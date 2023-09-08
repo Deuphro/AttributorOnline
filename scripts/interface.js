@@ -95,13 +95,6 @@ class Table{
         })
         this.destination.appendChild(this.container)
         this.drawVirtual()
-
-
-
-
-
-
-
         this.hRuler.addEventListener('mousedown',(e)=>{
             e.preventDefault();
             let dx=e.clientX;
@@ -195,7 +188,7 @@ class Table{
         console.log("largeur du scroller horizontale :",width)
         let res=CE('div',{className:"scrollwrapper horizontal"},[""])
         stylize(res,{
-            background:"red",
+            background:"none",
             position:"absolute",
             width:`${width}px`,
             height:"10px",
@@ -209,7 +202,7 @@ class Table{
         const height=this.parameters.dataDimension.rows*parseInt(this.parameters.styles.cells.height) + (this.parameters.dataDimension.rows+1)*parseInt(this.parameters.styles.tables["border-spacing"])
         let res=CE('div',{className:"scrollwrapper vertical"},[""])
         stylize(res,{
-            background:"red",
+            background:"none",
             position:"absolute",
             width:"10px",
             height:`${height}px`,
@@ -659,7 +652,11 @@ class App{
         this.topContent=[
             CE('div',{id:"topContent", className:"horizontal content"},[
                 "Top content",
-                CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"])
+                CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
+                CE('button',{onclick:(e)=>{
+                    app.choco=new Dialog("Olympe",app,app.main);
+                    app.tata=new Table(fakeData(10),["Magic des frites au prout","in","the","air","allez","allez","allez","pu","up","the"],app,app.choco.DOMelt.content)
+                }},[" Please click here for a table test"])
             ])
         ]
         this.midCentralContent=CE('div',{className:"vertical center content"},["center content"])
@@ -689,11 +686,7 @@ class App{
                 "Bot content"
             ])
         ]
-        this.menu=CE('div',{id:"mainMenu",className:"menu"},["Main menu",
-            CE('span',{onclick:(e)=>{
-                app.choco=new Dialog("Olympe",app,app.main);
-                app.tata=new Table(fakeData(10),["Magic des frites au prout","in","the","air","allez","allez","allez","pu","up","the"],app,app.choco.DOMelt.content)
-            }},[" Please click here for a table test"])])
+        this.menu=CE('div',{id:"mainMenu",className:"menu"},["Main menu"])
         this.top=CE('div',{id:"top",className:"horizontal top panel"},this.topContent)
         this.mid=CE('div',{id:"mid",className:"horizontal mid panel"},this.midContent)
         this.bot=CE('div',{id:"bot",className:"horizontal bot panel"},this.botContent)
