@@ -1,0 +1,126 @@
+*{
+    box-sizing: border-box;
+    scrollbar-width:thin;
+}
+
+div{
+    border:0px solid rgba(0, 0, 0, 0.5);
+    background-color: rgba(0, 0, 0, 0.2);
+    padding:0px;
+}
+
+#mainMenu{
+    border:0px solid green;
+}
+
+#mainInterface{
+    border:0px solid red;
+    display:grid;
+    grid-template-rows:100px 5px 1fr 5px 200px;
+    justify-items: stretch;
+    justify-content: stretch;
+    transition:300ms;
+    overflow: hidden;
+}
+
+.horizontal.mid.panel{
+    display: grid;
+    grid-template-columns: 250px 5px 1fr 5px 250px;
+    transition: 300ms;
+    overflow:hidden;
+}
+
+.horizontal.septum{
+    display:grid;
+    grid-template-columns: 1fr 20px 1fr;
+    position:relative;
+}
+.horizontal.resizer{
+    cursor:row-resize;
+}
+.vertical.resizer{
+    cursor: col-resize;
+}
+.vertical.septum{
+    display:grid;
+    grid-template-rows: 1fr 20px 1fr;
+}
+.resizer{
+    justify-self: stretch;
+    align-self: stretch;
+    background-color: hsl(22, 100%, 9%);
+}
+.wrapper{
+    background-color: blue;
+    border-radius: 2px;
+    border:1px solid white;
+    height: 100%;
+    width:100%;
+    justify-self: center;
+    align-self: center;
+}
+.wrapper:hover{
+    background-color: rgb(255, 81, 0);
+    scale: 2;
+    border-radius: 5px;
+    border: 0.1px solid black;
+    transition: 100ms;
+}
+
+.content{
+    height: 100%;
+    overflow:auto;
+    border:0px solid violet;
+}
+.panel{
+    border:0px solid greenyellow;
+    overflow: auto;
+    position:relative;
+}
+
+.app{
+    display:grid;
+    grid-template-rows: 1em 1fr;
+    position: absolute;
+    bottom:0px;
+    top:0px;
+    left:0px;
+    right:0px;
+}
+
+.accordion.folder:hover{
+    border:1px solid rgb(255, 0, 140);
+}
+
+.accordion.label{
+    text-align: center;
+    color:rgb(212, 120, 0);
+}
+
+.accordion.folder{
+    border:1px solid white;
+    border-radius: 30%;
+    background-color: rgb(90, 83, 53);
+    width: 1em;
+    height: 1em;
+    align-self: center;
+}
+
+.accordion.menu{
+    border:1px solid white;
+    border-radius: 30%;
+    background-color: rgb(80, 80, 80);
+    width: 1em;
+    height: 1em;
+    align-self: center;
+}
+
+.dismisser{
+    border:1px solid white;
+    border-radius: 30%;
+    background-color: rgba(104, 34, 34, 0.671);
+}
+.dismisser:hover{
+    background-color: rgba(194, 26, 26, 0.671);
+    border:1px solid rgb(0, 0, 0);
+}
