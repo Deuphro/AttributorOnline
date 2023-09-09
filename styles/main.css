@@ -48,10 +48,10 @@ div{
 .resizer{
     justify-self: stretch;
     align-self: stretch;
-    background-color: hsl(22, 100%, 9%);
+    background-color: hsl(0, 0%, 55%);
 }
 .wrapper{
-    background-color: blue;
+    background-color: rgb(43, 43, 61);
     border-radius: 2px;
     border:1px solid white;
     height: 100%;
@@ -60,7 +60,7 @@ div{
     align-self: center;
 }
 .wrapper:hover{
-    background-color: rgb(255, 81, 0);
+    background-color: rgb(75, 65, 60);
     scale: 2;
     border-radius: 5px;
     border: 0.1px solid black;
