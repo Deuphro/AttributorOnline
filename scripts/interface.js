@@ -1,4 +1,125 @@
 import {$,CE,stylize,fakeData} from "./util.js"
+import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
+
+class Plot2D{
+    constructor(traces,origin,destination){
+        self=this
+        this.traces=traces
+        this.origin=origin
+        this.destination=destination
+        this.container=CE('div',{className:"2dplot container"},[]);
+        this.parameters={
+            graphzone:{
+                drawn:false
+            },
+            margins:{
+                top:10,
+                bottom:30,
+                left:30,
+                right:15
+            },
+            axis:{
+                bottom:{
+                    drawn:false,
+                    domain:[0,1],
+                    range:[0,1],
+                    position:{left:0,top:1},
+                    label:"Abscissa",
+                    orientation:"horizontal",
+                    scale:"linear",
+                    type:"bottom"
+                },
+                left:{
+                    drawn:false,
+                    domain:[0,1],
+                    range:[1,0],
+                    position:{left:0,top:0},
+                    label:"Ordinate",
+                    orientation:"vertical",
+                    scale:"linear",
+                    type:"left"
+                }
+            },
+        }
+        stylize(this.container,{
+            position:"relative",
+            width:"100%",
+            height:"100%",
+        })
+        this.destination.appendChild(this.container)
+        this.drawGraph()
+        this.resizeObserver=new ResizeObserver((e)=>{this.drawGraph()});
+        this.resizeObserver.observe(this.container);
+    }
+    get graphzone(){
+        self=this
+        return {
+            width:self.container.clientWidth-self.parameters.margins.left-self.parameters.margins.right,
+            height:self.container.clientHeight-self.parameters.margins.top-self.parameters.margins.bottom
+        }
+    }
+    drawGraph(){
+        let range=[]
+        let scale={}
+        let translate=""
+        this.axesSVG={}
+        let target=""
+        if(this.parameters.graphzone.drawn){
+            this.graphSVG
+                .attr("width",this.container.clientWidth)
+                .attr("height",this.container.clientHeight)
+            this.graphSVG
+                .select("g")
+                    .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
+        } else {
+            this.parameters.graphzone.drawn=true
+            this.graphSVG=d3.select(this.container)
+                .append("svg")
+                    .attr("width",this.container.clientWidth)
+                    .attr("height",this.container.clientHeight)
+            this.graphSVG.append("g")
+                    .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
+        }
+        for(let axis of Object.keys(this.parameters.axis)){
+            if(this.parameters.axis[axis].drawn){
+                //MAJ
+            }else{
+                //INIT
+                this.graphSVG.select("g").append("g").attr("class",axis)
+            }
+            target=`.${axis}`
+            translate=`translate(${this.parameters.axis[axis].position.left*this.graphzone.width},${this.parameters.axis[axis].position.top*this.graphzone.height})`
+            if(this.parameters.axis[axis].orientation=="horizontal"){
+                range=[this.parameters.axis[axis].range[0]*this.graphzone.width,this.parameters.axis[axis].range[1]*this.graphzone.width]
+            } else if (this.parameters.axis[axis].orientation=="vertical"){
+                range=[this.parameters.axis[axis].range[0]*this.graphzone.height,this.parameters.axis[axis].range[1]*this.graphzone.height]
+            }
+            if (this.parameters.axis[axis].scale=="linear"){
+                scale=d3.scaleLinear()
+                    .domain(this.parameters.axis[axis].domain)
+                    .range(range)
+            }
+            this.axesSVG[axis]=this.graphSVG.select("g").select(target)
+            this.axesSVG[axis].attr("transform",translate).transition().duration(1000)
+            switch (this.parameters.axis[axis].type){
+                case "left":
+                    this.axesSVG[axis].call(d3.axisLeft(scale))
+                    break
+                case "right":
+                    this.axesSVG[axis].call(d3.axisRight(scale))
+                    break
+                case "top":
+                    this.axesSVG[axis].call(d3.axisTop(scale))
+                    break
+                case "bottom":
+                    this.axesSVG[axis].call(d3.axisBottom(scale))
+                    break
+                default:
+            }
+            this.parameters.axis[axis].drawn=true
+        }
+    }
+}
 
 class Table{
     constructor(data,title=null,origin,destination){
@@ -349,7 +470,7 @@ class Dialog{
             "border-radius":"10px",
             display:"grid",
             "grid-template-rows":"auto 1fr",
-            padding:"0.5em",
+            padding:"0.2em",
             border:"1px dashed greenyellow",
             overflow:"hidden",
             resize:"both",
@@ -654,9 +775,13 @@ class App{
                 "Top content",
                 CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
                 CE('button',{onclick:(e)=>{
-                    app.choco=new Dialog("Olympe",app,app.main);
-                    app.tata=new Table(fakeData(10),["Magic des frites au prout","in","the","air","allez","allez","allez","pu","up","the"],app,app.choco.DOMelt.content)
-                }},[" Please click here for a table test"])
+                    app.choco=new Dialog("A table test",app,app.main);
+                    app.tata=new Table(fakeData(10),["A title","an other","a third"],app,app.choco.DOMelt.content)
+                }},[" Please click here for a table test"]),
+                CE('button',{onclick:(e)=>{
+                    app.lat=new Dialog("A graph test",app,app.midCentralContent);
+                    app.yoyo=new Plot2D([],app,app.lat.DOMelt.content)
+                }},[" Please click here for a graph test"])
             ])
         ]
         this.midCentralContent=CE('div',{className:"vertical center content"},["center content"])
@@ -688,26 +813,30 @@ class App{
         ]
         this.menu=CE('div',{id:"mainMenu",className:"menu"},["Main menu"])
         this.top=CE('div',{id:"top",className:"horizontal top panel"},this.topContent)
+        this.topSeptum=CE('div',{id:"topSeptum",className:"top horizontal septum"},[
+            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[]),
+            CE('div',{className:"horizontal wrapper",onclick:()=>{this.parameters.topContent.fold=!this.parameters.topContent.folded;}},[]),
+            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[])
+        ])
         this.mid=CE('div',{id:"mid",className:"horizontal mid panel"},this.midContent)
+        this.botSeptum=CE('div',{id:"botSeptum",className:"bot horizontal septum"},[
+            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[]),
+            CE('div',{className:"horizontal wrapper",onclick:()=>{this.parameters.botContent.fold=!this.parameters.botContent.folded;}},[]),
+            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[])
+        ])
         this.bot=CE('div',{id:"bot",className:"horizontal bot panel"},this.botContent)
+
         this.main=CE('div',{id:"main",className:"app"},[
             this.menu,
             CE('div',{id:"mainInterface", className:"container"},[
                 this.top,
-                CE('div',{id:"topSeptum",className:"top horizontal septum"},[
-                    CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[]),
-                    CE('div',{className:"horizontal wrapper",onclick:()=>{this.parameters.topContent.fold=!this.parameters.topContent.folded;}},[]),
-                    CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[])
-                ]),
+                this.topSeptum,
                 this.mid,
-                CE('div',{id:"botSeptum",className:"bot horizontal septum"},[
-                    CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[]),
-                    CE('div',{className:"horizontal wrapper",onclick:()=>{this.parameters.botContent.fold=!this.parameters.botContent.folded;}},[]),
-                    CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[])
-                ]),
+                this.botSeptum,
                 this.bot
             ])
         ])
+
         this.target="body";
         $(this.target).appendChild(this.main);
         let dataManager= new Accordion("Data manager");
