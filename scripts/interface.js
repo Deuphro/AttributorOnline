@@ -1,5 +1,55 @@
 import {$,CE,stylize,fakeData} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
+import defaultMenu from "./../resources/config.js"
+
+console.log(defaultMenu)
+
+class Channel{
+    constructor(){
+        this.eventTypes={}
+    }
+    register(name,caster){
+        this[name]=caster
+        if (!caster.events){
+            if (!caster.events.broadcast){
+                caster.events.broadcast={
+                poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:caster}}),
+                killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:caster}})
+                }
+            }
+        }
+        caster.events.channelNickname=name
+        const broadcasts=caster.events.broadcast
+        Object.values(broadcasts).forEach((e)=>{
+            window.addEventListener(e.type,this.defaultListener.bind(this))
+            if (!this.eventTypes[e.type]){
+                this.eventTypes[e.type]=[]
+            }
+        })
+        if(!caster.events.listen){
+        } else {
+            const listeners=caster.events.listen
+            Object.keys(listeners).forEach((e)=>{
+                if (!this.eventTypes[e]){
+                    this.eventTypes[e]=[]
+                }
+                this.eventTypes[e].push(name)
+        })
+        }
+        dispatchEvent(broadcasts.poppedUp)
+    }
+    degister(caster){
+    }
+    defaultListener(e){
+        const event=e
+        const et=e.type
+        this.eventTypes[e.type].forEach((targetName)=>{
+            this[targetName].events.listen[et](e)
+            })
+    }
+}
+
+
 
 class Plot2D{
     constructor(traces,origin,destination){
@@ -10,7 +60,8 @@ class Plot2D{
         this.container=CE('div',{className:"2dplot container"},[]);
         this.parameters={
             graphzone:{
-                drawn:false
+                drawn:false,
+                opacity:"0.5"
             },
             margins:{
                 top:10,
@@ -65,27 +116,30 @@ class Plot2D{
         this.axesSVG={}
         let target=""
         if(this.parameters.graphzone.drawn){
-            this.graphSVG
-                .attr("width",this.container.clientWidth)
-                .attr("height",this.container.clientHeight)
-            this.graphSVG
-                .select("g")
-                    .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
         } else {
             this.parameters.graphzone.drawn=true
             this.graphSVG=d3.select(this.container)
                 .append("svg")
                     .attr("width",this.container.clientWidth)
                     .attr("height",this.container.clientHeight)
+                    .attr("class","main")
             this.graphSVG.append("g")
                     .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
+                    .attr('class',"anchor")
         }
+        this.graphSVG
+            .attr("width",this.container.clientWidth)
+            .attr("height",this.container.clientHeight)
+        this.graphSVG
+            .select(".anchor")
+                .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
+        this.graphSVG.attr('opacity',this.parameters.graphzone.opacity)
         for(let axis of Object.keys(this.parameters.axis)){
             if(this.parameters.axis[axis].drawn){
                 //MAJ
             }else{
                 //INIT
-                this.graphSVG.select("g").append("g").attr("class",axis)
+                this.graphSVG.select(".anchor").append("g").attr("class",axis)
             }
             target=`.${axis}`
             translate=`translate(${this.parameters.axis[axis].position.left*this.graphzone.width},${this.parameters.axis[axis].position.top*this.graphzone.height})`
@@ -99,8 +153,9 @@ class Plot2D{
                     .domain(this.parameters.axis[axis].domain)
                     .range(range)
             }
-            this.axesSVG[axis]=this.graphSVG.select("g").select(target)
-            this.axesSVG[axis].attr("transform",translate).transition().duration(1000)
+            this.axesSVG[axis]=this.graphSVG.select(".anchor").select(target)
+            this.axesSVG[axis].attr("transform",translate)
+            this.axesSVG[axis].attr("fill","blanchedalmond")
             switch (this.parameters.axis[axis].type){
                 case "left":
                     this.axesSVG[axis].call(d3.axisLeft(scale))
@@ -116,6 +171,7 @@ class Plot2D{
                     break
                 default:
             }
+            this.axesSVG[axis].selectAll(".tick text").attr("font-size", "12px").attr("font-family","Times New Roman")
             this.parameters.axis[axis].drawn=true
         }
     }
@@ -152,6 +208,8 @@ class Table{
                         opacity:"0.5"
                     },
                     cells:{
+                        "font-size":"12px",
+                        "font-weight":"normal",
                         "background-color": "blanchedalmond",
                         "text-overflow":"clip",
                         "width":"50px",
@@ -173,6 +231,8 @@ class Table{
                         opacity:"0.5"
                     },
                     cells:{
+                        "font-size":"12px",
+                        "font-weight":"normal",
                         "width":"30px",
                         "height":"20px",
                         "background-color": "blanchedalmond",
@@ -234,10 +294,6 @@ class Table{
             }
         })
         this.container.addEventListener('scroll',()=>{this.onScroll()});
-        this.intersectionObserver= new IntersectionObserver((e)=>{
-            console.log("intersection du container triggered !")
-        });
-        this.intersectionObserver.observe(this.container)
         this.resizeObserver=new ResizeObserver(()=>{this.onResize()});
         this.resizeObserver.observe(this.container);
     }
@@ -306,7 +362,6 @@ class Table{
     }
     horizontalScrollWrapper(){
         const width=parseInt(this.parameters.styles.vRuler.cells.width) + this.parameters.dataDimension.cols*parseInt(this.parameters.styles.cells.width) + (this.parameters.dataDimension.cols+2)*parseInt(this.parameters.styles.tables["border-spacing"])
-        console.log("largeur du scroller horizontale :",width)
         let res=CE('div',{className:"scrollwrapper horizontal"},[""])
         stylize(res,{
             background:"none",
@@ -446,6 +501,17 @@ class Table{
 class Dialog{
     constructor(title,origin,destination){
         const dialog=this;
+        this.events={
+            broadcast:{
+                poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:dialog}}),
+                killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:dialog}}),
+                selected:new CustomEvent("selected",{detail:{msg:"I've just been selected !!!",emitter:dialog}})
+            },
+            listen:{
+                selected(e){console.log("oupinez quelqu'un a été selectionné !!",e.detail.emitter==dialog)},
+                killed(e){console.log("quelqu'un s'est fait tué !\n",e)}
+            }
+        }
         this.origin=origin;
         this.destination=destination;
         this.DOMelt={};
@@ -453,6 +519,7 @@ class Dialog{
         this.DOMelt.dismisser.onclick=this.suicide.bind(this);
         this.DOMelt.label=CE('div',{className:"label"},[title.toString()]);
         this.DOMelt.label.onmousedown=this.drag.bind(this);
+        this.DOMelt.label.onclick=(e)=>{dispatchEvent(dialog.events.broadcast.selected)}
         this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
         this.DOMelt.window=CE('div',{className:"popup container"},[
@@ -510,7 +577,7 @@ class Dialog{
     suicide(){
         this.destination.removeChild(this.DOMelt.window)
         delete this.DOMelt
-        delete this
+        dispatchEvent(this.events.broadcast.killed)
     }
     drag(e){
         const boundary={
@@ -567,15 +634,17 @@ class Dialog{
 }
 
 class Accordion{
-    constructor(title){
+    constructor(title,origin,destination){
         const accordion=this;
+        this.origin=origin
+        this.destination=destination
         this.parameters={
             container:{
                 folded:false,
                 style:{
                     display:"grid",
                     width:"100%",
-                    border:"1px solid black",
+                    border:"0px solid black",
                     padding:"1px",
                     "grid-template-rows":"auto 1fr",
                     transition:"300ms"
@@ -597,8 +666,9 @@ class Accordion{
                     width:"100%",
                     border:"1px solid black",
                     padding:"0px",
-                    transition:"300ms",
-                    overflow:"hidden"
+                    transition:"30ms",
+                    overflow:"hidden",
+                    transition:"200ms"
                 }
             }
         };
@@ -609,14 +679,14 @@ class Accordion{
                 CE('div',{className:"accordion handler menu"},[]),
                 CE('div',{className:"accordion handler label"},[title]),
             ]),
-            content:CE('div',{className:"accordion content"},[
-                "On pourrait faire mieux !!! Je veux dire par là qu'il doit y avoir un moyen d'améliorer l'ensemble sans pour autant avoir à tout refaire"+`${accordion}`+"\nOn pourrait faire mieux !!! Je veux dire par là qu'il doit y avoir un moyen d'améliorer l'ensemble sans pour autant avoir à tout refaire"+`${accordion}`]),
+            content:CE('div',{className:"accordion content"},[]),
         }
         this.DOMelt.handler.appendChild(this.DOMelt.folder)
         this.DOMelt.container=CE('div',{className:"accordion container"},[this.DOMelt.handler,this.DOMelt.content]);
         stylize(this.DOMelt.container,this.parameters.container.style);
         stylize(this.DOMelt.handler,this.parameters.handler.style);
         stylize(this.DOMelt.content,this.parameters.content.style);
+        this.destination.appendChild(this.DOMelt.container)
     }
     fold(){
         this.parameters.folded=true
@@ -644,6 +714,7 @@ class Accordion{
 class App{
     constructor(){
         const app=this
+        this.channel=new Channel()
         this.parameters={
             topContent:{
                 folded: false,
@@ -775,8 +846,8 @@ class App{
                 "Top content",
                 CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
                 CE('button',{onclick:(e)=>{
-                    app.choco=new Dialog("A table test",app,app.main);
-                    app.tata=new Table(fakeData(10),["A title","an other","a third"],app,app.choco.DOMelt.content)
+                    app.channel.register("choco",new Dialog("A table test",app,app.main))
+                    app.tata=new Table(fakeData(10),["A title","an other","a third"],app,app.channel["choco"].DOMelt.content)
                 }},[" Please click here for a table test"]),
                 CE('button',{onclick:(e)=>{
                     app.lat=new Dialog("A graph test",app,app.midCentralContent);
@@ -839,10 +910,13 @@ class App{
 
         this.target="body";
         $(this.target).appendChild(this.main);
-        let dataManager= new Accordion("Data manager");
-        $(".vertical.left.content").appendChild(dataManager.DOMelt.container);
-        let dataManager2= new Accordion("Data manager 2");
-        $(".vertical.left.content").appendChild(dataManager2.DOMelt.container);
+        let dataManager= new Accordion("Data manager",this,$(".vertical.left.content"));
+        let dataManager2= new Accordion("Data manager 2",this,$(".vertical.left.content"));
+        dataManager.DOMelt.content.appendChild(
+            CE('div',{},["test",CE('div',{id:"Gloubidi",style:{height:"300px"}},[])])
+            
+        )
+        let grrrr=new Plot2D([],this,$("#Gloubidi"))
     }
 }
 
