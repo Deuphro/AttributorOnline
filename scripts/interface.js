@@ -1,8 +1,8 @@
 import {$,CE,stylize,fakeData} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
-import defaultMenu from "./../resources/config.js"
+import {defaultMenu} from "../resources/config.js"
 
-console.log(defaultMenu)
+//console.log(defaultMenu)
 
 class Channel{
     constructor(){
@@ -18,12 +18,12 @@ class Channel{
                 }
             }
         }
-        caster.events.channelNickname=name
+        caster.events.registrationName=name
         const broadcasts=caster.events.broadcast
         Object.values(broadcasts).forEach((e)=>{
-            window.addEventListener(e.type,this.defaultListener.bind(this))
             if (!this.eventTypes[e.type]){
-                this.eventTypes[e.type]=[]
+                window.addEventListener(e.type,this.defaultListener.bind(this))
+                this.eventTypes[e.type]=new Set()
             }
         })
         if(!caster.events.listen){
@@ -31,9 +31,9 @@ class Channel{
             const listeners=caster.events.listen
             Object.keys(listeners).forEach((e)=>{
                 if (!this.eventTypes[e]){
-                    this.eventTypes[e]=[]
+                    this.eventTypes[e]=new Set()
                 }
-                this.eventTypes[e].push(name)
+                this.eventTypes[e].add(name)
         })
         }
         dispatchEvent(broadcasts.poppedUp)
@@ -43,13 +43,11 @@ class Channel{
     defaultListener(e){
         const event=e
         const et=e.type
-        this.eventTypes[e.type].forEach((targetName)=>{
+        this.eventTypes[e.type].forEach((targetName,i,a)=>{
             this[targetName].events.listen[et](e)
             })
     }
 }
-
-
 
 class Plot2D{
     constructor(traces,origin,destination){
@@ -508,8 +506,17 @@ class Dialog{
                 selected:new CustomEvent("selected",{detail:{msg:"I've just been selected !!!",emitter:dialog}})
             },
             listen:{
-                selected(e){console.log("oupinez quelqu'un a été selectionné !!",e.detail.emitter==dialog)},
-                killed(e){console.log("quelqu'un s'est fait tué !\n",e)}
+                selected(e){
+                    console.log("oupinez "+e.detail.emitter.events.registrationName+" a été selectionné !!")
+                    if (e.detail.emitter.events.registrationName==dialog.events.registrationName) {
+                        console.log("hey mais c moi car je suis:",dialog.events.registrationName)
+                        dialog.DOMelt.window.style.outline="3px solid greenyellow"
+                    } else {
+                        console.log("ha oui mais c'est pas moi car je suis:",dialog.events.registrationName)
+                        dialog.DOMelt.window.style.outline="0px solid black"
+                    }
+                },
+                killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationName)}
             }
         }
         this.origin=origin;
@@ -522,7 +529,7 @@ class Dialog{
         this.DOMelt.label.onclick=(e)=>{dispatchEvent(dialog.events.broadcast.selected)}
         this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
-        this.DOMelt.window=CE('div',{className:"popup container"},[
+        this.DOMelt.window=CE('div',{className:title+" popup container"},[
             dialog.DOMelt.handler,
             dialog.DOMelt.content
         ]);
@@ -571,12 +578,16 @@ class Dialog{
         this.resizeObserver=new ResizeObserver((e)=>e.forEach((v)=>{
             this.resize(v);
         }));
-        destination.appendChild(this.DOMelt.window);
+        if (!$(`.${title}.popup.container`)){
+            destination.appendChild(this.DOMelt.window);
+        }else{
+            this.destination.removeChild($(`.${title}.popup.container`))
+            destination.appendChild(this.DOMelt.window);
+        }
         this.resizeObserver.observe(this.DOMelt.window);
     }
     suicide(){
         this.destination.removeChild(this.DOMelt.window)
-        delete this.DOMelt
         dispatchEvent(this.events.broadcast.killed)
     }
     drag(e){
@@ -846,12 +857,12 @@ class App{
                 "Top content",
                 CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
                 CE('button',{onclick:(e)=>{
-                    app.channel.register("choco",new Dialog("A table test",app,app.main))
+                    app.channel.register("choco",new Dialog("choco",app,app.main))
                     app.tata=new Table(fakeData(10),["A title","an other","a third"],app,app.channel["choco"].DOMelt.content)
                 }},[" Please click here for a table test"]),
                 CE('button',{onclick:(e)=>{
-                    app.lat=new Dialog("A graph test",app,app.midCentralContent);
-                    app.yoyo=new Plot2D([],app,app.lat.DOMelt.content)
+                    app.channel.register("lata",new Dialog("lata",app,app.midCentralContent))
+                    app.yoyo=new Plot2D([],app,app.channel["lata"].DOMelt.content)
                 }},[" Please click here for a graph test"])
             ])
         ]
