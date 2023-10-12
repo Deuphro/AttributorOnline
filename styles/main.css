@@ -1,6 +1,9 @@
 *{
     box-sizing: border-box;
     scrollbar-width:thin;
+    font-family: monospace;
+    letter-spacing: -1px;
+    font-size: auto;
 }
 
 div{
@@ -9,14 +12,80 @@ div{
     padding:0px;
 }
 
+.child .parent .child{
+    left:100%;
+    top:-0%;
+}
+
+.parent {
+    display: block;
+    position:relative;
+    float: left;
+    margin: 0px;
+    border-radius: 5px;
+    margin-right: 0px;
+    width:auto;
+    padding:0px 5px 0px 5px;
+    text-align: left;
+    cursor:pointer;
+    color: rgb(0, 0, 0);
+    white-space: nowrap;
+}
+
+.child .parent{
+    position:relative;
+    display: block;
+    width:100%;
+    background: rgba(255, 255, 255, 0.377);
+    margin:1px 0px 1px 0px;
+    border-radius: 5px 5px 5px 5px;
+    /*font-size: 11pt;*/
+    border-bottom: 0px solid rgb(0, 0, 0);
+    padding:0px 10px 0px 10px;
+}
+
+.parent:hover{
+    outline: 1px solid greenyellow;
+    color: blanchedalmond;
+    background: rgba(0, 0, 0, 0.30);
+}
+
+.parent:hover>.child {
+    display:block;
+    position:absolute;
+    z-index:1;
+}
+
+.child{
+    display:none;
+    position:relative;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    background: rgba(33, 40, 43, 0.801);
+    list-style: none;
+    padding: 1px 1px 1px 1px;
+    margin: 50px;
+    margin: 0px 0px 0px 0px;
+    border-radius: 5px;
+    float:left;
+    width:auto;
+    box-shadow: 0px 0px 20px 1px greenyellow;
+}
+
+.label{
+    font-weight: normal;
+    padding-bottom: 0px;
+}
+
 #mainMenu{
     border:0px solid green;
+    height: 100%;
+    z-index:100;
 }
 
 #mainInterface{
     border:0px solid red;
     display:grid;
-    grid-template-rows:100px 5px 1fr 5px 200px;
+    grid-template-rows:100px 5px 1fr 5px 100px;
     justify-items: stretch;
     justify-content: stretch;
     transition:300ms;
@@ -53,15 +122,17 @@ div{
 
 .wrapper{
     background-color: rgb(43, 43, 61);
-    border-radius: 2px;
-    border:1px solid white;
+    border-radius: 5px;
+    border:1px solid blanchedalmond;
     height: 100%;
     width:100%;
     justify-self: center;
     align-self: center;
+    z-index:1;
 }
 .wrapper:hover{
     background-color: rgb(75, 65, 60);
+    opacity: 100%;
     scale: 2;
     border-radius: 5px;
     border: 0.1px solid black;
@@ -72,6 +143,8 @@ div{
     height: 100%;
     overflow:auto;
     border:0px solid violet;
+    background: linear-gradient(135deg, #89898080, #A9B2AC80, #BCD0C780);
+    border-radius: 5px;
 }
 .panel{
     border:0px solid greenyellow;
@@ -81,7 +154,7 @@ div{
 
 .app{
     display:grid;
-    grid-template-rows: 1em 1fr;
+    grid-template-rows: auto 1fr;
     position: absolute;
     bottom:0px;
     top:0px;
@@ -99,8 +172,8 @@ div{
 }
 
 .accordion.folder{
-    border:1px solid white;
-    border-radius: 30%;
+    border:1px solid blanchedalmond;
+    border-radius: 5px;
     background-color: rgb(90, 83, 53);
     width: 1em;
     height: 1em;
@@ -108,8 +181,8 @@ div{
 }
 
 .accordion.menu{
-    border:1px solid white;
-    border-radius: 30%;
+    border:1px solid blanchedalmond;
+    border-radius: 5px;
     background-color: rgb(80, 80, 80);
     width: 1em;
     height: 1em;
@@ -117,11 +190,16 @@ div{
 }
 
 .dismisser{
-    border:1px solid white;
-    border-radius: 30%;
+    border:1px solid blanchedalmond;
+    border-radius: 5px;
     background-color: rgba(104, 34, 34, 0.671);
 }
 .dismisser:hover{
     background-color: rgba(194, 26, 26, 0.671);
     border:1px solid rgb(0, 0, 0);
+}
+
+.selected{
+    outline: 1px solid blanchedalmond;
+    box-shadow: 0px 0px 20px 1px greenyellow;
 }

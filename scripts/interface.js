@@ -1,8 +1,59 @@
 import {$,CE,stylize,fakeData} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
+import { Data , Vector} from "./formats.js"
 
-//console.log(defaultMenu)
+let test=new Vector([
+    6,
+    4,
+    [2,[1,2,3,8]],
+    {x:4,y:5,z:6,t:{a:7,k:9}},
+    [1,2,3],
+    [1,2,3],
+    [[1,2,3],2,{a:12,b:{legume:"poireau",viande:"porc"},c:45,d:[1,2,3,4,5,6,7,8,9,10,11,12]}],
+    {x:9,y:6,prout:3}
+])
+console.log(test)
+
+class MainMenu{
+    constructor(configObject,title,origin,destination){
+        this.title=title
+        this.origin=origin
+        this.destination=destination
+        this.container=CE('nav',{className:`menu container ${title}`},[])
+        this.dfs4objects(configObject,this.container,0)
+        this.draw()
+    }
+    dfs4objects(object,html,c){
+        if(!Object.keys(object).length){
+            return
+        }
+        const category=(c==0 ? "menu" :"child")
+        html.appendChild(CE('div',{className:category},[]))//ul
+        let achteyheymel
+        c++
+        for (let k of Object.keys(object)){
+            if(k=='hr'){
+                achteyheymel=CE('hr',{},[])
+            } else {
+                achteyheymel=
+                CE('div',{className:"parent",onclick:object[k]},[
+                    k+(Object.keys(object[k]).length==0 || c<2?"":"..."),
+                ])
+            }
+            html.lastChild.append(achteyheymel)
+            this.dfs4objects(object[k],achteyheymel,c)
+        }
+    }
+    draw(){
+        if (!$(`.${this.title}.menu.container`)){
+            this.destination.appendChild(this.container);
+        }else{
+            this.destination.removeChild($(`.${title}.menu.container`))
+            this.destination.appendChild(this.container);
+        }
+    }
+}
 
 class Channel{
     constructor(){
@@ -11,6 +62,7 @@ class Channel{
     register(name,caster){
         this[name]=caster
         if (!caster.events){
+            caster.events={}
             if (!caster.events.broadcast){
                 caster.events.broadcast={
                 poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:caster}}),
@@ -50,9 +102,10 @@ class Channel{
 }
 
 class Plot2D{
-    constructor(traces,origin,destination){
+    constructor(data,title,origin,destination){
         self=this
-        this.traces=traces
+        this.title=title
+        this.data=data
         this.origin=origin
         this.destination=destination
         this.container=CE('div',{className:"2dplot container"},[]);
@@ -499,6 +552,7 @@ class Table{
 class Dialog{
     constructor(title,origin,destination){
         const dialog=this;
+        this.title=title
         this.events={
             broadcast:{
                 poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:dialog}}),
@@ -510,10 +564,12 @@ class Dialog{
                     console.log("oupinez "+e.detail.emitter.events.registrationName+" a été selectionné !!")
                     if (e.detail.emitter.events.registrationName==dialog.events.registrationName) {
                         console.log("hey mais c moi car je suis:",dialog.events.registrationName)
-                        dialog.DOMelt.window.style.outline="3px solid greenyellow"
+                        dialog.DOMelt.window.classList.add('selected')
+                        dialog.DOMelt.window.style["z-index"]="10"
                     } else {
                         console.log("ha oui mais c'est pas moi car je suis:",dialog.events.registrationName)
-                        dialog.DOMelt.window.style.outline="0px solid black"
+                        dialog.DOMelt.window.classList.remove('selected')
+                        dialog.DOMelt.window.style["z-index"]="0"
                     }
                 },
                 killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationName)}
@@ -566,7 +622,7 @@ class Dialog{
         })
         stylize(this.DOMelt.label,{
             cursor:"move",
-            padding:"0em",
+            //padding:"0em",
             "white-space":"nowrap",
             overflow:"hidden"
         })
@@ -647,6 +703,7 @@ class Dialog{
 class Accordion{
     constructor(title,origin,destination){
         const accordion=this;
+        this.title=title
         this.origin=origin
         this.destination=destination
         this.parameters={
@@ -862,7 +919,7 @@ class App{
                 }},[" Please click here for a table test"]),
                 CE('button',{onclick:(e)=>{
                     app.channel.register("lata",new Dialog("lata",app,app.midCentralContent))
-                    app.yoyo=new Plot2D([],app,app.channel["lata"].DOMelt.content)
+                    app.yoyo=new Plot2D([],"yoyo",app,app.channel["lata"].DOMelt.content)
                 }},[" Please click here for a graph test"])
             ])
         ]
@@ -893,7 +950,8 @@ class App{
                 "Bot content"
             ])
         ]
-        this.menu=CE('div',{id:"mainMenu",className:"menu"},["Main menu"])
+        this.menu=CE('div',{id:"mainMenu",className:"menu"},[])
+        this.menu.onload
         this.top=CE('div',{id:"top",className:"horizontal top panel"},this.topContent)
         this.topSeptum=CE('div',{id:"topSeptum",className:"top horizontal septum"},[
             CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[]),
@@ -927,8 +985,10 @@ class App{
             CE('div',{},["test",CE('div',{id:"Gloubidi",style:{height:"300px"}},[])])
             
         )
-        let grrrr=new Plot2D([],this,$("#Gloubidi"))
+        let grrrr=new Plot2D([],"unnamed",this,$("#Gloubidi"))
+        this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",app,app.menu))
     }
 }
+
 
 export {App}
