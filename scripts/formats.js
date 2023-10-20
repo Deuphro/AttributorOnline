@@ -9,12 +9,14 @@ class Data{
 }
 
 class Vector{
-    constructor(data,infos=undefined){
+    constructor(data,label=undefined,infos=undefined){
+        this.label=label
         this.data=data
         this.infos={...infos,...this.detDim(data)}
     }
     detDim(iterable){
-        let res={dim:[],keys:[[]]}
+        let res={dim:[],keys:[]}
+        if(!Array.isArray(iterable)){res.keys.push(Object.keys(iterable))}
         let queue=Object.values(iterable)
         let newQueue=[]
         let sonSize=0
@@ -42,4 +44,37 @@ class Vector{
     }
 }
 
-export {Data,Vector}
+class NdArray{
+    constructor(dims){
+        this.dims=dims
+        this.cum=[1]
+        for(let k=1;k<this.dims.length;k++){
+            this.cum.push(this.cum[k-1]*this.dims[k-1])
+        }
+        this.size=1
+        this.dims.forEach((e) => {
+            this.size*=e
+        })
+        this.#fillCore()
+    }
+    index(...coords){
+        let res=0
+        for(let k in coords){
+            const limitedCoord=Math.min(Math.max(coords[k],0),this.dims[k]-1)
+            res+=limitedCoord*this.cum[k]
+        }
+        return res
+    }
+    coords(index){
+        let res=[]
+        const limitedIndex=Math.min(Math.max(index,0),this.size-1)
+        for(let j in this.dims){
+            res.push(Math.floor(limitedIndex/this.cum[j])%this.dims[j])
+        }
+        return res
+    }
+    #core
+    #fillCore(){this.#core=new Float64Array(this.size)}
+}
+
+export {Data,Vector,NdArray}

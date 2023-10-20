@@ -5,10 +5,38 @@
     letter-spacing: -1px;
     font-size: auto;
 }
+button{
+    border:none;
+    border-radius:5px;
+    background: rgba(255, 255, 255, 0.377);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    width:auto;
+    margin:1px;
+}
+button:hover{
+    outline: 1px solid greenyellow;
+    color: blanchedalmond;
+    background: rgba(0, 0, 0, 0.55);
+    box-shadow: 0px 0px 20px 1px greenyellow;
+}
+select{
+    border:none;
+    border-radius:5px;
+    background: rgba(255, 255, 255, 0.377);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    width:auto;
+    margin:1px;
+}
+select:hover{
+    outline: 1px solid greenyellow;
+    color: blanchedalmond;
+    background: rgba(0, 0, 0, 0.55);
+    box-shadow: 0px 0px 20px 1px greenyellow;
+}
 
 div{
     border:0px solid rgba(0, 0, 0, 0.5);
-    background-color: rgba(76,86,96,0.15);
+    background-color: rgba(64, 73, 85, 0.185);
     padding:0px;
 }
 
@@ -48,6 +76,7 @@ div{
     outline: 1px solid greenyellow;
     color: blanchedalmond;
     background: rgba(0, 0, 0, 0.30);
+    box-shadow: 0px 0px 20px 1px greenyellow;
 }
 
 .parent:hover>.child {
@@ -68,7 +97,6 @@ div{
     border-radius: 5px;
     float:left;
     width:auto;
-    box-shadow: 0px 0px 20px 1px greenyellow;
 }
 
 .label{
@@ -89,7 +117,7 @@ div{
     justify-items: stretch;
     justify-content: stretch;
     transition:300ms;
-    overflow: hidden;
+    overflow:hidden;
 }
 
 .horizontal.mid.panel{
@@ -160,6 +188,10 @@ div{
     top:0px;
     left:0px;
     right:0px;
+}
+
+.accordion.handler.menu{
+    opacity:0.5;
 }
 
 .accordion.folder:hover{

@@ -9,7 +9,7 @@ const defaultMenu={
         Data:{
             Load:{
                 JSON:(e)=>{},
-                CSV:{},
+                "Delimited Text":(e)=>{dispatchEvent(new CustomEvent('importDelimitedText',{detail:{msg:"ça marche!"}}))},
                 hr:{},
                 msConverter:{}
             },

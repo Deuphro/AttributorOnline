@@ -1,26 +1,25 @@
 import {$,CE,stylize,fakeData} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
-import { Data , Vector} from "./formats.js"
+import { Data , Vector, NdArray} from "./formats.js"
 
-let test=new Vector([
-    6,
-    4,
-    [2,[1,2,3,8]],
-    {x:4,y:5,z:6,t:{a:7,k:9}},
-    [1,2,3],
-    [1,2,3],
-    [[1,2,3],2,{a:12,b:{legume:"poireau",viande:"porc"},c:45,d:[1,2,3,4,5,6,7,8,9,10,11,12]}],
-    {x:9,y:6,prout:3}
-])
-console.log(test)
+
 
 class MainMenu{
     constructor(configObject,title,origin,destination){
+        self=this
         this.title=title
         this.origin=origin
         this.destination=destination
         this.container=CE('nav',{className:`menu container ${title}`},[])
+        this.events={
+            broadcast:{
+                poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:self}}),
+                killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:self}}),
+            },
+            listen:{
+            importDelimitedText(e){origin.loadDelimitedText()},
+        }}
         this.dfs4objects(configObject,this.container,0)
         this.draw()
     }
@@ -83,6 +82,7 @@ class Channel{
             const listeners=caster.events.listen
             Object.keys(listeners).forEach((e)=>{
                 if (!this.eventTypes[e]){
+                    window.addEventListener(e,this.defaultListener.bind(this))
                     this.eventTypes[e]=new Set()
                 }
                 this.eventTypes[e].add(name)
@@ -240,29 +240,37 @@ class Table{
                     "border-spacing":'1px',
                     width:"max-content",
                     "border-collapse":"separate",
-                    "text-overflow":"clip",
+                    "overflow":"hidden",
+                    "text-overflow":"ellipsis",
+                    outline:"3px solid red"
                 },
                 cells:{
                     "text-align": "center",
                     width:"50px",
                     height:"20px",
+                    "overflow":"hidden",
+                    "text-overflow":"ellipsis",
+                    outline:"3px solid red"
                 },
                 lines:{},
                 hRuler:{
                     table:{
+                        "table-layout":"fixed",
                         "border-spacing":'1px',
-                        width:"max-content",
+                        width:"min-content",
                         "border-collapse":"separate",
-                        "text-overflow":"clip",
+                        "overflow":"hidden",
+                        "text-overflow":"ellipsis",
                         "border-bottom":"1px solid darkgrey",
                         "background-color":"darkgrey",
-                        opacity:"0.5"
+                        opacity:"0.5",
                     },
                     cells:{
                         "font-size":"12px",
                         "font-weight":"normal",
                         "background-color": "blanchedalmond",
-                        "text-overflow":"clip",
+                        "overflow":"hidden",
+                        "text-overflow":"ellipsis",
                         "width":"50px",
                         "height":"20px",
                         cursor:"default",
@@ -273,10 +281,12 @@ class Table{
                 },
                 vRuler:{
                     table:{
+                        "table-layout":"fixed",
                         "border-spacing":'1px',
                         width:"max-content",
                         "border-collapse":"separate",
-                        "text-overflow":"clip",
+                        "overflow":"hidden",
+                        "text-overflow":"ellipsis",
                         "border":"none",
                         cursor:"default",
                         opacity:"0.5"
@@ -287,19 +297,22 @@ class Table{
                         "width":"30px",
                         "height":"20px",
                         "background-color": "blanchedalmond",
-                        "text-overflow":"clip",
+                        "overflow":"hidden",
+                        "text-overflow":"ellipsis"
                     },
                     lines:{
                     }
                 },
                 bTable:{
                     table:{
+                        "table-layout":"fixed",
                         "border-spacing":'1px',
-                        width:"max-content",
+                        width:"min-content",
                         "border-collapse":"separate",
-                        "text-overflow":"clip",
+                        "overflow":"hidden",
+                        "text-overflow":"ellipsis",
                         cursor:"cell",
-                        "margin-left":"-10px"
+                        "margin-left":"0px"
                     },
                     cells:{
                         "background-color":"rgba(245, 245, 220, 0.5)",
@@ -307,6 +320,8 @@ class Table{
                         "height":"20px",
                         "opacity": "0.5",
                         "text-align": "center",
+                        "overflow":"hidden",
+                        "text-overflow":"ellipsis"
                     },
                     lines:{
                     }
@@ -352,7 +367,7 @@ class Table{
         this.data=arg
         this.parameters.dataDimension={rows:Table.rowNum(arg),cols:Table.colNum(arg)}
     }
-    onScroll(){//FIXER les effets de bord au post resize !!!
+    onScroll(){
         this.parameters.virtualIndex.top=Math.floor(this.container.scrollTop/(parseInt(this.parameters.styles.vRuler.table["border-spacing"]) + parseInt(this.parameters.styles.vRuler.cells.height)))
         this.parameters.virtualIndex.left=Math.floor(this.container.scrollLeft/(parseInt(this.parameters.styles.hRuler.cells.width) + parseInt(this.parameters.styles.hRuler.table["border-spacing"])))
         const hRulerHeight=this.hRuler.clientHeight
@@ -458,7 +473,7 @@ class Table{
         }
         stylize(res,{
             position:"sticky",
-            display:"inline-block",
+            display:"inline-table",
             left:`${this.vRuler.clientWidth}px`,
             top:`${this.hRuler.clientHeight}px`,
             overflow:"hidden",
@@ -479,7 +494,6 @@ class Table{
             position:"sticky",
             left:"0px",
             top:`${this.hRuler.clientHeight}px`,
-            "white-space":"nowrap",
             "display":"inline-block",
         })
         return res
@@ -494,25 +508,30 @@ class Table{
         for(let k=0;k<this.virtualNbCols;k++){
             rulerLine.push(CE('th',{className:"horizontal ruler cell",style:this.parameters.styles.hRuler.cells},[(this.parameters.virtualIndex.left+k).toString()]));
             titleLine.push(CE('th',{className:"horizontal title cell",style:this.parameters.styles.hRuler.cells},[this.title[this.parameters.virtualIndex.left+k]===undefined ? "" : this.title[this.parameters.virtualIndex.left+k]]));
+            titleLine[k].setAttribute("contenteditable","true")
+            titleLine[k].addEventListener("input",(e)=>{
+                this.title[e.target.cellIndex]=e.target.textContent
+            })
         }
-        let res=CE('table',{className:"table ruler horizontal",style:this.parameters.styles.hRuler.table},[CE('tr',{className:"horizontal title line",style:this.parameters.styles.hRuler.lines},titleLine),CE('tr',{className:"horizontal ruler line",style:this.parameters.styles.hRuler.lines},rulerLine)])
+        let res=CE('table',{className:"table ruler horizontal",style:this.parameters.styles.hRuler.table},[
+            CE('tr',{className:"horizontal title line",style:this.parameters.styles.hRuler.lines},titleLine),
+            CE('tr',{className:"horizontal ruler line",style:this.parameters.styles.hRuler.lines},rulerLine)
+        ])
         stylize(res,{
             position:"sticky",
             top:"0px",
             left:`${leftGap}px`,
             "z-index":"4",
-            "white-space":"normal",
-            "word-wrap":"clip",
         })
         return res
     }
-    bareTable(data){
+    static bareTable(data){
         self=this
         let res=CE('table',{className:"table normal"},[]);
         let line=[];
         for(let k of data){
             line=[];
-            k.forEach((v)=>{line.push(CE('td',{className:"normal cell",style:{width:this.parameters.cellWidth}},[v.toString()]))})
+            k.forEach((v)=>{line.push(CE('td',{className:"normal cell"},[v.toString()]))})
             res.appendChild(CE('tr',{className:"normal line"},[...line]));
         }
         return res
@@ -616,6 +635,7 @@ class Dialog{
         stylize(this.DOMelt.content,{
             position:"relative",
             width:"100%",
+            height:"100%",
             "border-radius":"10px",
             padding:"0em",
             overflow:"hidden"
@@ -724,6 +744,7 @@ class Accordion{
                     display:"grid",
                     width:"100%",
                     border:"1px solid black",
+                    "border-radius":"5px",
                     padding:"0px",
                     "grid-template-columns":"1em 1fr 1em",
                     "margin-bottom":"1px",
@@ -789,16 +810,16 @@ class App{
                 set fold(v){
                     if(v){
                         app.parameters.topContent.folded=true;
-                        $("#mainInterface").style["grid-template-rows"]=`0px 5px 3fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
+                        $("#mainInterface").style["grid-template-rows"]=`0px 5px 1fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
                     }else{
                         app.parameters.topContent.folded=false;
-                        $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height}px 5px 3fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
+                        $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height}px 5px 1fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
                     }
                 },
                 height:100,
                 set resizeHeight(v){
                     app.parameters.topContent.height=v
-                    $("#mainInterface").style["grid-template-rows"]=`${v}px 5px 3fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
+                    $("#mainInterface").style["grid-template-rows"]=`${v}px 5px 1fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
                 },
                 resizerHook:(e)=>{
                     e.preventDefault();
@@ -826,7 +847,7 @@ class App{
                         $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height*(!app.parameters.topContent.folded)}px 5px 1fr 5px ${app.parameters.botContent.height}px`
                     }
                 },
-                height:200,
+                height:100,
                 set resizeHeight(v){
                     app.parameters.botContent.height=v;
                     $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height*(!app.parameters.topContent.folded)}px 5px 1fr 5px ${v}px`
@@ -915,7 +936,7 @@ class App{
                 CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
                 CE('button',{onclick:(e)=>{
                     app.channel.register("choco",new Dialog("choco",app,app.main))
-                    app.tata=new Table(fakeData(10),["A title","an other","a third"],app,app.channel["choco"].DOMelt.content)
+                    app.tata=new Table(fakeData(10),["ttl","an other","a third","anotheronetocheckeverythingis ok","and a last one that is super long !"],app,app.channel["choco"].DOMelt.content)
                 }},[" Please click here for a table test"]),
                 CE('button',{onclick:(e)=>{
                     app.channel.register("lata",new Dialog("lata",app,app.midCentralContent))
@@ -987,6 +1008,105 @@ class App{
         )
         let grrrr=new Plot2D([],"unnamed",this,$("#Gloubidi"))
         this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",app,app.menu))
+    }
+    loadDelimitedText(){
+        let DelimitedTextLoader=new Dialog("Load delimited text file",this,this.main)
+        let prevLength=500
+        let dataVessel={
+            dims:[0,0],
+            raw:"",
+            processed:[],
+            processRaw(){
+                if(this.reader){
+                    this.raw=this.reader.result
+                    delete this.reader
+                }
+                let lines=this.raw.split(RegExp(lineSeparator.value))
+                this.dims[0]=lines.length
+                for(let k in lines){
+                    lines[k]=lines[k].split(RegExp(colSeparator.value))
+                    this.dims[1]=Math.max(this.dims[1],lines[k].length)
+                    lines[k].forEach((e,i,a)=>{a[i]=parseFloat(e)})
+                }
+                this.processed=lines
+            }
+        }
+        const validate=()=>{
+            DelimitedTextLoader.DOMelt.dismisser.click()
+        }
+        const readSingleFile=(e,data)=>{
+            let file = e.target.files[0];
+            if (!file) {
+                return;
+            }
+            data.reader = new FileReader();
+            data.reader.onload = (e)=>{
+                updatePreviews(data)
+            }
+            data.reader.readAsText(file);
+        }
+        const updatePreviews=(vessel)=>{
+            vessel.processRaw()
+            rawPreview.textContent=vessel.raw.slice(0,prevLength)
+            procPreview.innerHTML=""
+            let cropData=vessel.processed.slice(0,15)
+            cropData.pop()
+            let ellipsisRow=[]
+            for(let k in cropData[0]){ellipsisRow.push("...")}
+            cropData.push(ellipsisRow)
+            let prevTable=new Table(cropData,[],this,procPreview)
+        }
+        const loaderElement=CE('input',{type:"file",onchange:(e)=>{readSingleFile(e,dataVessel)}},["Select a text file"])
+        let rawPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données brutes"])
+        rawPreview.setAttribute("contenteditable","true")
+        rawPreview.addEventListener('input',(e)=>{
+            dataVessel.raw=e.target.textContent+dataVessel.raw.slice(prevLength)
+            updatePreviews(dataVessel)
+        })
+        let procPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données traitées"])
+        const lineSeparator=CE('select',{oninput:(e)=>{updatePreviews(dataVessel)}},[
+            CE('option',{value:"\r|\n|\r\n"},["auto/guess"]),
+            CE('option',{value:"\r\n"},["CRLF"]),
+            CE('option',{value:"\r"},["CR"]),
+            CE('option',{value:"\n"},["LF"]),
+        ])
+        const colSeparator=CE('select',{oninput:(e)=>{updatePreviews(dataVessel)}},[
+            CE('option',{value:"\t|,|\s"},["auto/guess"]),
+            CE('option',{value:"\t"},["tab"]),
+            CE('option',{value:","},["comma"]),
+            CE('option',{value:"/\s/"},["whitespace"]),
+        ])
+        const validator=CE('button',{onclick:(e)=>{validate()}},["Load"])
+        const command=CE('div',{width:"100%"},[
+            CE('label',{for:"loaderCommands"},["Lines separator"]),
+            lineSeparator,
+            CE('br',{},[]),
+            CE('label',{for:"loaderCommands"},["Columns separator"]),
+            colSeparator,
+            CE('br',{},[]),
+            CE('div',{style:{"text-align":"right"}},[validator])
+        ])
+        const loaderContainer=CE('div',{
+            style:{
+                width:"100%",
+                height:"100%",
+                display:"grid",
+                "grid-template-rows":"auto 3fr auto"},
+                "justify-items": "stretch",
+                "align-items": "stretch"
+        },[
+            loaderElement,
+            CE('div',{style:{
+                overflow:"auto",
+                display:"grid",
+                "grid-template-columns":"1fr 1fr"
+            }},[
+                rawPreview,
+                procPreview
+            ]),
+            command
+        ])
+        DelimitedTextLoader.DOMelt.content.appendChild(loaderContainer)
     }
 }
 
