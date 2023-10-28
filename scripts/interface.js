@@ -1,9 +1,14 @@
 import {$,CE,stylize,fakeData} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
-import { Data , Vector, NdArray} from "./formats.js"
+import { Data , Vector, Wave} from "./formats.js"
 
-
+window.raie=new Wave(1e5,2)
+window.prox=new Proxy(window.raie,{
+    get(target,property){
+        console.log(`Tu as voulu accéder à ${property} !!!`)
+    }
+})
 
 class MainMenu{
     constructor(configObject,title,origin,destination){
@@ -234,6 +239,9 @@ class Table{
         this.origin=origin;
         this.destination=destination;
         this.parameters={
+            mutable:{
+                hRuler:false,
+            },
             virtualIndex:{top:0,left:0},
             styles:{
                 tables:{
@@ -256,7 +264,7 @@ class Table{
                 hRuler:{
                     table:{
                         "table-layout":"fixed",
-                        "border-spacing":'1px',
+                        "border-spacing":'2px 0px',
                         width:"min-content",
                         "border-collapse":"separate",
                         "overflow":"hidden",
@@ -264,6 +272,7 @@ class Table{
                         "border-bottom":"1px solid darkgrey",
                         "background-color":"darkgrey",
                         opacity:"0.5",
+                        cursor:"auto"
                     },
                     cells:{
                         "font-size":"12px",
@@ -273,7 +282,8 @@ class Table{
                         "text-overflow":"ellipsis",
                         "width":"50px",
                         "height":"20px",
-                        cursor:"default",
+                        cursor:"auto",
+                        "border-bottom":"1px solid darkgrey"
                     },
                     lines:{
                         "border-bottom":"1px solid black"
@@ -306,7 +316,7 @@ class Table{
                 bTable:{
                     table:{
                         "table-layout":"fixed",
-                        "border-spacing":'1px',
+                        "border-spacing":'2px 1px',
                         width:"min-content",
                         "border-collapse":"separate",
                         "overflow":"hidden",
@@ -342,23 +352,6 @@ class Table{
         })
         this.destination.appendChild(this.container)
         this.drawVirtual()
-        this.hRuler.addEventListener('mousedown',(e)=>{
-            e.preventDefault();
-            let dx=e.clientX;
-            document.onmousemove=(e)=>{
-                e.preventDefault();
-                dx-=e.clientX
-                this.parameters.cellWidth=`${Math.max(5,parseInt(this.parameters.cellWidth))-dx}px`
-                Object.values(this.DOMelt.getElementsByClassName("cell")).forEach((v)=>{v.style.width=this.parameters.cellWidth})
-                this.DOMelt.getElementsByClassName("normal table")[0].style.left=this.parameters.cellWidth
-                dx=e.clientX
-            }
-            document.onmouseup=(e)=>{
-                e.preventDefault();
-                document.onmouseup=null;
-                document.onmousemove=null;
-            }
-        })
         this.container.addEventListener('scroll',()=>{this.onScroll()});
         this.resizeObserver=new ResizeObserver(()=>{this.onResize()});
         this.resizeObserver.observe(this.container);
@@ -508,10 +501,21 @@ class Table{
         for(let k=0;k<this.virtualNbCols;k++){
             rulerLine.push(CE('th',{className:"horizontal ruler cell",style:this.parameters.styles.hRuler.cells},[(this.parameters.virtualIndex.left+k).toString()]));
             titleLine.push(CE('th',{className:"horizontal title cell",style:this.parameters.styles.hRuler.cells},[this.title[this.parameters.virtualIndex.left+k]===undefined ? "" : this.title[this.parameters.virtualIndex.left+k]]));
-            titleLine[k].setAttribute("contenteditable","true")
-            titleLine[k].addEventListener("input",(e)=>{
-                this.title[e.target.cellIndex]=e.target.textContent
+            rulerLine[k].style["cursor"]="col-resize"
+            if(this.parameters.mutable.hRuler){
+                titleLine[k].style["cursor"]="auto"
+                titleLine[k].style["background-color"]="cornsilk"
+                titleLine[k].setAttribute("contenteditable","true")
+                titleLine[k].addEventListener("blur",(e)=>{
+                    this.title[e.target.cellIndex]=e.target.textContent
+                })
+                titleLine[k].addEventListener("keydown",(e)=>{
+                    if(e.key=="Enter"){
+                        e.target.blur()
+                    }
+                
             })
+            }
         }
         let res=CE('table',{className:"table ruler horizontal",style:this.parameters.styles.hRuler.table},[
             CE('tr',{className:"horizontal title line",style:this.parameters.styles.hRuler.lines},titleLine),
@@ -522,6 +526,25 @@ class Table{
             top:"0px",
             left:`${leftGap}px`,
             "z-index":"4",
+        })
+        res.children[1].style["cursor"]="col-resize"
+        res.children[1].addEventListener('mousedown',(e)=>{
+            e.preventDefault();
+            let dx=e.clientX;
+            document.onmousemove=(e)=>{
+                e.preventDefault();
+                dx-=e.clientX
+                this.parameters.styles.cells.width=`${Math.max(5,parseInt(this.parameters.styles.cells.width))-dx}px`
+                this.parameters.styles.hRuler.cells.width=`${Math.max(5,parseInt(this.parameters.styles.cells.width))-dx}px`
+                this.parameters.styles.bTable.cells.width=`${Math.max(5,parseInt(this.parameters.styles.cells.width))-dx}px`
+                this.onResize()
+                dx=e.clientX
+            }
+            document.onmouseup=(e)=>{
+                e.preventDefault();
+                document.onmouseup=null;
+                document.onmousemove=null;
+            }
         })
         return res
     }
@@ -728,7 +751,7 @@ class Accordion{
         this.destination=destination
         this.parameters={
             container:{
-                folded:false,
+                folded:true,
                 style:{
                     display:"grid",
                     width:"100%",
@@ -1001,7 +1024,9 @@ class App{
         this.target="body";
         $(this.target).appendChild(this.main);
         let dataManager= new Accordion("Data manager",this,$(".vertical.left.content"));
+        dataManager.toggle()
         let dataManager2= new Accordion("Data manager 2",this,$(".vertical.left.content"));
+        dataManager2.toggle()
         dataManager.DOMelt.content.appendChild(
             CE('div',{},["test",CE('div',{id:"Gloubidi",style:{height:"300px"}},[])])
             
@@ -1055,6 +1080,7 @@ class App{
             for(let k in cropData[0]){ellipsisRow.push("...")}
             cropData.push(ellipsisRow)
             let prevTable=new Table(cropData,[],this,procPreview)
+            prevTable.parameters.mutable.hRuler=true
         }
         const loaderElement=CE('input',{type:"file",onchange:(e)=>{readSingleFile(e,dataVessel)}},["Select a text file"])
         let rawPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données brutes"])
