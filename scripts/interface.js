@@ -3,12 +3,8 @@ import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave} from "./formats.js"
 
-window.raie=new Wave(1e5,2)
-window.prox=new Proxy(window.raie,{
-    get(target,property){
-        console.log(`Tu as voulu accéder à ${property} !!!`)
-    }
-})
+window.raie=new Wave(5,5)
+window.eiar=new Wave(2000,4)
 
 class MainMenu{
     constructor(configObject,title,origin,destination){
@@ -95,7 +91,9 @@ class Channel{
         }
         dispatchEvent(broadcasts.poppedUp)
     }
-    degister(caster){
+    degister(name){
+        delete this[name]
+        Object.values(this.eventTypes).forEach((e)=>{e.delete(name)})
     }
     defaultListener(e){
         const event=e
@@ -103,6 +101,7 @@ class Channel{
         this.eventTypes[e.type].forEach((targetName,i,a)=>{
             this[targetName].events.listen[et](e)
             })
+        if(et=="killed"){this.degister(e.detail.emitter.events.registrationName)}
     }
 }
 
@@ -614,7 +613,8 @@ class Dialog{
                         dialog.DOMelt.window.style["z-index"]="0"
                     }
                 },
-                killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationName)}
+                killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationName)},
+                importDelimitedText(e){console.log(e)}
             }
         }
         this.origin=origin;
@@ -771,6 +771,7 @@ class Accordion{
                     padding:"0px",
                     "grid-template-columns":"1em 1fr 1em",
                     "margin-bottom":"1px",
+                    transition:"none"
                 }
             },
             content:{
@@ -995,7 +996,7 @@ class App{
             ])
         ]
         this.menu=CE('div',{id:"mainMenu",className:"menu"},[])
-        this.menu.onload
+        //this.menu.onload
         this.top=CE('div',{id:"top",className:"horizontal top panel"},this.topContent)
         this.topSeptum=CE('div',{id:"topSeptum",className:"top horizontal septum"},[
             CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[]),

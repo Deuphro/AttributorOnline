@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        /* Ajoutez du CSS si nécessaire */
+    </style>
+    <title>Carré avec Coins Arrondis en D3.js</title>
+</head>
+<body>
+    <script>
+        // Définir les dimensions du carré
+        const width = 100;
+        const height = 50;
+        const borderRadius = 5; // Rayon des coins arrondis
+
+        // Sélectionner le corps du document
+        const svg = d3.select("body")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height);
+
+        // Tracer le carré avec des coins arrondis
+        const carre=svg.append("rect")
+            .attr("x",0)
+            .attr("y",0)
+            .attr("width", 10)
+            .attr("height", 10)
+            .attr("rx", 1*borderRadius) // Rayon de coin en x
+            .attr("ry", 1*borderRadius) // Rayon de coin en y
+            .style("fill", "lightblue") // Couleur de remplissage du carré
+            .style("stroke","darkgrey");
+
+        const carre2=svg.append("rect")
+            .attr("x",25)
+            .attr("y",25)
+            .attr("width", 10)
+            .attr("height", 10)
+            .attr("rx", 1*borderRadius) // Rayon de coin en x
+            .attr("ry", 1*borderRadius) // Rayon de coin en y
+            .style("fill", "lightblue") // Couleur de remplissage du carré
+            .style("stroke","darkgrey");
+    </script>
+</body>
+</html>
