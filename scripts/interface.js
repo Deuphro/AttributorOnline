@@ -1,10 +1,170 @@
-import {$,CE,stylize,fakeData} from "./util.js"
+import {$,CE,stylize,fakeData,DC} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave} from "./formats.js"
 
-window.raie=new Wave(5,5)
-window.eiar=new Wave(2000,4)
+window.raie=new Wave(5000,5000)
+window.eiar=new Wave(5000,5000)
+
+class Node{
+    constructor(title,inputs, outputs,origin,destinationFlow,position={x:10,y:10}){
+        const self=this
+        this.title=title
+        this.inputs=inputs
+        this.outputs=outputs
+        this.origin=origin
+        this.destination=destinationFlow
+        this.destination.nodeSet.add(this)
+        this.upToDate=true
+        this.drawn=false
+        this.events={broadcast:{
+            nodeMove:(pos)=>new CustomEvent("nodeMove",{detail:{msg:pos,emitter:this}}),
+            startLinkDrawing:new CustomEvent("startLinkDrawing",{detail:{msg:"",emitter:this}}),
+            nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}})
+        },listen:{
+            nodeSelected(e){
+                if (e.detail.emitter.events.registrationName==self.events.registrationName) {
+                    if(document.activeElement===self.SVGg.select('rect').node()){
+                        self.SVGg.select('rect').node().blur()
+                    }else{
+                        self.SVGg.select('rect').node().focus()
+                    }
+                } else {
+                    self.SVGg.select('rect').attr('class','node')
+                }
+            }
+        }}
+        this.parameters={
+            heightPerItem:12,
+            margin:2.5,
+            width:150,
+            position:position,
+            rounding:5,
+            outputs:{
+                positions:new Array(this.outputs.length)
+            },
+            inputs:{
+                positions:new Array(this.inputs.length)
+            }
+        }
+        this.SVGg=d3.create("svg:g").attr('class','nodeContainer')
+        this.SVGg.append("rect")
+            .attr('x',0)
+            .attr('y',0)
+            .attr("width", this.parameters.width)
+            .attr('height',this.nodeHeight)
+            .attr("rx", this.parameters.rounding)
+            .attr("ry", this.parameters.rounding)
+            .attr("tabindex",0)
+            .attr("class","node")
+            .on("mousedown", this.drag.bind(this) )
+            .on("click", ()=>window.dispatchEvent(this.events.broadcast.nodeSelected))
+            .on("keydown",(e)=>{
+                if(e.key==="Delete"){
+                    this.suicide()
+                }
+            })
+        for(let k in inputs){
+            this.parameters.inputs.positions[k]={x:0,y:this.parameters.rounding+this.parameters.margin+(Number(k)+0.5)*this.parameters.heightPerItem}
+            this.SVGg.append('circle')
+            .attr('cx',this.parameters.inputs.positions[k].x)
+            .attr('cy',this.parameters.inputs.positions[k].y)
+            .attr("r", 5)
+            .attr('class','input anchor')
+            .on("mousedown", (e)=>console.log(e.target) )
+        }
+        for(let k in outputs){
+            this.parameters.outputs.positions[k]={x:this.parameters.width,y:this.parameters.rounding+this.parameters.margin+(Number(k)+0.5)*this.parameters.heightPerItem}
+            this.SVGg.append('circle')
+            .attr('cx',this.parameters.width)
+            .attr('cy',this.parameters.outputs.positions[k].y)
+            .attr("r", 5)
+            .attr('class','output anchor')
+            .on("mousedown", (e)=>console.log(e.target))
+        }
+        this.SVGg.append("text")
+            .attr("x",10)
+            .attr("y",this.nodeHeight/2+2.5)
+            .text(title)
+            .attr('id','testText')
+        this.SVGg.attr('transform', 'translate('+`${this.parameters.position.x},${this.parameters.position.y}`+')')
+        this.DOMelt=this.SVGg.node()
+        this.draw()
+    }
+    draw(){
+        if(!this.drawn){
+            this.drawn=true
+            this.destination.container.querySelector('.field').append(this.DOMelt)
+        }
+    }
+    get nodeHeight(){
+        return 2*(this.parameters.rounding+this.parameters.margin)+Math.max(1,Math.max(this.outputs.length,this.inputs.length))*this.parameters.heightPerItem
+    }
+    drag(e){
+        e.preventDefault();
+        let dx=e.clientX;
+        let dy=e.clientY;
+        document.onmousemove=(e)=>{
+            e.preventDefault();
+            dx-=e.clientX;
+            dy-=e.clientY;
+            this.parameters.position.x-=dx
+            this.parameters.position.y-=dy
+            window.dispatchEvent(this.events.broadcast.nodeMove(this.parameters.position))
+            this.SVGg.attr('transform', 'translate('+`${this.parameters.position.x},${this.parameters.position.y}`+')')
+            dx=e.clientX;
+            dy=e.clientY;
+        }
+        document.onmouseup=(e)=>{
+            e.preventDefault();
+            document.onmousemove=null;
+            document.onmouseup=null;
+        }
+    }
+    suicide(){
+        this.SVGg.node().remove()
+        this.destination.nodeSet.delete(this)
+        dispatchEvent(this.events.broadcast.killed)
+    }
+}
+
+class Flow{
+    constructor(title,origin, destination){
+        self=this
+        this.title=title
+        this.origin=origin
+        this.destination=destination
+        this.container=CE('div',{className:`flow container ${title}`},[])
+        this.events={broadcast:{},listen:{
+            nodeMove(e){},
+        }}
+        this.nodeSet=new Set()
+        this.parameters={
+            field:{
+                drawn:false,
+                node:[],
+                links:{}
+            }
+        }
+        stylize(this.container,{
+            position:"relative",
+            width:"100%",
+            height:"100%",
+        })
+        this.destination.appendChild(this.container)
+        this.draw()
+    }
+    draw(){
+        if(!this.parameters.field.drawn){
+            this.parameters.field.drawn=true
+            let container=d3.select(this.container)
+            this.field=container.append("svg")
+                .attr("width","100%")
+                .attr("height","100%")
+                .attr("class","flow field")
+        }
+    }
+}
 
 class MainMenu{
     constructor(configObject,title,origin,destination){
@@ -37,7 +197,7 @@ class MainMenu{
                 achteyheymel=CE('hr',{},[])
             } else {
                 achteyheymel=
-                CE('div',{className:"parent",onclick:object[k]},[
+                CE('div',{className:"parent",handleClick:object[k]},[
                     k+(Object.keys(object[k]).length==0 || c<2?"":"..."),
                 ])
             }
@@ -49,7 +209,7 @@ class MainMenu{
         if (!$(`.${this.title}.menu.container`)){
             this.destination.appendChild(this.container);
         }else{
-            this.destination.removeChild($(`.${title}.menu.container`))
+            this.container.remove()
             this.destination.appendChild(this.container);
         }
     }
@@ -63,13 +223,12 @@ class Channel{
         this[name]=caster
         if (!caster.events){
             caster.events={}
-            if (!caster.events.broadcast){
-                caster.events.broadcast={
-                poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:caster}}),
-                killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:caster}})
-                }
-            }
         }
+        if (!caster.events.broadcast){
+            caster.events.broadcast={}
+        }
+        caster.events.broadcast['poppedUp']=new CustomEvent("poppedUp",{detail:{msg:"default registration message",emitter:caster}})
+        caster.events.broadcast['killed']=new CustomEvent("killed",{detail:{msg:"default killed message",emitter:caster}})
         caster.events.registrationName=name
         const broadcasts=caster.events.broadcast
         Object.values(broadcasts).forEach((e)=>{
@@ -96,7 +255,6 @@ class Channel{
         Object.values(this.eventTypes).forEach((e)=>{e.delete(name)})
     }
     defaultListener(e){
-        const event=e
         const et=e.type
         this.eventTypes[e.type].forEach((targetName,i,a)=>{
             this[targetName].events.listen[et](e)
@@ -351,7 +509,7 @@ class Table{
         })
         this.destination.appendChild(this.container)
         this.drawVirtual()
-        this.container.addEventListener('scroll',()=>{this.onScroll()});
+        this.container.addEventListener('scroll',(e)=>{this.onScroll(e)});
         this.resizeObserver=new ResizeObserver(()=>{this.onResize()});
         this.resizeObserver.observe(this.container);
     }
@@ -359,7 +517,7 @@ class Table{
         this.data=arg
         this.parameters.dataDimension={rows:Table.rowNum(arg),cols:Table.colNum(arg)}
     }
-    onScroll(){
+    onScroll(e){
         this.parameters.virtualIndex.top=Math.floor(this.container.scrollTop/(parseInt(this.parameters.styles.vRuler.table["border-spacing"]) + parseInt(this.parameters.styles.vRuler.cells.height)))
         this.parameters.virtualIndex.left=Math.floor(this.container.scrollLeft/(parseInt(this.parameters.styles.hRuler.cells.width) + parseInt(this.parameters.styles.hRuler.table["border-spacing"])))
         const hRulerHeight=this.hRuler.clientHeight
@@ -596,8 +754,7 @@ class Dialog{
         this.title=title
         this.events={
             broadcast:{
-                poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:dialog}}),
-                killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:dialog}}),
+                
                 selected:new CustomEvent("selected",{detail:{msg:"I've just been selected !!!",emitter:dialog}})
             },
             listen:{
@@ -621,10 +778,10 @@ class Dialog{
         this.destination=destination;
         this.DOMelt={};
         this.DOMelt.dismisser=CE('div',{className:"dismisser"},[]);
-        this.DOMelt.dismisser.onclick=this.suicide.bind(this);
+        this.DOMelt.dismisser.handleClick=this.suicide.bind(this);
         this.DOMelt.label=CE('div',{className:"label"},[title.toString()]);
         this.DOMelt.label.onmousedown=this.drag.bind(this);
-        this.DOMelt.label.onclick=(e)=>{dispatchEvent(dialog.events.broadcast.selected)}
+        this.DOMelt.label.handleClick=(e)=>{dispatchEvent(dialog.events.broadcast.selected)}
         this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
         this.DOMelt.window=CE('div',{className:title+" popup container"},[
@@ -680,13 +837,13 @@ class Dialog{
         if (!$(`.${title}.popup.container`)){
             destination.appendChild(this.DOMelt.window);
         }else{
-            this.destination.removeChild($(`.${title}.popup.container`))
+            this.DOMelt.window.remove()
             destination.appendChild(this.DOMelt.window);
         }
         this.resizeObserver.observe(this.DOMelt.window);
     }
     suicide(){
-        this.destination.removeChild(this.DOMelt.window)
+        this.DOMelt.window.remove()
         dispatchEvent(this.events.broadcast.killed)
     }
     drag(e){
@@ -781,13 +938,13 @@ class Accordion{
                     padding:"0px",
                     transition:"30ms",
                     overflow:"hidden",
-                    transition:"200ms"
+                    transition:"300ms"
                 }
             }
         };
         this.DOMelt={
             folder:CE('div',{className:"accordion handler folder",
-                onclick:(e)=>{accordion.toggle()}},[]),
+                handleClick:(e)=>{accordion.toggle()}},[]),
             handler:CE('div',{className:"accordion handler"},[
                 CE('div',{className:"accordion handler menu"},[]),
                 CE('div',{className:"accordion handler label"},[title]),
@@ -958,11 +1115,11 @@ class App{
             CE('div',{id:"topContent", className:"horizontal content"},[
                 "Top content",
                 CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
-                CE('button',{onclick:(e)=>{
+                CE('button',{handleClick:(e)=>{
                     app.channel.register("choco",new Dialog("choco",app,app.main))
                     app.tata=new Table(fakeData(10),["ttl","an other","a third","anotheronetocheckeverythingis ok","and a last one that is super long !"],app,app.channel["choco"].DOMelt.content)
                 }},[" Please click here for a table test"]),
-                CE('button',{onclick:(e)=>{
+                CE('button',{handleClick:(e)=>{
                     app.channel.register("lata",new Dialog("lata",app,app.midCentralContent))
                     app.yoyo=new Plot2D([],"yoyo",app,app.channel["lata"].DOMelt.content)
                 }},[" Please click here for a graph test"])
@@ -975,7 +1132,7 @@ class App{
             ]),
             CE('div',{id:"leftSeptum", className:"left septum vertical"},[
                 CE('div',{className:"vertical resizer",onmousedown:this.parameters.leftContent.resizerHook},[]),
-                CE('div',{className:"vertical wrapper",onclick:()=>{this.parameters.leftContent.fold=(!this.parameters.leftContent.folded)}},[]),
+                CE('div',{className:"vertical wrapper",handleClick:()=>{this.parameters.leftContent.fold=!this.parameters.leftContent.folded;}},[]),
                 CE('div',{className:"vertical resizer",onmousedown:this.parameters.leftContent.resizerHook},[])
             ]),
             CE('div',{id:"center",className:"vertical center panel"},[
@@ -983,7 +1140,7 @@ class App{
             ]),
             CE('div',{id:"rightSeptum", className:"right septum vertical"},[
                 CE('div',{className:"vertical resizer",onmousedown:this.parameters.rightContent.resizerHook},[]),
-                CE('div',{className:"vertical wrapper",onclick:()=>{this.parameters.rightContent.fold=(!this.parameters.rightContent.folded)}},[]),
+                CE('div',{className:"vertical wrapper",handleClick:()=>{this.parameters.rightContent.fold=!this.parameters.rightContent.folded;}},[]),
                 CE('div',{className:"vertical resizer",onmousedown:this.parameters.rightContent.resizerHook},[])
             ]),
             CE('div',{id:"right",className:"vertical right panel"},[
@@ -1000,13 +1157,13 @@ class App{
         this.top=CE('div',{id:"top",className:"horizontal top panel"},this.topContent)
         this.topSeptum=CE('div',{id:"topSeptum",className:"top horizontal septum"},[
             CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[]),
-            CE('div',{className:"horizontal wrapper",onclick:()=>{this.parameters.topContent.fold=!this.parameters.topContent.folded;}},[]),
+            CE('div',{className:"horizontal wrapper",handleClick:()=>{this.parameters.topContent.fold=!this.parameters.topContent.folded;}},[]),
             CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[])
         ])
         this.mid=CE('div',{id:"mid",className:"horizontal mid panel"},this.midContent)
         this.botSeptum=CE('div',{id:"botSeptum",className:"bot horizontal septum"},[
             CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[]),
-            CE('div',{className:"horizontal wrapper",onclick:()=>{this.parameters.botContent.fold=!this.parameters.botContent.folded;}},[]),
+            CE('div',{className:"horizontal wrapper",handleClick:()=>{this.parameters.botContent.fold=!this.parameters.botContent.folded;}},[]),
             CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[])
         ])
         this.bot=CE('div',{id:"bot",className:"horizontal bot panel"},this.botContent)
@@ -1022,18 +1179,24 @@ class App{
             ])
         ])
 
-        this.target="body";
-        $(this.target).appendChild(this.main);
-        let dataManager= new Accordion("Data manager",this,$(".vertical.left.content"));
-        dataManager.toggle()
-        let dataManager2= new Accordion("Data manager 2",this,$(".vertical.left.content"));
-        dataManager2.toggle()
-        dataManager.DOMelt.content.appendChild(
+        this.setupOnWindow()
+        this.channel.register("Data manager",new Accordion("Data manager",this,$(".vertical.left.content")))
+        this.channel['Data manager'].toggle()
+        this.channel['Data manager'].DOMelt.content.appendChild(
             CE('div',{},["test",CE('div',{id:"Gloubidi",style:{height:"300px"}},[])])
-            
         )
-        let grrrr=new Plot2D([],"unnamed",this,$("#Gloubidi"))
         this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",app,app.menu))
+        this.channel.register("mainFlow",new Flow("mainFlow",app,app.topContent[0]))
+        this.channel.register('teprou',new Node('teprou',[1,2,3],[6,4,2],app,this.channel.mainFlow))
+        this.channel.register('tefar', new Node('tefar',[1],[],app,this.channel.mainFlow,{x:180,y:10}))
+    }
+    setupOnWindow(destination='body'){
+        this.destination=destination;
+        $(this.destination).appendChild(this.main);
+        this.main.addEventListener('click',(e)=>{
+            console.log(e.target,e.target.parentNode)
+            if(e.target.handleClick){e.target.handleClick(e)}
+        })
     }
     loadDelimitedText(){
         let DelimitedTextLoader=new Dialog("Load delimited text file",this,this.main)
@@ -1103,7 +1266,7 @@ class App{
             CE('option',{value:","},["comma"]),
             CE('option',{value:"/\s/"},["whitespace"]),
         ])
-        const validator=CE('button',{onclick:(e)=>{validate()}},["Load"])
+        const validator=CE('button',{handleClick:(e)=>{validate()}},["Load"])
         const command=CE('div',{width:"100%"},[
             CE('label',{for:"loaderCommands"},["Lines separator"]),
             lineSeparator,
@@ -1134,6 +1297,16 @@ class App{
             command
         ])
         DelimitedTextLoader.DOMelt.content.appendChild(loaderContainer)
+    }
+    saveAppState(){
+        window.visited=new Map()
+        let appState=DC(this,window.visited)
+        return window.savedState=appState
+    }
+    restoreAppState(savedState){
+        document.body.lastChild.remove()
+        savedState.setupOnWindow()
+        window.Attributor=savedState
     }
 }
 

@@ -235,3 +235,47 @@ div{
     outline: 1px solid blanchedalmond;
     box-shadow: 0px 0px 20px 1px greenyellow;
 }
+
+.flow.container{
+    background-color: white;
+}
+
+.node{
+    fill:rgb(215, 215, 160);
+    stroke:grey;
+    stroke-width: 1px;
+    fill-opacity: 50%;
+    transition:300ms
+}
+.node:focus{
+    outline:none;
+    stroke:tomato;
+    stroke-width: 3px;
+    transition:300ms
+}
+.node.nodeSelected{
+    stroke-width: 2px;
+    stroke:violet;
+    box-shadow: 0px 0px 20px 1px greenyellow
+}
+.node:hover{
+    cursor:move;
+    fill-opacity: 75%;
+    transition:300ms
+}
+
+.anchor{
+    fill: lightgrey;
+    stroke: grey;
+    transition:300ms
+}
+
+.anchor:hover{
+    fill: rgb(255, 0, 140);
+    cursor: crosshair;
+    transition:300ms;
+}
+
+.flow.field{
+    fill:black;
+}

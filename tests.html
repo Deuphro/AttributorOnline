@@ -1,47 +1,60 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <style>
-        /* Ajoutez du CSS si nécessaire */
-    </style>
-    <title>Carré avec Coins Arrondis en D3.js</title>
-</head>
-<body>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width" />
+
+    <title>Web Workers basic example</title>
+
+    <link rel="stylesheet" href="style.css" />
+  </head>
+
+  <body>
+    <h1>Web<br />Workers<br />basic<br />example</h1>
+
+    <div class="controls" tabindex="0">
+      <form>
+        <div>
+          <label for="number1">Multiply number 1: </label>
+          <input type="text" id="number1" value="0" />
+        </div>
+        <div>
+          <label for="number2">Multiply number 2: </label>
+          <input type="text" id="number2" value="0" />
+        </div>
+      </form>
+
+      <p class="result">Result: 0</p>
+    </div>
     <script>
-        // Définir les dimensions du carré
-        const width = 100;
-        const height = 50;
-        const borderRadius = 5; // Rayon des coins arrondis
+        const first = document.querySelector('#number1');
+        const second = document.querySelector('#number2');
 
-        // Sélectionner le corps du document
-        const svg = d3.select("body")
-            .append("svg")
-            .attr("width", width)
-            .attr("height", height);
+        const result = document.querySelector('.result');
 
-        // Tracer le carré avec des coins arrondis
-        const carre=svg.append("rect")
-            .attr("x",0)
-            .attr("y",0)
-            .attr("width", 10)
-            .attr("height", 10)
-            .attr("rx", 1*borderRadius) // Rayon de coin en x
-            .attr("ry", 1*borderRadius) // Rayon de coin en y
-            .style("fill", "lightblue") // Couleur de remplissage du carré
-            .style("stroke","darkgrey");
+        if (window.Worker) {
+        const myWorker = new Worker("worker.js");
 
-        const carre2=svg.append("rect")
-            .attr("x",25)
-            .attr("y",25)
-            .attr("width", 10)
-            .attr("height", 10)
-            .attr("rx", 1*borderRadius) // Rayon de coin en x
-            .attr("ry", 1*borderRadius) // Rayon de coin en y
-            .style("fill", "lightblue") // Couleur de remplissage du carré
-            .style("stroke","darkgrey");
+        let liste=new Array(50);
+
+        [first, second].forEach(input => {
+            input.onchange = function() {
+            console.time('From main script')
+            myWorker.postMessage([first.value, second.value, liste]);
+            console.log('Message posted to worker');
+            }
+        })
+
+        myWorker.onmessage = function(e) {
+            result.textContent = e.data;
+            console.timeEnd('From main script')
+            console.log('Message received from worker');
+            console.log(liste)
+        }
+        } else {
+        console.log('Your browser doesn\'t support web workers.');
+        }
     </script>
-</body>
+  </body>
 </html>
