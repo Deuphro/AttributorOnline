@@ -1,0 +1,1 @@
+C:\Users\orthousf\Nextcloud\IPAG\Attributor\Webttributor\AttributorOnline\XOP\rust-extension\target\wasm32-unknown-unknown\release\libattribrustor.rlib: C:\Users\orthousf\Nextcloud\IPAG\Attributor\Webttributor\AttributorOnline\XOP\rust-extension\src\lib.rs

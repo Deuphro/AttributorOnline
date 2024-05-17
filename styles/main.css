@@ -161,7 +161,7 @@ div{
 .wrapper:hover{
     background-color: rgb(75, 65, 60);
     opacity: 100%;
-    scale: 2;
+    scale: 3;
     border-radius: 5px;
     border: 0.1px solid black;
     transition: 100ms;
@@ -237,7 +237,8 @@ div{
 }
 
 .flow.container{
-    background-color: white;
+    background: url('../resources/pattern.svg');
+    background-color: cornsilk;
 }
 
 .node{
@@ -278,4 +279,8 @@ div{
 
 .flow.field{
     fill:black;
+}
+
+.anchor.linked{
+    fill: black
 }

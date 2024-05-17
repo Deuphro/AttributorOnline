@@ -2,7 +2,7 @@
 const $=(e)=>{ return document.querySelector(e); }
 
 //a function to create a HTML element
-const CE=(tag,props,child)=>{
+function CE(tag,props,child){
     let res=document.createElement(tag);
     for (let k of Object.keys(props)){
         if(k=="style"){
@@ -33,9 +33,9 @@ function fakeData(n){
     let res=[];
     let line=[];
     let c=0;
-    for(let k=0;k<(100*n);k++){
+    for(let k=0;k<(10*n);k++){
         line=[];
-        for(let j=0;j<100*n/1;j++){
+        for(let j=0;j<10*n/1;j++){
             c++;
             line.push(c);
         }
@@ -44,14 +44,46 @@ function fakeData(n){
     return res
 }
 
-const DC=(obj,visited=new Map())=>{
-    //console.log(obj)
+function DC(obj,visited=new WeakMap()){
     if(visited.has(obj)){
-        //console.log("deja vu et stocké cloné en", visited.get(obj))
         return visited.get(obj)
     }
     if(typeof obj!=="object"||obj===null){
-        return obj
+        const clone=obj
+        return clone
+    }
+    if(obj instanceof Set){
+        let clone=new Set()
+        visited.set(obj,clone)
+        for(let item of obj){
+            clone.add(DC(item,visited))
+        }
+        return clone
+    }
+    if (obj instanceof Map) {
+        let clone = new Map()
+        visited.set(obj, clone)
+        for (let [key, value] of obj) {
+            clone.set(DC(key, visited), DC(value, visited))
+        }
+        for(let sym of Object.getOwnPropertySymbols(obj)){
+            clone[sym]=DC(obj[sym],visited)
+        }
+        for(let key in obj){
+            if(Object.prototype.hasOwnProperty.call(obj,key)){
+                if(clone[key] instanceof Function){
+                    clone[key]=DC(obj[key],visited).bind(clone)
+                }else{
+                    clone[key]=DC(obj[key],visited)
+                }
+            }
+        }
+        return clone
+    }
+    if(obj instanceof Event && obj.type){
+        let clone=new CustomEvent(obj.type,{detail:DC(obj.detail,visited)})
+        visited.set(obj,clone)
+        return clone
     }
     if(obj instanceof Node){
         let clone=obj.cloneNode(false)
@@ -59,11 +91,15 @@ const DC=(obj,visited=new Map())=>{
         Object.setPrototypeOf(clone, Object.getPrototypeOf(obj))
         for(let key in obj){
             if(Object.prototype.hasOwnProperty.call(obj,key)){
-                clone[key]=DC(obj[key],visited)
+                if(clone[key] instanceof Function){
+                    clone[key]=DC(obj[key],visited).bind(clone)
+                }else{
+                    clone[key]=DC(obj[key],visited)
+                }
             }
         }
         for(let child of obj.childNodes){
-            clone.appendChild(DC(child),visited)
+            clone.appendChild(DC(child,visited))
         }
         return clone
     }
@@ -84,10 +120,28 @@ const DC=(obj,visited=new Map())=>{
     }
     for(let key in obj){
         if(Object.prototype.hasOwnProperty.call(obj,key)){
-            clone[key]=DC(obj[key],visited)
+            if(clone[key] instanceof Function){
+                clone[key]=DC(obj[key],visited).bind(clone)
+            }else{
+                clone[key]=DC(obj[key],visited)
+            }
         }
     }
     return clone
 }
 
-export {$,CE,stylize,fakeData,DC}
+function serializeHTML(elt){
+    let dummyObj={}
+    dummyObj.tag=elt.tagName
+    dummyObj.attributes={}
+    for(let att of elt.attributes){
+        if(att.name=="class"){
+            dummyObj.attributes["className"]=att.value
+        }else{
+            dummyObj.attributes[att.name]=att.value
+        }
+    }
+    return JSON.stringify(dummyObj)
+}
+
+export {$,CE,stylize,fakeData,DC,serializeHTML}

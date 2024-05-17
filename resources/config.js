@@ -5,11 +5,13 @@ const defaultMenu={
             Import:(e)=>{dispatchEvent(new CustomEvent('clickImport',{detail:{msg:"This is SPARTAAAA !!!"}}))},
             Export:{}
         },
-        Edit:{},
+        Edit:{
+            Undo:(e)=>{dispatchEvent(new CustomEvent('undo',{detail:{msg:""}}))}
+        },
         Data:{
             Load:{
                 JSON:(e)=>{},
-                "Delimited Text":(e)=>{dispatchEvent(new CustomEvent('importDelimitedText',{detail:{msg:"ça marche!"}}))},
+                "Delimited Text":(e)=>{dispatchEvent(new CustomEvent('importDelimitedText',{detail:{msg:""}}))},
                 hr:{},
                 msConverter:{}
             },
@@ -23,7 +25,8 @@ const defaultMenu={
             Reset:{},
             Expose:{}
         },
-        About:{}
+        About:{},
+        CopyStabTest:(e)=>{console.log(this)}
     }
 }
 

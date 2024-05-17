@@ -1,14 +1,13 @@
-import {$,CE,stylize,fakeData,DC} from "./util.js"
+import {$,CE,stylize,fakeData,DC,serializeHTML} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave} from "./formats.js"
 
-window.raie=new Wave(5000,5000)
-window.eiar=new Wave(5000,5000)
+window.raie=new Wave(5)
+window.eiar=new Wave(7)
 
 class Node{
     constructor(title,inputs, outputs,origin,destinationFlow,position={x:10,y:10}){
-        const self=this
         this.title=title
         this.inputs=inputs
         this.outputs=outputs
@@ -18,19 +17,20 @@ class Node{
         this.upToDate=true
         this.drawn=false
         this.events={broadcast:{
-            nodeMove:(pos)=>new CustomEvent("nodeMove",{detail:{msg:pos,emitter:this}}),
+            nodeMove:new CustomEvent("nodeMove",{detail:{msg:"",emitter:this}}),
             startLinkDrawing:new CustomEvent("startLinkDrawing",{detail:{msg:"",emitter:this}}),
+            stopLinkDrawing:new CustomEvent("stopLinkDrawing",{detail:{msg:"",emitter:this}}),
             nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}})
         },listen:{
             nodeSelected(e){
-                if (e.detail.emitter.events.registrationName==self.events.registrationName) {
-                    if(document.activeElement===self.SVGg.select('rect').node()){
-                        self.SVGg.select('rect').node().blur()
+                if (e.detail.emitter.events.registrationName==this.events.registrationName) {
+                    if(document.activeElement===this.SVGg.select('rect').node()){
+                        this.SVGg.select('rect').node().blur()
                     }else{
-                        self.SVGg.select('rect').node().focus()
+                        this.SVGg.select('rect').node().focus()
                     }
                 } else {
-                    self.SVGg.select('rect').attr('class','node')
+                    this.SVGg.select('rect').attr('class','node')
                 }
             }
         }}
@@ -57,13 +57,6 @@ class Node{
             .attr("ry", this.parameters.rounding)
             .attr("tabindex",0)
             .attr("class","node")
-            .on("mousedown", this.drag.bind(this) )
-            .on("click", ()=>window.dispatchEvent(this.events.broadcast.nodeSelected))
-            .on("keydown",(e)=>{
-                if(e.key==="Delete"){
-                    this.suicide()
-                }
-            })
         for(let k in inputs){
             this.parameters.inputs.positions[k]={x:0,y:this.parameters.rounding+this.parameters.margin+(Number(k)+0.5)*this.parameters.heightPerItem}
             this.SVGg.append('circle')
@@ -71,7 +64,7 @@ class Node{
             .attr('cy',this.parameters.inputs.positions[k].y)
             .attr("r", 5)
             .attr('class','input anchor')
-            .on("mousedown", (e)=>console.log(e.target) )
+            .attr('id','input '+k)
         }
         for(let k in outputs){
             this.parameters.outputs.positions[k]={x:this.parameters.width,y:this.parameters.rounding+this.parameters.margin+(Number(k)+0.5)*this.parameters.heightPerItem}
@@ -80,15 +73,36 @@ class Node{
             .attr('cy',this.parameters.outputs.positions[k].y)
             .attr("r", 5)
             .attr('class','output anchor')
-            .on("mousedown", (e)=>console.log(e.target))
+            .attr('id','output '+k)
         }
         this.SVGg.append("text")
             .attr("x",10)
             .attr("y",this.nodeHeight/2+2.5)
             .text(title)
-            .attr('id','testText')
+            .attr('id','nodeTitle')
         this.SVGg.attr('transform', 'translate('+`${this.parameters.position.x},${this.parameters.position.y}`+')')
         this.DOMelt=this.SVGg.node()
+        this.DOMelt.querySelector('rect').pilot=this
+        this.DOMelt.querySelector('rect').handleClick=(e)=>globalThis.dispatchEvent(e.target.pilot.events.broadcast.nodeSelected)
+        this.DOMelt.querySelector('rect').handleMouseDown=(e)=>e.target.pilot.drag(e)
+        this.DOMelt.querySelector('rect').handleKeyDown=(e)=>{
+            if(e.key==="Delete"){
+                e.target.pilot.suicide()
+            }
+        }
+        for(let anchor of this.DOMelt.querySelectorAll('.anchor')){
+            anchor.pilot=this
+            anchor.handleMouseDown=(e)=>{
+                e.target.pilot.events.broadcast.startLinkDrawing.detail.msg={startingAnchor:e.target}
+                dispatchEvent(e.target.pilot.events.broadcast.startLinkDrawing)
+                e.target.pilot.events.broadcast.startLinkDrawing.detail.msg=""
+            }
+            anchor.handleMouseUp=(e)=>{
+                e.target.pilot.events.broadcast.stopLinkDrawing.detail.msg={endingAnchor:e.target}
+                dispatchEvent(e.target.pilot.events.broadcast.stopLinkDrawing)
+                e.target.pilot.events.broadcast.stopLinkDrawing.detail.msg=""
+            }
+        }
         this.draw()
     }
     draw(){
@@ -104,14 +118,15 @@ class Node{
         e.preventDefault();
         let dx=e.clientX;
         let dy=e.clientY;
+        const pilot=e.target.pilot
         document.onmousemove=(e)=>{
             e.preventDefault();
             dx-=e.clientX;
             dy-=e.clientY;
-            this.parameters.position.x-=dx
-            this.parameters.position.y-=dy
-            window.dispatchEvent(this.events.broadcast.nodeMove(this.parameters.position))
-            this.SVGg.attr('transform', 'translate('+`${this.parameters.position.x},${this.parameters.position.y}`+')')
+            pilot.parameters.position.x-=dx
+            pilot.parameters.position.y-=dy
+            window.dispatchEvent(pilot.events.broadcast.nodeMove)
+            pilot.SVGg.attr('transform', 'translate('+`${pilot.parameters.position.x},${pilot.parameters.position.y}`+')')
             dx=e.clientX;
             dy=e.clientY;
         }
@@ -129,14 +144,16 @@ class Node{
 }
 
 class Flow{
-    constructor(title,origin, destination){
-        self=this
+    constructor(title,origin,destination){
         this.title=title
         this.origin=origin
         this.destination=destination
         this.container=CE('div',{className:`flow container ${title}`},[])
         this.events={broadcast:{},listen:{
-            nodeMove(e){},
+            nodeMove(e){
+            },
+            startLinkDrawing(e){this.addBuildingLink(e)},
+            stopLinkDrawing(e){}
         }}
         this.nodeSet=new Set()
         this.parameters={
@@ -164,22 +181,40 @@ class Flow{
                 .attr("class","flow field")
         }
     }
+    addBuildingLink(e){//e must be a startLinkDrawing event
+        /*startingPosition={
+            x:e.detail.emitter.position.x,
+            y:e.detail.emitter.position.y
+        }*/
+        e.preventDefault()
+        document.onmousemove=(e)=>{
+            e.preventDefault()
+            console.log(e)
+        }
+        document.onmouseup=(e)=>{
+            e.preventDefault();
+            document.onmousemove=null;
+            document.onmouseup=null;
+        }
+        console.log(this)
+        console.log(e)
+    }
 }
 
 class MainMenu{
     constructor(configObject,title,origin,destination){
-        self=this
         this.title=title
         this.origin=origin
         this.destination=destination
         this.container=CE('nav',{className:`menu container ${title}`},[])
         this.events={
             broadcast:{
-                poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:self}}),
-                killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:self}}),
+                poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:this}}),
+                killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:this}}),
             },
             listen:{
             importDelimitedText(e){origin.loadDelimitedText()},
+            undo(e){origin.restoreLastState()}
         }}
         this.dfs4objects(configObject,this.container,0)
         this.draw()
@@ -197,7 +232,7 @@ class MainMenu{
                 achteyheymel=CE('hr',{},[])
             } else {
                 achteyheymel=
-                CE('div',{className:"parent",handleClick:object[k]},[
+                CE('div',{className:"parent",handleClick:typeof object[k] =="function"? object[k]: null},[
                     k+(Object.keys(object[k]).length==0 || c<2?"":"..."),
                 ])
             }
@@ -216,7 +251,8 @@ class MainMenu{
 }
 
 class Channel{
-    constructor(){
+    constructor(origin){
+        this.origin=origin
         this.eventTypes={}
     }
     register(name,caster){
@@ -233,7 +269,7 @@ class Channel{
         const broadcasts=caster.events.broadcast
         Object.values(broadcasts).forEach((e)=>{
             if (!this.eventTypes[e.type]){
-                window.addEventListener(e.type,this.defaultListener.bind(this))
+                globalThis.addEventListener(e.type,this.defaultListener.bind(this))
                 this.eventTypes[e.type]=new Set()
             }
         })
@@ -242,7 +278,7 @@ class Channel{
             const listeners=caster.events.listen
             Object.keys(listeners).forEach((e)=>{
                 if (!this.eventTypes[e]){
-                    window.addEventListener(e,this.defaultListener.bind(this))
+                    globalThis.addEventListener(e,this.defaultListener.bind(this))
                     this.eventTypes[e]=new Set()
                 }
                 this.eventTypes[e].add(name)
@@ -250,27 +286,44 @@ class Channel{
         }
         dispatchEvent(broadcasts.poppedUp)
     }
+    setupOnAir(){
+        for(let etype of Object.keys(this.eventTypes)){
+            globalThis.addEventListener(etype,this.defaultListener.bind(this))
+        }
+    }
+    shutDown(){
+        for(let etype of Object.keys(this.eventTypes)){
+            globalThis.removeEventListener(etype,this.defaultListener.bind(this))
+        }
+        this.eventTypes={}
+    }
     degister(name){
         delete this[name]
         Object.values(this.eventTypes).forEach((e)=>{e.delete(name)})
     }
     defaultListener(e){
+        if(e.detail.stackUndo){
+            this.origin.saveAppState()
+        }
         const et=e.type
-        this.eventTypes[e.type].forEach((targetName,i,a)=>{
-            this[targetName].events.listen[et](e)
-            })
-        if(et=="killed"){this.degister(e.detail.emitter.events.registrationName)}
+        if(this.eventTypes[e.type]){
+            this.eventTypes[e.type].forEach((targetName,i,a)=>{
+                this[targetName].events.listen[et].call(this[targetName],e)
+                })
+        }
+        if(et=="killed"){
+            this.degister(e.detail.emitter.events.registrationName)
+        }
     }
 }
 
 class Plot2D{
     constructor(data,title,origin,destination){
-        self=this
         this.title=title
         this.data=data
         this.origin=origin
         this.destination=destination
-        this.container=CE('div',{className:"2dplot container"},[]);
+        this.container=CE('div',{className:"2dplot container",pilot:this},[]);
         this.parameters={
             graphzone:{
                 drawn:false,
@@ -312,14 +365,12 @@ class Plot2D{
         })
         this.destination.appendChild(this.container)
         this.drawGraph()
-        this.resizeObserver=new ResizeObserver((e)=>{this.drawGraph()});
-        this.resizeObserver.observe(this.container);
+        this.container.handleResize=(e)=>e.target.pilot.drawGraph()
     }
     get graphzone(){
-        self=this
         return {
-            width:self.container.clientWidth-self.parameters.margins.left-self.parameters.margins.right,
-            height:self.container.clientHeight-self.parameters.margins.top-self.parameters.margins.bottom
+            width:this.container.clientWidth-this.parameters.margins.left-this.parameters.margins.right,
+            height:this.container.clientHeight-this.parameters.margins.top-this.parameters.margins.bottom
         }
     }
     drawGraph(){
@@ -497,7 +548,7 @@ class Table{
         }
         this.setData=data
         this.title=title
-        this.container=CE('div',{className:"table container"},[]);
+        this.container=CE('div',{className:"table container",pilot:this},[]);
         stylize(this.container,{
             position:"relative",
             width:"100%",
@@ -509,17 +560,22 @@ class Table{
         })
         this.destination.appendChild(this.container)
         this.drawVirtual()
-        this.container.addEventListener('scroll',(e)=>{this.onScroll(e)});
-        this.resizeObserver=new ResizeObserver(()=>{this.onResize()});
-        this.resizeObserver.observe(this.container);
+        this.container.handleScroll=(e)=>e.target.pilot.onScroll(e);
+        this.container.handleResize=(e)=>e.target.pilot.onResize()
     }
     set setData(arg){
         this.data=arg
         this.parameters.dataDimension={rows:Table.rowNum(arg),cols:Table.colNum(arg)}
     }
     onScroll(e){
-        this.parameters.virtualIndex.top=Math.floor(this.container.scrollTop/(parseInt(this.parameters.styles.vRuler.table["border-spacing"]) + parseInt(this.parameters.styles.vRuler.cells.height)))
-        this.parameters.virtualIndex.left=Math.floor(this.container.scrollLeft/(parseInt(this.parameters.styles.hRuler.cells.width) + parseInt(this.parameters.styles.hRuler.table["border-spacing"])))
+        this.parameters.virtualIndex.top=Math.floor(
+            this.container.scrollTop/
+                (parseInt(this.parameters.styles.vRuler.table["border-spacing"]) 
+                    + parseInt(this.parameters.styles.vRuler.cells.height)))
+        this.parameters.virtualIndex.left=Math.floor(
+            (this.container.scrollLeft)/
+                (parseInt(this.parameters.styles.hRuler.cells.width) 
+                    + 0.5*parseInt(this.parameters.styles.hRuler.table["border-spacing"])))
         const hRulerHeight=this.hRuler.clientHeight
         for(let k=0;k<this.virtualNbCols;k++){this.hRuler.children[0].children[k].textContent=(this.title[this.parameters.virtualIndex.left+k]===undefined ? "" : this.title[this.parameters.virtualIndex.left+k])}
         if(this.hRuler.clientHeight!=hRulerHeight){console.log("SHIFT !!!");this.onHrulerHeightChange()}
@@ -577,7 +633,11 @@ class Table{
         }
     }
     horizontalScrollWrapper(){
-        const width=parseInt(this.parameters.styles.vRuler.cells.width) + this.parameters.dataDimension.cols*parseInt(this.parameters.styles.cells.width) + (this.parameters.dataDimension.cols+2)*parseInt(this.parameters.styles.tables["border-spacing"])
+        const width=parseInt(
+            this.parameters.styles.vRuler.cells.width)//la largeur de la colonne d'indice verticaux
+            + this.parameters.dataDimension.cols*parseInt(this.parameters.styles.cells.width)//le gros des cellules
+            + (this.parameters.dataDimension.cols+2)*parseInt(this.parameters.styles.tables["border-spacing"]//leur empatement
+            )
         let res=CE('div',{className:"scrollwrapper horizontal"},[""])
         stylize(res,{
             background:"none",
@@ -591,7 +651,8 @@ class Table{
         return res
     }
     verticalScrollWrapper(){
-        const height=this.parameters.dataDimension.rows*parseInt(this.parameters.styles.cells.height) + (this.parameters.dataDimension.rows+1)*parseInt(this.parameters.styles.tables["border-spacing"])
+        const height=this.parameters.dataDimension.rows*parseInt(this.parameters.styles.cells.height) 
+        + (this.parameters.dataDimension.rows+1)*parseInt(this.parameters.styles.tables["border-spacing"])
         let res=CE('div',{className:"scrollwrapper vertical"},[""])
         stylize(res,{
             background:"none",
@@ -648,6 +709,27 @@ class Table{
         })
         return res
     }
+    columnResizer(e){
+        e.preventDefault();
+        let dx=e.clientX;
+        const pilot=e.target.pilot
+        document.onmousemove=(e)=>{
+            e.preventDefault();
+            dx-=e.clientX
+            pilot.parameters.styles.cells.width=`${Math.max(5,parseInt(pilot.parameters.styles.cells.width))-dx}px`
+            pilot.parameters.styles.hRuler.cells.width=`${Math.max(5,parseInt(pilot.parameters.styles.cells.width))-dx}px`
+            pilot.parameters.styles.bTable.cells.width=`${Math.max(5,parseInt(pilot.parameters.styles.cells.width))-dx}px`
+            pilot.hScroller=pilot.horizontalScrollWrapper()
+            pilot.container.replaceChild(pilot.hScroller,pilot.container.children[0])
+            pilot.onResize()
+            dx=e.clientX
+        }
+        document.onmouseup=(e)=>{
+            e.preventDefault();
+            document.onmouseup=null;
+            document.onmousemove=null;
+        }
+    }
     virtualhRuler(){
         const Dx=this.container.clientWidth-parseInt(this.parameters.styles.vRuler.cells.width)-2*parseInt(this.parameters.styles.tables["border-spacing"])
         this.virtualNbCols=Math.min(Math.ceil(Dx/(parseInt(this.parameters.styles.hRuler.cells.width)+parseInt(this.parameters.styles.hRuler.table["border-spacing"]))),this.parameters.dataDimension.cols)
@@ -656,22 +738,22 @@ class Table{
         let rulerLine=[]//[CE('th',{className:"horizontal ruler cell",style:this.parameters.styles.vRuler.cells},[""])];
         const leftGap=parseInt(this.parameters.styles.vRuler.cells.width)+2*parseInt(this.parameters.styles.vRuler.table['border-spacing'])
         for(let k=0;k<this.virtualNbCols;k++){
-            rulerLine.push(CE('th',{className:"horizontal ruler cell",style:this.parameters.styles.hRuler.cells},[(this.parameters.virtualIndex.left+k).toString()]));
+            rulerLine.push(CE('th',{className:"horizontal ruler cell",pilot:this,handleMouseDown:(e)=>{e.target.pilot.columnResizer(e)},style:this.parameters.styles.hRuler.cells},[(this.parameters.virtualIndex.left+k).toString()]));
             titleLine.push(CE('th',{className:"horizontal title cell",style:this.parameters.styles.hRuler.cells},[this.title[this.parameters.virtualIndex.left+k]===undefined ? "" : this.title[this.parameters.virtualIndex.left+k]]));
             rulerLine[k].style["cursor"]="col-resize"
             if(this.parameters.mutable.hRuler){
                 titleLine[k].style["cursor"]="auto"
                 titleLine[k].style["background-color"]="cornsilk"
                 titleLine[k].setAttribute("contenteditable","true")
-                titleLine[k].addEventListener("blur",(e)=>{
-                    this.title[e.target.cellIndex]=e.target.textContent
-                })
-                titleLine[k].addEventListener("keydown",(e)=>{
+                titleLine[k].pilot=this
+                titleLine[k].handleBlur=(e)=>{
+                    e.target.pilot.title[e.target.cellIndex]=e.target.textContent
+                }
+                titleLine[k].handleKeyDown=(e)=>{
                     if(e.key=="Enter"){
                         e.target.blur()
                     }
-                
-            })
+                }
             }
         }
         let res=CE('table',{className:"table ruler horizontal",style:this.parameters.styles.hRuler.table},[
@@ -685,24 +767,6 @@ class Table{
             "z-index":"4",
         })
         res.children[1].style["cursor"]="col-resize"
-        res.children[1].addEventListener('mousedown',(e)=>{
-            e.preventDefault();
-            let dx=e.clientX;
-            document.onmousemove=(e)=>{
-                e.preventDefault();
-                dx-=e.clientX
-                this.parameters.styles.cells.width=`${Math.max(5,parseInt(this.parameters.styles.cells.width))-dx}px`
-                this.parameters.styles.hRuler.cells.width=`${Math.max(5,parseInt(this.parameters.styles.cells.width))-dx}px`
-                this.parameters.styles.bTable.cells.width=`${Math.max(5,parseInt(this.parameters.styles.cells.width))-dx}px`
-                this.onResize()
-                dx=e.clientX
-            }
-            document.onmouseup=(e)=>{
-                e.preventDefault();
-                document.onmouseup=null;
-                document.onmousemove=null;
-            }
-        })
         return res
     }
     static bareTable(data){
@@ -750,24 +814,22 @@ class Table{
 
 class Dialog{
     constructor(title,origin,destination){
-        const dialog=this;
         this.title=title
         this.events={
             broadcast:{
-                
-                selected:new CustomEvent("selected",{detail:{msg:"I've just been selected !!!",emitter:dialog}})
+                selected:new CustomEvent("selected",{detail:{msg:"I've just been selected !!!",emitter:this}}),
             },
             listen:{
                 selected(e){
                     console.log("oupinez "+e.detail.emitter.events.registrationName+" a été selectionné !!")
-                    if (e.detail.emitter.events.registrationName==dialog.events.registrationName) {
-                        console.log("hey mais c moi car je suis:",dialog.events.registrationName)
-                        dialog.DOMelt.window.classList.add('selected')
-                        dialog.DOMelt.window.style["z-index"]="10"
+                    if (e.detail.emitter.events.registrationName==this.events.registrationName) {
+                        console.log("hey mais c moi car je suis:",this.events.registrationName)
+                        this.DOMelt.window.classList.add('selected')
+                        this.DOMelt.window.style["z-index"]="10"
                     } else {
-                        console.log("ha oui mais c'est pas moi car je suis:",dialog.events.registrationName)
-                        dialog.DOMelt.window.classList.remove('selected')
-                        dialog.DOMelt.window.style["z-index"]="0"
+                        console.log("ha oui mais c'est pas moi car je suis:",this.events.registrationName)
+                        this.DOMelt.window.classList.remove('selected')
+                        this.DOMelt.window.style["z-index"]="2"//1 is for interface
                     }
                 },
                 killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationName)},
@@ -777,16 +839,16 @@ class Dialog{
         this.origin=origin;
         this.destination=destination;
         this.DOMelt={};
-        this.DOMelt.dismisser=CE('div',{className:"dismisser"},[]);
-        this.DOMelt.dismisser.handleClick=this.suicide.bind(this);
-        this.DOMelt.label=CE('div',{className:"label"},[title.toString()]);
-        this.DOMelt.label.onmousedown=this.drag.bind(this);
-        this.DOMelt.label.handleClick=(e)=>{dispatchEvent(dialog.events.broadcast.selected)}
+        this.DOMelt.dismisser=CE('div',{className:"dismisser",pilot:this},[]);
+        this.DOMelt.dismisser.handleClick=(e)=>e.target.pilot.suicide();
+        this.DOMelt.label=CE('div',{className:"label",pilot:this},[title.toString()]);
+        this.DOMelt.label.handleMouseDown=(e)=>e.target.pilot.drag(e);
+        this.DOMelt.label.handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.selected)}
         this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
-        this.DOMelt.window=CE('div',{className:title+" popup container"},[
-            dialog.DOMelt.handler,
-            dialog.DOMelt.content
+        this.DOMelt.window=CE('div',{className:title+" popup container",pilot:this},[
+            this.DOMelt.handler,
+            this.DOMelt.content
         ]);
         stylize(this.DOMelt.window,{
             position:"absolute",
@@ -831,16 +893,13 @@ class Dialog{
             width:"1em",
             "align-self":"center"
         })
-        this.resizeObserver=new ResizeObserver((e)=>e.forEach((v)=>{
-            this.resize(v);
-        }));
+        this.DOMelt.window.handleResize=(e)=>e.target.pilot.resize(e)
         if (!$(`.${title}.popup.container`)){
             destination.appendChild(this.DOMelt.window);
         }else{
             this.DOMelt.window.remove()
             destination.appendChild(this.DOMelt.window);
         }
-        this.resizeObserver.observe(this.DOMelt.window);
     }
     suicide(){
         this.DOMelt.window.remove()
@@ -854,23 +913,24 @@ class Dialog{
         e.preventDefault();
         let dx=e.clientX;
         let dy=e.clientY;
+        const pilot=e.target.pilot
         document.onmousemove=(e)=>{
             e.preventDefault();
             dx-=e.clientX;
             dy-=e.clientY;
             let gap={
-                left:this.DOMelt.window.offsetLeft-dx,
-                right:boundary.width-(this.DOMelt.window.offsetLeft-dx+this.DOMelt.window.offsetWidth),
-                top:this.DOMelt.window.offsetTop-dy,
-                bottom:boundary.height-(this.DOMelt.window.offsetTop-dy+this.DOMelt.window.offsetHeight)
+                left:pilot.DOMelt.window.offsetLeft-dx,
+                right:boundary.width-(pilot.DOMelt.window.offsetLeft-dx+pilot.DOMelt.window.offsetWidth),
+                top:pilot.DOMelt.window.offsetTop-dy,
+                bottom:boundary.height-(pilot.DOMelt.window.offsetTop-dy+pilot.DOMelt.window.offsetHeight)
             }
             if(gap.left>=0 && gap.right>=0){
-                this.DOMelt.window.style.left=`${100*gap.left/boundary.width}%`;
-                this.DOMelt.window.style.right=`${100*gap.right/boundary.width}%`;
+                pilot.DOMelt.window.style.left=`${100*gap.left/boundary.width}%`;
+                pilot.DOMelt.window.style.right=`${100*gap.right/boundary.width}%`;
             }
             if(gap.top>=0 && gap.bottom>=0){
-                this.DOMelt.window.style.top=`${100*gap.top/boundary.height}%`;
-                this.DOMelt.window.style.bottom=`${100*gap.bottom/boundary.height}%`;
+                pilot.DOMelt.window.style.top=`${100*gap.top/boundary.height}%`;
+                pilot.DOMelt.window.style.bottom=`${100*gap.bottom/boundary.height}%`;
             }
             dx=e.clientX;
             dy=e.clientY;
@@ -882,17 +942,17 @@ class Dialog{
         }
     }
     resize(e){
-        self=this;
+        //console.log(e.target)
         let gap={
             left:e.target.offsetLeft,
-            right:self.destination.offsetWidth-(e.target.offsetLeft+e.target.offsetWidth),
+            right:e.target.pilot.destination.offsetWidth-(e.target.offsetLeft+e.target.offsetWidth),
             top:e.target.offsetTop,
-            bottom:self.destination.offsetHeight-(e.target.offsetTop+e.target.offsetHeight)
+            bottom:e.target.pilot.destination.offsetHeight-(e.target.offsetTop+e.target.offsetHeight)
         }
-        e.target.style.left=`${100*(Math.max(gap.left,0)/this.destination.offsetWidth)}%`;
-        e.target.style.right=`${100*(Math.max(gap.right,0)/this.destination.offsetWidth)}%`;
-        e.target.style.top=`${100*(Math.max(gap.top,0)/this.destination.offsetHeight)}%`;
-        e.target.style.bottom=`${100*(Math.max(gap.bottom,0)/this.destination.offsetHeight)}%`;
+        e.target.style.left=`${100*(Math.max(gap.left,0)/e.target.pilot.destination.offsetWidth)}%`;
+        e.target.style.right=`${100*(Math.max(gap.right,0)/e.target.pilot.destination.offsetWidth)}%`;
+        e.target.style.top=`${100*(Math.max(gap.top,0)/e.target.pilot.destination.offsetHeight)}%`;
+        e.target.style.bottom=`${100*(Math.max(gap.bottom,0)/e.target.pilot.destination.offsetHeight)}%`;
         if(gap.bottom<1 || gap.right){
             e.target.style.height="";
             e.target.style.width="";
@@ -902,7 +962,6 @@ class Dialog{
 
 class Accordion{
     constructor(title,origin,destination){
-        const accordion=this;
         this.title=title
         this.origin=origin
         this.destination=destination
@@ -943,8 +1002,7 @@ class Accordion{
             }
         };
         this.DOMelt={
-            folder:CE('div',{className:"accordion handler folder",
-                handleClick:(e)=>{accordion.toggle()}},[]),
+            folder:CE('div',{className:"accordion handler folder",pilot:this,handleClick:(e)=>e.target.pilot.toggle()},[]),
             handler:CE('div',{className:"accordion handler"},[
                 CE('div',{className:"accordion handler menu"},[]),
                 CE('div',{className:"accordion handler label"},[title]),
@@ -983,146 +1041,41 @@ class Accordion{
 
 class App{
     constructor(){
-        const app=this
-        this.channel=new Channel()
+        this.testMap=new Map()
+        this.testMap.set({prout:"zob"},{taille:78})
+        this.channel=new Channel(this)
         this.parameters={
             topContent:{
                 folded: false,
-                set fold(v){
-                    if(v){
-                        app.parameters.topContent.folded=true;
-                        $("#mainInterface").style["grid-template-rows"]=`0px 5px 1fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
-                    }else{
-                        app.parameters.topContent.folded=false;
-                        $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height}px 5px 1fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
-                    }
-                },
                 height:100,
-                set resizeHeight(v){
-                    app.parameters.topContent.height=v
-                    $("#mainInterface").style["grid-template-rows"]=`${v}px 5px 1fr 5px ${app.parameters.botContent.height*(!app.parameters.botContent.folded)}px`
-                },
-                resizerHook:(e)=>{
-                    e.preventDefault();
-                    let dy=e.clientY;
-                    document.onmousemove=(e)=>{
-                        $("#mainInterface").style.transition="0ms";
-                        app.parameters.topContent.resizeHeight=app.parameters.topContent.height-dy+e.clientY;
-                        dy=e.clientY;
-                    }
-                    document.onmouseup=(e)=>{
-                        document.onmousemove=null;
-                        document.onmouseup=null;
-                        $("#mainInterface").style.transition="300ms";
-                    }
-                }
             },
             botContent:{
                 folded: false,
-                set fold(v){
-                    if(v){
-                        app.parameters.botContent.folded=true;
-                        $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height*(!app.parameters.topContent.folded)}px 5px 1fr 5px 0px`
-                    }else{
-                        app.parameters.botContent.folded=false;
-                        $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height*(!app.parameters.topContent.folded)}px 5px 1fr 5px ${app.parameters.botContent.height}px`
-                    }
-                },
                 height:100,
-                set resizeHeight(v){
-                    app.parameters.botContent.height=v;
-                    $("#mainInterface").style["grid-template-rows"]=`${app.parameters.topContent.height*(!app.parameters.topContent.folded)}px 5px 1fr 5px ${v}px`
-                },
-                resizerHook:(e)=>{
-                    e.preventDefault();
-                    let dy=e.clientY;
-                    document.onmousemove=(e)=>{
-                        $("#mainInterface").style.transition="0ms";
-                        app.parameters.botContent.resizeHeight=app.parameters.botContent.height+dy-e.clientY;
-                        dy=e.clientY;
-                    }
-                    document.onmouseup=(e)=>{
-                        document.onmousemove=null;
-                        document.onmouseup=null;
-                        $("#mainInterface").style.transition="300ms";
-                    }
-                }
+                
             },
             leftContent:{
                 folded:false,
                 width:250,
-                set fold(v){
-                    if(v){
-                        app.parameters.leftContent.folded=true;
-                        app.mid.style["grid-template-columns"]=`0px 5px 1fr 5px ${app.parameters.rightContent.width*(!app.parameters.rightContent.folded)}px`
-                    }else{
-                        app.parameters.leftContent.folded=false;
-                        app.mid.style["grid-template-columns"]=`${app.parameters.leftContent.width}px 5px 1fr 5px ${app.parameters.rightContent.width*(!app.parameters.rightContent.folded)}px`
-                    }
-                },
-                set resizeWidth(v){
-                    app.parameters.leftContent.width=v;
-                    app.mid.style["grid-template-columns"]=`${v}px 5px 1fr 5px ${app.parameters.rightContent.width*(!app.parameters.rightContent.folded)}px`
-                },
-                resizerHook:(e)=>{
-                    e.preventDefault();
-                    let dx=e.clientX;
-                    document.onmousemove=(e)=>{
-                        app.mid.style.transition="0ms";
-                        app.parameters.leftContent.resizeWidth=app.parameters.leftContent.width-dx+e.clientX;
-                        dx=e.clientX;
-                    }
-                    document.onmouseup=(e)=>{
-                        document.onmousemove=null;
-                        document.onmouseup=null;
-                        app.mid.style.transition="300ms";
-                    }
-                }
             },
             rightContent:{
                 folded:false,
                 width:250,
-                set fold(v){
-                    if(v){
-                        app.parameters.rightContent.folded=true;
-                        app.mid.style["grid-template-columns"]=`${app.parameters.leftContent.width*(!app.parameters.leftContent.folded)}px 5px 1fr 5px 0px`
-                    }else{
-                        app.parameters.rightContent.folded=false;
-                        app.mid.style["grid-template-columns"]=`${app.parameters.leftContent.width*(!app.parameters.leftContent.folded)}px 5px 1fr 5px ${app.parameters.rightContent.width}px`
-                    }
-                },
-                set resizeWidth(v){
-                    app.parameters.rightContent.width=v;
-                    app.mid.style["grid-template-columns"]=`${app.parameters.leftContent.width*(!app.parameters.leftContent.folded)}px 5px 1fr 5px ${v}px`
-                },
-                resizerHook:(e)=>{
-                    e.preventDefault();
-                    let dx=e.clientX;
-                    document.onmousemove=(e)=>{
-                        app.mid.style.transition="0ms";
-                        app.parameters.rightContent.resizeWidth=app.parameters.rightContent.width+dx-e.clientX;
-                        dx=e.clientX;
-                    }
-                    document.onmouseup=(e)=>{
-                        document.onmousemove=null;
-                        document.onmouseup=null;
-                        app.mid.style.transition="300ms";
-                    }
-                }
             }
         }
         this.topContent=[
             CE('div',{id:"topContent", className:"horizontal content"},[
                 "Top content",
                 CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
-                CE('button',{handleClick:(e)=>{
-                    app.channel.register("choco",new Dialog("choco",app,app.main))
-                    app.tata=new Table(fakeData(10),["ttl","an other","a third","anotheronetocheckeverythingis ok","and a last one that is super long !"],app,app.channel["choco"].DOMelt.content)
+                CE('button',{pilot:this,handleClick:(e)=>{
+                    e.target.pilot.channel.register("choco",new Dialog("choco",e.target.pilot,e.target.pilot.main))
+                    e.target.pilot.tata=new Table(fakeData(10),["ttl","an other","a third","anotheronetocheckeverythingis ok","and a last one that is super long !"],e.target.pilot,e.target.pilot.channel["choco"].DOMelt.content)
                 }},[" Please click here for a table test"]),
-                CE('button',{handleClick:(e)=>{
-                    app.channel.register("lata",new Dialog("lata",app,app.midCentralContent))
-                    app.yoyo=new Plot2D([],"yoyo",app,app.channel["lata"].DOMelt.content)
-                }},[" Please click here for a graph test"])
+                CE('button',{pilot:this,handleClick:(e)=>{
+                    e.target.pilot.channel.register("lata",new Dialog("lata",e.target.pilot,e.target.pilot.midCentralContent))
+                    e.target.pilot.yoyo=new Plot2D([],"yoyo",e.target.pilot,e.target.pilot.channel["lata"].DOMelt.content)
+                }},[" Please click here for a graph test"]),
+                CE('button',{pilot:this,handleClick:(e)=>{console.log(e.target.pilot)}},["Copy stability tests"])
             ])
         ]
         this.midCentralContent=CE('div',{className:"vertical center content"},["center content"])
@@ -1131,17 +1084,17 @@ class App{
                 CE('div',{className:"vertical left content"},["left content"])
             ]),
             CE('div',{id:"leftSeptum", className:"left septum vertical"},[
-                CE('div',{className:"vertical resizer",onmousedown:this.parameters.leftContent.resizerHook},[]),
-                CE('div',{className:"vertical wrapper",handleClick:()=>{this.parameters.leftContent.fold=!this.parameters.leftContent.folded;}},[]),
-                CE('div',{className:"vertical resizer",onmousedown:this.parameters.leftContent.resizerHook},[])
+                CE('div',{className:"vertical resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookLeft(e)},[]),
+                CE('div',{className:"vertical wrapper",pilot:this,handleClick:(e)=>{e.target.pilot.foldLeft(!e.target.pilot.parameters.leftContent.folded)}},[]),
+                CE('div',{className:"vertical resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookLeft(e)},[])
             ]),
             CE('div',{id:"center",className:"vertical center panel"},[
                 this.midCentralContent
             ]),
             CE('div',{id:"rightSeptum", className:"right septum vertical"},[
-                CE('div',{className:"vertical resizer",onmousedown:this.parameters.rightContent.resizerHook},[]),
-                CE('div',{className:"vertical wrapper",handleClick:()=>{this.parameters.rightContent.fold=!this.parameters.rightContent.folded;}},[]),
-                CE('div',{className:"vertical resizer",onmousedown:this.parameters.rightContent.resizerHook},[])
+                CE('div',{className:"vertical resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookRight(e)},[]),
+                CE('div',{className:"vertical wrapper",pilot:this,handleClick:(e)=>{e.target.pilot.foldRight(!e.target.pilot.parameters.rightContent.folded)}},[]),
+                CE('div',{className:"vertical resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookRight(e)},[])
             ]),
             CE('div',{id:"right",className:"vertical right panel"},[
                 CE('div',{className:"vertical right content"},["right content"])
@@ -1153,30 +1106,29 @@ class App{
             ])
         ]
         this.menu=CE('div',{id:"mainMenu",className:"menu"},[])
-        //this.menu.onload
         this.top=CE('div',{id:"top",className:"horizontal top panel"},this.topContent)
         this.topSeptum=CE('div',{id:"topSeptum",className:"top horizontal septum"},[
-            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[]),
-            CE('div',{className:"horizontal wrapper",handleClick:()=>{this.parameters.topContent.fold=!this.parameters.topContent.folded;}},[]),
-            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.topContent.resizerHook},[])
+            CE('div',{className:"horizontal resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookTop(e)},[]),
+            CE('div',{className:"horizontal wrapper",pilot:this,handleClick:(e)=>{e.target.pilot.foldTop(!e.target.pilot.parameters.topContent.folded)}},[]),
+            CE('div',{className:"horizontal resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookTop(e)},[])
         ])
         this.mid=CE('div',{id:"mid",className:"horizontal mid panel"},this.midContent)
         this.botSeptum=CE('div',{id:"botSeptum",className:"bot horizontal septum"},[
-            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[]),
-            CE('div',{className:"horizontal wrapper",handleClick:()=>{this.parameters.botContent.fold=!this.parameters.botContent.folded;}},[]),
-            CE('div',{className:"horizontal resizer",onmousedown:this.parameters.botContent.resizerHook},[])
+            CE('div',{className:"horizontal resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookBot(e)},[]),
+            CE('div',{className:"horizontal wrapper",pilot:this,handleClick:(e)=>{e.target.pilot.foldBot(!e.target.pilot.parameters.botContent.folded)}},[]),
+            CE('div',{className:"horizontal resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookBot(e)},[])
         ])
         this.bot=CE('div',{id:"bot",className:"horizontal bot panel"},this.botContent)
-
+        this.mainInterface=CE('div',{id:"mainInterface", className:"container"},[
+            this.top,
+            this.topSeptum,
+            this.mid,
+            this.botSeptum,
+            this.bot
+        ])
         this.main=CE('div',{id:"main",className:"app"},[
             this.menu,
-            CE('div',{id:"mainInterface", className:"container"},[
-                this.top,
-                this.topSeptum,
-                this.mid,
-                this.botSeptum,
-                this.bot
-            ])
+            this.mainInterface
         ])
 
         this.setupOnWindow()
@@ -1185,18 +1137,189 @@ class App{
         this.channel['Data manager'].DOMelt.content.appendChild(
             CE('div',{},["test",CE('div',{id:"Gloubidi",style:{height:"300px"}},[])])
         )
-        this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",app,app.menu))
-        this.channel.register("mainFlow",new Flow("mainFlow",app,app.topContent[0]))
-        this.channel.register('teprou',new Node('teprou',[1,2,3],[6,4,2],app,this.channel.mainFlow))
-        this.channel.register('tefar', new Node('tefar',[1],[],app,this.channel.mainFlow,{x:180,y:10}))
+        this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",this,this.menu))
+        this.channel.register("mainFlow",new Flow("mainFlow",this,this.topContent[0]))
+        this.channel.register('teprou',new Node('teprou',[1,2,3],[6,4,2],this,this.channel.mainFlow))
+        this.channel.register('tefar', new Node('tefar',[1],[],this,this.channel.mainFlow,{x:180,y:10}))
+    }
+    foldTop(v){
+        if(v){
+            this.parameters.topContent.folded=true;
+            this.mainInterface.style["grid-template-rows"]=`0px 5px 1fr 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
+        }else{
+            this.parameters.topContent.folded=false;
+            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height}px 5px 1fr 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
+        }
+    }
+    resizeHeightTop(v){
+        this.parameters.topContent.height=v
+        this.mainInterface.style["grid-template-rows"]=`${v}px 5px 1fr 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
+    }
+    resizerHookTop(e){
+        e.preventDefault();
+        let dy=e.clientY;
+        const pilot=e.target.pilot
+        document.onmousemove=(e)=>{
+            pilot.mainInterface.style.transition="0ms";
+            pilot.resizeHeightTop(pilot.parameters.topContent.height-dy+e.clientY);
+            dy=e.clientY;
+        }
+        document.onmouseup=(e)=>{
+            document.onmousemove=null;
+            document.onmouseup=null;
+            pilot.mainInterface.style.transition="300ms";
+        }
+    }
+    foldBot(v){
+        if(v){
+            this.parameters.botContent.folded=true;
+            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px 1fr 5px 0px`
+        }else{
+            this.parameters.botContent.folded=false;
+            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px 1fr 5px ${this.parameters.botContent.height}px`
+        }
+    }
+    resizeHeightBot(v){
+        this.parameters.botContent.height=v;
+        this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px 1fr 5px ${v}px`
+    }
+    resizerHookBot(e){
+        e.preventDefault();
+        let dy=e.clientY;
+        const pilot=e.target.pilot
+        document.onmousemove=(e)=>{
+            pilot.mainInterface.style.transition="0ms";
+            pilot.resizeHeightBot(pilot.parameters.botContent.height+dy-e.clientY)
+            dy=e.clientY;
+        }
+        document.onmouseup=(e)=>{
+            document.onmousemove=null;
+            document.onmouseup=null;
+            pilot.mainInterface.style.transition="300ms";
+        }
+    }
+    foldLeft(v){
+        if(v){
+            this.parameters.leftContent.folded=true;
+            this.mid.style["grid-template-columns"]=`0px 5px 1fr 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
+        }else{
+            this.parameters.leftContent.folded=false;
+            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width}px 5px 1fr 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
+        }
+    }
+    resizeWidthLeft(v){
+        this.parameters.leftContent.width=v;
+        this.mid.style["grid-template-columns"]=`${v}px 5px 1fr 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
+    }
+    resizerHookLeft(e){
+        e.preventDefault();
+        let dx=e.clientX;
+        const pilot=e.target.pilot
+        document.onmousemove=(e)=>{
+            pilot.mid.style.transition="0ms";
+            pilot.resizeWidthLeft(pilot.parameters.leftContent.width-dx+e.clientX);
+            dx=e.clientX;
+        }
+        document.onmouseup=(e)=>{
+            document.onmousemove=null;
+            document.onmouseup=null;
+            pilot.mid.style.transition="300ms";
+        }
+    }
+    foldRight(v){
+        if(v){
+            this.parameters.rightContent.folded=true;
+            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px 1fr 5px 0px`
+        }else{
+            this.parameters.rightContent.folded=false;
+            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px 1fr 5px ${this.parameters.rightContent.width}px`
+        }
+    }
+    resizeWidthRight(v){
+        this.parameters.rightContent.width=v;
+        this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px 1fr 5px ${v}px`
+    }
+    resizerHookRight(e){
+        e.preventDefault();
+        let dx=e.clientX;
+        const pilot=e.target.pilot
+        document.onmousemove=(e)=>{
+            pilot.mid.style.transition="0ms";
+            pilot.resizeWidthRight(pilot.parameters.rightContent.width+dx-e.clientX)
+            dx=e.clientX;
+        }
+        document.onmouseup=(e)=>{
+            document.onmousemove=null;
+            document.onmouseup=null;
+            pilot.mid.style.transition="300ms";
+        }
     }
     setupOnWindow(destination='body'){
         this.destination=destination;
         $(this.destination).appendChild(this.main);
         this.main.addEventListener('click',(e)=>{
-            console.log(e.target,e.target.parentNode)
+            //console.log(e.target)
             if(e.target.handleClick){e.target.handleClick(e)}
         })
+        this.main.addEventListener('mousedown',function(e){
+            if(e.target.handleMouseDown){e.target.handleMouseDown(e)}
+        })
+        this.main.addEventListener('mouseup',function(e){
+            if(e.target.handleMouseUp){e.target.handleMouseUp(e)}
+        })
+        this.main.addEventListener('keydown',(e)=>{
+            if(e.target.handleKeyDown){e.target.handleKeyDown(e)}
+        })
+        this.main.addEventListener('blur',(e)=>{
+            if(e.target.handleBlur){e.target.handleBlur(e)}
+        },true)
+        this.main.addEventListener('input',(e)=>{
+            if(e.target.handleInput){e.target.handleInput(e)}
+        })
+        this.main.addEventListener('scroll',(e)=>{
+            if(e.target.handleScroll){e.target.handleScroll(e)}
+        },true)
+        this.main.addEventListener('change',(e)=>{
+            if(e.target.handleChange){e.target.handleChange(e)}
+        })
+        const deepResize=(e)=>{
+            if(e.target.handleResize){
+                e.target.handleResize(e)
+            }
+            for(let child of e.target.children){
+                deepResize({target:child})
+            }
+        }
+        const setDeepResizeObs=(elt,obs)=>{
+            obs.observe(elt)
+            for(let child of elt.children){
+                setDeepResizeObs(child,obs)
+            }
+        }
+        this.resizeObserver=new ResizeObserver((entries)=>{entries.forEach((e)=>deepResize(e))})
+        this.mutObserver=new MutationObserver((mutationsList, observer)=>{
+            mutationsList.forEach((e)=>{
+                //console.log(e)
+                if(e.target.handleResize){
+                    setDeepResizeObs(e.target,this.resizeObserver)
+                    /*if(e.oldValue){
+                        const oldWidth=e.oldValue.match(/width:\s*([^;]+);/)
+                        if(oldWidth!=null){
+                            const oldHeight=e.oldValue.match(/height:\s*([^;]+);/)
+                            if(oldHeight!=null){
+                                if(oldWidth[1]!=e.target.style.width || oldHeight[1]!=e.target.style.height){
+                                    deepResize(e)
+                                }
+                            }
+                        }
+                    }*/
+                }
+            }
+            )
+            }
+            )
+        setDeepResizeObs(this.main,this.resizeObserver)
+        this.mutObserver.observe(this.main,{attributes:true,childList:true,attributeFilter:["style"],attributeOldValue:true,subtree:true})
     }
     loadDelimitedText(){
         let DelimitedTextLoader=new Dialog("Load delimited text file",this,this.main)
@@ -1246,21 +1369,21 @@ class App{
             let prevTable=new Table(cropData,[],this,procPreview)
             prevTable.parameters.mutable.hRuler=true
         }
-        const loaderElement=CE('input',{type:"file",onchange:(e)=>{readSingleFile(e,dataVessel)}},["Select a text file"])
+        const loaderElement=CE('input',{type:"file",handleChange:(e)=>{readSingleFile(e,dataVessel)}},["Select a text file"])
         let rawPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données brutes"])
         rawPreview.setAttribute("contenteditable","true")
-        rawPreview.addEventListener('input',(e)=>{
+        rawPreview.handleInput=(e)=>{
             dataVessel.raw=e.target.textContent+dataVessel.raw.slice(prevLength)
             updatePreviews(dataVessel)
-        })
+        }
         let procPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données traitées"])
-        const lineSeparator=CE('select',{oninput:(e)=>{updatePreviews(dataVessel)}},[
+        const lineSeparator=CE('select',{handleInput:(e)=>{updatePreviews(dataVessel)}},[
             CE('option',{value:"\r|\n|\r\n"},["auto/guess"]),
             CE('option',{value:"\r\n"},["CRLF"]),
             CE('option',{value:"\r"},["CR"]),
             CE('option',{value:"\n"},["LF"]),
         ])
-        const colSeparator=CE('select',{oninput:(e)=>{updatePreviews(dataVessel)}},[
+        const colSeparator=CE('select',{handleInput:(e)=>{updatePreviews(dataVessel)}},[
             CE('option',{value:"\t|,|\s"},["auto/guess"]),
             CE('option',{value:"\t"},["tab"]),
             CE('option',{value:","},["comma"]),
@@ -1299,14 +1422,16 @@ class App{
         DelimitedTextLoader.DOMelt.content.appendChild(loaderContainer)
     }
     saveAppState(){
-        window.visited=new Map()
-        let appState=DC(this,window.visited)
-        return window.savedState=appState
+        return globalThis.undoStack.push(DC(this))
     }
-    restoreAppState(savedState){
-        document.body.lastChild.remove()
-        savedState.setupOnWindow()
-        window.Attributor=savedState
+    restoreLastState(){
+        if(globalThis.undoStack.length){
+            document.body.lastChild.remove()
+            this.channel.shutDown()
+            globalThis.Attributor=globalThis.undoStack.pop()
+            globalThis.Attributor.setupOnWindow()
+            globalThis.Attributor.channel.setupOnAir()
+        }
     }
 }
 

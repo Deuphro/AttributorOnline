@@ -59,8 +59,8 @@ class Wave{
             globalThis['_'+k]=new Function('...c','return c['+k+']')//(...c)=>{return c[value]}
         }
         this.size=dims.reduce((t,e)=>{return t*e},1)
-        this.#init()
-        this[Symbol.iterator]=()=>{
+        this.init()
+        /*this[Symbol.iterator]=()=>{
             let res={value:undefined,index:-1}
             const limit= this.size-1
             return{next:()=>{
@@ -73,7 +73,7 @@ class Wave{
                 }
                 }
             }
-        }
+        }*/
         this.iterables=this.generateIterables()
         this.indices={
             [Symbol.iterator]:()=>{
@@ -105,6 +105,20 @@ class Wave{
         }
         this.labels=new Array(this.degree)
     }
+    [Symbol.iterator](){
+        let res={value:undefined,index:-1}
+        const limit= this.size-1
+        return{next:()=>{
+            if(res.index++<limit){
+                res.value=this.core[res.index]
+                return {value:res,done:false}
+            }else{
+                res={value:undefined,index:-1}
+                return {done:true}
+            }
+            }
+        }
+    }
     index(...coords){
         let res=coords[0]
         for(let k=1;k<this.degree;k++){
@@ -120,7 +134,7 @@ class Wave{
         }
         return res
     }
-    #init(){
+    init(){
         this.core=new Float64Array(this.size)
     }
     forEach(fn){
