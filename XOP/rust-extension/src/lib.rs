@@ -35,3 +35,10 @@ pub fn bench(n: u64) -> u64{
     }
     return sum
 }
+
+//on veut énumérer les coordonnées d'une tableau nd
+#[wasm_bindgen]
+pub fn sieve(n: usize) -> Vec<f64> {
+    let a = vec![0.0; n];
+    a
+}

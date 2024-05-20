@@ -2,7 +2,6 @@ import {App} from "./interface.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import * as util from "./util.js"
 import init,* as rust from '../XOP/rust-extension/pkg/attribrustor.js'
-console.log(rust)
 async function run(){
     await init();
     globalThis.rust=rust

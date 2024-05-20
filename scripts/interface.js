@@ -18,8 +18,8 @@ class Node{
         this.drawn=false
         this.events={broadcast:{
             nodeMove:new CustomEvent("nodeMove",{detail:{msg:"",emitter:this}}),
-            startLinkDrawing:new CustomEvent("startLinkDrawing",{detail:{msg:"",emitter:this}}),
-            stopLinkDrawing:new CustomEvent("stopLinkDrawing",{detail:{msg:"",emitter:this}}),
+            startLinkDrawing(anchor){return new CustomEvent("startLinkDrawing",{detail:{msg:{starter:anchor},emitter:this}})},
+            stopLinkDrawing(anchor){return new CustomEvent("stopLinkDrawing",{detail:{msg:{stopper:anchor},emitter:this}})},
             nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}})
         },listen:{
             nodeSelected(e){
@@ -45,7 +45,8 @@ class Node{
             },
             inputs:{
                 positions:new Array(this.inputs.length)
-            }
+            },
+            anchorMap:new WeakMap()
         }
         this.SVGg=d3.create("svg:g").attr('class','nodeContainer')
         this.SVGg.append("rect")
@@ -59,21 +60,23 @@ class Node{
             .attr("class","node")
         for(let k in inputs){
             this.parameters.inputs.positions[k]={x:0,y:this.parameters.rounding+this.parameters.margin+(Number(k)+0.5)*this.parameters.heightPerItem}
-            this.SVGg.append('circle')
-            .attr('cx',this.parameters.inputs.positions[k].x)
-            .attr('cy',this.parameters.inputs.positions[k].y)
-            .attr("r", 5)
-            .attr('class','input anchor')
-            .attr('id','input '+k)
+            this.SVGg.append('svg:circle')
+                .attr('cx',this.parameters.inputs.positions[k].x)
+                .attr('cy',this.parameters.inputs.positions[k].y)
+                .attr("r", 5)
+                .attr('class','input anchor')
+                .attr('id',k)
+                .style("z-index", 1)
         }
         for(let k in outputs){
             this.parameters.outputs.positions[k]={x:this.parameters.width,y:this.parameters.rounding+this.parameters.margin+(Number(k)+0.5)*this.parameters.heightPerItem}
             this.SVGg.append('circle')
-            .attr('cx',this.parameters.width)
-            .attr('cy',this.parameters.outputs.positions[k].y)
-            .attr("r", 5)
-            .attr('class','output anchor')
-            .attr('id','output '+k)
+                .attr('cx',this.parameters.width)
+                .attr('cy',this.parameters.outputs.positions[k].y)
+                .attr("r", 5)
+                .attr('class','output anchor')
+                .attr('id',k)
+                .style("z-index", 1)
         }
         this.SVGg.append("text")
             .attr("x",10)
@@ -91,16 +94,18 @@ class Node{
             }
         }
         for(let anchor of this.DOMelt.querySelectorAll('.anchor')){
+            const k=anchor.id
+            const anchortype=anchor.classList.contains("output")? "output" : "input"
+            this.parameters.anchorMap.set(anchor,{
+                type:anchortype,
+                positions:this.parameters[anchortype+"s"].positions[k]
+            })
             anchor.pilot=this
             anchor.handleMouseDown=(e)=>{
-                e.target.pilot.events.broadcast.startLinkDrawing.detail.msg={startingAnchor:e.target}
-                dispatchEvent(e.target.pilot.events.broadcast.startLinkDrawing)
-                e.target.pilot.events.broadcast.startLinkDrawing.detail.msg=""
+                dispatchEvent(e.target.pilot.events.broadcast.startLinkDrawing.call(e.target.pilot,e.target))
             }
             anchor.handleMouseUp=(e)=>{
-                e.target.pilot.events.broadcast.stopLinkDrawing.detail.msg={endingAnchor:e.target}
-                dispatchEvent(e.target.pilot.events.broadcast.stopLinkDrawing)
-                e.target.pilot.events.broadcast.stopLinkDrawing.detail.msg=""
+                dispatchEvent(e.target.pilot.events.broadcast.stopLinkDrawing.call(e.target.pilot,e.target))
             }
         }
         this.draw()
@@ -152,8 +157,8 @@ class Flow{
         this.events={broadcast:{},listen:{
             nodeMove(e){
             },
-            startLinkDrawing(e){this.addBuildingLink(e)},
-            stopLinkDrawing(e){}
+            startLinkDrawing(e){this.startBuildingLink(e)},
+            stopLinkDrawing(e){this.stopBuildingLink(e)}
         }}
         this.nodeSet=new Set()
         this.parameters={
@@ -181,23 +186,41 @@ class Flow{
                 .attr("class","flow field")
         }
     }
-    addBuildingLink(e){//e must be a startLinkDrawing event
-        /*startingPosition={
-            x:e.detail.emitter.position.x,
-            y:e.detail.emitter.position.y
-        }*/
+    startBuildingLink(e){
+        const anchorPos=e.detail.emitter.parameters.anchorMap.get(e.detail.msg.starter).positions
+        const nodePos=e.detail.emitter.parameters.position
+        const startingPos={
+            x:anchorPos.x+nodePos.x,
+            y:anchorPos.y+nodePos.y
+        }
+        this.buildingLink=d3.create("svg:g").attr('class','link').append('path').style('pointer-events','none')
+            .attr("d", `M ${startingPos.x} ${startingPos.y} L ${startingPos.x} ${startingPos.y}`)
+            .attr("class", "link")
+        this.buildingLink.startingAnchor=e.detail.msg.starter
+        this.buildingLink.startingNode=e.detail.emitter
+        this.field.node().appendChild(this.buildingLink.node())
         e.preventDefault()
         document.onmousemove=(e)=>{
             e.preventDefault()
-            console.log(e)
+            //console.log(e)
+            //console.log("M 0 0 L "+e.clientX+" "+e.clientY)
+            this.buildingLink.attr("d", `M ${startingPos.x} ${startingPos.y}
+                C ${startingPos.x+50} ${startingPos.y},
+                ${e.layerX-50} ${e.layerY},
+                ${e.layerX} ${e.layerY}`)
         }
         document.onmouseup=(e)=>{
             e.preventDefault();
+            if(!this.buildingLink.endingAnchor){
+                this.buildingLink.node().remove()
+            }
             document.onmousemove=null;
             document.onmouseup=null;
         }
-        console.log(this)
-        console.log(e)
+    }
+    stopBuildingLink(e){
+        this.buildingLink.endingAnchor=e.detail.msg.stopper
+        this.buildingLink.endingNode=e.detail.emitter
     }
 }
 
@@ -1139,8 +1162,8 @@ class App{
         )
         this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",this,this.menu))
         this.channel.register("mainFlow",new Flow("mainFlow",this,this.topContent[0]))
-        this.channel.register('teprou',new Node('teprou',[1,2,3],[6,4,2],this,this.channel.mainFlow))
-        this.channel.register('tefar', new Node('tefar',[1],[],this,this.channel.mainFlow,{x:180,y:10}))
+        this.channel.register('teprou',new Node('teprou',[{},{},{}],[{},{},{}],this,this.channel.mainFlow))
+        this.channel.register('tefar', new Node('tefar',[{}],[{}],this,this.channel.mainFlow,{x:180,y:10}))
     }
     foldTop(v){
         if(v){
