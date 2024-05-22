@@ -1,0 +1,14 @@
+{
+  "name": "attribrustor",
+  "version": "0.1.0",
+  "files": [
+    "attribrustor_bg.wasm",
+    "attribrustor.js",
+    "attribrustor.d.ts"
+  ],
+  "module": "attribrustor.js",
+  "types": "attribrustor.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
