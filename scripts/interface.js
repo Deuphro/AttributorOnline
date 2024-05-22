@@ -20,7 +20,8 @@ class Node{
             nodeMove:new CustomEvent("nodeMove",{detail:{msg:"",emitter:this}}),
             startLinkDrawing(anchor){return new CustomEvent("startLinkDrawing",{detail:{msg:{starter:anchor},emitter:this}})},
             stopLinkDrawing(anchor){return new CustomEvent("stopLinkDrawing",{detail:{msg:{stopper:anchor},emitter:this}})},
-            nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}})
+            nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}}),
+            nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this}})
         },listen:{
             nodeSelected(e){
                 if (e.detail.emitter.events.registrationName==this.events.registrationName) {
@@ -29,8 +30,6 @@ class Node{
                     }else{
                         this.SVGg.select('rect').node().focus()
                     }
-                } else {
-                    this.SVGg.select('rect').attr('class','node')
                 }
             }
         }}
@@ -46,7 +45,7 @@ class Node{
             inputs:{
                 positions:new Array(this.inputs.length)
             },
-            anchorMap:new WeakMap()
+            anchorMap:new Map()
         }
         this.SVGg=d3.create("svg:g").attr('class','nodeContainer')
         this.SVGg.append("rect")
@@ -145,6 +144,15 @@ class Node{
         this.SVGg.node().remove()
         this.destination.nodeSet.delete(this)
         dispatchEvent(this.events.broadcast.killed)
+        dispatchEvent(this.events.broadcast.nodeKilled)
+    }
+    static anchorAbsPos(anchor){
+        const anchorPos=anchor.pilot.parameters.anchorMap.get(anchor).positions
+        const nodePos=anchor.pilot.parameters.position
+        return {
+            x:anchorPos.x+nodePos.x,
+            y:anchorPos.y+nodePos.y
+        }
     }
 }
 
@@ -154,18 +162,23 @@ class Flow{
         this.origin=origin
         this.destination=destination
         this.container=CE('div',{className:`flow container ${title}`},[])
-        this.events={broadcast:{},listen:{
-            nodeMove(e){
-            },
+        this.events={broadcast:{
+            linkSelected(link){return new CustomEvent('linkSelected',{detail:{msg:link,emitter:this}})},
+            linkDeleted(link){return new CustomEvent('linkDeleted',{detail:{msg:link,emitter:this}})}
+        },listen:{
+            nodeMove(e){this.updateLinks()},
             startLinkDrawing(e){this.startBuildingLink(e)},
-            stopLinkDrawing(e){this.stopBuildingLink(e)}
+            stopLinkDrawing(e){this.stopBuildingLink(e)},
+            nodeKilled(e){this.updateLinks()},
+            linkSelected(e){}
         }}
         this.nodeSet=new Set()
+        this.linkList=[]
         this.parameters={
             field:{
                 drawn:false,
                 node:[],
-                links:{}
+                links:{stiffness:75}
             }
         }
         stylize(this.container,{
@@ -187,40 +200,75 @@ class Flow{
         }
     }
     startBuildingLink(e){
-        const anchorPos=e.detail.emitter.parameters.anchorMap.get(e.detail.msg.starter).positions
-        const nodePos=e.detail.emitter.parameters.position
-        const startingPos={
-            x:anchorPos.x+nodePos.x,
-            y:anchorPos.y+nodePos.y
-        }
-        this.buildingLink=d3.create("svg:g").attr('class','link').append('path').style('pointer-events','none')
+        const startingPos=Node.anchorAbsPos(e.detail.msg.starter)
+        this.linkList.push(d3.create("svg:g").attr('class','link').append('path').style('pointer-events','none')
             .attr("d", `M ${startingPos.x} ${startingPos.y} L ${startingPos.x} ${startingPos.y}`)
-            .attr("class", "link")
-        this.buildingLink.startingAnchor=e.detail.msg.starter
-        this.buildingLink.startingNode=e.detail.emitter
-        this.field.node().appendChild(this.buildingLink.node())
-        e.preventDefault()
+            .attr("class", "link"))
+        this.linkList.at(-1).startingAnchor=e.detail.msg.starter
+        this.linkList.at(-1).startingNode=e.detail.emitter
+        this.field.node().appendChild(this.linkList.at(-1).node())
+        const bezierSide=e.detail.emitter.parameters.anchorMap.get(e.detail.msg.starter).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
         document.onmousemove=(e)=>{
             e.preventDefault()
-            //console.log(e)
-            //console.log("M 0 0 L "+e.clientX+" "+e.clientY)
-            this.buildingLink.attr("d", `M ${startingPos.x} ${startingPos.y}
-                C ${startingPos.x+50} ${startingPos.y},
-                ${e.layerX-50} ${e.layerY},
+            this.linkList.at(-1).attr("d", `M ${startingPos.x} ${startingPos.y}
+                C ${startingPos.x+bezierSide} ${startingPos.y},
+                ${e.layerX-bezierSide} ${e.layerY},
                 ${e.layerX} ${e.layerY}`)
         }
         document.onmouseup=(e)=>{
             e.preventDefault();
-            if(!this.buildingLink.endingAnchor){
-                this.buildingLink.node().remove()
+            if(!this.linkList.at(-1).endingAnchor){
+                this.linkList.at(-1).node().remove()
+                this.linkList.pop()
+            }else{
+                const endingPos=Node.anchorAbsPos(this.linkList.at(-1).endingAnchor)
+                this.linkList.at(-1).attr("d", `M ${startingPos.x} ${startingPos.y}
+                    C ${startingPos.x+bezierSide} ${startingPos.y},
+                    ${endingPos.x-bezierSide} ${endingPos.y},
+                    ${endingPos.x} ${endingPos.y}`)
+                this.linkList.at(-1).style('pointer-events','all')
+                this.linkList.at(-1).attr("id",this.linkList.length-1)
+                this.linkList.at(-1).attr("tabindex",0)
+                this.linkList.at(-1).lower()
+                this.linkList.at(-1).node().pilot=this
+                this.linkList.at(-1).node().handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.linkSelected.call(e.target.pilot,e.target))}
+                this.linkList.at(-1).node().handleKeyDown=(e)=>{
+                    if(e.key==="Delete"){
+                        e.target.pilot.deleteLink(e.target.id)
+                    }
+                }
             }
             document.onmousemove=null;
             document.onmouseup=null;
         }
     }
+    deleteLink(k){
+        this.linkList[k].node().remove()
+        this.linkList.splice(k,1)
+        dispatchEvent(this.events.broadcast.linkDeleted(this.linkList[k]))
+    }
     stopBuildingLink(e){
-        this.buildingLink.endingAnchor=e.detail.msg.stopper
-        this.buildingLink.endingNode=e.detail.emitter
+        if(this.linkList.at(-1).startingNode.parameters.anchorMap.get(this.linkList.at(-1).startingAnchor).type!=
+            e.detail.emitter.parameters.anchorMap.get(e.detail.msg.stopper).type){
+            this.linkList.at(-1).endingAnchor=e.detail.msg.stopper
+            this.linkList.at(-1).endingNode=e.detail.emitter
+        }
+    }
+    updateLinks(){
+        for(let k=0;k<this.linkList.length;k++){
+            if(this.nodeSet.has(this.linkList[k].startingNode) && this.nodeSet.has(this.linkList[k].endingNode)){
+                const startingPos=Node.anchorAbsPos(this.linkList[k].startingAnchor)
+                const endingPos=Node.anchorAbsPos(this.linkList[k].endingAnchor)
+                const bezierSide=this.linkList[k].startingNode.parameters.anchorMap.get(this.linkList[k].startingAnchor).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
+                this.linkList[k].attr("d", `M ${startingPos.x} ${startingPos.y}
+                C ${startingPos.x+bezierSide} ${startingPos.y},
+                ${endingPos.x-bezierSide} ${endingPos.y},
+                ${endingPos.x} ${endingPos.y}`)
+            }else{
+                this.deleteLink(k)
+                k--
+            }
+        }
     }
 }
 
@@ -1064,8 +1112,6 @@ class Accordion{
 
 class App{
     constructor(){
-        this.testMap=new Map()
-        this.testMap.set({prout:"zob"},{taille:78})
         this.channel=new Channel(this)
         this.parameters={
             topContent:{
@@ -1098,7 +1144,14 @@ class App{
                     e.target.pilot.channel.register("lata",new Dialog("lata",e.target.pilot,e.target.pilot.midCentralContent))
                     e.target.pilot.yoyo=new Plot2D([],"yoyo",e.target.pilot,e.target.pilot.channel["lata"].DOMelt.content)
                 }},[" Please click here for a graph test"]),
-                CE('button',{pilot:this,handleClick:(e)=>{console.log(e.target.pilot)}},["Copy stability tests"])
+                CE('button',{pilot:this,handleClick:(e)=>{
+                    const title=Date.now().toString()
+                    let outputs=[]
+                    let inputs=[]
+                    for(let k=0;k<Math.round(Math.random()*5);k++){outputs.push({})}
+                    for(let k=0;k<Math.round(Math.random()*5);k++){inputs.push({})}
+                    e.target.pilot.channel.register(title, new Node(title,inputs,outputs,e.target.pilot,e.target.pilot.channel.mainFlow,{x:180,y:10}))
+                }},["Pop a random Node"])
             ])
         ]
         this.midCentralContent=CE('div',{className:"vertical center content"},["center content"])

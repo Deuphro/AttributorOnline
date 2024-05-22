@@ -254,11 +254,7 @@ div{
     stroke-width: 3px;
     transition:300ms
 }
-.node.nodeSelected{
-    stroke-width: 2px;
-    stroke:violet;
-    box-shadow: 0px 0px 20px 1px greenyellow
-}
+
 .node:hover{
     cursor:move;
     fill-opacity: 75%;
@@ -289,4 +285,19 @@ div{
     stroke: grey;
     stroke-width: 2px;
     fill: none;
+    opacity:50%;
+}
+
+.link:hover{
+    stroke-width: 3px;
+    transition: 300ms;
+    cursor:crosshair;
+    opacity:75%;
+}
+
+.link:focus{
+    outline:none;
+    stroke:tomato;
+    stroke-width: 3px;
+    opacity:75%;
 }
