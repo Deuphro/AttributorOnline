@@ -21,7 +21,7 @@ class Node{
             startLinkDrawing(anchor){return new CustomEvent("startLinkDrawing",{detail:{msg:{starter:anchor},emitter:this}})},
             stopLinkDrawing(anchor){return new CustomEvent("stopLinkDrawing",{detail:{msg:{stopper:anchor},emitter:this}})},
             nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}}),
-            nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this}})
+            nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this,undoStack:true}})
         },listen:{
             nodeSelected(e){
                 if (e.detail.emitter.events.registrationName==this.events.registrationName) {
@@ -164,7 +164,7 @@ class Flow{
         this.container=CE('div',{className:`flow container ${title}`},[])
         this.events={broadcast:{
             linkSelected(link){return new CustomEvent('linkSelected',{detail:{msg:link,emitter:this}})},
-            linkDeleted(link){return new CustomEvent('linkDeleted',{detail:{msg:link,emitter:this}})}
+            linkDeleted(link){return new CustomEvent('linkDeleted',{detail:{msg:link,emitter:this,undoStack:true}})}
         },listen:{
             nodeMove(e){this.updateLinks()},
             startLinkDrawing(e){this.startBuildingLink(e)},
@@ -207,7 +207,7 @@ class Flow{
         this.linkList.at(-1).startingAnchor=e.detail.msg.starter
         this.linkList.at(-1).startingNode=e.detail.emitter
         this.field.node().appendChild(this.linkList.at(-1).node())
-        const bezierSide=e.detail.emitter.parameters.anchorMap.get(e.detail.msg.starter).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
+        let bezierSide=e.detail.emitter.parameters.anchorMap.get(e.detail.msg.starter).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
         document.onmousemove=(e)=>{
             e.preventDefault()
             this.linkList.at(-1).attr("d", `M ${startingPos.x} ${startingPos.y}
@@ -234,7 +234,7 @@ class Flow{
                 this.linkList.at(-1).node().handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.linkSelected.call(e.target.pilot,e.target))}
                 this.linkList.at(-1).node().handleKeyDown=(e)=>{
                     if(e.key==="Delete"){
-                        e.target.pilot.deleteLink(e.target.id)
+                        e.target.pilot.deleteLink(e.target)
                     }
                 }
             }
@@ -243,6 +243,9 @@ class Flow{
         }
     }
     deleteLink(k){
+        if(typeof k !="number"){
+            k=this.linkList.findIndex((e)=>{return e.node()===k})
+        }
         this.linkList[k].node().remove()
         this.linkList.splice(k,1)
         dispatchEvent(this.events.broadcast.linkDeleted(this.linkList[k]))
@@ -259,7 +262,8 @@ class Flow{
             if(this.nodeSet.has(this.linkList[k].startingNode) && this.nodeSet.has(this.linkList[k].endingNode)){
                 const startingPos=Node.anchorAbsPos(this.linkList[k].startingAnchor)
                 const endingPos=Node.anchorAbsPos(this.linkList[k].endingAnchor)
-                const bezierSide=this.linkList[k].startingNode.parameters.anchorMap.get(this.linkList[k].startingAnchor).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
+                let bezierSide=this.linkList[k].startingNode.parameters.anchorMap.get(this.linkList[k].startingAnchor).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
+                
                 this.linkList[k].attr("d", `M ${startingPos.x} ${startingPos.y}
                 C ${startingPos.x+bezierSide} ${startingPos.y},
                 ${endingPos.x-bezierSide} ${endingPos.y},
@@ -335,7 +339,7 @@ class Channel{
             caster.events.broadcast={}
         }
         caster.events.broadcast['poppedUp']=new CustomEvent("poppedUp",{detail:{msg:"default registration message",emitter:caster}})
-        caster.events.broadcast['killed']=new CustomEvent("killed",{detail:{msg:"default killed message",emitter:caster}})
+        caster.events.broadcast['killed']=new CustomEvent("killed",{detail:{msg:"default killed message",emitter:caster,stackUndo:true}})
         caster.events.registrationName=name
         const broadcasts=caster.events.broadcast
         Object.values(broadcasts).forEach((e)=>{

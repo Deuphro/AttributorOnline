@@ -38,7 +38,8 @@ pub fn bench(n: u64) -> u64{
 
 //on veut énumérer les coordonnées d'une tableau nd
 #[wasm_bindgen]
-pub fn sieve(n: usize) -> Vec<f64> {
-    let a = vec![0.0; n];
-    a
+pub fn sieve() -> String {
+    let a="Hello World !";
+    println!("{}",a);
+    a.to_string()
 }

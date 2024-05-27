@@ -130,7 +130,7 @@ function DC(obj,visited=new WeakMap()){
     return clone
 }
 
-function serializeHTML(elt){
+function serializeHTML(elt){//NOT FINISHED
     let dummyObj={}
     dummyObj.tag=elt.tagName
     dummyObj.attributes={}
@@ -144,4 +144,25 @@ function serializeHTML(elt){
     return JSON.stringify(dummyObj)
 }
 
-export {$,CE,stylize,fakeData,DC,serializeHTML}
+function requestPOST(url,data){
+    const options={
+        method:"POST",
+        headers:{"Content-Type":"application/json",},
+        body:data//JSON.stringify(data)
+    }
+    fetch(url,options)
+        .then(response=>{
+            if(!response.ok){
+                throw new Error('HTTP request error')
+            }
+            return response.text()
+        })
+        .then(data=>{
+            console.log("HTTP POST data: ", data)
+        })
+        .catch(error=>{
+            console.error("HTTP POST error: ", error)
+        })
+}
+
+export {$,CE,stylize,fakeData,DC,serializeHTML,requestPOST}
