@@ -1,4 +1,4 @@
-import {$,CE,stylize,fakeData,DC,serializeHTML} from "./util.js"
+import {$,CE,stylize,fakeData,DC,requestPOST} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave} from "./formats.js"
@@ -289,6 +289,7 @@ class MainMenu{
             },
             listen:{
             importDelimitedText(e){origin.loadDelimitedText()},
+            msConvert(e){origin.msConvert()},
             undo(e){origin.restoreLastState()}
         }}
         this.dfs4objects(configObject,this.container,0)
@@ -1400,6 +1401,63 @@ class App{
             )
         setDeepResizeObs(this.main,this.resizeObserver)
         this.mutObserver.observe(this.main,{attributes:true,childList:true,attributeFilter:["style"],attributeOldValue:true,subtree:true})
+    }
+    msConvert(){
+        let message="Server is ready"
+        const sendToServer=(fileList)=>{
+            let fileNumber=0
+            for(let file of fileList){
+                fileNumber++
+                requestPOST('https://attributor.fr/uploads',file,(data)=>{
+                    for(let item of senderContainer.children[1].children){
+                        if(item.textContent==file.name){
+                            let textFileName=file.name.replace('.raw','.txt')
+                            item.appendChild(
+                                CE('button',{style:{"margin-left":"10px"},
+                                handleClick:(e)=>{
+                                    window.location.href=`https://attributor.fr/uploads/outputs/${textFileName}`
+                                }
+                                },["Download "+textFileName])
+                            )
+                            fileNumber--
+                            if(fileNumber==0){
+                                senderContainer.lastChild.textContent="Files ready to download"
+                            }
+                        }
+                    }
+                })
+            }
+        }
+        let sendList=CE('div',{style:{height:"100%"}},["Files to be sent to server:"])
+        const addFileSendList=(e)=>{
+            sendList.replaceChildren()
+            for(let file of e.target.files){
+                sendList.appendChild(CE('div',{style:{"margin-bottom":"1px"}},[file.name]))
+            }
+        }
+        let msConvertDialog=new Dialog("Send .raw to a server for conversion",this,this.main)
+        let loaderElement=CE('input',{type:"file",multiple:true,accept:".raw",handleChange:(e)=>{addFileSendList(e)}},["Select a raw file"])
+        let sendCommand=CE('div',{},[
+            CE('button',{handleClick:(e)=>{
+                sendToServer(loaderElement.files)
+                e.target.disabled=true
+                senderContainer.lastChild.textContent="Files sent to server, waiting for conversion..."
+            }},["Send to Server"])
+        ])
+        let senderContainer=CE('div',{
+            style:{
+                width:"100%",
+                height:"100%",
+                display:"grid",
+                "grid-template-rows":"auto 1fr auto auto"},
+                "justify-items": "stretch",
+                "align-items": "stretch"
+            },[loaderElement,
+                sendList,
+                sendCommand,
+                CE('div',{style:{"text-align":"center"}},[message])
+            ])
+        msConvertDialog.DOMelt.content.appendChild(senderContainer)
     }
     loadDelimitedText(){
         let DelimitedTextLoader=new Dialog("Load delimited text file",this,this.main)

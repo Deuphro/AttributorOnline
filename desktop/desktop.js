@@ -14,7 +14,7 @@ function createWindow() {
   });
 
   // Charge le fichier index.html.
-  mainWindow.loadFile('index.html');
+  mainWindow.loadFile('../index.html');
   mainWindow.setMenu(null)
 
   // Ouvre les DevTools.

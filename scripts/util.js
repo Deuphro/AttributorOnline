@@ -144,21 +144,33 @@ function serializeHTML(elt){//NOT FINISHED
     return JSON.stringify(dummyObj)
 }
 
-function requestPOST(url,data){
+function requestPOST(url,data,callback=()=>{}){
+    let body=data
+    let headers={}
+    if(data instanceof File){
+        const formData=new FormData()
+        formData.append('file',data)
+        body=formData
+    }else{
+        headers['Content-Type'] = 'application/json'
+        body = JSON.stringify(data)
+    }
     const options={
         method:"POST",
-        headers:{"Content-Type":"application/json",},
-        body:data//JSON.stringify(data)
+        headers:headers,
+        body:body
     }
     fetch(url,options)
         .then(response=>{
             if(!response.ok){
                 throw new Error('HTTP request error')
             }
+            console.log("the response :",response)
             return response.text()
         })
         .then(data=>{
-            console.log("HTTP POST data: ", data)
+            //console.log("HTTP POST data: ", data)
+            callback(data)
         })
         .catch(error=>{
             console.error("HTTP POST error: ", error)

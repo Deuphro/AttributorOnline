@@ -1,20 +1,12 @@
 {
-  "name": "attributoronline",
+  "name": "attributorbackend",
   "version": "1.0.0",
-  "description": "",
-  "main": "desktop.js",
+  "description": "the server needed for use of dll and everything that can't be handled by the front end part",
+  "main": "index.js",
   "scripts": {
-    "start": "electron desktop.js",
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Deuphro/AttributorOnline.git"
-  },
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/Deuphro/AttributorOnline/issues"
-  },
-  "homepage": "https://github.com/Deuphro/AttributorOnline#readme"
+  "author": "FROD",
+  "license": "ISC"
 }

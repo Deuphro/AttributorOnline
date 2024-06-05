@@ -1,0 +1,20 @@
+{
+  "name": "attributoronline",
+  "version": "1.0.0",
+  "description": "",
+  "main": "desktop.js",
+  "scripts": {
+    "start": "electron desktop.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Deuphro/AttributorOnline.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Deuphro/AttributorOnline/issues"
+  },
+  "homepage": "https://github.com/Deuphro/AttributorOnline#readme"
+}

@@ -10,10 +10,10 @@ const defaultMenu={
         },
         Data:{
             Load:{
-                JSON:(e)=>{},
+                //JSON:(e)=>{},
                 "Delimited Text":(e)=>{dispatchEvent(new CustomEvent('importDelimitedText',{detail:{msg:""}}))},
                 hr:{},
-                msConverter:{}
+                'Use msConvert':(e)=>{dispatchEvent(new CustomEvent('msConvert',{detail:{msg:""}}))}
             },
             Save:{
                 JSON:{},
