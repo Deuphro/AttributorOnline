@@ -8,12 +8,14 @@ const fs=require("fs")
 
 // Configuration du serveur HTTP
 const hostname = '0.0.0.0';
-const port = 443;
+const port = 8080;
+const toolsPort=3001
+/*
 const SSLoptions={
     key:fs.readFileSync('/etc/letsencrypt/live/attributor.fr/privkey.pem'),
     cert:fs.readFileSync('/etc/letsencrypt/live/attributor.fr/fullchain.pem')
 }
-
+*/
 function splitBuffer(buffer, boundary) {
     const parts = [];
     let start = buffer.indexOf(boundary) + boundary.length + 2; // Skip the initial CRLF
@@ -54,6 +56,7 @@ function getMimeType(filePath) {
 
 function serveStaticFileLimited(req, res) {
     const filePathMap = {
+        '/TOOLS/index.html':'TOOLS/index.html',
         '/': 'index.html',
         '/styles/main.css': 'styles/main.css',
         '/scripts/main.js': 'scripts/main.js',
@@ -98,8 +101,8 @@ function serveStaticFile(req, res) {
     }
 }
 
-// Création du serveur HTTP
-const server = https.createServer(SSLoptions,(req, res) => {
+// Création du serveur HTTP principal
+const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*'); // Permettre les requêtes de n'importe quelle origine
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -195,11 +198,60 @@ const server = https.createServer(SSLoptions,(req, res) => {
     }
 });
 
-// Démarre le serveur
-server.listen(port, hostname, () => {
-    console.log(`Server started at https://${hostname}:${port}/`);
+// Configuration du serveur pour tools.attributor.fr
+// TOOLS est la racine web (ne PAS l’exposer dans l’URL)
+
+const toolsRoot = path.join(__dirname, 'TOOLS');
+
+function getClientIp(req) {
+    const forwarded = req.headers['x-forwarded-for'];
+    return forwarded ? forwarded.split(',')[0].trim() : req.socket.remoteAddress;
+}
+
+const toolsServer = http.createServer((req, res) => {
+    if (req.method !== 'GET') {
+        res.writeHead(405);
+        return res.end();
+    }
+
+    let urlPath = req.url === '/' ? '/index.html' : req.url;
+    const safePath = path.normalize(urlPath).replace(/^(\.\.[\/\\])+/, '');
+    const filePath = path.join(toolsRoot, safePath);
+
+    if (!filePath.startsWith(toolsRoot)) {
+        res.writeHead(403);
+        return res.end();
+    }
+
+    fs.readFile(filePath, (err, data) => {
+        const clientIp = getClientIp(req);
+
+        if (err) {
+            console.log(`[TOOLS] 404 ${urlPath} ← ${clientIp}`);
+            res.writeHead(404);
+            return res.end('Not found');
+        }
+
+        console.log(`[TOOLS] 200 ${urlPath} ← ${clientIp}`);
+
+        res.writeHead(200, {
+            'Content-Type': getMimeType(filePath)
+        });
+        res.end(data);
+    });
 });
 
+// Démarre le serveur pour tools.attributor.fr
+toolsServer.listen(toolsPort, hostname, () => {
+    console.log(`Tools server started at http://${hostname}:${toolsPort}/`);
+});
+
+// Démarre le serveur
+server.listen(port, hostname, () => {
+    console.log(`Server started at http://${hostname}:${port}/`);
+});
+
+/*
 //http redirection by creating another server
 const httpServer=http.createServer((req,res)=>{
     res.writeHead(301,{"Location":`https://${req.headers.host}${req.url}`})
@@ -209,3 +261,4 @@ const httpServer=http.createServer((req,res)=>{
 httpServer.listen(80,hostname,()=>{
     console.log('HTTP Server is running on port 80 and redirecting to HTTPS')
 })
+*/

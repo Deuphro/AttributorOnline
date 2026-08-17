@@ -1,4 +1,4 @@
-import {$,CE,stylize,fakeData,DC,requestPOST} from "./util.js"
+import {$,CE,stylize,fakeData,DC,requestPOST,serializeApp,SingleJsonFile, deserializeApp} from "./util.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave} from "./formats.js"
@@ -7,6 +7,7 @@ window.raie=new Wave(5)
 window.eiar=new Wave(7)
 
 class Node{
+    #status;
     constructor(title,inputs, outputs,origin,destinationFlow,position={x:10,y:10}){
         this.title=title
         this.inputs=inputs
@@ -21,7 +22,7 @@ class Node{
             startLinkDrawing(anchor){return new CustomEvent("startLinkDrawing",{detail:{msg:{starter:anchor},emitter:this}})},
             stopLinkDrawing(anchor){return new CustomEvent("stopLinkDrawing",{detail:{msg:{stopper:anchor},emitter:this}})},
             nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}}),
-            nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this,undoStack:true}})
+            nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this,undoStack:true}}),
         },listen:{
             nodeSelected(e){
                 if (e.detail.emitter.events.registrationName==this.events.registrationName) {
@@ -87,6 +88,7 @@ class Node{
         this.DOMelt.querySelector('rect').pilot=this
         this.DOMelt.querySelector('rect').handleClick=(e)=>globalThis.dispatchEvent(e.target.pilot.events.broadcast.nodeSelected)
         this.DOMelt.querySelector('rect').handleMouseDown=(e)=>e.target.pilot.drag(e)
+        this.DOMelt.querySelector('rect').handleContextmenu=(e)=>{console.log(e)}
         this.DOMelt.querySelector('rect').handleKeyDown=(e)=>{
             if(e.key==="Delete"){
                 e.target.pilot.suicide()
@@ -107,6 +109,7 @@ class Node{
                 dispatchEvent(e.target.pilot.events.broadcast.stopLinkDrawing.call(e.target.pilot,e.target))
             }
         }
+        this.#status='floating'
         this.draw()
     }
     draw(){
@@ -140,6 +143,19 @@ class Node{
             document.onmouseup=null;
         }
     }
+    set status(value){
+        const possible=['resolved','error','pending','floating']
+        this.DOMelt.querySelector("rect").classList.remove(...possible)
+        if(possible.includes(value)){
+            this.DOMelt.querySelector("rect").classList.add(value)
+        }else{
+            value='floating'
+        }
+        this.#status=value
+    }
+    get status(){
+        return this.#status
+    }
     suicide(){
         this.SVGg.node().remove()
         this.destination.nodeSet.delete(this)
@@ -153,6 +169,47 @@ class Node{
             x:anchorPos.x+nodePos.x,
             y:anchorPos.y+nodePos.y
         }
+    }
+    async startResolve(){//default for testing
+        if(this.status==='resolved') return
+        this.status='pending'
+        await new Promise(resolve=>{setTimeout(()=>{
+            console.log(this.title)
+            if(this.inputs.length){
+                const protoOutput=this.computeOutputs()
+                for(let k in this.outputs){
+                    this.outputs[k]=[...protoOutput]
+                }
+            }
+            this.status='resolved'
+            resolve()
+            },
+            1000)})
+    }
+    computeOutputs(){
+        let protoOutput=[]
+        for(let input of this.inputs){
+            console.log('pour cet input :',input)
+            for(let entry of input.entries()){
+                console.log('il y a cette entrée :',entry)
+                for(let values of entry[1]){
+                    console.log('qui contient ces valeurs :',values)
+                    if(!Array.isArray(values)){
+                        let convert=[]
+                        for(let k in values){
+                            values[k]=values[k]?values[k]:0
+                            convert.push(values[k])
+                        }
+                        values=convert
+                    }
+                    for(let value of values){
+                        console.log('et pour cette valeur ',value,' on incrémente et la valeur et le tableau')
+                        protoOutput.push(value+1)
+                    }
+                }
+            }
+        }
+        return protoOutput
     }
 }
 
@@ -170,7 +227,7 @@ class Flow{
             startLinkDrawing(e){this.startBuildingLink(e)},
             stopLinkDrawing(e){this.stopBuildingLink(e)},
             nodeKilled(e){this.updateLinks()},
-            linkSelected(e){}
+            linkSelected(e){},
         }}
         this.nodeSet=new Set()
         this.linkList=[]
@@ -210,10 +267,13 @@ class Flow{
         let bezierSide=e.detail.emitter.parameters.anchorMap.get(e.detail.msg.starter).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
         document.onmousemove=(e)=>{
             e.preventDefault()
+            const rect = this.field.node().getBoundingClientRect()
+            const x = e.clientX - rect.left
+            const y = e.clientY - rect.top
             this.linkList.at(-1).attr("d", `M ${startingPos.x} ${startingPos.y}
                 C ${startingPos.x+bezierSide} ${startingPos.y},
-                ${e.layerX-bezierSide} ${e.layerY},
-                ${e.layerX} ${e.layerY}`)
+                ${x-bezierSide} ${y},
+                ${x} ${y}`)
         }
         document.onmouseup=(e)=>{
             e.preventDefault();
@@ -226,7 +286,7 @@ class Flow{
                     C ${startingPos.x+bezierSide} ${startingPos.y},
                     ${endingPos.x-bezierSide} ${endingPos.y},
                     ${endingPos.x} ${endingPos.y}`)
-                this.linkList.at(-1).style('pointer-events','all')
+                this.linkList.at(-1).style('pointer-events','stroke')
                 this.linkList.at(-1).attr("id",this.linkList.length-1)
                 this.linkList.at(-1).attr("tabindex",0)
                 this.linkList.at(-1).lower()
@@ -246,6 +306,7 @@ class Flow{
         if(typeof k !="number"){
             k=this.linkList.findIndex((e)=>{return e.node()===k})
         }
+        this.forwardStatus(this.linkList.at(k).outputNode,'floating')
         this.linkList[k].node().remove()
         this.linkList.splice(k,1)
         dispatchEvent(this.events.broadcast.linkDeleted(this.linkList[k]))
@@ -255,6 +316,18 @@ class Flow{
             e.detail.emitter.parameters.anchorMap.get(e.detail.msg.stopper).type){
             this.linkList.at(-1).endingAnchor=e.detail.msg.stopper
             this.linkList.at(-1).endingNode=e.detail.emitter
+            if(this.linkList.at(-1).endingAnchor.classList.contains('input')){
+                this.linkList.at(-1).inputNode=this.linkList.at(-1).startingNode
+                this.linkList.at(-1).outputNode=this.linkList.at(-1).endingNode
+                this.linkList.at(-1).inputAnchor=this.linkList.at(-1).startingAnchor
+                this.linkList.at(-1).outputAnchor=this.linkList.at(-1).endingAnchor
+            }else{
+                this.linkList.at(-1).inputNode=this.linkList.at(-1).endingNode
+                this.linkList.at(-1).outputNode=this.linkList.at(-1).startingNode
+                this.linkList.at(-1).inputAnchor=this.linkList.at(-1).endingAnchor
+                this.linkList.at(-1).outputAnchor=this.linkList.at(-1).startingAnchor
+            }
+            this.forwardStatus(this.linkList.at(-1).outputNode,'floating')
         }
     }
     updateLinks(){
@@ -263,7 +336,6 @@ class Flow{
                 const startingPos=Node.anchorAbsPos(this.linkList[k].startingAnchor)
                 const endingPos=Node.anchorAbsPos(this.linkList[k].endingAnchor)
                 let bezierSide=this.linkList[k].startingNode.parameters.anchorMap.get(this.linkList[k].startingAnchor).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
-                
                 this.linkList[k].attr("d", `M ${startingPos.x} ${startingPos.y}
                 C ${startingPos.x+bezierSide} ${startingPos.y},
                 ${endingPos.x-bezierSide} ${endingPos.y},
@@ -274,14 +346,156 @@ class Flow{
             }
         }
     }
+    get leaves(){
+        let res=new Set
+        this.nodeSet.forEach((node)=>{
+            let isLeave=true//!!node.inputs.length
+            for (const link of this.linkList){
+                if(node==link.inputNode){
+                    isLeave=false
+                    break
+                }
+            }
+            if(isLeave){
+                res.add(node)
+            }
+        })
+        return res
+    }
+    parentsMap(node){
+        let parents=new Map()
+        for(let link of this.linkList){
+            if(link.outputNode==node){
+                const parent=link.inputNode
+                if(!parents.has(parent)){
+                    parents.set(parent,[])
+                }
+                parents.get(parent).push({
+                    inputIndex:link.inputAnchor.id,
+                    outputIndex:link.outputAnchor.id
+                })
+            }
+        }
+        return parents
+    }
+    childrenMap(node){
+        let children=new Map()
+        for(let link of this.linkList){
+            if(link.inputNode==node){
+                const child=link.outputNode
+                if(!children.has(child)){
+                    children.set(child,[])
+                }
+                children.get(child).push({
+                    inputIndex:link.inputAnchor.id,
+                    outputIndex:link.outputAnchor.id
+                })
+            }
+        }
+        return children
+    }
+    async parentSynapse(node,parentsMap){//download outputs into inputs for each link extracted in parentMap
+        for(let k in node.inputs){
+            node.inputs[k]=new Map()
+        }
+        await new Promise(resolve=>{
+            for(let parent of parentsMap){
+                for(let pair of parent[1]){
+                    if(!node.inputs[pair.outputIndex].has(parent[0])){
+                        node.inputs[pair.outputIndex].set(parent[0],[])
+                    }
+                    node.inputs[pair.outputIndex].get(parent[0]).push(parent[0].outputs[pair.inputIndex])
+                }
+            }
+            resolve()
+        })
+    }
+    async resolveNode(node){
+        const parentsMap=this.parentsMap(node)
+        await Promise.all(parentsMap.keys().toArray().map(parent=>this.resolveNode(parent)))
+        await this.parentSynapse(node,parentsMap)
+        await node.startResolve()
+    }
+    async resolveFlow(){
+        await Promise.all(this.leaves.keys().toArray().map(leaf=>this.resolveNode(leaf)))
+    }
+    forwardStatus(node, status){
+        this.childrenMap(node).keys().toArray().map(child=>this.forwardStatus(child,status))
+        node.status=status
+    }
 }
 
-class MainMenu{
+class Menu{
     constructor(configObject,title,origin,destination){
+        //console.log(destination)
         this.title=title
         this.origin=origin
         this.destination=destination
         this.container=CE('nav',{className:`menu container ${title}`},[])
+        this.events={broadcast:{},listen:{}}
+        this.dfs(configObject,this.container,0)
+        this.draw()
+        window.addEventListener('click',(e)=>{
+            if(!e.target.closest('.menu .container')){
+                this.container.querySelectorAll('.parent.open').forEach(elt=>elt.classList.remove('open'))
+            }
+        })
+    }
+    dfs(object,DOMelt,rank){
+        if(!Object.keys(object).length){
+            return
+        }
+        const category=(rank==0 ? "menu" :"child")
+        DOMelt.appendChild(CE('div',{className:category},[]))//ul
+        let protoDOMelt
+        rank++
+        for (let k of Object.keys(object)){
+            if(k=='hr'){
+                protoDOMelt=CE('hr',{},[])
+            } else {
+                const isAction=typeof object[k]=='function'
+                const closeSelfAndChildren=(element)=>{
+                    element.classList.remove('open')
+                    for(const child of element.children){
+                        closeSelfAndChildren(child)
+                    }
+                }
+                protoDOMelt=
+                CE('div',{className:"parent",tabIndex:0,
+                    handleClick:(e)=>{
+                        e.stopPropagation()
+                        if(isAction){
+                            object[k]()
+                            this.container.querySelectorAll('.parent.open').forEach(elt=>elt.classList.remove('open'))
+                        }else{
+                            for(const sibling of e.target.parentNode.children){
+                                if(sibling!=e.target){
+                                    closeSelfAndChildren(sibling)
+                                }
+                            }
+                            e.target.classList.toggle('open')
+                        }
+                    },
+                }
+            ,[k+(Object.keys(object[k]).length==0 || rank<2?"":"..."),])
+            }
+            DOMelt.lastChild.append(protoDOMelt)
+            this.dfs(object[k],protoDOMelt,rank)
+        }
+    }
+    draw(){
+        if (!$(`.${this.title}.menu.container`)){
+            this.destination.appendChild(this.container);
+        }else{
+            this.container.remove()
+            this.destination.appendChild(this.container);
+        }
+    }
+}
+
+class MainMenu extends Menu{
+    constructor(configObject,title,origin,destination){
+        super(configObject,title,origin,destination)
         this.events={
             broadcast:{
                 poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:this}}),
@@ -292,37 +506,6 @@ class MainMenu{
             msConvert(e){origin.msConvert()},
             undo(e){origin.restoreLastState()}
         }}
-        this.dfs4objects(configObject,this.container,0)
-        this.draw()
-    }
-    dfs4objects(object,html,c){
-        if(!Object.keys(object).length){
-            return
-        }
-        const category=(c==0 ? "menu" :"child")
-        html.appendChild(CE('div',{className:category},[]))//ul
-        let achteyheymel
-        c++
-        for (let k of Object.keys(object)){
-            if(k=='hr'){
-                achteyheymel=CE('hr',{},[])
-            } else {
-                achteyheymel=
-                CE('div',{className:"parent",handleClick:typeof object[k] =="function"? object[k]: null},[
-                    k+(Object.keys(object[k]).length==0 || c<2?"":"..."),
-                ])
-            }
-            html.lastChild.append(achteyheymel)
-            this.dfs4objects(object[k],achteyheymel,c)
-        }
-    }
-    draw(){
-        if (!$(`.${this.title}.menu.container`)){
-            this.destination.appendChild(this.container);
-        }else{
-            this.container.remove()
-            this.destination.appendChild(this.container);
-        }
     }
 }
 
@@ -1121,7 +1304,7 @@ class App{
         this.parameters={
             topContent:{
                 folded: false,
-                height:100,
+                height:125,
             },
             botContent:{
                 folded: false,
@@ -1153,13 +1336,18 @@ class App{
                     const title=Date.now().toString()
                     let outputs=[]
                     let inputs=[]
-                    for(let k=0;k<Math.round(Math.random()*5);k++){outputs.push({})}
-                    for(let k=0;k<Math.round(Math.random()*5);k++){inputs.push({})}
+                    for(let k=0;k<Math.round(Math.random()*5);k++){outputs.push([0])}
+                    for(let k=0;k<Math.round(Math.random()*5);k++){inputs.push([0])}
                     e.target.pilot.channel.register(title, new Node(title,inputs,outputs,e.target.pilot,e.target.pilot.channel.mainFlow,{x:180,y:10}))
-                }},["Pop a random Node"])
+                }},["Pop a random Node"]),
+                CE('button',{pilot:this,handleClick:(e)=>{
+                    this.channel.mainFlow.resolveFlow()
+                }},["Resolve the main flow"])
             ])
         ]
-        this.midCentralContent=CE('div',{className:"vertical center content"},["center content"])
+        this.midCentralContent=CE('div',{className:"vertical center content"},[
+            "center content"
+        ])
         this.midContent=[
             CE('div',{id:"left",className:"vertical left panel"},[
                 CE('div',{className:"vertical left content"},["left content"])
@@ -1220,8 +1408,9 @@ class App{
         )
         this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",this,this.menu))
         this.channel.register("mainFlow",new Flow("mainFlow",this,this.topContent[0]))
-        this.channel.register('teprou',new Node('teprou',[{},{},{}],[{},{},{}],this,this.channel.mainFlow))
-        this.channel.register('tefar', new Node('tefar',[{}],[{}],this,this.channel.mainFlow,{x:180,y:10}))
+        this.channel.register('Node with no inputs',new Node('Node with no inputs',[],[[0],[0],[0]],this,this.channel.mainFlow))
+        this.channel.register('Filter node', new Node('Filter node',[{}],[{}],this,this.channel.mainFlow,{x:200,y:10}))
+        this.channel.register('Display node', new Node('Display node',[{}],[],this,this.channel.mainFlow,{x:400,y:10}))
     }
     foldTop(v){
         if(v){
@@ -1354,6 +1543,9 @@ class App{
         this.main.addEventListener('blur',(e)=>{
             if(e.target.handleBlur){e.target.handleBlur(e)}
         },true)
+        this.main.addEventListener('focus',(e)=>{
+            if(e.target.handleFocus){e.target.handleFocus(e)}
+        })
         this.main.addEventListener('input',(e)=>{
             if(e.target.handleInput){e.target.handleInput(e)}
         })
@@ -1362,6 +1554,9 @@ class App{
         },true)
         this.main.addEventListener('change',(e)=>{
             if(e.target.handleChange){e.target.handleChange(e)}
+        })
+        this.main.addEventListener('contextmenu',(e)=>{
+            if(e.target.handleContextmenu){e.target.handleContextmenu(e)}
         })
         const deepResize=(e)=>{
             if(e.target.handleResize){
@@ -1412,6 +1607,7 @@ class App{
                     for(let item of senderContainer.children[1].children){
                         if(item.textContent==file.name){
                             let textFileName=file.name.replace('.raw','.txt')
+                            item.lastChild.remove()
                             item.appendChild(
                                 CE('button',{style:{"margin-left":"10px"},
                                 handleClick:(e)=>{
@@ -1431,6 +1627,7 @@ class App{
         let sendList=CE('div',{style:{height:"100%"}},["Files to be sent to server:"])
         const addFileSendList=(e)=>{
             sendList.replaceChildren()
+            sendCommand.firstChild.disabled=false
             for(let file of e.target.files){
                 sendList.appendChild(CE('div',{style:{"margin-bottom":"1px"}},[file.name]))
             }
@@ -1441,6 +1638,9 @@ class App{
             CE('button',{handleClick:(e)=>{
                 sendToServer(loaderElement.files)
                 e.target.disabled=true
+                for(let item of senderContainer.children[1].children){
+                    item.appendChild(new OrbiSpinner())
+                }
                 senderContainer.lastChild.textContent="Files sent to server, waiting for conversion..."
             }},["Send to Server"])
         ])
@@ -1571,7 +1771,340 @@ class App{
             globalThis.Attributor.channel.setupOnAir()
         }
     }
+    serialize(){
+        globalThis.saveJSON=serializeApp(this)
+    }
+    deserialize(){
+        globalThis.revivedJSON=deserializeApp(globalThis.saveJSON)
+    }
 }
+
+class OrbiSpinner{
+    constructor(width=30,height=15){
+        let t=10000*Math.random()
+        const r=Math.min(width,height)/5
+        let container=CE('div',{style:{
+            "background-color":"rgba(164, 173, 185, 0.3)",
+            margin:"0px",
+            display:"inline-block",
+            border:"1px solid lightblue",
+            "border-radius":`5px`,
+            width:`${width}px`,
+            height:`${height}px`,
+            position:"relative"}},[])
+        let svg=d3.select(container).append("svg")
+            .attr("width","100%")
+            .attr("height","100%")
+        let c1=svg.append("circle")
+            .attr("cx",10)
+            .attr("cy",10)
+            .attr("r",r)
+            .attr('fill','tomato')
+            .attr('stroke','darkgrey')
+        let c2=svg.append("circle")
+            .attr("cx",10)
+            .attr("cy",10)
+            .attr("r",r)
+            .attr('fill','blanchedalmond')
+            .attr('stroke','DarkCyan')
+        let c3=svg.append("circle")
+            .attr("cx",10)
+            .attr("cy",10)
+            .attr("r",r)
+            .attr('fill','purple')
+            .attr('stroke','darkgrey')
+        const animLoop=()=>{
+            c1
+            .attr("cx",0.5*width+0.5*(width-r)*Math.cos(t/200))
+            .attr("cy",0.5*height+(height/2-1.5*r)*Math.sin(t/10))
+            .attr("r",1+r*Math.abs(Math.sin(t/20)))
+            c2
+            .attr("cx",0.5*width+0.5*(width-r)*Math.cos((t-10)/30))
+            .attr("cy",0.5*height+(height/2-1.5*r)*Math.sin((t-10)/10))
+            .attr("r",1+r*Math.abs(Math.sin(t/20)))
+            c3
+            .attr("cx",0.5*width+0.5*(width-r)*Math.cos((t-30)/60))
+            .attr("cy",0.5*height+(height/2-1.5*r)*Math.sin((t-30)/10))
+            .attr("r",1+r*Math.abs(Math.sin(t/20)))
+            t++
+            requestAnimationFrame(animLoop)
+        }
+        animLoop()
+        return container
+    }
+}
+
+class CycloSpinner{
+    constructor(size=20){
+        let width=size
+        let height=size
+        let t=10000*Math.random()
+        const r=Math.min(size/5,4)
+        let c=0
+        let container=CE('div',{style:{
+            "background-color":"rgba(64, 73, 85, 0)",
+            margin:"0px",
+            display:"inline-block",
+            border:"none",
+            "border-radius":`5px`,
+            width:`${width}px`,
+            height:`${height}px`,
+            position:"relative"}},[])
+        let svg=d3.select(container).append("svg")
+            .attr("width","100%")
+            .attr("height","100%")
+        let c0=svg.append("circle")
+            .attr("cx",width/2)
+            .attr("cy",height/2)
+            .attr("r",width/2-1)
+            .attr('fill','rgba(164, 173, 185, 0.3)')
+            .attr('stroke','lightblue')
+        let c1=svg.append("circle")
+            .attr("cx",10)
+            .attr("cy",10)
+            .attr("r",r)
+            .attr('fill','tomato')
+            .attr('stroke','darkgrey')
+        let c2=svg.append("circle")
+            .attr("cx",10)
+            .attr("cy",10)
+            .attr("r",r)
+            .attr('fill','blanchedalmond')
+            .attr('stroke','DarkCyan')
+        let c3=svg.append("circle")
+            .attr("cx",10)
+            .attr("cy",10)
+            .attr("r",r)
+            .attr('fill','purple')
+            .attr('stroke','darkgrey')
+        const animLoop=()=>{
+            const c=(phi)=>0.9*Math.abs(Math.sin((t+phi)/200))**1.5
+            c1
+            .attr("cx",0.5*width+0.5*c(-50)*(width-r)*Math.cos(t/20))
+            .attr("cy",0.5*height+0.5*c(-50)*(height-r)*Math.sin(t/20))
+            //.attr("r",1+r*Math.abs(Math.sin(t/100)))
+            c2
+            .attr("cx",0.5*width+0.5*c(-100)*(width-r)*Math.cos((1.5*t)/20))
+            .attr("cy",0.5*height+0.5*c(-100)*(height-r)*Math.sin((1.5*t)/20))
+            //.attr("r",1+r*Math.abs(Math.sin(t/100)))
+            c3
+            .attr("cx",0.5*width+0.5*c(-150)*(width-r)*Math.cos((1.25*t)/20))
+            .attr("cy",0.5*height+0.5*c(-150)*(height-r)*Math.sin((1.25*t)/20))
+            //.attr("r",1+r*Math.abs(Math.sin(t/100)))
+            t++
+            requestAnimationFrame(animLoop)
+        }
+        animLoop()
+        return container
+    }
+}
+
+class PetitGazParfait {
+    constructor(width = 300, height = 200, N = 25, r = 7) {
+        this.width = width;
+        this.height = height;
+        this.N = N;
+        this.r = r;
+
+        let container = document.createElement('div');
+        Object.assign(container.style, {
+            backgroundColor: "rgba(64, 73, 85, 0)",
+            margin: "0px",
+            display: "inline-block",
+            border: "1px solid lightblue",
+            borderRadius: `5px`,
+            width: `${width}px`,
+            height: `${height}px`,
+            position: "relative"
+        });
+
+        let svg = d3.select(container).append("svg")
+            .attr("width", "100%")
+            .attr("height", "100%");
+
+        const balls = d3.range(N).map(() => ({
+            x: Math.random() * (width - 2 * r) + r,
+            y: Math.random() * (height - 2 * r) + r,
+            vx: (Math.random() - 0.5) * 1,
+            vy: (Math.random() - 0.5) * 1
+        }));
+
+        const circles = svg.selectAll("circle")
+            .data(balls)
+            .enter()
+            .append("circle")
+            .attr("r", r)
+            .attr("fill", "skyblue")
+            .attr("stroke", "#88f");
+
+        function collide(a, b) {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < 2 * r) {
+                const nx = dx / dist;
+                const ny = dy / dist;
+
+                const dvx = b.vx - a.vx;
+                const dvy = b.vy - a.vy;
+                const impact = dvx * nx + dvy * ny;
+
+                if (impact < 0) { // éviter de "recoller" les particules déjà en fuite
+                    const impulse = 2 * impact / 2; // masses égales
+                    a.vx += impulse * nx;
+                    a.vy += impulse * ny;
+                    b.vx -= impulse * nx;
+                    b.vy -= impulse * ny;
+                }
+            }
+        }
+
+        const animate = () => {
+            // Mise à jour des positions
+            for (let b of balls) {
+                b.x += b.vx;
+                b.y += b.vy;
+
+                // Rebonds sur les murs
+                if (b.x <= r || b.x >= width - r) b.vx *= -1;
+                if (b.y <= r || b.y >= height - r) b.vy *= -1;
+            }
+
+            // Collisions entre particules
+            for (let i = 0; i < N; i++) {
+                for (let j = i + 1; j < N; j++) {
+                    collide(balls[i], balls[j]);
+                }
+            }
+
+            // Mise à jour de l'affichage
+            circles
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y);
+
+            requestAnimationFrame(animate);
+        };
+        animate();
+
+        return container;
+    }
+}
+
+class PetitGazFusion {
+    constructor(width = 300, height = 200, N = 250, r = 5) {
+        this.width = width;
+        this.height = height;
+        this.N = N;
+        this.r = r;
+
+        let container = document.createElement('div');
+        Object.assign(container.style, {
+            backgroundColor: "rgba(64, 73, 85, 0)",
+            margin: "0px",
+            display: "inline-block",
+            border: "1px solid lightblue",
+            borderRadius: `5px`,
+            width: `${width}px`,
+            height: `${height}px`,
+            position: "relative"
+        });
+
+        let svg = d3.select(container).append("svg")
+            .attr("width", "100%")
+            .attr("height", "100%");
+
+        let balls = d3.range(N).map(() => ({
+            x: Math.random() * (width - 2 * r) + r,
+            y: Math.random() * (height - 2 * r) + r,
+            vx: (Math.random() - 0.5) * 1,
+            vy: (Math.random() - 0.5) * 1,
+            mass: 1,
+            r: r
+        }));
+
+        const update = () => {
+            // Mise à jour des positions
+            for (let b of balls) {
+                b.x += b.vx;
+                b.y += b.vy;
+
+                // Rebonds murs
+                if (b.x <= b.r || b.x >= width - b.r) b.vx *= -1;
+                if (b.y <= b.r || b.y >= height - b.r) b.vy *= -1;
+            }
+
+            // Collisions/fusion
+            let survivors = [];
+            let merged = new Set();
+
+            for (let i = 0; i < balls.length; i++) {
+                if (merged.has(i)) continue;
+
+                let a = balls[i];
+                for (let j = i + 1; j < balls.length; j++) {
+                    if (merged.has(j)) continue;
+
+                    let b = balls[j];
+                    let dx = b.x - a.x;
+                    let dy = b.y - a.y;
+                    let dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < a.r + b.r) {
+                        // Fusion !
+
+                        let totalMass = a.mass + b.mass;
+                        let newVx = (a.vx * a.mass + b.vx * b.mass) / totalMass;
+                        let newVy = (a.vy * a.mass + b.vy * b.mass) / totalMass;
+
+                        let newX = (a.x * a.mass + b.x * b.mass) / totalMass;
+                        let newY = (a.y * a.mass + b.y * b.mass) / totalMass;
+
+                        survivors.push({
+                            x: newX,
+                            y: newY,
+                            vx: newVx,
+                            vy: newVy,
+                            mass: totalMass,
+                            r: this.r * Math.sqrt(totalMass) // rayon ∝ √masse
+                        });
+
+                        merged.add(i);
+                        merged.add(j);
+                        break;
+                    }
+                }
+
+                if (!merged.has(i)) {
+                    survivors.push(a);
+                }
+            }
+
+            balls = survivors;
+
+            // Mise à jour SVG
+            let sel = svg.selectAll("circle").data(balls);
+
+            sel.enter()
+                .append("circle")
+                .merge(sel)
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y)
+                .attr("r", d => d.r)
+                .attr("fill", "orange")
+                .attr("stroke", "firebrick");
+
+            sel.exit().remove();
+
+            requestAnimationFrame(update);
+        };
+
+        update();
+
+        return container;
+    }
+}
+
 
 
 export {App}

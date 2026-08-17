@@ -1,10 +1,7 @@
 class Data{
     constructor(title,...vectors){
         this.title=title
-        this.core={}
-        for(let vector of vectors){
-            
-        }
+        this._core={}
     }
 }
 

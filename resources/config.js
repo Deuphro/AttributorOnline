@@ -27,6 +27,21 @@ const defaultMenu={
         },
         About:{},
         CopyStabTest:(e)=>{console.log(this)}
+    },
+    mainFlowMenu:{
+        Toto:{
+            Lapin:{},
+            Tritri:{}
+        },
+        Fafa:{
+            Girouette:{
+                Enfin:{
+                    Ca:{
+                        depend:{},
+                        'des fois':{}}
+                }
+            }
+        }
     }
 }
 

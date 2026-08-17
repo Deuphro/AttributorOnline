@@ -1,0 +1,10 @@
+The server is thought to be accessed through http via reverse proxy managing SSL.
+HTTPS accesses are commented.
+
+The server is written for node.js
+
+The msConvert part requires Wine and Mono
+Install notes:
+-Wine needs to be installed for users, not root. Simply get any package up to date
+-Mono needs to be downloaded before installation, select the latest .msi and run wine msiexec -i XXX.msi
+-Run wine msconvert.exe to set the correct prefix

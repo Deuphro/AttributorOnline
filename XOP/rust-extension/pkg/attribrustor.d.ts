@@ -22,10 +22,14 @@ export function arrust(data: Float64Array): void;
 */
 export function bench(n: bigint): bigint;
 /**
-* @param {number} n
-* @returns {Float64Array}
+* @returns {string}
 */
-export function sieve(n: number): Float64Array;
+export function sieve(): string;
+/**
+* @param {number} n
+* @returns {Int32Array}
+*/
+export function zeros_matrix(n: number): Int32Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -35,7 +39,8 @@ export interface InitOutput {
   readonly add: (a: number, b: number) => number;
   readonly arrust: (a: number, b: number, c: number) => void;
   readonly bench: (a: number) => number;
-  readonly sieve: (a: number, b: number) => void;
+  readonly sieve: (a: number) => void;
+  readonly zeros_matrix: (a: number, b: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;

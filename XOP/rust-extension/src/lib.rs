@@ -7,7 +7,7 @@ pub fn compute(a: i32,b: i32) -> i32{
     let mut c=0;
     for k in 0..a {
         for i in 0..b {
-            c=k+i;
+            c=c+0b1//=k+i;
         }
     }
     return c;
@@ -42,4 +42,10 @@ pub fn sieve() -> String {
     let a="Hello World !";
     println!("{}",a);
     a.to_string()
+}
+
+//on veut faire un tableau de zéros
+#[wasm_bindgen]
+pub fn zeros_matrix(n: usize) -> Vec<i32> {
+    vec![0; n * n]
 }
