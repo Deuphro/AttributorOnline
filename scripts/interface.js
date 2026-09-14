@@ -24,6 +24,9 @@ class Node{
             nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}}),
             nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this,undoStack:true}}),
         },listen:{
+            registered(e){
+                this.registered(e)
+            },
             nodeSelected(e){
                 if (e.detail.emitter.events.registrationName==this.events.registrationName) {
                     if(document.activeElement===this.SVGg.select('rect').node()){
@@ -112,10 +115,25 @@ class Node{
         this.#status='floating'
         this.draw()
     }
+    registered(e){
+    }
     draw(){
         if(!this.drawn){
             this.drawn=true
             this.destination.container.querySelector('.field').append(this.DOMelt)
+            this.fitWidthToTitle()
+        }
+    }
+    fitWidthToTitle(){
+        const titleElement=this.DOMelt.querySelector('#nodeTitle')
+        const titleWidth=titleElement.getComputedTextLength()
+        this.parameters.width=Math.max(150,titleWidth+20)
+        this.DOMelt.querySelector('rect').setAttribute('width',this.parameters.width)
+        for(const [anchor,anchorData] of this.parameters.anchorMap){
+            if(anchorData.type==='output'){
+                anchorData.positions.x=this.parameters.width
+                anchor.setAttribute('cx',this.parameters.width)
+            }
         }
     }
     get nodeHeight(){
@@ -213,6 +231,51 @@ class Node{
     }
 }
 
+class NodeWithAccordion extends Node{
+    registered(e){
+        const {channel, name, caster} = e.detail.msg
+        if(caster !== this){
+            return
+        }
+        this.accordion=new Accordion(name,this.origin,$(".vertical.left.content"))
+        channel.register(`${name} accordion`,this.accordion)
+    }
+    suicide(){
+        this.accordion?.suicide()
+        super.suicide()
+    }
+}
+
+class NodeWithAccordionGraph extends Node{
+    registered(e){
+        const {channel, name, caster} = e.detail.msg
+        if(caster !== this){
+            return
+        }
+        this.accordion=new Accordion(name,this.origin,$(".vertical.left.content"))
+        channel.register(`${name} accordion`,this.accordion)
+        this.graphDialog=new Dialog(`${name} graph`,this.origin,this.origin.midCentralContent)
+        this.graphDialog.DOMelt.dismisser.hidden=true
+        stylize(this.graphDialog.DOMelt.window,{
+            top:"0px",
+            left:"0px",
+            width:"100%",
+            height:"100%"
+        })
+        channel.register(`${name} graph`,this.graphDialog)
+        this.graph=new Plot2D([],
+            `${name} graph`,
+            this.origin,
+            this.graphDialog.DOMelt.content
+        )
+    }
+    suicide(){
+        this.graphDialog?.suicide()
+        this.accordion?.suicide()
+        super.suicide()
+    }
+}
+
 class Flow{
     constructor(title,origin,destination){
         this.title=title
@@ -228,6 +291,9 @@ class Flow{
             stopLinkDrawing(e){this.stopBuildingLink(e)},
             nodeKilled(e){this.updateLinks()},
             linkSelected(e){},
+            async resolveFlow(e){
+                await this.resolveFlow()
+            },
         }}
         this.nodeSet=new Set()
         this.linkList=[]
@@ -308,8 +374,8 @@ class Flow{
         }
         this.forwardStatus(this.linkList.at(k).outputNode,'floating')
         this.linkList[k].node().remove()
-        this.linkList.splice(k,1)
         dispatchEvent(this.events.broadcast.linkDeleted(this.linkList[k]))
+        this.linkList.splice(k,1)
     }
     stopBuildingLink(e){
         if(this.linkList.at(-1).startingNode.parameters.anchorMap.get(this.linkList.at(-1).startingAnchor).type!=
@@ -417,7 +483,7 @@ class Flow{
         await node.startResolve()
     }
     async resolveFlow(){
-        await Promise.all(this.leaves.keys().toArray().map(leaf=>this.resolveNode(leaf)))
+        await Promise.all([...this.leaves].map(leaf=>this.resolveNode(leaf)))
     }
     forwardStatus(node, status){
         this.childrenMap(node).keys().toArray().map(child=>this.forwardStatus(child,status))
@@ -509,26 +575,120 @@ class MainMenu extends Menu{
     }
 }
 
+class MainFlowMenu extends Menu{
+    constructor(configObject,title,origin,destination){
+        super(configObject,title,origin,destination)
+        this.events={
+            broadcast:{},
+            listen:{
+                createNode(e){
+                    const {title,type} = e.detail.msg
+                    let node
+                    switch (type) {
+                        case "random": {
+                            const inputs = []
+                            const outputs = []
+                            for (let k = 0; k < Math.round(Math.random() * 5); k++) {
+                                outputs.push([0])
+                            }
+                            for (let k = 0; k < Math.round(Math.random() * 5); k++) {
+                                inputs.push([0])
+                            }
+                            node = new Node(
+                                title,
+                                inputs,
+                                outputs,
+                                origin,
+                                origin.channel.mainFlow,
+                                {x: 180, y: 10}
+                            )
+                            break
+                        }
+                        case "randomAccordion": {
+                            const inputs = []
+                            const outputs = []
+                            for (let k = 0; k < Math.round(Math.random() * 5); k++) {
+                                outputs.push([0])
+                            }
+                            for (let k = 0; k < Math.round(Math.random() * 5); k++) {
+                                inputs.push([0])
+                            }
+                            node = new NodeWithAccordion(
+                                title,
+                                inputs,
+                                outputs,
+                                origin,
+                                origin.channel.mainFlow,
+                                {x: 180, y: 10}
+                            )
+                            break
+                        }
+                        case "randomAccordionGraph":
+                            const inputs = []
+                            const outputs = []
+                            for (let k = 0; k < Math.round(Math.random() * 5); k++) {
+                                outputs.push([0])
+                            }
+                            for (let k = 0; k < Math.round(Math.random() * 5); k++) {
+                                inputs.push([0])
+                            }
+                            node = new NodeWithAccordionGraph(
+                                title,
+                                inputs,
+                                outputs,
+                                origin,
+                                origin.channel.mainFlow,
+                                {x: 180, y: 10}
+                            )
+                            break
+                        default:
+                            node = new Node(
+                                title,
+                                [],
+                                [],
+                                origin,
+                                origin.channel.mainFlow,
+                                {x: 180, y: 10}
+                            )
+                            break
+                    }
+                    origin.channel.register(title, node)
+                }
+            }
+        }
+    }
+}
+
 class Channel{
     constructor(origin){
         this.origin=origin
         this.eventTypes={}
+        this.listeners={}
     }
     register(name,caster){
-        this[name]=caster
+        const requestedName=name
+        let registrationName=requestedName
+        let suffix=2
+        while(Object.prototype.hasOwnProperty.call(this,registrationName)){
+            registrationName=`${requestedName} (${suffix})`
+            suffix++
+        }
+        this[registrationName]=caster
         if (!caster.events){
             caster.events={}
         }
         if (!caster.events.broadcast){
             caster.events.broadcast={}
         }
-        caster.events.broadcast['poppedUp']=new CustomEvent("poppedUp",{detail:{msg:"default registration message",emitter:caster}})
+        caster.events.broadcast['poppedUp']=new CustomEvent("poppedUp",{detail:{msg:{channel:this,name:registrationName,caster:caster},emitter:caster}})
         caster.events.broadcast['killed']=new CustomEvent("killed",{detail:{msg:"default killed message",emitter:caster,stackUndo:true}})
-        caster.events.registrationName=name
+        caster.events.broadcast['registered']=new CustomEvent("registered",{detail:{msg:{channel:this,name:registrationName,caster:caster},emitter:caster}})
+        caster.events.registrationName=registrationName
         const broadcasts=caster.events.broadcast
         Object.values(broadcasts).forEach((e)=>{
             if (!this.eventTypes[e.type]){
-                globalThis.addEventListener(e.type,this.defaultListener.bind(this))
+                this.listeners[e.type]=this.defaultListener.bind(this)
+                globalThis.addEventListener(e.type,this.listeners[e.type])
                 this.eventTypes[e.type]=new Set()
             }
         })
@@ -537,28 +697,38 @@ class Channel{
             const listeners=caster.events.listen
             Object.keys(listeners).forEach((e)=>{
                 if (!this.eventTypes[e]){
-                    globalThis.addEventListener(e,this.defaultListener.bind(this))
+                    this.listeners[e]=this.defaultListener.bind(this)
+                    globalThis.addEventListener(e,this.listeners[e])
                     this.eventTypes[e]=new Set()
                 }
-                this.eventTypes[e].add(name)
+                this.eventTypes[e].add(registrationName)
         })
         }
+        dispatchEvent(broadcasts.registered)
         dispatchEvent(broadcasts.poppedUp)
     }
     setupOnAir(){
         for(let etype of Object.keys(this.eventTypes)){
-            globalThis.addEventListener(etype,this.defaultListener.bind(this))
+            globalThis.addEventListener(etype,this.listeners[etype])
         }
     }
     shutDown(){
         for(let etype of Object.keys(this.eventTypes)){
-            globalThis.removeEventListener(etype,this.defaultListener.bind(this))
+            globalThis.removeEventListener(etype,this.listeners[etype])
         }
         this.eventTypes={}
+        this.listeners={}
     }
     degister(name){
         delete this[name]
-        Object.values(this.eventTypes).forEach((e)=>{e.delete(name)})
+        Object.entries(this.eventTypes).forEach(([eventType,casters])=>{
+            casters.delete(name)
+            if(!casters.size){
+                globalThis.removeEventListener(eventType,this.listeners[eventType])
+                delete this.eventTypes[eventType]
+                delete this.listeners[eventType]
+            }
+        })
     }
     defaultListener(e){
         if(e.detail.stackUndo){
@@ -1153,7 +1323,7 @@ class Dialog{
             "align-self":"center"
         })
         this.DOMelt.window.handleResize=(e)=>e.target.pilot.resize(e)
-        if (!$(`.${title}.popup.container`)){
+        if (!$(`.${CSS.escape(title)}.popup.container`)){
             destination.appendChild(this.DOMelt.window);
         }else{
             this.DOMelt.window.remove()
@@ -1226,7 +1396,7 @@ class Accordion{
         this.destination=destination
         this.parameters={
             container:{
-                folded:true,
+                folded:false,
                 style:{
                     display:"grid",
                     width:"100%",
@@ -1296,6 +1466,12 @@ class Accordion{
             this.fold();
         }
     }
+    suicide(){
+        this.DOMelt.container.remove()
+        if(this.events?.broadcast?.killed){
+            dispatchEvent(this.events.broadcast.killed)
+        }
+    }
 }
 
 class App{
@@ -1322,8 +1498,8 @@ class App{
         }
         this.topContent=[
             CE('div',{id:"topContent", className:"horizontal content"},[
-                "Top content",
-                CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},["What is in top content"]),
+                "",
+                CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},[""])/*,
                 CE('button',{pilot:this,handleClick:(e)=>{
                     e.target.pilot.channel.register("choco",new Dialog("choco",e.target.pilot,e.target.pilot.main))
                     e.target.pilot.tata=new Table(fakeData(10),["ttl","an other","a third","anotheronetocheckeverythingis ok","and a last one that is super long !"],e.target.pilot,e.target.pilot.channel["choco"].DOMelt.content)
@@ -1331,20 +1507,11 @@ class App{
                 CE('button',{pilot:this,handleClick:(e)=>{
                     e.target.pilot.channel.register("lata",new Dialog("lata",e.target.pilot,e.target.pilot.midCentralContent))
                     e.target.pilot.yoyo=new Plot2D([],"yoyo",e.target.pilot,e.target.pilot.channel["lata"].DOMelt.content)
-                }},[" Please click here for a graph test"]),
-                CE('button',{pilot:this,handleClick:(e)=>{
-                    const title=Date.now().toString()
-                    let outputs=[]
-                    let inputs=[]
-                    for(let k=0;k<Math.round(Math.random()*5);k++){outputs.push([0])}
-                    for(let k=0;k<Math.round(Math.random()*5);k++){inputs.push([0])}
-                    e.target.pilot.channel.register(title, new Node(title,inputs,outputs,e.target.pilot,e.target.pilot.channel.mainFlow,{x:180,y:10}))
-                }},["Pop a random Node"]),
-                CE('button',{pilot:this,handleClick:(e)=>{
-                    this.channel.mainFlow.resolveFlow()
-                }},["Resolve the main flow"])
+                }},[" Please click here for a graph test"])*/
             ])
         ]
+        this.flowWorkspace=CE('div',{className:"flow workspace"},[])
+        this.topContent[0].appendChild(this.flowWorkspace)
         this.midCentralContent=CE('div',{className:"vertical center content"},[
             "center content"
         ])
@@ -1401,16 +1568,21 @@ class App{
         ])
 
         this.setupOnWindow()
+        /*
         this.channel.register("Data manager",new Accordion("Data manager",this,$(".vertical.left.content")))
         this.channel['Data manager'].toggle()
         this.channel['Data manager'].DOMelt.content.appendChild(
             CE('div',{},["test",CE('div',{id:"Gloubidi",style:{height:"300px"}},[])])
         )
+        */
         this.channel.register("mainMenu",new MainMenu(defaultMenu.mainMenu,"mainMenu",this,this.menu))
-        this.channel.register("mainFlow",new Flow("mainFlow",this,this.topContent[0]))
+        this.channel.register("mainFlowMenu",new MainFlowMenu(defaultMenu.mainFlowMenu,"mainFlowMenu",this,this.flowWorkspace))
+        this.channel.register("mainFlow",new Flow("mainFlow",this,this.flowWorkspace))
+        /*
         this.channel.register('Node with no inputs',new Node('Node with no inputs',[],[[0],[0],[0]],this,this.channel.mainFlow))
-        this.channel.register('Filter node', new Node('Filter node',[{}],[{}],this,this.channel.mainFlow,{x:200,y:10}))
+        this.channel.register('Filter node', new NodeWithAccordion('Filter node',[{}],[{}],this,this.channel.mainFlow,{x:200,y:10}))
         this.channel.register('Display node', new Node('Display node',[{}],[],this,this.channel.mainFlow,{x:400,y:10}))
+        */
     }
     foldTop(v){
         if(v){

@@ -250,6 +250,23 @@ div{
     background-color: cornsilk;
 }
 
+.flow.workspace{
+    display:grid;
+    grid-template-rows:auto minmax(0,1fr);
+    height:100%;
+    min-height:0;
+    position:relative;
+    overflow:hidden;
+}
+.flow.workspace>.menu.container{
+    display:flow-root;
+    position:relative;
+    z-index:100;
+}
+.flow.workspace>.flow.container{
+    min-height:0;
+}
+
 .node{
     fill:rgb(215, 215, 160);
     stroke:grey;

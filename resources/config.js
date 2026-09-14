@@ -29,18 +29,21 @@ const defaultMenu={
         CopyStabTest:(e)=>{console.log(this)}
     },
     mainFlowMenu:{
-        Toto:{
-            Lapin:{},
-            Tritri:{}
+        "Data":{
+            "Simple XY file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Lapin'}}}))},
         },
-        Fafa:{
-            Girouette:{
-                Enfin:{
-                    Ca:{
-                        depend:{},
-                        'des fois':{}}
-                }
-            }
+        "Display":{
+            "Simple XY plot":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY plot'}}}))},
+        },
+        "Random":{
+            "Random simple":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Random',type:'random'}}}))},
+            "Random with accordion":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Random with accordion',type:'randomAccordion'}}}))},
+            "Random with accordion and graph":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Random with accordion and graph',type:'randomAccordionGraph'}}}))},
+        },
+        "Flow":{
+            Resolve:(e)=>{dispatchEvent(new CustomEvent('resolveFlow',{detail:{msg:""}}))},
+            "Export to JSON":(e)=>{dispatchEvent(new CustomEvent('exportFlow',{detail:{msg:""}}))},
+            "Import from JSON":(e)=>{dispatchEvent(new CustomEvent('importFlow',{detail:{msg:""}}))},
         }
     }
 }
