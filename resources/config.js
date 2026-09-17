@@ -2,8 +2,8 @@ const defaultMenu={
     mainMenu:{
         File:{
             "New session":{},
-            Import:(e)=>{dispatchEvent(new CustomEvent('clickImport',{detail:{msg:"This is SPARTAAAA !!!"}}))},
-            Export:{}
+              Import:(e)=>{dispatchEvent(new CustomEvent('importSession',{detail:{msg:{format:"json",source:"file"}}}))},
+              Export:(e)=>{dispatchEvent(new CustomEvent('exportSession',{detail:{msg:{format:"json",target:"file"}}}))},
         },
         Edit:{
             Undo:(e)=>{dispatchEvent(new CustomEvent('undo',{detail:{msg:""}}))}

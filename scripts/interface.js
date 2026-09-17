@@ -1,4 +1,5 @@
 import {$,CE,stylize,fakeData,DC,requestPOST,serializeApp,SingleJsonFile, deserializeApp} from "./util.js"
+import {save as saveSession, import as importSessionData} from "./sessions.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave} from "./formats.js"
@@ -28,7 +29,7 @@ class Node{
                 this.registered(e)
             },
             nodeSelected(e){
-                if (e.detail.emitter.events.registrationName==this.events.registrationName) {
+                if (e.detail.emitter.events.registrationId===this.events.registrationId) {
                     if(document.activeElement===this.SVGg.select('rect').node()){
                         this.SVGg.select('rect').node().blur()
                     }else{
@@ -233,12 +234,16 @@ class Node{
 
 class NodeWithAccordion extends Node{
     registered(e){
-        const {channel, name, caster} = e.detail.msg
+        const {channel, registrationName, label, caster} = e.detail.msg
         if(caster !== this){
             return
         }
-        this.accordion=new Accordion(name,this.origin,$(".vertical.left.content"))
-        channel.register(`${name} accordion`,this.accordion)
+        this.accordion=new Accordion(
+            label,
+            this.origin,
+            this.origin.main.querySelector(".vertical.left.content")
+        )
+        channel.register(`${registrationName}:accordion`,this.accordion,label)
     }
     suicide(){
         this.accordion?.suicide()
@@ -248,13 +253,17 @@ class NodeWithAccordion extends Node{
 
 class NodeWithAccordionGraph extends Node{
     registered(e){
-        const {channel, name, caster} = e.detail.msg
+        const {channel, registrationName, label, caster} = e.detail.msg
         if(caster !== this){
             return
         }
-        this.accordion=new Accordion(name,this.origin,$(".vertical.left.content"))
-        channel.register(`${name} accordion`,this.accordion)
-        this.graphDialog=new Dialog(`${name} graph`,this.origin,this.origin.midCentralContent)
+        this.accordion=new Accordion(
+            label,
+            this.origin,
+            this.origin.main.querySelector(".vertical.left.content")
+        )
+        channel.register(`${registrationName}:accordion`,this.accordion,label)
+        this.graphDialog=new Dialog(`${label} graph`,this.origin,this.origin.midCentralContent)
         this.graphDialog.DOMelt.dismisser.hidden=true
         stylize(this.graphDialog.DOMelt.window,{
             top:"0px",
@@ -262,9 +271,9 @@ class NodeWithAccordionGraph extends Node{
             width:"100%",
             height:"100%"
         })
-        channel.register(`${name} graph`,this.graphDialog)
+        channel.register(`${registrationName}:graph`,this.graphDialog,`${label} graph`)
         this.graph=new Plot2D([],
-            `${name} graph`,
+            `${label} graph`,
             this.origin,
             this.graphDialog.DOMelt.content
         )
@@ -497,7 +506,7 @@ class Menu{
         this.title=title
         this.origin=origin
         this.destination=destination
-        this.container=CE('nav',{className:`menu container ${title}`},[])
+        this.container=CE('nav',{className:"menu container"},[])
         this.events={broadcast:{},listen:{}}
         this.dfs(configObject,this.container,0)
         this.draw()
@@ -550,7 +559,7 @@ class Menu{
         }
     }
     draw(){
-        if (!$(`.${this.title}.menu.container`)){
+        if (!this.destination.querySelector('.menu.container')){
             this.destination.appendChild(this.container);
         }else{
             this.container.remove()
@@ -570,7 +579,19 @@ class MainMenu extends Menu{
             listen:{
             importDelimitedText(e){origin.loadDelimitedText()},
             msConvert(e){origin.msConvert()},
-            undo(e){origin.restoreLastState()}
+            undo(e){origin.restoreLastState()},
+            exportSession(e){
+                const {format,target}=e.detail.msg
+                if(format==="json" && target==="file"){
+                    origin.saveSession({download:true})
+                }
+            },
+            async importSession(e){
+                const {format,source}=e.detail.msg
+                if(format==="json" && source==="file"){
+                    await origin.importSession({filePicker:true})
+                }
+            }
         }}
     }
 }
@@ -599,7 +620,7 @@ class MainFlowMenu extends Menu{
                                 inputs,
                                 outputs,
                                 origin,
-                                origin.channel.mainFlow,
+                                origin.channel.get("mainFlow"),
                                 {x: 180, y: 10}
                             )
                             break
@@ -618,7 +639,7 @@ class MainFlowMenu extends Menu{
                                 inputs,
                                 outputs,
                                 origin,
-                                origin.channel.mainFlow,
+                                origin.channel.get("mainFlow"),
                                 {x: 180, y: 10}
                             )
                             break
@@ -637,7 +658,7 @@ class MainFlowMenu extends Menu{
                                 inputs,
                                 outputs,
                                 origin,
-                                origin.channel.mainFlow,
+                                origin.channel.get("mainFlow"),
                                 {x: 180, y: 10}
                             )
                             break
@@ -647,12 +668,12 @@ class MainFlowMenu extends Menu{
                                 [],
                                 [],
                                 origin,
-                                origin.channel.mainFlow,
+                                origin.channel.get("mainFlow"),
                                 {x: 180, y: 10}
                             )
                             break
                     }
-                    origin.channel.register(title, node)
+                    origin.channel.register("node", node, node.title)
                 }
             }
         }
@@ -664,26 +685,33 @@ class Channel{
         this.origin=origin
         this.eventTypes={}
         this.listeners={}
+        this.casters=new Map()
+        this.names=new Map()
+        this.nextId=1
     }
-    register(name,caster){
-        const requestedName=name
+    register(requestedName,caster,label=caster.label??caster.title??requestedName){
         let registrationName=requestedName
         let suffix=2
-        while(Object.prototype.hasOwnProperty.call(this,registrationName)){
+        while(this.names.has(registrationName)){
             registrationName=`${requestedName} (${suffix})`
             suffix++
         }
-        this[registrationName]=caster
+        const registrationId=`channel-${this.nextId++}`
+        this.casters.set(registrationId,caster)
+        this.names.set(registrationName,registrationId)
         if (!caster.events){
             caster.events={}
         }
         if (!caster.events.broadcast){
             caster.events.broadcast={}
         }
-        caster.events.broadcast['poppedUp']=new CustomEvent("poppedUp",{detail:{msg:{channel:this,name:registrationName,caster:caster},emitter:caster}})
+        const identity={channel:this,registrationName,registrationId,label,caster}
+        caster.events.broadcast['poppedUp']=new CustomEvent("poppedUp",{detail:{msg:identity,emitter:caster}})
         caster.events.broadcast['killed']=new CustomEvent("killed",{detail:{msg:"default killed message",emitter:caster,stackUndo:true}})
-        caster.events.broadcast['registered']=new CustomEvent("registered",{detail:{msg:{channel:this,name:registrationName,caster:caster},emitter:caster}})
+        caster.events.broadcast['registered']=new CustomEvent("registered",{detail:{msg:identity,emitter:caster}})
         caster.events.registrationName=registrationName
+        caster.events.registrationId=registrationId
+        caster.events.label=label
         const broadcasts=caster.events.broadcast
         Object.values(broadcasts).forEach((e)=>{
             if (!this.eventTypes[e.type]){
@@ -701,11 +729,16 @@ class Channel{
                     globalThis.addEventListener(e,this.listeners[e])
                     this.eventTypes[e]=new Set()
                 }
-                this.eventTypes[e].add(registrationName)
+                this.eventTypes[e].add(registrationId)
         })
         }
         dispatchEvent(broadcasts.registered)
         dispatchEvent(broadcasts.poppedUp)
+        return registrationId
+    }
+    get(nameOrId){
+        const id=this.casters.has(nameOrId)?nameOrId:this.names.get(nameOrId)
+        return id===undefined?undefined:this.casters.get(id)
     }
     setupOnAir(){
         for(let etype of Object.keys(this.eventTypes)){
@@ -718,11 +751,18 @@ class Channel{
         }
         this.eventTypes={}
         this.listeners={}
+        this.casters.clear()
+        this.names.clear()
     }
-    degister(name){
-        delete this[name]
+    degister(registrationId){
+        const caster=this.casters.get(registrationId)
+        if(!caster){
+            return
+        }
+        this.casters.delete(registrationId)
+        this.names.delete(caster.events.registrationName)
         Object.entries(this.eventTypes).forEach(([eventType,casters])=>{
-            casters.delete(name)
+            casters.delete(registrationId)
             if(!casters.size){
                 globalThis.removeEventListener(eventType,this.listeners[eventType])
                 delete this.eventTypes[eventType]
@@ -736,12 +776,13 @@ class Channel{
         }
         const et=e.type
         if(this.eventTypes[e.type]){
-            this.eventTypes[e.type].forEach((targetName,i,a)=>{
-                this[targetName].events.listen[et].call(this[targetName],e)
+            this.eventTypes[e.type].forEach((registrationId)=>{
+                const caster=this.casters.get(registrationId)
+                caster?.events.listen?.[et]?.call(caster,e)
                 })
         }
         if(et=="killed"){
-            this.degister(e.detail.emitter.events.registrationName)
+            this.degister(e.detail.emitter.events.registrationId)
         }
     }
 }
@@ -1250,18 +1291,18 @@ class Dialog{
             },
             listen:{
                 selected(e){
-                    console.log("oupinez "+e.detail.emitter.events.registrationName+" a été selectionné !!")
-                    if (e.detail.emitter.events.registrationName==this.events.registrationName) {
-                        console.log("hey mais c moi car je suis:",this.events.registrationName)
+                    console.log("oupinez "+e.detail.emitter.events.registrationId+" a été selectionné !!")
+                    if (e.detail.emitter.events.registrationId===this.events.registrationId) {
+                        console.log("hey mais c moi car je suis:",this.events.registrationId)
                         this.DOMelt.window.classList.add('selected')
                         this.DOMelt.window.style["z-index"]="10"
                     } else {
-                        console.log("ha oui mais c'est pas moi car je suis:",this.events.registrationName)
+                        console.log("ha oui mais c'est pas moi car je suis:",this.events.registrationId)
                         this.DOMelt.window.classList.remove('selected')
                         this.DOMelt.window.style["z-index"]="2"//1 is for interface
                     }
                 },
-                killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationName)},
+                killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationId)},
                 importDelimitedText(e){console.log(e)}
             }
         }
@@ -1275,7 +1316,7 @@ class Dialog{
         this.DOMelt.label.handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.selected)}
         this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
-        this.DOMelt.window=CE('div',{className:title+" popup container",pilot:this},[
+        this.DOMelt.window=CE('div',{className:"popup container",pilot:this},[
             this.DOMelt.handler,
             this.DOMelt.content
         ]);
@@ -1323,12 +1364,7 @@ class Dialog{
             "align-self":"center"
         })
         this.DOMelt.window.handleResize=(e)=>e.target.pilot.resize(e)
-        if (!$(`.${CSS.escape(title)}.popup.container`)){
-            destination.appendChild(this.DOMelt.window);
-        }else{
-            this.DOMelt.window.remove()
-            destination.appendChild(this.DOMelt.window);
-        }
+        destination.appendChild(this.DOMelt.window)
     }
     suicide(){
         this.DOMelt.window.remove()
@@ -1502,11 +1538,11 @@ class App{
                 CE('div',{height:"200px",width:"100px",border:"1px solid black",color:'red'},[""])/*,
                 CE('button',{pilot:this,handleClick:(e)=>{
                     e.target.pilot.channel.register("choco",new Dialog("choco",e.target.pilot,e.target.pilot.main))
-                    e.target.pilot.tata=new Table(fakeData(10),["ttl","an other","a third","anotheronetocheckeverythingis ok","and a last one that is super long !"],e.target.pilot,e.target.pilot.channel["choco"].DOMelt.content)
+                    e.target.pilot.tata=new Table(fakeData(10),["ttl","an other","a third","anotheronetocheckeverythingis ok","and a last one that is super long !"],e.target.pilot,e.target.pilot.channel.get("choco").DOMelt.content)
                 }},[" Please click here for a table test"]),
                 CE('button',{pilot:this,handleClick:(e)=>{
                     e.target.pilot.channel.register("lata",new Dialog("lata",e.target.pilot,e.target.pilot.midCentralContent))
-                    e.target.pilot.yoyo=new Plot2D([],"yoyo",e.target.pilot,e.target.pilot.channel["lata"].DOMelt.content)
+                    e.target.pilot.yoyo=new Plot2D([],"yoyo",e.target.pilot,e.target.pilot.channel.get("lata").DOMelt.content)
                 }},[" Please click here for a graph test"])*/
             ])
         ]
@@ -1570,8 +1606,8 @@ class App{
         this.setupOnWindow()
         /*
         this.channel.register("Data manager",new Accordion("Data manager",this,$(".vertical.left.content")))
-        this.channel['Data manager'].toggle()
-        this.channel['Data manager'].DOMelt.content.appendChild(
+        this.channel.get('Data manager').toggle()
+        this.channel.get('Data manager').DOMelt.content.appendChild(
             CE('div',{},["test",CE('div',{id:"Gloubidi",style:{height:"300px"}},[])])
         )
         */
@@ -1579,9 +1615,9 @@ class App{
         this.channel.register("mainFlowMenu",new MainFlowMenu(defaultMenu.mainFlowMenu,"mainFlowMenu",this,this.flowWorkspace))
         this.channel.register("mainFlow",new Flow("mainFlow",this,this.flowWorkspace))
         /*
-        this.channel.register('Node with no inputs',new Node('Node with no inputs',[],[[0],[0],[0]],this,this.channel.mainFlow))
-        this.channel.register('Filter node', new NodeWithAccordion('Filter node',[{}],[{}],this,this.channel.mainFlow,{x:200,y:10}))
-        this.channel.register('Display node', new Node('Display node',[{}],[],this,this.channel.mainFlow,{x:400,y:10}))
+        this.channel.register('node',new Node('Node with no inputs',[],[[0],[0],[0]],this,this.channel.get('mainFlow')), 'Node with no inputs')
+        this.channel.register('node', new NodeWithAccordion('Filter node',[{}],[{}],this,this.channel.get('mainFlow'),{x:200,y:10}), 'Filter node')
+        this.channel.register('node', new Node('Display node',[{}],[],this,this.channel.get('mainFlow'),{x:400,y:10}), 'Display node')
         */
     }
     foldTop(v){
@@ -1854,6 +1890,7 @@ class App{
             }
         }
         const validate=()=>{
+            console.log(dataVessel)
             DelimitedTextLoader.DOMelt.dismisser.click()
         }
         const readSingleFile=(e,data)=>{
@@ -1948,6 +1985,104 @@ class App{
     }
     deserialize(){
         globalThis.revivedJSON=deserializeApp(globalThis.saveJSON)
+    }
+    saveSession(options={}){
+        if(typeof options === "boolean"){
+            options={download:options}
+        }
+        const json=saveSession(this)
+        if(options.download){
+            SingleJsonFile(json)
+        }
+        if(options.localStorage){
+            localStorage.setItem("attributor-session",json)
+        }
+        return json
+    }
+    async importSession(options={}){
+        if(typeof options === "string"){
+            options={json:options}
+        }
+        let json=options.json
+        if(options.localStorage){
+            json=localStorage.getItem("attributor-session")
+        }
+        if(options.file){
+            json=await options.file.text()
+        }
+        if(options.filePicker){
+            const input=CE('input',{type:"file",accept:"application/json"},[])
+            json=await new Promise((resolve,reject)=>{
+                input.addEventListener("change",async()=>{
+                    const file=input.files?.[0]
+                    if(!file){
+                        reject(new Error("No session file selected"))
+                        return
+                    }
+                    try{
+                        resolve(await file.text())
+                    }catch(error){
+                        reject(error)
+                    }
+                },{once:true})
+                input.click()
+            })
+        }
+        if(typeof json !== "string"){
+            throw new TypeError("importSession expects json, file, localStorage, or filePicker")
+        }
+        const importedApp=await importSessionData(json,{
+            createApp:()=>new App(),
+            createNode:({data,app,flow})=>{
+                const constructors={
+                    Node,
+                    NodeWithAccordion,
+                    NodeWithAccordionGraph
+                }
+                const NodeType=constructors[data.type]??Node
+                return new NodeType(
+                    data.title,
+                    data.inputs,
+                    data.outputs,
+                    app,
+                    flow,
+                    data.position
+                )
+            },
+            createLink:({flow,inputNode,inputIndex,outputNode,outputIndex})=>{
+                const inputAnchor=inputNode.DOMelt.querySelectorAll('.output.anchor')[inputIndex]
+                const outputAnchor=outputNode.DOMelt.querySelectorAll('.input.anchor')[outputIndex]
+                if(!inputAnchor||!outputAnchor){
+                    throw new Error("Cannot restore link anchors")
+                }
+                const startingPos=Node.anchorAbsPos(inputAnchor)
+                const endingPos=Node.anchorAbsPos(outputAnchor)
+                const bezierSide=flow.parameters.field.links.stiffness
+                const link=d3.create("svg:g")
+                    .attr("class","link")
+                    .append("path")
+                    .attr("class","link")
+                    .style("pointer-events","stroke")
+                    .attr("d",`M ${startingPos.x} ${startingPos.y}
+                        C ${startingPos.x+bezierSide} ${startingPos.y},
+                        ${endingPos.x-bezierSide} ${endingPos.y},
+                        ${endingPos.x} ${endingPos.y}`)
+                flow.field.node().appendChild(link.node())
+                link.startingAnchor=inputAnchor
+                link.endingAnchor=outputAnchor
+                link.startingNode=inputNode
+                link.endingNode=outputNode
+                link.inputNode=inputNode
+                link.outputNode=outputNode
+                link.inputAnchor=inputAnchor
+                link.outputAnchor=outputAnchor
+                flow.linkList.push(link)
+            }
+        })
+        this.channel.shutDown()
+        this.main.remove()
+        globalThis.Attributor=importedApp
+        return importedApp
     }
 }
 
