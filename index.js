@@ -66,7 +66,8 @@ function serveStaticFileLimited(req, res) {
         '/XOP/rust-extension/pkg/attribrustor_bg.wasm':'XOP/rust-extension/pkg/attribrustor_bg.wasm',
         "/resources/config.js":"resources/config.js",
         "/scripts/formats.js":"scripts/formats.js",
-        "/resources/pattern.svg":"resources/pattern.svg"
+        "/resources/pattern.svg":"resources/pattern.svg",
+        "/scripts/sessions.js":"scripts/sessions.js"
     }
     const filePath = filePathMap[req.url]
     console.log("This file is served by serveStaticFileLimited: ",req.url)

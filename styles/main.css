@@ -37,6 +37,16 @@ select:hover{
     background: rgba(0, 0, 0, 0.55);
     box-shadow: 0px 0px 20px 1px greenyellow;
 }
+.dropzone{
+    border:2px dashed rgba(255, 255, 255, 0.5);
+    padding:1em;
+    margin-bottom:0.5em;
+    text-align:center;
+}
+.dropzone.dragover{
+    background:rgba(240, 240, 240, 0.2);
+    border-color:greenyellow;
+}
 
 div{
     border:0px solid rgba(0, 0, 0, 0.5);
@@ -116,7 +126,8 @@ div{
 #mainMenu{
     border:0px solid green;
     height: 100%;
-    z-index:100;
+    position:relative;
+    z-index:200;
 }
 
 #mainInterface{
@@ -178,6 +189,7 @@ div{
 
 .content{
     height: 100%;
+    min-height: 0;
     overflow:auto;
     border:0px solid violet;
     background: linear-gradient(135deg, #89898080, #A9B2AC80, #BCD0C780);
@@ -187,6 +199,22 @@ div{
     border:0px solid greenyellow;
     overflow: auto;
     position:relative;
+}
+.vertical.left.content{
+    min-height:0;
+    overflow:auto;
+}
+.accordion.container{
+    min-height:0;
+    max-height:70%;
+    overflow:hidden;
+}
+.accordion.content{
+    display:grid;
+    grid-template-rows:minmax(0, 1fr);
+    min-height:0;
+    max-height:100%;
+    overflow:auto;
 }
 
 .app{

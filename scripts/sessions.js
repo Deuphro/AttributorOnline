@@ -148,6 +148,7 @@ function serializeNode(node, state) {
         inputs: encodeValue(node.inputs, state),
         outputs: encodeValue(node.outputs, state),
         position: encodeValue(node.parameters?.position ?? {x: 10, y: 10}, state),
+        state: encodeValue(node.serializeState?.(), state),
         status: node.status
     }
 }
@@ -277,6 +278,7 @@ function importSession(serialized, options = {}) {
             channel.register(nodeData.registrationName, node, nodeData.label)
             nodes.set(nodeData.id, node)
             registrations.set(nodeData.id, node)
+            node.restoreState?.(decodeValue(nodeData.state, registrations))
         }
 
         for (const nodeData of flowData.nodes) {

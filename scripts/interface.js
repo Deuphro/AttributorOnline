@@ -24,6 +24,7 @@ class Node{
             stopLinkDrawing(anchor){return new CustomEvent("stopLinkDrawing",{detail:{msg:{stopper:anchor},emitter:this}})},
             nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}}),
             nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this,undoStack:true}}),
+            nodeStatusChanged(status){return new CustomEvent("nodeStatusChanged",{detail:{msg:{status},emitter:this}})},
         },listen:{
             registered(e){
                 this.registered(e)
@@ -251,6 +252,178 @@ class NodeWithAccordion extends Node{
     }
 }
 
+class DelimitedTextNode extends NodeWithAccordion{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        super(title,[],[[]],origin,destinationFlow,position)
+        this.parameters.source={
+            lineSeparator:"\\r|\\n|\\r\\n",
+            columnSeparator:"\\t|,|\\s",
+            fileName:"",
+            raw:"",
+            pairs:[]
+        }
+    }
+    registered(e){
+        super.registered(e)
+        this.renderAccordion()
+    }
+    serializeState(){
+        return {
+            source:this.parameters.source,
+            status:this.status
+        }
+    }
+    restoreState(state){
+        if(state?.source){
+            this.parameters.source=state.source
+        }
+        this.updateLabel(this.parameters.source.fileName)
+        if(this.parameters.source.pairs?.length){
+            this.outputs[0]=this.parameters.source.pairs.map(pair=>[...pair])
+        }
+        this.status=state?.status??(this.parameters.source.pairs?.length?"resolved":"floating")
+        this.renderAccordion()
+    }
+    async startResolve(){
+        if(!this.parameters.source.pairs.length){
+            this.outputs[0]=[]
+            this.status="floating"
+            return
+        }
+        this.outputs[0]=this.parameters.source.pairs.map(pair=>[...pair])
+        this.status="resolved"
+    }
+    clear(){
+        this.updateLabel("")
+        this.parameters.source.fileName=""
+        this.parameters.source.raw=""
+        this.parameters.source.pairs=[]
+        this.outputs[0]=[]
+        dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,"floating"))
+        this.renderAccordion()
+    }
+    parseRaw(){
+        const {raw,lineSeparator,columnSeparator}=this.parameters.source
+        const pairs=[]
+        for(const line of raw.split(RegExp(lineSeparator))){
+            const values=line.split(RegExp(columnSeparator)).map(value=>Number.parseFloat(value))
+            if(Number.isFinite(values[0])&&Number.isFinite(values[1])){
+                pairs.push([values[0],values[1]])
+            }
+        }
+        return pairs
+    }
+    updateLabel(fileName){
+        const label=fileName||"Simple XY file"
+        this.title=label
+        this.events.label=label
+        this.DOMelt.querySelector("#nodeTitle").textContent=label
+        if(this.accordion){
+            this.accordion.title=label
+            this.accordion.DOMelt.handler.querySelector(".accordion.handler.label").textContent=label
+        }
+        this.fitWidthToTitle()
+    }
+    renderAccordion(){
+        if(!this.accordion){
+            return
+        }
+        this.accordion.DOMelt.content.replaceChildren()
+        if(this.status==="resolved"){
+            const tableData=[["X","Y"],...this.parameters.source.pairs]
+            const resolvedContent=CE("div",{style:{
+                display:"grid",
+                "grid-template-rows":"minmax(0, 1fr) auto",
+                "min-height":"0",
+                height:"100%",
+                overflow:"hidden"
+            }},[])
+            this.accordion.DOMelt.content.appendChild(resolvedContent)
+            new Table(tableData,"XY",this.origin,resolvedContent)
+            resolvedContent.appendChild(CE("button",{pilot:this,handleClick:e=>e.target.pilot.clear()},["Clear"]))
+            return
+        }
+        const previewStyle={
+            margin:"5px",
+            borderRadius:"5px",
+            border:"1px solid white",
+            padding:"5px",
+            minHeight:"0",
+            overflow:"auto"
+        }
+        const rawPreview=CE("div",{style:previewStyle},["Raw preview"])
+        const procPreview=CE("div",{style:previewStyle},["XY preview"])
+        const updatePreview=()=>{
+            rawPreview.textContent=this.parameters.source.raw.slice(0,500)
+            procPreview.textContent=this.parameters.source.raw?JSON.stringify(this.parseRaw().slice(0,15)):"XY preview"
+        }
+        const readFile=file=>{
+            if(!file){
+                return
+            }
+            const reader=new FileReader()
+            reader.onload=()=>{
+                this.parameters.source.fileName=file.name
+                this.updateLabel(file.name)
+                this.parameters.source.raw=reader.result
+                updatePreview()
+            }
+            reader.readAsText(file)
+        }
+        const dropzone=CE("div",{className:"dropzone"},["Drop a text file here"])
+        dropzone.addEventListener("dragover",e=>{
+            e.preventDefault()
+            dropzone.classList.add("dragover")
+        })
+        dropzone.addEventListener("dragleave",()=>dropzone.classList.remove("dragover"))
+        dropzone.addEventListener("drop",e=>{
+            e.preventDefault()
+            dropzone.classList.remove("dragover")
+            readFile(e.dataTransfer.files[0])
+        })
+        const loader=CE("input",{type:"file",handleChange:e=>readFile(e.target.files[0])},["Select a text file"])
+        const lineSeparator=CE("select",{value:this.parameters.source.lineSeparator,handleInput:e=>{
+            this.parameters.source.lineSeparator=e.target.value
+            updatePreview()
+        }},[
+            CE("option",{value:"\\r|\\n|\\r\\n"},["auto/guess"]),
+            CE("option",{value:"\\r\\n"},["CRLF"]),
+            CE("option",{value:"\\r"},["CR"]),
+            CE("option",{value:"\\n"},["LF"])
+        ])
+        const columnSeparator=CE("select",{value:this.parameters.source.columnSeparator,handleInput:e=>{
+            this.parameters.source.columnSeparator=e.target.value
+            updatePreview()
+        }},[
+            CE("option",{value:"\\t|,|\\s"},["auto/guess"]),
+            CE("option",{value:"\\t"},["tab"]),
+            CE("option",{value:","},["comma"]),
+            CE("option",{value:"\\s+"},["whitespace"])
+        ])
+        const validate=CE("button",{pilot:this,handleClick:async e=>{
+            e.target.pilot.parameters.source.pairs=e.target.pilot.parseRaw()
+            await e.target.pilot.startResolve()
+            e.target.pilot.renderAccordion()
+        }},["Load"])
+        this.accordion.DOMelt.content.appendChild(CE("div",{style:{
+            display:"grid",
+            gap:"5px",
+            minHeight:"0",
+            height:"100%",
+            overflow:"hidden",
+            gridTemplateRows:"auto auto minmax(0, 1fr) auto auto"
+        }},[
+            dropzone,
+            loader,
+            CE("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",minHeight:"0",overflow:"hidden"}},[rawPreview,procPreview]),
+            CE("label",{},["Lines separator",lineSeparator]),
+            CE("label",{},["Columns separator",columnSeparator]),
+            validate
+        ]))
+        updatePreview()
+    }
+}
+
 class NodeWithAccordionGraph extends Node{
     registered(e){
         const {channel, registrationName, label, caster} = e.detail.msg
@@ -285,6 +458,99 @@ class NodeWithAccordionGraph extends Node{
     }
 }
 
+class NodeWithRightAccordionGraph extends Node{
+    constructor(title,inputs,outputs,origin,destinationFlow,position={x:180,y:10}){
+        super(title,inputs,outputs,origin,destinationFlow,position)
+    }
+    registered(e){
+        const {channel, registrationName, label, caster} = e.detail.msg
+        if(caster !== this){
+            return
+        }
+        this.accordion=new Accordion(
+            label,
+            this.origin,
+            this.origin.main.querySelector(".vertical.right.content")
+        )
+        channel.register(`${registrationName}:accordion`,this.accordion,label)
+        this.graphDialog=new Dialog(`${label} graph`,this.origin,this.origin.midCentralContent)
+        this.graphDialog.DOMelt.dismisser.hidden=true
+        stylize(this.graphDialog.DOMelt.window,{
+            top:"0px",
+            left:"0px",
+            width:"100%",
+            height:"100%"
+        })
+        channel.register(`${registrationName}:graph`,this.graphDialog,`${label} graph`)
+        this.graph=new Plot2D([],`${label} graph`,this.origin,this.graphDialog.DOMelt.content)
+    }
+    suicide(){
+        this.graphDialog?.suicide()
+        this.accordion?.suicide()
+        super.suicide()
+    }
+}
+
+class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
+    constructor(title,inputs,outputs,origin,destinationFlow,position={x:180,y:10}){
+        super(title,inputs,outputs,origin,destinationFlow,position)
+    }
+    registered(e){
+        super.registered(e)
+        this.logScaleCheckbox=CE("input",{type:"checkbox",style:{accentColor:"greenyellow"}},[])
+        this.logScaleCheckbox.addEventListener("change",event=>{
+            const enabled=event.target.checked
+            if(enabled&&this.graph.data.some(([x,y])=>x<=0||y<=0)){
+                event.target.checked=false
+                return
+            }
+            this.setLogarithmicScale(enabled)
+        })
+        const logScaleLabel=CE("label",{},[])
+        logScaleLabel.appendChild(this.logScaleCheckbox)
+        logScaleLabel.appendChild(document.createTextNode(" Logarithmic scale"))
+        this.accordion.DOMelt.content.appendChild(logScaleLabel)
+    }
+    setLogarithmicScale(enabled){
+        const scale=enabled?"log":"linear"
+        this.graph.parameters.axis.bottom.scale=scale
+        this.graph.parameters.axis.left.scale=scale
+        this.graph.drawGraph()
+    }
+    collectPairs(){
+        const pairs=[]
+        for(const input of this.inputs){
+            for(const values of input.values()){
+                for(const value of values){
+                    if(Array.isArray(value)){
+                        for(const pair of value){
+                            if(Array.isArray(pair)&&pair.length>=2){
+                                const x=Number(pair[0])
+                                const y=Number(pair[1])
+                                if(Number.isFinite(x)&&Number.isFinite(y)){
+                                    pairs.push([x,y])
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return pairs
+    }
+    async startResolve(){
+        this.status="pending"
+        const pairs=this.collectPairs()
+        this.graph.data=pairs
+        if(this.graph.parameters.axis.bottom.scale==="log"&&pairs.some(([x,y])=>x<=0||y<=0)){
+            this.logScaleCheckbox.checked=false
+            this.setLogarithmicScale(false)
+        }
+        this.graph.drawGraph()
+        this.status=pairs.length?"resolved":"error"
+    }
+}
+
 class Flow{
     constructor(title,origin,destination){
         this.title=title
@@ -299,6 +565,7 @@ class Flow{
             startLinkDrawing(e){this.startBuildingLink(e)},
             stopLinkDrawing(e){this.stopBuildingLink(e)},
             nodeKilled(e){this.updateLinks()},
+            nodeStatusChanged(e){this.forwardStatus(e.detail.emitter,e.detail.msg.status)},
             linkSelected(e){},
             async resolveFlow(e){
                 await this.resolveFlow()
@@ -606,6 +873,14 @@ class MainFlowMenu extends Menu{
                     const {title,type} = e.detail.msg
                     let node
                     switch (type) {
+                        case "delimitedText":
+                            node = new DelimitedTextNode(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
                         case "random": {
                             const inputs = []
                             const outputs = []
@@ -660,6 +935,26 @@ class MainFlowMenu extends Menu{
                                 origin,
                                 origin.channel.get("mainFlow"),
                                 {x: 180, y: 10}
+                            )
+                            break
+                        case "rightAccordionGraph":
+                            node = new NodeWithRightAccordionGraph(
+                                title,
+                                [],
+                                [],
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
+                        case "simpleXYPlot":
+                            node = new SimpleXYPlotNode(
+                                title,
+                                [[]],
+                                [],
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
                             )
                             break
                         default:
@@ -849,6 +1144,23 @@ class Plot2D{
         let translate=""
         this.axesSVG={}
         let target=""
+        if(this.data.length){
+            const xValues=this.data.map(pair=>pair[0])
+            const yValues=this.data.map(pair=>pair[1])
+            const xMin=Math.min(...xValues)
+            const xMax=Math.max(...xValues)
+            const yMin=Math.min(...yValues)
+            const yMax=Math.max(...yValues)
+            if(this.parameters.axis.bottom.scale==="log"){
+                this.parameters.axis.bottom.domain=[xMin/1.05,xMax*1.05]
+                this.parameters.axis.left.domain=[yMin/1.05,yMax*1.05]
+            }else{
+                const xPadding=(xMax-xMin)||1
+                const yPadding=(yMax-yMin)||1
+                this.parameters.axis.bottom.domain=[xMin-0.05*xPadding,xMax+0.05*xPadding]
+                this.parameters.axis.left.domain=[yMin-0.05*yPadding,yMax+0.05*yPadding]
+            }
+        }
         if(this.parameters.graphzone.drawn){
         } else {
             this.parameters.graphzone.drawn=true
@@ -882,11 +1194,9 @@ class Plot2D{
             } else if (this.parameters.axis[axis].orientation=="vertical"){
                 range=[this.parameters.axis[axis].range[0]*this.graphzone.height,this.parameters.axis[axis].range[1]*this.graphzone.height]
             }
-            if (this.parameters.axis[axis].scale=="linear"){
-                scale=d3.scaleLinear()
-                    .domain(this.parameters.axis[axis].domain)
-                    .range(range)
-            }
+            scale=(this.parameters.axis[axis].scale==="log"?d3.scaleLog():d3.scaleLinear())
+                .domain(this.parameters.axis[axis].domain)
+                .range(range)
             this.axesSVG[axis]=this.graphSVG.select(".anchor").select(target)
             this.axesSVG[axis].attr("transform",translate)
             this.axesSVG[axis].attr("fill","blanchedalmond")
@@ -908,6 +1218,25 @@ class Plot2D{
             this.axesSVG[axis].selectAll(".tick text").attr("font-size", "12px").attr("font-family","Times New Roman")
             this.parameters.axis[axis].drawn=true
         }
+        const xScale=(this.parameters.axis.bottom.scale==="log"?d3.scaleLog():d3.scaleLinear())
+            .domain(this.parameters.axis.bottom.domain)
+            .range([0,this.graphzone.width])
+        const yScale=(this.parameters.axis.left.scale==="log"?d3.scaleLog():d3.scaleLinear())
+            .domain(this.parameters.axis.left.domain)
+            .range([this.graphzone.height,0])
+        const points=this.graphSVG.select(".anchor")
+            .selectAll("circle.point")
+            .data(this.data)
+        points.enter()
+            .append("circle")
+            .attr("class","point")
+            .merge(points)
+            .attr("cx",pair=>xScale(pair[0]))
+            .attr("cy",pair=>yScale(pair[1]))
+            .attr("r",4)
+            .attr("fill","tomato")
+            .attr("stroke","darkgrey")
+        points.exit().remove()
     }
 }
 
@@ -1438,7 +1767,7 @@ class Accordion{
                     width:"100%",
                     border:"0px solid black",
                     padding:"1px",
-                    "grid-template-rows":"auto 1fr",
+                    "grid-template-rows":"auto minmax(0, 1fr)",
                     transition:"300ms"
                 }
             },
@@ -1812,7 +2141,7 @@ class App{
             for(let file of fileList){
                 fileNumber++
                 requestPOST('https://attributor.fr/uploads',file,(data)=>{
-                    for(let item of senderContainer.children[1].children){
+                    for(let item of senderContainer.children[2].children){
                         if(item.textContent==file.name){
                             let textFileName=file.name.replace('.raw','.txt')
                             item.lastChild.remove()
@@ -1833,20 +2162,35 @@ class App{
             }
         }
         let sendList=CE('div',{style:{height:"100%"}},["Files to be sent to server:"])
-        const addFileSendList=(e)=>{
+        let selectedFiles=[]
+        const addFileSendList=(files)=>{
+            selectedFiles=files
             sendList.replaceChildren()
             sendCommand.firstChild.disabled=false
-            for(let file of e.target.files){
+            for(let file of files){
                 sendList.appendChild(CE('div',{style:{"margin-bottom":"1px"}},[file.name]))
             }
         }
         let msConvertDialog=new Dialog("Send .raw to a server for conversion",this,this.main)
-        let loaderElement=CE('input',{type:"file",multiple:true,accept:".raw",handleChange:(e)=>{addFileSendList(e)}},["Select a raw file"])
+        const dropzone=CE('div',{className:"dropzone"},["Drop .raw files here"])
+        dropzone.addEventListener("dragover",(e)=>{
+            e.preventDefault()
+            dropzone.classList.add("dragover")
+        })
+        dropzone.addEventListener("dragleave",()=>{
+            dropzone.classList.remove("dragover")
+        })
+        dropzone.addEventListener("drop",(e)=>{
+            e.preventDefault()
+            dropzone.classList.remove("dragover")
+            addFileSendList(e.dataTransfer.files)
+        })
+        let loaderElement=CE('input',{type:"file",multiple:true,accept:".raw",handleChange:(e)=>{addFileSendList(e.target.files)}},["Select a raw file"])
         let sendCommand=CE('div',{},[
             CE('button',{handleClick:(e)=>{
-                sendToServer(loaderElement.files)
+                sendToServer(selectedFiles)
                 e.target.disabled=true
-                for(let item of senderContainer.children[1].children){
+                for(let item of senderContainer.children[2].children){
                     item.appendChild(new OrbiSpinner())
                 }
                 senderContainer.lastChild.textContent="Files sent to server, waiting for conversion..."
@@ -1857,10 +2201,11 @@ class App{
                 width:"100%",
                 height:"100%",
                 display:"grid",
-                "grid-template-rows":"auto 1fr auto auto"},
+                "grid-template-rows":"auto auto 1fr auto auto"},
                 "justify-items": "stretch",
                 "align-items": "stretch"
-            },[loaderElement,
+            },[dropzone,
+                loaderElement,
                 sendList,
                 sendCommand,
                 CE('div',{style:{"text-align":"center"}},[message])
@@ -1893,16 +2238,18 @@ class App{
             console.log(dataVessel)
             DelimitedTextLoader.DOMelt.dismisser.click()
         }
-        const readSingleFile=(e,data)=>{
-            let file = e.target.files[0];
+        const readFile=(file,data)=>{
             if (!file) {
-                return;
+                return
             }
-            data.reader = new FileReader();
-            data.reader.onload = (e)=>{
+            data.reader = new FileReader()
+            data.reader.onload = ()=>{
                 updatePreviews(data)
             }
-            data.reader.readAsText(file);
+            data.reader.readAsText(file)
+        }
+        const readSingleFile=(e,data)=>{
+            readFile(e.target.files[0],data)
         }
         const updatePreviews=(vessel)=>{
             vessel.processRaw()
@@ -1916,6 +2263,19 @@ class App{
             let prevTable=new Table(cropData,[],this,procPreview)
             prevTable.parameters.mutable.hRuler=true
         }
+        const dropzone=CE('div',{className:"dropzone"},["Drop a text file here"])
+        dropzone.addEventListener("dragover",(e)=>{
+            e.preventDefault()
+            dropzone.classList.add("dragover")
+        })
+        dropzone.addEventListener("dragleave",()=>{
+            dropzone.classList.remove("dragover")
+        })
+        dropzone.addEventListener("drop",(e)=>{
+            e.preventDefault()
+            dropzone.classList.remove("dragover")
+            readFile(e.dataTransfer.files[0],dataVessel)
+        })
         const loaderElement=CE('input',{type:"file",handleChange:(e)=>{readSingleFile(e,dataVessel)}},["Select a text file"])
         let rawPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données brutes"])
         rawPreview.setAttribute("contenteditable","true")
@@ -1951,13 +2311,15 @@ class App{
                 width:"100%",
                 height:"100%",
                 display:"grid",
-                "grid-template-rows":"auto 3fr auto"},
+                "grid-template-rows":"auto auto minmax(0, 1fr) auto"},
                 "justify-items": "stretch",
                 "align-items": "stretch"
         },[
+            dropzone,
             loaderElement,
             CE('div',{style:{
                 overflow:"auto",
+                "min-height":"0",
                 display:"grid",
                 "grid-template-columns":"1fr 1fr"
             }},[
@@ -2037,9 +2399,15 @@ class App{
                 const constructors={
                     Node,
                     NodeWithAccordion,
-                    NodeWithAccordionGraph
+                    NodeWithAccordionGraph,
+                    NodeWithRightAccordionGraph,
+                    SimpleXYPlotNode,
+                    DelimitedTextNode
                 }
                 const NodeType=constructors[data.type]??Node
+                if(NodeType===DelimitedTextNode){
+                    return new NodeType(data.title,app,flow,data.position)
+                }
                 return new NodeType(
                     data.title,
                     data.inputs,
