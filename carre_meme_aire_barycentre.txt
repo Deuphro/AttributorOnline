@@ -1,0 +1,10 @@
+# Carré ayant la même aire et le même barycentre que le contour fourni
+# Aire du contour : 29.60022511 deg² (approximation plane)
+# Barycentre : X=2.24771354, Y=46.68167159
+# Côté du carré : 5.44060889 degrés
+# Format : X Y
+-0.47259090 43.96136715
+4.96801799 43.96136715
+4.96801799 49.40197604
+-0.47259090 49.40197604
+-0.47259090 43.96136715

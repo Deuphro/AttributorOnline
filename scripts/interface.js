@@ -7,8 +7,48 @@ import { Data , Vector, Wave} from "./formats.js"
 window.raie=new Wave(5)
 window.eiar=new Wave(7)
 
+class History{
+    constructor(){
+        this.undoStack=[]
+        this.redoStack=[]
+        this.replaying=false
+    }
+    record(command){
+        if(this.replaying){
+            return
+        }
+        this.undoStack.push(command)
+        this.redoStack=[]
+    }
+    undo(){
+        const command=this.undoStack.pop()
+        if(!command){
+            return
+        }
+        this.replaying=true
+        try{
+            command.undo()
+            this.redoStack.push(command)
+        }finally{
+            this.replaying=false
+        }
+    }
+    redo(){
+        const command=this.redoStack.pop()
+        if(!command){
+            return
+        }
+        this.replaying=true
+        try{
+            command.redo()
+            this.undoStack.push(command)
+        }finally{
+            this.replaying=false
+        }
+    }
+}
+
 class Node{
-    #status;
     constructor(title,inputs, outputs,origin,destinationFlow,position={x:10,y:10}){
         this.title=title
         this.inputs=inputs
@@ -23,7 +63,7 @@ class Node{
             startLinkDrawing(anchor){return new CustomEvent("startLinkDrawing",{detail:{msg:{starter:anchor},emitter:this}})},
             stopLinkDrawing(anchor){return new CustomEvent("stopLinkDrawing",{detail:{msg:{stopper:anchor},emitter:this}})},
             nodeSelected:new CustomEvent("nodeSelected",{detail:{msg:"I'm a node selected",emitter:this}}),
-            nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this,undoStack:true}}),
+            nodeKilled:new CustomEvent("nodeKilled",{detail:{msg:"",emitter:this}}),
             nodeStatusChanged(status){return new CustomEvent("nodeStatusChanged",{detail:{msg:{status},emitter:this}})},
         },listen:{
             registered(e){
@@ -114,7 +154,7 @@ class Node{
                 dispatchEvent(e.target.pilot.events.broadcast.stopLinkDrawing.call(e.target.pilot,e.target))
             }
         }
-        this.#status='floating'
+        this._status='floating'
         this.draw()
     }
     registered(e){
@@ -146,6 +186,7 @@ class Node{
         let dx=e.clientX;
         let dy=e.clientY;
         const pilot=e.target.pilot
+        const before={...pilot.parameters.position}
         document.onmousemove=(e)=>{
             e.preventDefault();
             dx-=e.clientX;
@@ -161,7 +202,19 @@ class Node{
             e.preventDefault();
             document.onmousemove=null;
             document.onmouseup=null;
+            const after={...pilot.parameters.position}
+            if(before.x!==after.x||before.y!==after.y){
+                pilot.origin.history.record({
+                    undo:()=>pilot.setPosition(before),
+                    redo:()=>pilot.setPosition(after)
+                })
+            }
         }
+    }
+    setPosition(position){
+        this.parameters.position={...position}
+        this.SVGg.attr('transform',`translate(${position.x},${position.y})`)
+        this.destination.updateLinks()
     }
     set status(value){
         const possible=['resolved','error','pending','floating']
@@ -171,16 +224,61 @@ class Node{
         }else{
             value='floating'
         }
-        this.#status=value
+        this._status=value
     }
     get status(){
-        return this.#status
+        return this._status
     }
-    suicide(){
-        this.SVGg.node().remove()
-        this.destination.nodeSet.delete(this)
+    suicide({skipHistory=false}={}){
+        const flow=this.destination
+        const linkedDescriptors=flow.linkList
+            .filter(link=>link.inputNode===this||link.outputNode===this)
+            .map(link=>({
+                inputNode:link.inputNode,
+                inputIndex:Number(link.inputAnchor.id),
+                outputNode:link.outputNode,
+                outputIndex:Number(link.outputAnchor.id)
+            }))
+        const restoreData={
+            title:this.title,
+            type:this.constructor.name,
+            inputs:DC(this.inputs),
+            outputs:DC(this.outputs),
+            position:{...this.parameters.position},
+            status:this.status,
+            source:this.parameters.source?DC(this.parameters.source):null
+        }
         dispatchEvent(this.events.broadcast.killed)
+        for(const link of [...flow.linkList]){
+            if(link.inputNode===this||link.outputNode===this){
+                flow.deleteLink(link,{record:false})
+            }
+        }
+        flow.nodeSet.delete(this)
         dispatchEvent(this.events.broadcast.nodeKilled)
+        this.SVGg.node().remove()
+        if(!skipHistory&&!this.origin.history.replaying){
+            let restoredNode=null
+            let restoredLinks=[]
+            this.origin.history.record({
+                undo:()=>{
+                    restoredNode=createNodeForHistory(this.origin,flow,restoreData)
+                    restoredLinks=linkedDescriptors.map(link=>flow.createLink(
+                        link.inputNode===this?restoredNode:link.inputNode,
+                        link.inputIndex,
+                        link.outputNode===this?restoredNode:link.outputNode,
+                        link.outputIndex
+                    )).filter(Boolean)
+                },
+                redo:()=>{
+                    for(const link of [...restoredLinks]){
+                        flow.deleteLink(link,{record:false})
+                    }
+                    restoredNode?.suicide({skipHistory:true})
+                    restoredLinks=[]
+                }
+            })
+        }
     }
     static anchorAbsPos(anchor){
         const anchorPos=anchor.pilot.parameters.anchorMap.get(anchor).positions
@@ -233,10 +331,40 @@ class Node{
     }
 }
 
+class Operation extends Node{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        super(title,[[]],[[]],origin,destinationFlow,position)
+    }
+    operation(value){
+        return Number(value)+1
+    }
+    computeOutputs(){
+        const output=[]
+        for(const input of this.inputs){
+            if(!(input instanceof Map)){
+                continue
+            }
+            for(const values of input.values()){
+                for(const pairs of values){
+                    if(!Array.isArray(pairs)){
+                        continue
+                    }
+                    for(const pair of pairs){
+                        if(Array.isArray(pair)&&pair.length>=2){
+                            output.push(pair.map(item=>this.operation(item)))
+                        }
+                    }
+                }
+            }
+        }
+        return output
+    }
+}
+
 class NodeWithAccordion extends Node{
     registered(e){
         const {channel, registrationName, label, caster} = e.detail.msg
-        if(caster !== this){
+        if(caster !== this || this.accordion){
             return
         }
         this.accordion=new Accordion(
@@ -246,9 +374,9 @@ class NodeWithAccordion extends Node{
         )
         channel.register(`${registrationName}:accordion`,this.accordion,label)
     }
-    suicide(){
+    suicide(options={}){
         this.accordion?.suicide()
-        super.suicide()
+        super.suicide(options)
     }
 }
 
@@ -256,7 +384,7 @@ class DelimitedTextNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(title,[],[[]],origin,destinationFlow,position)
         this.parameters.source={
-            lineSeparator:"\\r|\\n|\\r\\n",
+            lineSeparator:"\\r\\n|\\r|\\n",
             columnSeparator:"\\t|,|\\s",
             fileName:"",
             raw:"",
@@ -264,6 +392,9 @@ class DelimitedTextNode extends NodeWithAccordion{
         }
     }
     registered(e){
+        if(e.detail.msg.caster !== this){
+            return
+        }
         super.registered(e)
         this.renderAccordion()
     }
@@ -427,7 +558,7 @@ class DelimitedTextNode extends NodeWithAccordion{
 class NodeWithAccordionGraph extends Node{
     registered(e){
         const {channel, registrationName, label, caster} = e.detail.msg
-        if(caster !== this){
+        if(caster !== this || this.accordion){
             return
         }
         this.accordion=new Accordion(
@@ -451,10 +582,10 @@ class NodeWithAccordionGraph extends Node{
             this.graphDialog.DOMelt.content
         )
     }
-    suicide(){
+    suicide(options={}){
         this.graphDialog?.suicide()
         this.accordion?.suicide()
-        super.suicide()
+        super.suicide(options)
     }
 }
 
@@ -464,7 +595,7 @@ class NodeWithRightAccordionGraph extends Node{
     }
     registered(e){
         const {channel, registrationName, label, caster} = e.detail.msg
-        if(caster !== this){
+        if(caster !== this || this.accordion){
             return
         }
         this.accordion=new Accordion(
@@ -484,10 +615,10 @@ class NodeWithRightAccordionGraph extends Node{
         channel.register(`${registrationName}:graph`,this.graphDialog,`${label} graph`)
         this.graph=new Plot2D([],`${label} graph`,this.origin,this.graphDialog.DOMelt.content)
     }
-    suicide(){
+    suicide(options={}){
         this.graphDialog?.suicide()
         this.accordion?.suicide()
-        super.suicide()
+        super.suicide(options)
     }
 }
 
@@ -496,6 +627,9 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         super(title,inputs,outputs,origin,destinationFlow,position)
     }
     registered(e){
+        if(e.detail.msg.caster !== this || this.logScaleCheckbox){
+            return
+        }
         super.registered(e)
         this.logScaleCheckbox=CE("input",{type:"checkbox",style:{accentColor:"greenyellow"}},[])
         this.logScaleCheckbox.addEventListener("change",event=>{
@@ -551,6 +685,43 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     }
 }
 
+function createNodeForHistory(origin,flow,data){
+    const position={...data.position}
+    let node
+    switch(data.type){
+        case "DelimitedTextNode":
+            node=new DelimitedTextNode(data.title,origin,flow,position)
+            break
+        case "SimpleXYPlotNode":
+            node=new SimpleXYPlotNode(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
+            break
+        case "NodeWithAccordionGraph":
+            node=new NodeWithAccordionGraph(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
+            break
+        case "NodeWithRightAccordionGraph":
+            node=new NodeWithRightAccordionGraph(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
+            break
+        case "NodeWithAccordion":
+            node=new NodeWithAccordion(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
+            break
+        case "Operation":
+            node=new Operation(data.title,origin,flow,position)
+            break
+        default:
+            node=new Node(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
+            break
+    }
+    origin.channel.register("node",node,node.title)
+    if(data.source){
+        node.parameters.source=DC(data.source)
+        node.updateLabel(node.parameters.source.fileName)
+        node.startResolve().then(()=>node.renderAccordion?.())
+    }else if(data.status){
+        node.status=data.status
+    }
+    return node
+}
+
 class Flow{
     constructor(title,origin,destination){
         this.title=title
@@ -559,7 +730,7 @@ class Flow{
         this.container=CE('div',{className:`flow container ${title}`},[])
         this.events={broadcast:{
             linkSelected(link){return new CustomEvent('linkSelected',{detail:{msg:link,emitter:this}})},
-            linkDeleted(link){return new CustomEvent('linkDeleted',{detail:{msg:link,emitter:this,undoStack:true}})}
+            linkDeleted(link){return new CustomEvent('linkDeleted',{detail:{msg:link,emitter:this}})}
         },listen:{
             nodeMove(e){this.updateLinks()},
             startLinkDrawing(e){this.startBuildingLink(e)},
@@ -624,34 +795,116 @@ class Flow{
                 this.linkList.pop()
             }else{
                 const endingPos=Node.anchorAbsPos(this.linkList.at(-1).endingAnchor)
-                this.linkList.at(-1).attr("d", `M ${startingPos.x} ${startingPos.y}
+                let link=this.linkList.at(-1)
+                link.attr("d", `M ${startingPos.x} ${startingPos.y}
                     C ${startingPos.x+bezierSide} ${startingPos.y},
                     ${endingPos.x-bezierSide} ${endingPos.y},
                     ${endingPos.x} ${endingPos.y}`)
-                this.linkList.at(-1).style('pointer-events','stroke')
-                this.linkList.at(-1).attr("id",this.linkList.length-1)
-                this.linkList.at(-1).attr("tabindex",0)
-                this.linkList.at(-1).lower()
-                this.linkList.at(-1).node().pilot=this
-                this.linkList.at(-1).node().handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.linkSelected.call(e.target.pilot,e.target))}
-                this.linkList.at(-1).node().handleKeyDown=(e)=>{
+                link.style('pointer-events','stroke')
+                link.attr("id",this.linkList.length-1)
+                link.attr("tabindex",0)
+                link.lower()
+                link.node().pilot=this
+                link.node().handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.linkSelected.call(e.target.pilot,e.target))}
+                link.node().handleKeyDown=(e)=>{
                     if(e.key==="Delete"){
                         e.target.pilot.deleteLink(e.target)
                     }
+                }
+                if(!this.origin.history.replaying){
+                    const descriptor={
+                        inputNode:link.inputNode,
+                        inputIndex:Number(link.inputAnchor.id),
+                        outputNode:link.outputNode,
+                        outputIndex:Number(link.outputAnchor.id)
+                    }
+                    this.origin.history.record({
+                        undo:()=>this.deleteLink(link,{record:false}),
+                        redo:()=>{link=this.createLink(
+                            descriptor.inputNode,
+                            descriptor.inputIndex,
+                            descriptor.outputNode,
+                            descriptor.outputIndex
+                        )}
+                    })
                 }
             }
             document.onmousemove=null;
             document.onmouseup=null;
         }
     }
-    deleteLink(k){
+    createLink(inputNode,inputIndex,outputNode,outputIndex){
+        const inputAnchor=inputNode.DOMelt.querySelectorAll('.output.anchor')[inputIndex]
+        const outputAnchor=outputNode.DOMelt.querySelectorAll('.input.anchor')[outputIndex]
+        if(!inputAnchor||!outputAnchor){
+            return null
+        }
+        const startingPos=Node.anchorAbsPos(inputAnchor)
+        const endingPos=Node.anchorAbsPos(outputAnchor)
+        const link=d3.create("svg:g")
+            .attr("class","link")
+            .append("path")
+            .attr("class","link")
+            .style("pointer-events","stroke")
+            .attr("d",`M ${startingPos.x} ${startingPos.y}
+                C ${startingPos.x+this.parameters.field.links.stiffness} ${startingPos.y},
+                ${endingPos.x-this.parameters.field.links.stiffness} ${endingPos.y},
+                ${endingPos.x} ${endingPos.y}`)
+        link.startingAnchor=inputAnchor
+        link.endingAnchor=outputAnchor
+        link.startingNode=inputNode
+        link.endingNode=outputNode
+        link.inputNode=inputNode
+        link.outputNode=outputNode
+        link.inputAnchor=inputAnchor
+        link.outputAnchor=outputAnchor
+        link.node().pilot=this
+        link.node().handleClick=e=>{
+            e.target.focus()
+            dispatchEvent(e.target.pilot.events.broadcast.linkSelected.call(e.target.pilot,e.target))
+        }
+        link.node().handleKeyDown=e=>{
+            if(e.key==="Delete"){
+                e.target.pilot.deleteLink(e.target)
+            }
+        }
+        this.field.node().appendChild(link.node())
+        this.linkList.push(link)
+        link.attr("id",this.linkList.length-1)
+        link.attr("tabindex",0)
+        link.lower()
+        return link
+    }
+    deleteLink(k,{record=true}={}){
         if(typeof k !="number"){
             k=this.linkList.findIndex((e)=>{return e.node()===k})
         }
-        this.forwardStatus(this.linkList.at(k).outputNode,'floating')
-        this.linkList[k].node().remove()
-        dispatchEvent(this.events.broadcast.linkDeleted(this.linkList[k]))
+        const link=this.linkList[k]
+        if(!link){
+            return
+        }
+        const descriptor={
+            inputNode:link.inputNode,
+            inputIndex:Number(link.inputAnchor.id),
+            outputNode:link.outputNode,
+            outputIndex:Number(link.outputAnchor.id)
+        }
+        dispatchEvent(this.events.broadcast.linkDeleted(link))
+        this.forwardStatus(link.outputNode,'floating')
+        link.node().remove()
         this.linkList.splice(k,1)
+        if(record&&!this.origin.history.replaying){
+            let restoredLink=null
+            this.origin.history.record({
+                undo:()=>{restoredLink=this.createLink(
+                    descriptor.inputNode,
+                    descriptor.inputIndex,
+                    descriptor.outputNode,
+                    descriptor.outputIndex
+                )},
+                redo:()=>this.deleteLink(restoredLink,{record:false})
+            })
+        }
     }
     stopBuildingLink(e){
         if(this.linkList.at(-1).startingNode.parameters.anchorMap.get(this.linkList.at(-1).startingAnchor).type!=
@@ -844,9 +1097,18 @@ class MainMenu extends Menu{
                 killed:new CustomEvent("killed",{detail:{msg:"I've just been killed !!!",emitter:this}}),
             },
             listen:{
-            importDelimitedText(e){origin.loadDelimitedText()},
+            importDelimitedText(e){
+                origin.loadDelimitedText(source=>{
+                    dispatchEvent(new CustomEvent('createNode',{detail:{msg:{
+                        title:source.fileName||'Simple XY file',
+                        type:'delimitedText',
+                        source
+                    }}}))
+                })
+            },
             msConvert(e){origin.msConvert()},
-            undo(e){origin.restoreLastState()},
+            undo(e){origin.history.undo()},
+            redo(e){origin.history.redo()},
             exportSession(e){
                 const {format,target}=e.detail.msg
                 if(format==="json" && target==="file"){
@@ -858,7 +1120,8 @@ class MainMenu extends Menu{
                 if(format==="json" && source==="file"){
                     await origin.importSession({filePicker:true})
                 }
-            }
+            },
+            about(e){origin.about()},
         }}
     }
 }
@@ -870,7 +1133,7 @@ class MainFlowMenu extends Menu{
             broadcast:{},
             listen:{
                 createNode(e){
-                    const {title,type} = e.detail.msg
+                    const {title,type,source} = e.detail.msg
                     let node
                     switch (type) {
                         case "delimitedText":
@@ -957,6 +1220,14 @@ class MainFlowMenu extends Menu{
                                 {x:180,y:10}
                             )
                             break
+                        case "operation":
+                            node = new Operation(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
                         default:
                             node = new Node(
                                 title,
@@ -969,9 +1240,33 @@ class MainFlowMenu extends Menu{
                             break
                     }
                     origin.channel.register("node", node, node.title)
+                    if(type === "delimitedText" && source){
+                        node.parameters.source={...node.parameters.source,...source}
+                        node.updateLabel(node.parameters.source.fileName)
+                        node.startResolve().then(()=>node.renderAccordion())
+                    }
+                    if(!origin.history.replaying){
+                        const nodeData=nodeHistoryData(node)
+                        origin.history.record({
+                            undo:()=>node.suicide({skipHistory:true}),
+                            redo:()=>{node=createNodeForHistory(origin,origin.channel.get("mainFlow"),nodeData)}
+                        })
+                    }
                 }
             }
         }
+            function nodeHistoryData(node){
+                return {
+                    title:node.title,
+                    type:node.constructor.name,
+                    inputs:DC(node.inputs),
+                    outputs:DC(node.outputs),
+                    position:{...node.parameters.position},
+                    status:node.status,
+                    source:node.parameters.source?DC(node.parameters.source):null
+                }
+            }
+
     }
 }
 
@@ -1002,7 +1297,7 @@ class Channel{
         }
         const identity={channel:this,registrationName,registrationId,label,caster}
         caster.events.broadcast['poppedUp']=new CustomEvent("poppedUp",{detail:{msg:identity,emitter:caster}})
-        caster.events.broadcast['killed']=new CustomEvent("killed",{detail:{msg:"default killed message",emitter:caster,stackUndo:true}})
+        caster.events.broadcast['killed']=new CustomEvent("killed",{detail:{msg:"default killed message",emitter:caster}})
         caster.events.broadcast['registered']=new CustomEvent("registered",{detail:{msg:identity,emitter:caster}})
         caster.events.registrationName=registrationName
         caster.events.registrationId=registrationId
@@ -1066,9 +1361,6 @@ class Channel{
         })
     }
     defaultListener(e){
-        if(e.detail.stackUndo){
-            this.origin.saveAppState()
-        }
         const et=e.type
         if(this.eventTypes[e.type]){
             this.eventTypes[e.type].forEach((registrationId)=>{
@@ -1617,6 +1909,7 @@ class Dialog{
         this.events={
             broadcast:{
                 selected:new CustomEvent("selected",{detail:{msg:"I've just been selected !!!",emitter:this}}),
+                killed:new CustomEvent("killed",{detail:{msg:"",emitter:this}}),
             },
             listen:{
                 selected(e){
@@ -1842,6 +2135,7 @@ class Accordion{
 class App{
     constructor(){
         this.channel=new Channel(this)
+        this.history=new History()
         this.parameters={
             topContent:{
                 folded: false,
@@ -1878,11 +2172,11 @@ class App{
         this.flowWorkspace=CE('div',{className:"flow workspace"},[])
         this.topContent[0].appendChild(this.flowWorkspace)
         this.midCentralContent=CE('div',{className:"vertical center content"},[
-            "center content"
+            ""
         ])
         this.midContent=[
             CE('div',{id:"left",className:"vertical left panel"},[
-                CE('div',{className:"vertical left content"},["left content"])
+                CE('div',{className:"vertical left content"},[""])
             ]),
             CE('div',{id:"leftSeptum", className:"left septum vertical"},[
                 CE('div',{className:"vertical resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookLeft(e)},[]),
@@ -1898,12 +2192,12 @@ class App{
                 CE('div',{className:"vertical resizer",pilot:this,handleMouseDown:(e)=>e.target.pilot.resizerHookRight(e)},[])
             ]),
             CE('div',{id:"right",className:"vertical right panel"},[
-                CE('div',{className:"vertical right content"},["right content"])
+                CE('div',{className:"vertical right content"},[""])
             ])
         ]
         this.botContent=[
             CE('div',{id:"botContent", className:"horizontal content"},[
-                "Bot content"
+                ""
             ])
         ]
         this.menu=CE('div',{id:"mainMenu",className:"menu"},[])
@@ -2075,6 +2369,20 @@ class App{
             if(e.target.handleMouseUp){e.target.handleMouseUp(e)}
         })
         this.main.addEventListener('keydown',(e)=>{
+            if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){
+                e.preventDefault()
+                if(e.shiftKey){
+                    this.history.redo()
+                }else{
+                    this.history.undo()
+                }
+                return
+            }
+            if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="y"){
+                e.preventDefault()
+                this.history.redo()
+                return
+            }
             if(e.target.handleKeyDown){e.target.handleKeyDown(e)}
         })
         this.main.addEventListener('blur',(e)=>{
@@ -2212,7 +2520,7 @@ class App{
             ])
         msConvertDialog.DOMelt.content.appendChild(senderContainer)
     }
-    loadDelimitedText(){
+    loadDelimitedText(onValidate){
         let DelimitedTextLoader=new Dialog("Load delimited text file",this,this.main)
         let prevLength=500
         let dataVessel={
@@ -2235,7 +2543,19 @@ class App{
             }
         }
         const validate=()=>{
-            console.log(dataVessel)
+            dataVessel.processRaw()
+            const source={
+                lineSeparator:lineSeparator.value,
+                columnSeparator:colSeparator.value,
+                fileName:dataVessel.fileName||"",
+                raw:dataVessel.raw,
+                pairs:dataVessel.processed
+                    .filter(line=>Number.isFinite(line[0])&&Number.isFinite(line[1]))
+                    .map(line=>[line[0],line[1]])
+            }
+            if(onValidate){
+                onValidate(source)
+            }
             DelimitedTextLoader.DOMelt.dismisser.click()
         }
         const readFile=(file,data)=>{
@@ -2244,6 +2564,7 @@ class App{
             }
             data.reader = new FileReader()
             data.reader.onload = ()=>{
+                data.fileName=file.name
                 updatePreviews(data)
             }
             data.reader.readAsText(file)
@@ -2285,16 +2606,16 @@ class App{
         }
         let procPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données traitées"])
         const lineSeparator=CE('select',{handleInput:(e)=>{updatePreviews(dataVessel)}},[
-            CE('option',{value:"\r|\n|\r\n"},["auto/guess"]),
+            CE('option',{value:"\\r\\n|\\r|\\n"},["auto/guess"]),
             CE('option',{value:"\r\n"},["CRLF"]),
             CE('option',{value:"\r"},["CR"]),
             CE('option',{value:"\n"},["LF"]),
         ])
         const colSeparator=CE('select',{handleInput:(e)=>{updatePreviews(dataVessel)}},[
-            CE('option',{value:"\t|,|\s"},["auto/guess"]),
+            CE('option',{value:"\\t|,|\\s+"},["auto/guess"]),
             CE('option',{value:"\t"},["tab"]),
             CE('option',{value:","},["comma"]),
-            CE('option',{value:"/\s/"},["whitespace"]),
+            CE('option',{value:"\\s+"},["whitespace"]),
         ])
         const validator=CE('button',{handleClick:(e)=>{validate()}},["Load"])
         const command=CE('div',{width:"100%"},[
@@ -2329,18 +2650,6 @@ class App{
             command
         ])
         DelimitedTextLoader.DOMelt.content.appendChild(loaderContainer)
-    }
-    saveAppState(){
-        return globalThis.undoStack.push(DC(this))
-    }
-    restoreLastState(){
-        if(globalThis.undoStack.length){
-            document.body.lastChild.remove()
-            this.channel.shutDown()
-            globalThis.Attributor=globalThis.undoStack.pop()
-            globalThis.Attributor.setupOnWindow()
-            globalThis.Attributor.channel.setupOnAir()
-        }
     }
     serialize(){
         globalThis.saveJSON=serializeApp(this)
@@ -2418,39 +2727,39 @@ class App{
                 )
             },
             createLink:({flow,inputNode,inputIndex,outputNode,outputIndex})=>{
-                const inputAnchor=inputNode.DOMelt.querySelectorAll('.output.anchor')[inputIndex]
-                const outputAnchor=outputNode.DOMelt.querySelectorAll('.input.anchor')[outputIndex]
-                if(!inputAnchor||!outputAnchor){
-                    throw new Error("Cannot restore link anchors")
-                }
-                const startingPos=Node.anchorAbsPos(inputAnchor)
-                const endingPos=Node.anchorAbsPos(outputAnchor)
-                const bezierSide=flow.parameters.field.links.stiffness
-                const link=d3.create("svg:g")
-                    .attr("class","link")
-                    .append("path")
-                    .attr("class","link")
-                    .style("pointer-events","stroke")
-                    .attr("d",`M ${startingPos.x} ${startingPos.y}
-                        C ${startingPos.x+bezierSide} ${startingPos.y},
-                        ${endingPos.x-bezierSide} ${endingPos.y},
-                        ${endingPos.x} ${endingPos.y}`)
-                flow.field.node().appendChild(link.node())
-                link.startingAnchor=inputAnchor
-                link.endingAnchor=outputAnchor
-                link.startingNode=inputNode
-                link.endingNode=outputNode
-                link.inputNode=inputNode
-                link.outputNode=outputNode
-                link.inputAnchor=inputAnchor
-                link.outputAnchor=outputAnchor
-                flow.linkList.push(link)
+                return flow.createLink(inputNode,inputIndex,outputNode,outputIndex)
             }
         })
         this.channel.shutDown()
         this.main.remove()
         globalThis.Attributor=importedApp
         return importedApp
+    }
+    about(){
+        let aboutDialog=new Dialog("About Attributor",this,this.main)
+        stylize(aboutDialog.DOMelt.window,{
+            width:"20%",
+            height:"20%",
+            top:"40%",
+            left:"40%"
+        })
+        aboutDialog.DOMelt.content.appendChild(CE('div',{style:{
+            width:"100%",
+            height:"100%",
+            display:"grid",
+            "grid-template-rows":"auto auto auto",
+            "place-items":"center",
+            "text-align":"center"
+        }},[
+            new OrbiSpinner(50,50),
+            CE("div",{},[
+                CE("div",{},["Attributor Alpha version 0.1.0"]),
+                CE("div",{},["This software is under development and may contain bugs."]),
+                CE("div",{},["Please report any issues to the developers."])
+            ]),
+            CE("div",{},[new CycloSpinner(15)]),
+            CE("div",{},[new CycloSpinner(15),new CycloSpinner(15)])
+        ]))
     }
 }
 
@@ -2517,14 +2826,15 @@ class CycloSpinner{
         const r=Math.min(size/5,4)
         let c=0
         let container=CE('div',{style:{
-            "background-color":"rgba(64, 73, 85, 0)",
+            background:"radial-gradient(circle, rgba(164, 173, 185, 0.28) 0%, rgba(164, 173, 185, 0.12) 58%, transparent 100%)",
             margin:"0px",
             display:"inline-block",
             border:"none",
-            "border-radius":`5px`,
+            "border-radius":"50%",
             width:`${width}px`,
             height:`${height}px`,
-            position:"relative"}},[])
+            position:"relative",
+            overflow:"hidden"}},[])
         let svg=d3.select(container).append("svg")
             .attr("width","100%")
             .attr("height","100%")

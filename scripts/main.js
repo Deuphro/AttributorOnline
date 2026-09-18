@@ -13,7 +13,6 @@ async function run(){
 }
 run()
 
-globalThis.undoStack=[]
 globalThis.Attributor=new App();
 globalThis.d3=d3
 globalThis.util=util
