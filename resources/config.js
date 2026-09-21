@@ -1,7 +1,7 @@
 const defaultMenu={
     mainMenu:{
         File:{
-            "New session":{},
+            "New session":(e)=>{dispatchEvent(new CustomEvent('newSession',{detail:{msg:""}}))},
               "Import flow":(e)=>{dispatchEvent(new CustomEvent('importSession',{detail:{msg:{format:"json",source:"file"}}}))},
               "Export flow":(e)=>{dispatchEvent(new CustomEvent('exportSession',{detail:{msg:{format:"json",target:"file"}}}))},
         },

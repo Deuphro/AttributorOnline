@@ -1,4 +1,4 @@
-import {$,CE,stylize,fakeData,DC,requestPOST,serializeApp,SingleJsonFile, deserializeApp} from "./util.js"
+import {$,CE,stylize,fakeData,DC,requestPOST,SingleJsonFile} from "./util.js"
 import {save as saveSession, import as importSessionData} from "./sessions.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
@@ -238,10 +238,20 @@ class Node{
             document.onmouseup=null;
             const after={...pilot.parameters.position}
             if(before.x!==after.x||before.y!==after.y){
+                //the command resolves the live node at execution time: the pilot
+                //may have been deleted then restored by an undo in between
+                const resolveLive=()=>{
+                    const flow=pilot.destination
+                    if(flow.nodeSet.has(pilot)){
+                        return pilot
+                    }
+                    const replacement=flow.replacements?.get(pilot)
+                    return replacement&&flow.nodeSet.has(replacement)?replacement:null
+                }
                 pilot.origin.history.record(new Command({
                     label:`Move ${pilot.title}`,
-                    undo:()=>pilot.setPosition(before),
-                    redo:()=>pilot.setPosition(after)
+                    undo:()=>resolveLive()?.setPosition(before),
+                    redo:()=>resolveLive()?.setPosition(after)
                 }))
             }
         }
@@ -274,14 +284,12 @@ class Node{
                 outputNode:link.outputNode,
                 outputIndex:Number(link.outputAnchor.id)
             }))
-        const restoreData={
-            title:this.title,
-            type:this.constructor.name,
-            inputs:DC(this.inputs),
-            outputs:DC(this.outputs),
-            position:{...this.parameters.position},
-            status:this.status,
-            source:this.parameters.source?DC(this.parameters.source):null
+        const restoreData=nodeRestoreData(this)
+        //forget stale replacements pointing at the node being killed
+        for(const [deadOriginal,replacement] of flow.replacements){
+            if(replacement===this){
+                flow.replacements.delete(deadOriginal)
+            }
         }
         dispatchEvent(this.events.broadcast.killed)
         for(const link of [...flow.linkList]){
@@ -305,6 +313,8 @@ class Node{
                         link.outputNode===this?restoredNode:link.outputNode,
                         link.outputIndex
                     )).filter(Boolean)
+                    restoredNode.refreshFromLinks?.()
+                    flow.replacements.set(this,restoredNode)
                 },
                 redo:()=>{
                     for(const link of [...restoredLinks]){
@@ -312,6 +322,7 @@ class Node{
                     }
                     restoredNode?.suicide({skipHistory:true})
                     restoredLinks=[]
+                    flow.replacements.delete(this)
                 }
             }))
         }
@@ -629,6 +640,39 @@ class NodeWithAccordionGraph extends Node{
             this.graphDialog.DOMelt.content
         )
     }
+    serializeState(){
+        if(!this.graph){
+            return null
+        }
+        return {
+            axes:DC(this.graph.parameters.axis),
+            traces:this.graph.traces.map(trace=>({
+                id:trace.id,
+                title:trace.title,
+                options:DC(trace.options)
+            }))
+        }
+    }
+    restoreState(state){
+        if(!state||!this.graph){
+            return
+        }
+        if(state.axes&&typeof state.axes==="object"){
+            this.graph.parameters.axis=DC(state.axes)
+            for(const axis of Object.values(this.graph.parameters.axis)){
+                if(axis&&typeof axis==="object"){
+                    //drawn is a runtime flag: the fresh Plot2D has to redraw its axes
+                    axis.drawn=false
+                }
+            }
+        }
+        if(Array.isArray(state.traces)){
+            this.traceOptions=state.traces
+        }
+    }
+    restoreAfterImport(){
+        this.graph?.drawGraph()
+    }
     suicide(options={}){
         this.graphDialog?.suicide()
         this.accordion?.suicide()
@@ -662,6 +706,39 @@ class NodeWithRightAccordionGraph extends Node{
         channel.register(`${registrationName}:graph`,this.graphDialog,`${label} graph`)
         this.graph=new Plot2D([],`${label} graph`,this.origin,this.graphDialog.DOMelt.content)
     }
+    serializeState(){
+        if(!this.graph){
+            return null
+        }
+        return {
+            axes:DC(this.graph.parameters.axis),
+            traces:this.graph.traces.map(trace=>({
+                id:trace.id,
+                title:trace.title,
+                options:DC(trace.options)
+            }))
+        }
+    }
+    restoreState(state){
+        if(!state||!this.graph){
+            return
+        }
+        if(state.axes&&typeof state.axes==="object"){
+            this.graph.parameters.axis=DC(state.axes)
+            for(const axis of Object.values(this.graph.parameters.axis)){
+                if(axis&&typeof axis==="object"){
+                    //drawn is a runtime flag: the fresh Plot2D has to redraw its axes
+                    axis.drawn=false
+                }
+            }
+        }
+        if(Array.isArray(state.traces)){
+            this.traceOptions=state.traces
+        }
+    }
+    restoreAfterImport(){
+        this.graph?.drawGraph()
+    }
     suicide(options={}){
         this.graphDialog?.suicide()
         this.accordion?.suicide()
@@ -690,10 +767,17 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     renderInspector(){
         if(!this.accordion) return
         const root=this.accordion.DOMelt.content
+        this.graph.ensureAxes?.()
+        //the sections are rebuilt on every refresh, so their collapsed state has to survive the wipe
+        this.inspectorSections={}
+        root.querySelectorAll(":scope > details").forEach(details=>{
+            const title=details.querySelector(":scope > summary")?.textContent
+            if(title) this.inspectorSections[title]=details.open
+        })
         root.replaceChildren()
         const section=(title,open=true)=>{
             const details=document.createElement("details")
-            details.open=open
+            details.open=this.inspectorSections?.[title]??open
             const summary=document.createElement("summary")
             summary.textContent=title
             details.append(summary)
@@ -739,9 +823,29 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             swatchWrap.append(swatch)
             const nameBtn=document.createElement("button")
             nameBtn.type="button"
-            nameBtn.textContent=`${trace.title} (${trace.pointCount} points)`
+            nameBtn.title=`${trace.title} (${trace.pointCount} points)`
+            nameBtn.style.display="flex"
+            nameBtn.style.alignItems="center"
+            nameBtn.style.gap="4px"
+            //min-width:0 lets the 1fr grid track shrink instead of being widened
+            //by a long trace name; the name is truncated with an ellipsis and the
+            //full name stays available through the tooltip
+            nameBtn.style.minWidth="0"
+            nameBtn.style.overflow="hidden"
             nameBtn.style.textAlign="left"
             nameBtn.style.opacity=trace.options.hidden?"0.45":"1"
+            const nameSpan=document.createElement("span")
+            nameSpan.textContent=trace.title
+            nameSpan.title=trace.title
+            nameSpan.style.minWidth="0"
+            nameSpan.style.overflow="hidden"
+            nameSpan.style.textOverflow="ellipsis"
+            nameSpan.style.whiteSpace="nowrap"
+            const countSpan=document.createElement("span")
+            countSpan.textContent=`(${trace.pointCount} points)`
+            countSpan.style.flexShrink="0"
+            countSpan.style.whiteSpace="nowrap"
+            nameBtn.append(nameSpan,countSpan)
             nameBtn.addEventListener("click",()=>selectTrace(trace))
             const eye=document.createElement("button")
             eye.type="button"
@@ -824,39 +928,97 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             tracesSection.append(editor)
         }
         const axesSection=section("Axes",false)
-        const axisNames={bottom:"X",left:"Y"}
         for(const [key,axis] of Object.entries(this.graph.parameters.axis)){
-            const pretty=axisNames[key]??key
-            this.renderAxisInspector(axesSection,pretty,axis)
+            const pretty=this.axisDisplayName(key)
+            if(axis.mirror){
+                this.renderMirrorAxisInspector(axesSection,key,pretty,axis)
+            }else{
+                this.renderAxisInspector(axesSection,key,pretty,axis)
+            }
         }
     }
-    renderAxisInspector(section,pretty,axis){
+    axisDisplayName(key){
+        const axisNames={bottom:"X (bottom)",left:"Y (left)",top:"X (top)",right:"Y (right)"}
+        return axisNames[key]??key
+    }
+    axisShowToggle(axis,title,onChange){
+        const toggle=document.createElement("input")
+        toggle.type="checkbox"
+        toggle.checked=axis.enabled??true
+        toggle.title=title
+        toggle.addEventListener("change",()=>{
+            axis.enabled=toggle.checked
+            this.graph.drawGraph()
+            onChange?.()
+        })
+        return toggle
+    }
+    renderAxisInspector(section,key,pretty,axis){
         const block=document.createElement("div")
-        block.dataset.axis=pretty
+        block.dataset.axis=key
         section.append(block)
         const row=document.createElement("div")
-        row.style.display="grid"; row.style.gridTemplateColumns="auto 1fr"; row.style.gap="4px"; row.style.alignItems="center"
+        row.style.display="grid"; row.style.gridTemplateColumns="auto auto 1fr"; row.style.gap="4px"; row.style.alignItems="center"
         const name=document.createElement("strong"); name.textContent=`${pretty}:`
-        const label=document.createElement("input"); label.value=axis.label
+        name.style.opacity=(axis.enabled??true)?"1":"0.45"
+        const label=document.createElement("input"); label.value=axis.label??""
         label.style.width="100%"
         label.addEventListener("input",()=>{axis.label=label.value;axis.autoLabel=false;this.graph.drawGraph()})
-        row.append(name,label); block.append(row)
+        row.append(this.axisShowToggle(axis,"Show this axis",()=>{name.style.opacity=(axis.enabled??true)?"1":"0.45"}),name,label); block.append(row)
         const scaleRow=document.createElement("div")
         scaleRow.style.display="grid"; scaleRow.style.gridTemplateColumns="auto 1fr auto"; scaleRow.style.gap="4px"; scaleRow.style.alignItems="center"
         const scaleLabel=document.createElement("span"); scaleLabel.textContent="Scale"; scaleLabel.style.fontSize="0.85em"
         const scale=document.createElement("select")
         for(const value of ["linear","log"]){const option=new Option(value,value);option.selected=axis.scale===value;scale.add(option)}
-        scale.addEventListener("change",()=>{axis.scale=scale.value;axis.autoDomain=true;this.graph.drawGraph();this.refreshAxisBlock(block,pretty,axis)})
+        scale.addEventListener("change",()=>{axis.scale=scale.value;axis.autoDomain=true;this.graph.drawGraph();this.refreshAxisBlock(block,axis)})
         const autoBtn=document.createElement("button")
         autoBtn.type="button"; autoBtn.textContent="Auto"; autoBtn.title="Automatic bounds"
         autoBtn.style.opacity=(axis.autoDomain??true)?"1":"0.45"
-        autoBtn.addEventListener("click",()=>{axis.autoDomain=true;this.graph.drawGraph();this.refreshAxisBlock(block,pretty,axis)})
+        autoBtn.addEventListener("click",()=>{axis.autoDomain=true;this.graph.drawGraph();this.refreshAxisBlock(block,axis)})
         scaleRow.append(scaleLabel,scale,autoBtn); block.append(scaleRow)
-        this.buildDualSlider(block,pretty,axis,autoBtn)
+        this.buildDualSlider(block,axis,autoBtn)
     }
-    axisSliderRange(pretty,axis){
+    renderMirrorAxisInspector(section,key,pretty,axis){
+        const block=document.createElement("div")
+        block.dataset.axis=key
+        section.append(block)
+        const row=document.createElement("div")
+        row.style.display="grid"; row.style.gridTemplateColumns="auto auto 1fr"; row.style.gap="4px"; row.style.alignItems="center"
+        const name=document.createElement("strong"); name.textContent=`${pretty}:`
+        const body=document.createElement("div")
+        const refreshBody=()=>{
+            const enabled=axis.enabled??true
+            name.style.opacity=enabled?"1":"0.45"
+            body.replaceChildren()
+            if(!enabled){
+                const hidden=document.createElement("div")
+                hidden.textContent="Hidden"
+                hidden.style.fontSize="0.85em"; hidden.style.opacity="0.6"
+                body.append(hidden)
+                return
+            }
+            const source=this.graph.axisMirrorOf(key)
+            const labelRow=document.createElement("div")
+            labelRow.style.display="grid"; labelRow.style.gridTemplateColumns="auto 1fr"; labelRow.style.gap="4px"; labelRow.style.alignItems="center"
+            const labelName=document.createElement("span"); labelName.textContent="Label"; labelName.style.fontSize="0.85em"
+            const label=document.createElement("input")
+            label.value=axis.label??""
+            label.placeholder=source?.label??""
+            label.style.width="100%"
+            label.addEventListener("input",()=>{axis.label=label.value;this.graph.drawGraph()})
+            labelRow.append(labelName,label)
+            const note=document.createElement("div")
+            note.textContent=`Scale and range follow ${this.axisDisplayName(axis.mirror)}.`
+            note.style.fontSize="0.8em"; note.style.opacity="0.7"
+            body.append(labelRow,note)
+        }
+        row.append(this.axisShowToggle(axis,"Show this axis",refreshBody),name)
+        block.append(row,body)
+        refreshBody()
+    }
+    axisSliderRange(axis){
         const bounds=this.graph.dataBounds()
-        const isX=(pretty==="X")
+        const isX=(axis.orientation==="horizontal")
         const dataMin=isX?bounds?.xMin:bounds?.yMin
         const dataMax=isX?bounds?.xMax:bounds?.yMax
         const currentMin=axis.domain?.[0]
@@ -866,15 +1028,15 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         const span=(refMax-refMin)||1
         return {paddedMin:refMin-0.1*span,paddedMax:refMax+0.1*span,step:span/200,initMin:currentMin??(refMin-0.1*span),initMax:currentMax??(refMax+0.1*span)}
     }
-    buildDualSlider(block,pretty,axis,autoBtn){
-        const {paddedMin,paddedMax,step,initMin,initMax}=this.axisSliderRange(pretty,axis)
+    buildDualSlider(block,axis,autoBtn){
+        const {paddedMin,paddedMax,step,initMin,initMax}=this.axisSliderRange(axis)
         this.renderDualSlider(block,axis,autoBtn,paddedMin,paddedMax,step,initMin,initMax)
     }
-    refreshAxisBlock(block,pretty,axis){
+    refreshAxisBlock(block,axis){
         const autoBtn=block.querySelector("button[title='Automatic bounds']")
         if(autoBtn) autoBtn.style.opacity=(axis.autoDomain??true)?"1":"0.45"
         block.querySelectorAll(":scope > div[data-range]").forEach(elt=>elt.remove())
-        this.buildDualSlider(block,pretty,axis,autoBtn)
+        this.buildDualSlider(block,axis,autoBtn)
     }
     renderDualSlider(block,axis,autoBtn,paddedMin,paddedMax,step,initMin,initMax){
         const rangeRow=document.createElement("div")
@@ -919,27 +1081,53 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         hiNum.type="number"; hiNum.step="any"; hiNum.value=String(initMax)
         hiNum.style.width="100%"; hiNum.title="Upper bound"
         inputsRow.append(loNum,hiNum)
+        const parseOk=(value)=>{
+            //a number field holds intermediate states while typing ("", "-",
+            //"1e"...) which must never be coerced into a bound
+            return value!==""&&value!=="-"&&Number.isFinite(Number(value))
+        }
         const apply=(a,b,from)=>{
             a=Number(a); b=Number(b)
             if(!Number.isFinite(a)||!Number.isFinite(b)) return
             if(a===b) return
             if(a>b) [a,b]=[b,a]
             if(axis.scale==="log"&&(a<=0||b<=0)) return
-            a=Math.min(Math.max(a,paddedMin),paddedMax)
-            b=Math.min(Math.max(b,paddedMin),paddedMax)
+            const loBound=Number(lo.min)
+            const hiBound=Number(lo.max)
+            a=Math.min(Math.max(a,loBound),hiBound)
+            b=Math.min(Math.max(b,loBound),hiBound)
             if(a===b) return
             axis.domain=[a,b]
             axis.autoDomain=false
             this.graph.drawGraph()
-            if(from!=="sliders"){lo.value=String(a); hi.value=String(b); loNum.value=String(a); hiNum.value=String(b)}
-            else {loNum.value=String(a); hiNum.value=String(b)}
+            lo.value=String(a); hi.value=String(b)
+            if(from!=="numbers"){
+                //the number fields are only rewritten when the change comes from
+                //the sliders: rewriting them from their own typing would clobber
+                //an in-progress value (and made negative numbers impossible)
+                loNum.value=String(a); hiNum.value=String(b)
+            }
             paint()
             autoBtn.style.opacity="0.45"
         }
+        const commitNumbers=()=>{
+            if(!parseOk(loNum.value)||!parseOk(hiNum.value)) return
+            apply(loNum.value,hiNum.value,"numbers")
+            //reflect the clamped domain back into the fields on commit
+            loNum.value=String(axis.domain[0]); hiNum.value=String(axis.domain[1])
+        }
         lo.addEventListener("input",()=>apply(lo.value,hi.value,"sliders"))
         hi.addEventListener("input",()=>apply(lo.value,hi.value,"sliders"))
-        loNum.addEventListener("change",()=>apply(loNum.value,hiNum.value,"numbers"))
-        hiNum.addEventListener("change",()=>apply(loNum.value,hiNum.value,"numbers"))
+        loNum.addEventListener("input",()=>{
+            if(!parseOk(loNum.value)||!parseOk(hiNum.value)) return
+            apply(loNum.value,hiNum.value,"numbers")
+        })
+        hiNum.addEventListener("input",()=>{
+            if(!parseOk(loNum.value)||!parseOk(hiNum.value)) return
+            apply(loNum.value,hiNum.value,"numbers")
+        })
+        loNum.addEventListener("change",commitNumbers)
+        hiNum.addEventListener("change",commitNumbers)
         sliders.append(track,fill,lo,hi)
         rangeRow.append(rangeLabel,sliders,inputsRow); block.append(rangeRow)
         paint()
@@ -967,23 +1155,97 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         }
         return traces
     }
+    applyTraceOptions(traces){
+        const saved=this.traceOptions
+        if(!Array.isArray(saved)||!saved.length){
+            return traces
+        }
+        const entries=saved.filter(entry=>entry&&typeof entry==="object")
+        const positions=entries.map(entry=>entry.id)
+        const pending=entries.slice()
+        for(const trace of traces){
+            if(!trace.options||typeof trace.options!=="object"){
+                continue
+            }
+            let match=pending.find(entry=>entry.id===trace.id)
+            if(!match){
+                match=pending.find(entry=>entry.title===trace.title)
+            }
+            if(!match||!match.options||typeof match.options!=="object"){
+                continue
+            }
+            pending.splice(pending.indexOf(match),1)
+            //the applied object is shared with its saved entry, so later user
+            //edits stay in sync and survive the next re-resolve
+            trace.options=Object.assign({},trace.options,match.options)
+            match.options=trace.options
+            if(!trace.options.marker||typeof trace.options.marker!=="object"){
+                trace.options.marker={shape:"circle",size:4}
+            }
+            if(!trace.options.line||typeof trace.options.line!=="object"){
+                trace.options.line={size:1,style:"solid",joinStyle:"round",miterLimit:10,capStyle:"flat"}
+            }
+        }
+        //restore the saved drawing order (drag-reorder in the inspector)
+        if(positions.length){
+            traces.sort((a,b)=>{
+                const ia=positions.indexOf(a.id)
+                const ib=positions.indexOf(b.id)
+                return (ia===-1?positions.length:ia)-(ib===-1?positions.length:ib)
+            })
+        }
+        return traces
+    }
     async startResolve(){
         this.status="pending"
-        const traces=this.collectTraces()
+        const traces=this.applyTraceOptions(this.collectTraces())
         this.graph.setTraces(traces)
         this.graph.syncAxisLabels()
-        this.renderInspector()
         if(this.graph.parameters.axis.bottom.scale==="log"&&this.graph.points.some(([x,y])=>x<=0||y<=0)){
-            this.logScaleCheckbox.checked=false
             this.setLogarithmicScale(false)
         }
         this.graph.drawGraph()
+        this.renderInspector()
         this.status=traces.length?"resolved":"error"
     }
     restoreAfterImport(){
-        this.graph?.setTraces([])
-        this.graph?.drawGraph()
         this.status="floating"
+        if(this.inputs.some(input=>input instanceof Map&&input.size)){
+            //the session import already decoded the inputs: rebuild the traces
+            //from them (saved axes and trace options are re-applied)
+            this.startResolve()
+        }else{
+            this.graph?.drawGraph()
+        }
+    }
+    refreshFromLinks(){
+        //undo/redo path: the caller triggers this once the links exist again
+        this.destination?.syncInputs(this).then(()=>{
+            if(this.inputs.some(input=>input instanceof Map&&input.size)){
+                //the live parents are already resolved: rebuild the traces from
+                //them (saved axes and trace options are re-applied)
+                this.startResolve()
+            }else{
+                this.status="floating"
+                this.graph?.drawGraph()
+            }
+        })
+    }
+}
+
+function nodeRestoreData(node){
+    return {
+        title:node.title,
+        type:node.constructor.name,
+        registrationName:node.events?.registrationName,
+        //inputs keep their shape only: Maps are rebuilt from the live links by
+        //syncInputs (and by resolveFlow), so parent nodes are never deep-cloned
+        inputs:node.inputs.map(entry=>entry instanceof Map ? new Map() : DC(entry)),
+        outputs:DC(node.outputs),
+        position:{...node.parameters.position},
+        status:node.status,
+        source:node.parameters.source?DC(node.parameters.source):null,
+        state:node.serializeState?.()??null
     }
 }
 
@@ -1013,14 +1275,23 @@ function createNodeForHistory(origin,flow,data){
             node=new Node(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
             break
     }
-    origin.channel.register("node",node,node.title)
+    origin.channel.register(data.registrationName??"node",node,node.title)
     if(data.source){
         node.parameters.source=DC(data.source)
         node.updateLabel(node.parameters.source.fileName)
         node.startResolve().then(()=>node.renderAccordion?.())
-    }else if(data.status){
+        return node
+    }
+    if(data.state&&typeof node.restoreState==="function"){
+        node.restoreState(data.state)
+    }
+    if(data.status){
         node.status=data.status
     }
+    if(Array.isArray(data.outputs)&&data.outputs.length===node.outputs.length){
+        node.outputs=DC(data.outputs)
+    }
+    node.graph?.drawGraph()
     return node
 }
 
@@ -1046,6 +1317,9 @@ class Flow{
         }}
         this.nodeSet=new Set()
         this.linkList=[]
+        //tracks the live instance that replaced a deleted node (undo of "Delete
+        //node"), so older commands recorded against the dead instance stay effective
+        this.replacements=new Map()
         this.parameters={
             field:{
                 drawn:false,
@@ -1180,7 +1454,9 @@ class Flow{
     }
     deleteLink(k,{record=true}={}){
         if(typeof k !="number"){
-            k=this.linkList.findIndex((e)=>{return e.node()===k})
+            //accepts a numeric index, a DOM element, or a d3 selection
+            const target=typeof k?.node==="function"?k.node():k
+            k=this.linkList.findIndex((e)=>{return e.node()===target||e===k})
         }
         const link=this.linkList[k]
         if(!link){
@@ -1240,7 +1516,10 @@ class Flow{
                 ${endingPos.x-bezierSide} ${endingPos.y},
                 ${endingPos.x} ${endingPos.y}`)
             }else{
-                this.deleteLink(k)
+                //dangling links are removed silently: their deletion is already
+                //covered by the command that removed their node, recording them
+                //here would pollute the undo stack with orphan link commands
+                this.deleteLink(k,{record:false})
                 k--
             }
         }
@@ -1309,6 +1588,11 @@ class Flow{
             resolve()
         })
     }
+    async syncInputs(node){
+        //rebuilds the node inputs from the current links without resolving the
+        //parents (their outputs are already available in memory)
+        await this.parentSynapse(node,this.parentsMap(node))
+    }
     async resolveNode(node){
         const parentsMap=this.parentsMap(node)
         await Promise.all(parentsMap.keys().toArray().map(parent=>this.resolveNode(parent)))
@@ -1334,11 +1618,21 @@ class Menu{
         this.events={broadcast:{},listen:{}}
         this.dfs(configObject,this.container,0)
         this.draw()
-        window.addEventListener('click',(e)=>{
+        //stored so dispose() can remove the listener (importing a session must
+        //not leave the old menu listening on the global window)
+        this.windowClickHandler=(e)=>{
             if(!e.target.closest('.menu .container')){
                 this.container.querySelectorAll('.parent.open').forEach(elt=>elt.classList.remove('open'))
             }
-        })
+        }
+        window.addEventListener('click',this.windowClickHandler)
+    }
+    dispose(){
+        if(this.windowClickHandler){
+            window.removeEventListener('click',this.windowClickHandler)
+            this.windowClickHandler=null
+        }
+        this.container.remove()
     }
     dfs(object,DOMelt,rank){
         if(!Object.keys(object).length){
@@ -1402,7 +1696,10 @@ class MainMenu extends Menu{
             if(text==="Undo") this.undoItem=elt
             if(text==="Redo") this.redoItem=elt
         }
-        globalThis.addEventListener("historyChanged",(e)=>this.updateUndoRedo(e.detail.msg))
+        //stored so dispose() can remove the listener (importing a session must
+        //not leave the old menu updating a detached DOM)
+        this.historyChangedHandler=(e)=>this.updateUndoRedo(e.detail.msg)
+        globalThis.addEventListener("historyChanged",this.historyChangedHandler)
         this.updateUndoRedo({canUndo:false,canRedo:false,undoLabel:null,redoLabel:null})
         this.events={
             broadcast:{
@@ -1435,6 +1732,11 @@ class MainMenu extends Menu{
                 }
             },
             about(e){origin.about()},
+            newSession(e){
+                //replaces the current app with a fresh empty one
+                origin.dispose()
+                globalThis.Attributor=new App()
+            },
         }}
     }
     updateUndoRedo({canUndo,canRedo,undoLabel,redoLabel}={}){
@@ -1446,6 +1748,13 @@ class MainMenu extends Menu{
             this.redoItem.firstChild.textContent=canRedo&&redoLabel?`Redo: ${redoLabel}`:"Redo"
             this.redoItem.style.opacity=canRedo?"1":"0.4"
         }
+    }
+    dispose(){
+        if(this.historyChangedHandler){
+            globalThis.removeEventListener("historyChanged",this.historyChangedHandler)
+            this.historyChangedHandler=null
+        }
+        super.dispose()
     }
 }
 
@@ -1569,28 +1878,19 @@ class MainFlowMenu extends Menu{
                         node.startResolve().then(()=>node.renderAccordion())
                     }
                     if(!origin.history.replaying){
-                        const nodeData=nodeHistoryData(node)
+                        const nodeData=nodeRestoreData(node)
                         origin.history.record(new Command({
                             label:`Create node ${node.title}`,
                             undo:()=>node.suicide({skipHistory:true}),
-                            redo:()=>{node=createNodeForHistory(origin,origin.channel.get("mainFlow"),nodeData)}
+                            redo:()=>{
+                                node=createNodeForHistory(origin,origin.channel.get("mainFlow"),nodeData)
+                                node.refreshFromLinks?.()
+                            }
                         }))
                     }
                 }
             }
         }
-            function nodeHistoryData(node){
-                return {
-                    title:node.title,
-                    type:node.constructor.name,
-                    inputs:DC(node.inputs),
-                    outputs:DC(node.outputs),
-                    position:{...node.parameters.position},
-                    status:node.status,
-                    source:node.parameters.source?DC(node.parameters.source):null
-                }
-            }
-
     }
 }
 
@@ -1711,39 +2011,21 @@ class Plot2D{
                 drawn:false,
                 opacity:"0.5"
             },
-            margins:{
-                top:10,
-                bottom:30,
-                left:30,
+            baseMargins:{
+                top:12,
+                bottom:52,
+                left:40,
                 right:15
             },
-            axis:{
-                bottom:{
-                    drawn:false,
-                    domain:[0,1],
-                    autoDomain:true,
-                    range:[0,1],
-                    position:{left:0,top:1},
-                    label:"Abscissa",
-                    autoLabel:true,
-                    orientation:"horizontal",
-                    scale:"linear",
-                    type:"bottom"
-                },
-                left:{
-                    drawn:false,
-                    domain:[0,1],
-                    autoDomain:true,
-                    range:[1,0],
-                    position:{left:0,top:0},
-                    label:"Ordinate",
-                    autoLabel:true,
-                    orientation:"vertical",
-                    scale:"linear",
-                    type:"left"
-                }
+            margins:{
+                top:12,
+                bottom:52,
+                left:40,
+                right:15
             },
+            axis:DC(this.defaultAxes)
         }
+        this.updateMargins()
         stylize(this.container,{
             position:"relative",
             width:"100%",
@@ -1755,13 +2037,133 @@ class Plot2D{
     }
     get graphzone(){
         return {
-            width:this.container.clientWidth-this.parameters.margins.left-this.parameters.margins.right,
-            height:this.container.clientHeight-this.parameters.margins.top-this.parameters.margins.bottom
+            width:Math.max(0,this.container.clientWidth-this.parameters.margins.left-this.parameters.margins.right),
+            height:Math.max(0,this.container.clientHeight-this.parameters.margins.top-this.parameters.margins.bottom)
+        }
+    }
+    get defaultAxes(){
+        return {
+            bottom:{
+                drawn:false,
+                enabled:true,
+                mirror:null,
+                domain:[0,1],
+                autoDomain:true,
+                range:[0,1],
+                position:{left:0,top:1},
+                label:"Abscissa",
+                autoLabel:true,
+                orientation:"horizontal",
+                scale:"linear",
+                type:"bottom"
+            },
+            left:{
+                drawn:false,
+                enabled:true,
+                mirror:null,
+                domain:[0,1],
+                autoDomain:true,
+                range:[1,0],
+                position:{left:0,top:0},
+                label:"Ordinate",
+                autoLabel:true,
+                orientation:"vertical",
+                scale:"linear",
+                type:"left"
+            },
+            top:{
+                drawn:false,
+                enabled:false,
+                mirror:"bottom",
+                domain:[0,1],
+                autoDomain:true,
+                range:[0,1],
+                position:{left:0,top:0},
+                label:"",
+                autoLabel:true,
+                orientation:"horizontal",
+                scale:"linear",
+                type:"top"
+            },
+            right:{
+                drawn:false,
+                enabled:false,
+                mirror:"left",
+                domain:[0,1],
+                autoDomain:true,
+                range:[1,0],
+                position:{left:1,top:0},
+                label:"",
+                autoLabel:true,
+                orientation:"vertical",
+                scale:"linear",
+                type:"right"
+            }
+        }
+    }
+    ensureAxes(){
+        for(const [key,fallback] of Object.entries(this.defaultAxes)){
+            const axis=this.parameters.axis[key]
+            if(!axis){
+                this.parameters.axis[key]=DC(fallback)
+                continue
+            }
+            for(const [field,value] of Object.entries(fallback)){
+                if(axis[field]===undefined){
+                    axis[field]=DC(value)
+                }
+            }
+        }
+    }
+    updateMargins(){
+        if(!this.parameters.baseMargins){
+            this.parameters.baseMargins={...this.parameters.margins}
+        }
+        const margins={...this.parameters.baseMargins}
+        if(this.axisShown("top")){
+            margins.top=Math.max(margins.top,52)
+        }
+        if(this.axisShown("right")){
+            margins.right=Math.max(margins.right,40)
+        }
+        this.parameters.margins=margins
+        return margins
+    }
+    axisShown(key){
+        const axis=this.parameters.axis[key]
+        return Boolean(axis&&(axis.enabled??true))
+    }
+    axisMirrorOf(key){
+        const mirror=this.parameters.axis[key]?.mirror
+        return mirror?this.parameters.axis[mirror]??null:null
+    }
+    //the axis a drawn axis takes its scale and domain from (itself unless it is a mirrored axis)
+    axisSource(key){
+        return this.axisMirrorOf(key)??this.parameters.axis[key]
+    }
+    axisLabelText(key){
+        const axis=this.parameters.axis[key]
+        if(axis?.label) return axis.label
+        return this.axisMirrorOf(key)?.label??""
+    }
+    //coordinates are expressed inside the anchor group, so they only need the graphzone and a free margin
+    axisLabelPlacement(key){
+        const type=this.parameters.axis[key]?.type??key
+        switch(type){
+            case "top":
+                return {rotate:null,x:this.graphzone.width/2,y:-38}
+            case "left":
+                return {rotate:-90,x:-this.graphzone.height/2,y:-28}
+            case "right":
+                return {rotate:90,x:this.graphzone.height/2,y:-28}
+            case "bottom":
+            default:
+                return {rotate:null,x:this.graphzone.width/2,y:38}
         }
     }
     setTraces(traces){
         this.traces=traces.filter(trace=>trace instanceof XYTrace)
-        this.data=this.points
+        this.data=this.traces.length?this.points:[]
     }
     syncAxisLabels(){
         const reference=this.traces[0]?.wave
@@ -1780,15 +2182,36 @@ class Plot2D{
         return this.data
     }
     dataBounds(){
-        const allPoints=this.points
+        const allPoints=this.points.filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
         if(!allPoints.length) return null
-        const xValues=allPoints.map(pair=>pair[0])
-        const yValues=allPoints.map(pair=>pair[1])
+        let xMin=allPoints[0][0]
+        let xMax=xMin
+        let yMin=allPoints[0][1]
+        let yMax=yMin
+        for(const [x,y] of allPoints.slice(1)){
+            xMin=Math.min(xMin,x)
+            xMax=Math.max(xMax,x)
+            yMin=Math.min(yMin,y)
+            yMax=Math.max(yMax,y)
+        }
         return {
-            xMin:Math.min(...xValues),
-            xMax:Math.max(...xValues),
-            yMin:Math.min(...yValues),
-            yMax:Math.max(...yValues)
+            xMin,
+            xMax,
+            yMin,
+            yMax
+        }
+    }
+    ensureValidScales(bounds){
+        const limits={bottom:[bounds?.xMin,bounds?.xMax],left:[bounds?.yMin,bounds?.yMax]}
+        for(const [key,[dataMin,dataMax]] of Object.entries(limits)){
+            const axis=this.parameters.axis[key]
+            const domain=axis.domain??[]
+            const invalidData=!(dataMin>0)||!(dataMax>0)
+            const invalidManualDomain=!axis.autoDomain&&(!(domain[0]>0)||!(domain[1]>0))
+            if(axis.scale==="log"&&(invalidData||invalidManualDomain)){
+                axis.scale="linear"
+                axis.autoDomain=true
+            }
         }
     }
     autoDomain(axis,bounds){
@@ -1801,7 +2224,7 @@ class Plot2D{
             }
         }
         if(axis==="left"){
-            if(this.parameters.axis.bottom.scale==="log"){
+            if(this.parameters.axis.left.scale==="log"){
                 this.parameters.axis.left.domain=[bounds.yMin/1.05,bounds.yMax*1.05]
             }else{
                 const yPadding=(bounds.yMax-bounds.yMin)||1
@@ -1823,12 +2246,15 @@ class Plot2D{
         }
     }
     drawGraph(){
+        this.ensureAxes()
+        this.updateMargins()
         let range=[]
         let scale={}
         let translate=""
         this.axesSVG={}
         let target=""
         const bounds=this.dataBounds()
+        this.ensureValidScales(bounds)
         if(bounds){
             if(this.parameters.axis.bottom.autoDomain??true){
                 this.autoDomain("bottom",bounds)
@@ -1857,11 +2283,16 @@ class Plot2D{
                 .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
         this.graphSVG.attr('opacity',this.parameters.graphzone.opacity)
         for(let axis of Object.keys(this.parameters.axis)){
+            if(!this.axisShown(axis)){
+                this.graphSVG.select(".anchor").select(`.${axis}`).remove()
+                this.parameters.axis[axis].drawn=false
+                continue
+            }
             if(this.parameters.axis[axis].drawn){
                 //MAJ
             }else{
-                //INIT
-                this.graphSVG.select(".anchor").append("g").attr("class",axis)
+                //INIT (before the traces, so that a re-shown axis does not end up on top of the points)
+                this.graphSVG.select(".anchor").insert("g",".trace").attr("class",axis)
             }
             target=`.${axis}`
             translate=`translate(${this.parameters.axis[axis].position.left*this.graphzone.width},${this.parameters.axis[axis].position.top*this.graphzone.height})`
@@ -1870,12 +2301,13 @@ class Plot2D{
             } else if (this.parameters.axis[axis].orientation=="vertical"){
                 range=[this.parameters.axis[axis].range[0]*this.graphzone.height,this.parameters.axis[axis].range[1]*this.graphzone.height]
             }
-            scale=(this.parameters.axis[axis].scale==="log"?d3.scaleLog():d3.scaleLinear())
-                .domain(this.parameters.axis[axis].domain)
+            const source=this.axisSource(axis)
+            scale=(source.scale==="log"?d3.scaleLog():d3.scaleLinear())
+                .domain(source.domain)
                 .range(range)
             this.axesSVG[axis]=this.graphSVG.select(".anchor").select(target)
             this.axesSVG[axis].attr("transform",translate)
-            this.axesSVG[axis].attr("fill","blanchedalmond")
+            this.axesSVG[axis].attr("class",`${axis} plot-axis`)
             switch (this.parameters.axis[axis].type){
                 case "left":
                     this.axesSVG[axis].call(d3.axisLeft(scale))
@@ -1891,7 +2323,19 @@ class Plot2D{
                     break
                 default:
             }
-            this.axesSVG[axis].selectAll(".tick text").attr("font-size", "12px").attr("font-family","Times New Roman")
+            const label=this.axisLabelText(axis)
+            const placement=this.axisLabelPlacement(axis)
+            const axisLabel=this.axesSVG[axis].selectAll("text.axis-label").data([label])
+            axisLabel.enter()
+                .append("text")
+                .attr("class","axis-label")
+                .merge(axisLabel)
+                .attr("text-anchor","middle")
+                .attr("transform",placement.rotate===null?null:`rotate(${placement.rotate})`)
+                .attr("x",placement.x)
+                .attr("y",placement.y)
+                .text(label)
+            axisLabel.exit().remove()
             this.parameters.axis[axis].drawn=true
         }
         const xScale=(this.parameters.axis.bottom.scale==="log"?d3.scaleLog():d3.scaleLinear())
@@ -1920,7 +2364,7 @@ class Plot2D{
         const owner=this
         mergedTraceGroups.each(function(trace){
             const group=d3.select(this)
-            const tracePoints=trace.points
+            const tracePoints=trace.points.filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
             const color=trace.options.color
             const showLine=(trace.options.mode==="lines-between-points"||trace.options.mode==="lines-and-points"||trace.options.mode==="sticks-to-zero")
             const showMarkers=(trace.options.mode==="points"||trace.options.mode==="lines-and-points")
@@ -2801,6 +3245,33 @@ class App{
             pilot.mid.style.transition="300ms";
         }
     }
+    applyPanelParameters(){
+        const p=this.parameters
+        if(!p?.topContent||!p?.botContent||!p?.leftContent||!p?.rightContent){
+            return
+        }
+        //apply the saved layout (fold states and sizes) without animation
+        this.mainInterface.style.transition="0ms"
+        this.mid.style.transition="0ms"
+        this.foldTop(Boolean(p.topContent.folded))
+        if(!p.topContent.folded&&typeof p.topContent.height==="number"){
+            this.resizeHeightTop(p.topContent.height)
+        }
+        this.foldBot(Boolean(p.botContent.folded))
+        if(!p.botContent.folded&&typeof p.botContent.height==="number"){
+            this.resizeHeightBot(p.botContent.height)
+        }
+        this.foldLeft(Boolean(p.leftContent.folded))
+        if(!p.leftContent.folded&&typeof p.leftContent.width==="number"){
+            this.resizeWidthLeft(p.leftContent.width)
+        }
+        this.foldRight(Boolean(p.rightContent.folded))
+        if(!p.rightContent.folded&&typeof p.rightContent.width==="number"){
+            this.resizeWidthRight(p.rightContent.width)
+        }
+        this.mainInterface.style.transition="300ms"
+        this.mid.style.transition="300ms"
+    }
     setupOnWindow(destination='body'){
         this.destination=destination;
         $(this.destination).appendChild(this.main);
@@ -3097,12 +3568,6 @@ class App{
         ])
         DelimitedTextLoader.DOMelt.content.appendChild(loaderContainer)
     }
-    serialize(){
-        globalThis.saveJSON=serializeApp(this)
-    }
-    deserialize(){
-        globalThis.revivedJSON=deserializeApp(globalThis.saveJSON)
-    }
     saveSession(options={}){
         if(typeof options === "boolean"){
             options={download:options}
@@ -3115,6 +3580,20 @@ class App{
             localStorage.setItem("attributor-session",json)
         }
         return json
+    }
+    dispose(){
+        //idempotent teardown of the whole app (used before replacing it with an
+        //imported session): stops the observers, the menus and the channel
+        if(this.disposed){
+            return
+        }
+        this.disposed=true
+        this.resizeObserver?.disconnect()
+        this.mutObserver?.disconnect()
+        this.channel.get("mainMenu")?.dispose?.()
+        this.channel.get("mainFlowMenu")?.dispose?.()
+        this.channel.shutDown()
+        this.main?.remove()
     }
     async importSession(options={}){
         if(typeof options === "string"){
@@ -3148,6 +3627,10 @@ class App{
         if(typeof json !== "string"){
             throw new TypeError("importSession expects json, file, localStorage, or filePicker")
         }
+        //tear the current app down BEFORE creating the imported one: the new app
+        //attaches itself to the DOM and broadcasts events in its constructor, so
+        //the old channel listeners must be gone already (no cross-talk, no leaks)
+        this.dispose()
         const importedApp=await importSessionData(json,{
             createApp:()=>new App(),
             createNode:({data,app,flow})=>{
@@ -3157,10 +3640,11 @@ class App{
                     NodeWithAccordionGraph,
                     NodeWithRightAccordionGraph,
                     SimpleXYPlotNode,
-                    DelimitedTextNode
+                    DelimitedTextNode,
+                    Operation
                 }
                 const NodeType=constructors[data.type]??Node
-                if(NodeType===DelimitedTextNode){
+                if(NodeType===DelimitedTextNode||NodeType===Operation){
                     return new NodeType(data.title,app,flow,data.position)
                 }
                 return new NodeType(
@@ -3174,11 +3658,16 @@ class App{
             },
             createLink:({flow,inputNode,inputIndex,outputNode,outputIndex})=>{
                 return flow.createLink(inputNode,inputIndex,outputNode,outputIndex)
+            },
+            //mainFlow already exists (built by the App constructor); any other
+            //flow stored in the session file is created here on the fly
+            createFlow:(flowData,app)=>{
+                return new Flow(flowData.label??"flow",app,app.flowWorkspace)
             }
         })
-        this.channel.shutDown()
-        this.main.remove()
         globalThis.Attributor=importedApp
+        //restore the saved panel layout (fold states and sizes)
+        importedApp.applyPanelParameters()
         return importedApp
     }
     about(){

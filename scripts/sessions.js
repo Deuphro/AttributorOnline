@@ -10,7 +10,7 @@ function registrationOf(caster) {
     return caster?.events?.registrationId
 }
 
-function encodeValue(value, state, seen = new WeakSet()) {
+function encodeValue(value, seen = new WeakSet()) {
     if (value === undefined) {
         return {type: "undefined"}
     }
@@ -28,7 +28,7 @@ function encodeValue(value, state, seen = new WeakSet()) {
     }
     const serializedFormat=serializeFormatValue(value)
     if(serializedFormat){
-        return {type:"format",value:encodeValue(serializedFormat,state,seen)}
+        return {type:"format",value:encodeValue(serializedFormat,seen)}
     }
     const registrationId = registrationOf(value)
     if (registrationId) {
@@ -44,21 +44,21 @@ function encodeValue(value, state, seen = new WeakSet()) {
         result = {
             type: "map",
             entries: [...value].map(([key, entryValue]) => [
-                encodeValue(key, state, seen),
-                encodeValue(entryValue, state, seen)
+                encodeValue(key, seen),
+                encodeValue(entryValue, seen)
             ])
         }
     } else if (value instanceof Set) {
         result = {
             type: "set",
-            values: [...value].map(entry => encodeValue(entry, state, seen))
+            values: [...value].map(entry => encodeValue(entry, seen))
         }
     } else if (Array.isArray(value)) {
-        result = value.map(entry => encodeValue(entry, state, seen))
+        result = value.map(entry => encodeValue(entry, seen))
     } else {
         result = {}
         for (const [key, entryValue] of Object.entries(value)) {
-            result[key] = encodeValue(entryValue, state, seen)
+            result[key] = encodeValue(entryValue, seen)
         }
     }
 
@@ -121,6 +121,11 @@ function runtimeShape(value) {
     if (value.type === "undefined" || value.type === "registration") {
         return undefined
     }
+    //dom/event values decode to undefined (see decodeValue), so the shape given
+    //to node factories has to match
+    if (value.type === "dom" || value.type === "event") {
+        return undefined
+    }
     if (value.type === "bigint") {
         return BigInt(value.value)
     }
@@ -156,10 +161,10 @@ function serializeNode(node, state) {
         label: registration.label,
         type: registration.type,
         title: node.title,
-        inputs: encodeValue(node.inputs, state),
-        outputs: encodeValue(node.outputs, state),
-        position: encodeValue(node.parameters?.position ?? {x: 10, y: 10}, state),
-        state: encodeValue(node.serializeState?.(), state),
+        inputs: encodeValue(node.inputs),
+        outputs: encodeValue(node.outputs),
+        position: encodeValue(node.parameters?.position ?? {x: 10, y: 10}),
+        state: encodeValue(node.serializeState?.()),
         status: node.status
     }
 }
@@ -182,7 +187,7 @@ function serializeFlow(flow, state) {
         label: registration.label,
         type: registration.type,
         title: flow.title,
-        parameters: encodeValue(flow.parameters, state),
+        parameters: encodeValue(flow.parameters),
         nodes,
         links
     }
@@ -203,7 +208,7 @@ function save(app, options = {}) {
         format: SESSION_FORMAT,
         version: SESSION_VERSION,
         app: {
-            parameters: encodeValue(app.parameters, state)
+            parameters: encodeValue(app.parameters)
         },
         channel: {
             nextId: app.channel.nextId,

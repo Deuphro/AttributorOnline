@@ -1,4 +1,7 @@
 *{
+    --plot-axis-color: black;
+    --plot-axis-font: monospace;
+    --plot-axis-font-size: 12px;
     box-sizing: border-box;
     scrollbar-width:thin;
     font-family: monospace;
@@ -385,4 +388,19 @@ input[type=range].dual::-moz-range-thumb{
     stroke:tomato;
     stroke-width: 3px;
     opacity:75%;
+}
+
+.plot-axis{
+    fill: none;
+}
+.plot-axis .domain,
+.plot-axis .tick line{
+    stroke: var(--plot-axis-color);
+}
+.plot-axis .tick text,
+.plot-axis text.axis-label{
+    fill: var(--plot-axis-color);
+    stroke: none;
+    font-size: var(--plot-axis-font-size);
+    font-family: var(--plot-axis-font);
 }
