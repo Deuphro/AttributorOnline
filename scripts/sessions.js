@@ -1,5 +1,6 @@
 const SESSION_FORMAT = "attributor-session"
 const SESSION_VERSION = 1
+import {serializeFormatValue,recreateFormatValue} from "./formats.js"
 
 function isObject(value) {
     return value !== null && typeof value === "object"
@@ -24,6 +25,10 @@ function encodeValue(value, state, seen = new WeakSet()) {
     }
     if (value instanceof Event) {
         return {type: "event", name: value.type}
+    }
+    const serializedFormat=serializeFormatValue(value)
+    if(serializedFormat){
+        return {type:"format",value:encodeValue(serializedFormat,state,seen)}
     }
     const registrationId = registrationOf(value)
     if (registrationId) {
@@ -74,6 +79,9 @@ function decodeValue(value, registrations) {
     if (value.type === "bigint") {
         return BigInt(value.value)
     }
+    if(value.type === "format"){
+        return recreateFormatValue(decodeValue(value.value,registrations))
+    }
     if (value.type === "registration") {
         return registrations.get(value.id)
     }
@@ -115,6 +123,9 @@ function runtimeShape(value) {
     }
     if (value.type === "bigint") {
         return BigInt(value.value)
+    }
+    if(value.type === "format"){
+        return recreateFormatValue(runtimeShape(value.value))
     }
 
     const result = {}
@@ -291,6 +302,7 @@ function importSession(serialized, options = {}) {
             if (nodeData.status !== undefined) {
                 node.status = nodeData.status
             }
+            node.restoreAfterImport?.()
         }
 
         for (const linkData of flowData.links) {

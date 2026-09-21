@@ -273,6 +273,28 @@ div{
     box-shadow: 0px 0px 20px 1px greenyellow;
 }
 
+input[type=range].dual{
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    pointer-events: none;
+    margin: 0;
+}
+input[type=range].dual::-webkit-slider-runnable-track{
+    background: transparent;
+}
+input[type=range].dual::-webkit-slider-thumb{
+    pointer-events: auto;
+    cursor: ew-resize;
+}
+input[type=range].dual::-moz-range-track{
+    background: transparent;
+}
+input[type=range].dual::-moz-range-thumb{
+    pointer-events: auto;
+    cursor: ew-resize;
+}
+
 .flow.container{
     background: url('../resources/pattern.svg');
     background-color: cornsilk;

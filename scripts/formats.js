@@ -101,6 +101,51 @@ class Wave{
             }
         }
         this.labels=new Array(this.degree)
+        this.metadata={}
+    }
+    static fromPairs(pairs,metadata={}){
+        if(!Array.isArray(pairs)){
+            throw new TypeError("Wave.fromPairs expects an array of [x, y] pairs")
+        }
+        const wave=new Wave(2,pairs.length)
+        for(let pointIndex=0;pointIndex<pairs.length;pointIndex++){
+            const pair=pairs[pointIndex]
+            if(!Array.isArray(pair)||pair.length<2){
+                throw new TypeError(`Invalid XY pair at index ${pointIndex}`)
+            }
+            const x=Number(pair[0])
+            const y=Number(pair[1])
+            if(!Number.isFinite(x)||!Number.isFinite(y)){
+                throw new TypeError(`XY pair at index ${pointIndex} must contain finite numbers`)
+            }
+            wave.core[wave.index(0,pointIndex)]=x
+            wave.core[wave.index(1,pointIndex)]=y
+        }
+        wave.labels=["x","y"]
+        wave.metadata={...metadata}
+        return wave
+    }
+    importPairs(pairs,metadata={}){
+        const imported=Wave.fromPairs(pairs,metadata)
+        this.dims=imported.dims
+        this.degree=imported.degree
+        this.cum=imported.cum
+        this.size=imported.size
+        this.core=imported.core
+        this.iterables=imported.iterables
+        this.indices=imported.indices
+        this.labels=imported.labels
+        this.metadata=imported.metadata
+        return this
+    }
+    toPairs(){
+        if(this.degree!==2||this.dims[0]!==2){
+            throw new TypeError("Wave.toPairs requires a Wave with dimensions [2, pointCount]")
+        }
+        return Array.from({length:this.dims[1]},(_,pointIndex)=>[
+            this.core[this.index(0,pointIndex)],
+            this.core[this.index(1,pointIndex)]
+        ])
     }
     [Symbol.iterator](){
         let res={value:undefined,index:-1}
@@ -529,6 +574,8 @@ class Wave{
         for(let k=0;k<this.size;k++){
             res.core[k]=this.core[k]
         }
+        res.labels=[...this.labels]
+        res.metadata={...this.metadata}
         return res
     }
     swapaxes(a,b){
@@ -574,4 +621,95 @@ class Wave{
     }
 }
 
-export {Data,Vector,Wave}
+class Trace{
+    constructor({id,title="Trace",options={}}={}){
+        this.id=id??crypto.randomUUID()
+        this.title=title
+        this.options={
+            color:"#ff0000",
+            hidden:false,
+            mode:"lines-between-points",
+            grouping:"none",
+            errorBars:false,
+            offset:false,
+            gaps:false,
+            marker:{
+                shape:"circle",
+                size:4,
+                ...options.marker
+            },
+            ...options,
+            line:{
+                size:1,
+                style:"solid",
+                joinStyle:"round",
+                miterLimit:10,
+                capStyle:"flat",
+                ...options.line
+            }
+        }
+        if(!this.options.marker||typeof this.options.marker!=="object"){
+            this.options.marker={shape:"circle",size:4}
+        }
+    }
+}
+
+class XYTrace extends Trace{
+    constructor({id,title="XY trace",wave,options={}}={}){
+        super({id,title,options})
+        if(!(wave instanceof Wave)||wave.degree!==2||wave.dims[0]!==2){
+            throw new TypeError("XYTrace requires a Wave with dimensions [2, pointCount]")
+        }
+        this.wave=wave
+    }
+    get pointCount(){
+        return this.wave.dims[1]
+    }
+    get points(){
+        return this.wave.toPairs()
+    }
+}
+
+function serializeFormatValue(value){
+    if(value instanceof Wave){
+        return {
+            kind:"Wave",
+            dims:[...value.dims],
+            core:Array.from(value.core),
+            labels:[...value.labels],
+            metadata:{...value.metadata}
+        }
+    }
+    if(value instanceof XYTrace){
+        return {
+            kind:"XYTrace",
+            id:value.id,
+            title:value.title,
+            options:value.options,
+            wave:serializeFormatValue(value.wave)
+        }
+    }
+    if(value instanceof Trace){
+        return {kind:"Trace",id:value.id,title:value.title,options:value.options}
+    }
+    return null
+}
+
+function recreateFormatValue(value){
+    if(value?.kind==="Wave"){
+        const wave=new Wave(...value.dims)
+        wave.core.set(value.core)
+        wave.labels=[...value.labels]
+        wave.metadata={...value.metadata}
+        return wave
+    }
+    if(value?.kind==="XYTrace"){
+        return new XYTrace({...value,wave:recreateFormatValue(value.wave)})
+    }
+    if(value?.kind==="Trace"){
+        return new Trace(value)
+    }
+    throw new TypeError("Unsupported serialized format value")
+}
+
+export {Data,Vector,Wave,Trace,XYTrace,serializeFormatValue,recreateFormatValue}

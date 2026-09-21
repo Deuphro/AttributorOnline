@@ -2,10 +2,24 @@ import {$,CE,stylize,fakeData,DC,requestPOST,serializeApp,SingleJsonFile, deseri
 import {save as saveSession, import as importSessionData} from "./sessions.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
-import { Data , Vector, Wave} from "./formats.js"
+import { Data , Vector, Wave, XYTrace} from "./formats.js"
 
 window.raie=new Wave(5)
 window.eiar=new Wave(7)
+
+class Command{
+    constructor({label="action",undo,redo}={}){
+        this.label=label
+        this._undo=undo
+        this._redo=redo
+    }
+    undo(){
+        return this._undo?.()
+    }
+    redo(){
+        return this._redo?.()
+    }
+}
 
 class History{
     constructor(){
@@ -17,8 +31,12 @@ class History{
         if(this.replaying){
             return
         }
+        if(!(command instanceof Command)){
+            command=new Command(command)
+        }
         this.undoStack.push(command)
         this.redoStack=[]
+        this.notify()
     }
     undo(){
         const command=this.undoStack.pop()
@@ -32,6 +50,7 @@ class History{
         }finally{
             this.replaying=false
         }
+        this.notify()
     }
     redo(){
         const command=this.redoStack.pop()
@@ -45,6 +64,21 @@ class History{
         }finally{
             this.replaying=false
         }
+        this.notify()
+    }
+    get undoLabel(){
+        return this.undoStack.at(-1)?.label??null
+    }
+    get redoLabel(){
+        return this.redoStack.at(-1)?.label??null
+    }
+    notify(){
+        dispatchEvent(new CustomEvent("historyChanged",{detail:{msg:{
+            canUndo:this.undoStack.length>0,
+            canRedo:this.redoStack.length>0,
+            undoLabel:this.undoLabel,
+            redoLabel:this.redoLabel
+        }}}))
     }
 }
 
@@ -204,10 +238,11 @@ class Node{
             document.onmouseup=null;
             const after={...pilot.parameters.position}
             if(before.x!==after.x||before.y!==after.y){
-                pilot.origin.history.record({
+                pilot.origin.history.record(new Command({
+                    label:`Move ${pilot.title}`,
                     undo:()=>pilot.setPosition(before),
                     redo:()=>pilot.setPosition(after)
-                })
+                }))
             }
         }
     }
@@ -260,7 +295,8 @@ class Node{
         if(!skipHistory&&!this.origin.history.replaying){
             let restoredNode=null
             let restoredLinks=[]
-            this.origin.history.record({
+            this.origin.history.record(new Command({
+                label:`Delete node ${this.title}`,
                 undo:()=>{
                     restoredNode=createNodeForHistory(this.origin,flow,restoreData)
                     restoredLinks=linkedDescriptors.map(link=>flow.createLink(
@@ -277,7 +313,7 @@ class Node{
                     restoredNode?.suicide({skipHistory:true})
                     restoredLinks=[]
                 }
-            })
+            }))
         }
     }
     static anchorAbsPos(anchor){
@@ -345,14 +381,23 @@ class Operation extends Node{
                 continue
             }
             for(const values of input.values()){
-                for(const pairs of values){
-                    if(!Array.isArray(pairs)){
+                for(const waves of values){
+                    if(!Array.isArray(waves)){
                         continue
                     }
-                    for(const pair of pairs){
-                        if(Array.isArray(pair)&&pair.length>=2){
-                            output.push(pair.map(item=>this.operation(item)))
+                    for(const wave of waves){
+                        if(!(wave instanceof Wave)){
+                            continue
                         }
+                        const transformed=wave.clone
+                        transformed.core.forEach((value,index)=>{
+                            transformed.core[index]=this.operation(value)
+                        })
+                        transformed.metadata={
+                            ...wave.metadata,
+                            transformedBy:[...(wave.metadata.transformedBy??[]),this.title]
+                        }
+                        output.push(transformed)
                     }
                 }
             }
@@ -410,7 +455,9 @@ class DelimitedTextNode extends NodeWithAccordion{
         }
         this.updateLabel(this.parameters.source.fileName)
         if(this.parameters.source.pairs?.length){
-            this.outputs[0]=this.parameters.source.pairs.map(pair=>[...pair])
+            this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName})]
+        }else{
+            this.outputs[0]=[]
         }
         this.status=state?.status??(this.parameters.source.pairs?.length?"resolved":"floating")
         this.renderAccordion()
@@ -421,7 +468,7 @@ class DelimitedTextNode extends NodeWithAccordion{
             this.status="floating"
             return
         }
-        this.outputs[0]=this.parameters.source.pairs.map(pair=>[...pair])
+        this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName})]
         this.status="resolved"
     }
     clear(){
@@ -631,19 +678,8 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             return
         }
         super.registered(e)
-        this.logScaleCheckbox=CE("input",{type:"checkbox",style:{accentColor:"greenyellow"}},[])
-        this.logScaleCheckbox.addEventListener("change",event=>{
-            const enabled=event.target.checked
-            if(enabled&&this.graph.data.some(([x,y])=>x<=0||y<=0)){
-                event.target.checked=false
-                return
-            }
-            this.setLogarithmicScale(enabled)
-        })
-        const logScaleLabel=CE("label",{},[])
-        logScaleLabel.appendChild(this.logScaleCheckbox)
-        logScaleLabel.appendChild(document.createTextNode(" Logarithmic scale"))
-        this.accordion.DOMelt.content.appendChild(logScaleLabel)
+        this.logScaleCheckbox=true
+        this.renderInspector()
     }
     setLogarithmicScale(enabled){
         const scale=enabled?"log":"linear"
@@ -651,37 +687,303 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         this.graph.parameters.axis.left.scale=scale
         this.graph.drawGraph()
     }
-    collectPairs(){
-        const pairs=[]
+    renderInspector(){
+        if(!this.accordion) return
+        const root=this.accordion.DOMelt.content
+        root.replaceChildren()
+        const section=(title,open=true)=>{
+            const details=document.createElement("details")
+            details.open=open
+            const summary=document.createElement("summary")
+            summary.textContent=title
+            details.append(summary)
+            root.append(details)
+            return details
+        }
+        const tracesSection=section("Traces")
+        const traceList=document.createElement("div")
+        traceList.style.display="grid"
+        traceList.style.gap="3px"
+        tracesSection.append(traceList)
+        const selectTrace=trace=>{
+            this.selectedTraceId=(this.selectedTraceId===trace.id)?null:trace.id
+            this.renderInspector()
+        }
+        for(const trace of this.graph.traces){
+            if(!trace.options.marker||typeof trace.options.marker!=="object"){
+                trace.options.marker={shape:"circle",size:4}
+            }
+            const item=document.createElement("div")
+            item.style.display="grid"
+            item.style.gridTemplateColumns="auto 1fr auto"
+            item.style.gap="4px"
+            item.style.alignItems="center"
+            item.draggable=true
+            if(trace.id===this.selectedTraceId) item.classList.add("selected")
+            const swatchWrap=document.createElement("label")
+            swatchWrap.title="Trace color"
+            swatchWrap.style.width="1.2em"
+            swatchWrap.style.height="1.2em"
+            swatchWrap.style.borderRadius="4px"
+            swatchWrap.style.cursor="pointer"
+            swatchWrap.style.border=`2px solid ${trace.options.color}`
+            swatchWrap.style.background=trace.options.color
+            swatchWrap.style.opacity=trace.options.hidden?"0.35":"1"
+            swatchWrap.style.overflow="hidden"
+            const swatch=document.createElement("input")
+            swatch.type="color"; swatch.value=trace.options.color
+            swatch.title="Trace color"
+            swatch.style.width="1px"; swatch.style.height="1px"
+            swatch.style.opacity="0"; swatch.style.border="none"; swatch.style.padding="0"
+            swatch.addEventListener("input",()=>{trace.options.color=swatch.value;this.graph.drawGraph();this.renderInspector()})
+            swatchWrap.append(swatch)
+            const nameBtn=document.createElement("button")
+            nameBtn.type="button"
+            nameBtn.textContent=`${trace.title} (${trace.pointCount} points)`
+            nameBtn.style.textAlign="left"
+            nameBtn.style.opacity=trace.options.hidden?"0.45":"1"
+            nameBtn.addEventListener("click",()=>selectTrace(trace))
+            const eye=document.createElement("button")
+            eye.type="button"
+            eye.title=trace.options.hidden?"Show trace":"Hide trace"
+            eye.textContent=trace.options.hidden?"🚫":"👁"
+            eye.style.width="1.8em"
+            eye.addEventListener("click",(event)=>{
+                event.stopPropagation()
+                trace.options.hidden=!trace.options.hidden
+                this.graph.drawGraph()
+                this.renderInspector()
+            })
+            item.append(swatchWrap,nameBtn,eye)
+            item.addEventListener("dragstart",event=>event.dataTransfer.setData("text/plain",trace.id))
+            item.addEventListener("dragover",event=>event.preventDefault())
+            item.addEventListener("drop",event=>{
+                event.preventDefault()
+                const from=this.graph.traces.findIndex(candidate=>candidate.id===event.dataTransfer.getData("text/plain"))
+                const to=this.graph.traces.indexOf(trace)
+                if(from>=0&&to>=0&&from!==to){
+                    const [moved]=this.graph.traces.splice(from,1)
+                    this.graph.traces.splice(to,0,moved)
+                    this.graph.drawGraph()
+                    this.renderInspector()
+                }
+            })
+            traceList.append(item)
+        }
+        const trace=this.graph.traces.find(candidate=>candidate.id===this.selectedTraceId)
+        if(trace){
+            if(!trace.options.marker||typeof trace.options.marker!=="object"){
+                trace.options.marker={shape:"circle",size:4}
+            }
+            const editor=document.createElement("div")
+            editor.style.display="grid"
+            editor.style.gap="4px"
+            editor.style.padding="4px"
+            editor.style.border="1px solid rgba(255,255,255,0.35)"
+            editor.style.borderRadius="5px"
+            const control=(label,element)=>{
+                const row=document.createElement("label")
+                row.style.display="grid"
+                row.style.gridTemplateColumns="1fr 1fr"
+                row.style.gap="4px"
+                row.style.alignItems="center"
+                row.style.fontSize="0.85em"
+                row.textContent=label
+                row.append(element)
+                editor.append(row)
+            }
+            const colorMini=document.createElement("input")
+            colorMini.type="color"; colorMini.value=trace.options.color
+            colorMini.style.width="1.2em"; colorMini.style.height="1.2em"
+            colorMini.style.padding="0"; colorMini.style.border="none"
+            colorMini.style.justifySelf="end"
+            colorMini.addEventListener("input",()=>{trace.options.color=colorMini.value;this.graph.drawGraph();this.renderInspector()})
+            control("Color",colorMini)
+            const mode=document.createElement("select")
+            for(const [value,text] of [["lines-between-points","Lines between points"],["lines-and-points","Lines + points"],["points","Points only"],["sticks-to-zero","Sticks to zero"]]){
+                const option=new Option(text,value); option.selected=trace.options.mode===value; mode.add(option)
+            }
+            mode.addEventListener("change",()=>{trace.options.mode=mode.value;this.graph.drawGraph()})
+            control("Mode",mode)
+            const markerShape=document.createElement("select")
+            for(const [value,text] of [["circle","Circle"],["square","Square"],["diamond","Diamond"],["triangle-up","Triangle up"],["triangle-down","Triangle down"],["cross","Cross"],["plus","Plus"]]){
+                const option=new Option(text,value); option.selected=(trace.options.marker.shape??"circle")===value; markerShape.add(option)
+            }
+            markerShape.addEventListener("change",()=>{trace.options.marker.shape=markerShape.value;this.graph.drawGraph()})
+            control("Marker",markerShape)
+            const markerSize=document.createElement("input")
+            markerSize.type="number"; markerSize.min="1"; markerSize.max="20"; markerSize.step="0.5"; markerSize.value=trace.options.marker.size??4
+            markerSize.style.width="100%"
+            markerSize.addEventListener("input",()=>{trace.options.marker.size=Number(markerSize.value);this.graph.drawGraph()})
+            control("Marker size",markerSize)
+            const size=document.createElement("input")
+            size.type="number"; size.min="0"; size.step="0.5"; size.value=trace.options.line.size
+            size.style.width="100%"
+            size.addEventListener("input",()=>{trace.options.line.size=Number(size.value);this.graph.drawGraph()})
+            control("Line size",size)
+            tracesSection.append(editor)
+        }
+        const axesSection=section("Axes",false)
+        const axisNames={bottom:"X",left:"Y"}
+        for(const [key,axis] of Object.entries(this.graph.parameters.axis)){
+            const pretty=axisNames[key]??key
+            this.renderAxisInspector(axesSection,pretty,axis)
+        }
+    }
+    renderAxisInspector(section,pretty,axis){
+        const block=document.createElement("div")
+        block.dataset.axis=pretty
+        section.append(block)
+        const row=document.createElement("div")
+        row.style.display="grid"; row.style.gridTemplateColumns="auto 1fr"; row.style.gap="4px"; row.style.alignItems="center"
+        const name=document.createElement("strong"); name.textContent=`${pretty}:`
+        const label=document.createElement("input"); label.value=axis.label
+        label.style.width="100%"
+        label.addEventListener("input",()=>{axis.label=label.value;axis.autoLabel=false;this.graph.drawGraph()})
+        row.append(name,label); block.append(row)
+        const scaleRow=document.createElement("div")
+        scaleRow.style.display="grid"; scaleRow.style.gridTemplateColumns="auto 1fr auto"; scaleRow.style.gap="4px"; scaleRow.style.alignItems="center"
+        const scaleLabel=document.createElement("span"); scaleLabel.textContent="Scale"; scaleLabel.style.fontSize="0.85em"
+        const scale=document.createElement("select")
+        for(const value of ["linear","log"]){const option=new Option(value,value);option.selected=axis.scale===value;scale.add(option)}
+        scale.addEventListener("change",()=>{axis.scale=scale.value;axis.autoDomain=true;this.graph.drawGraph();this.refreshAxisBlock(block,pretty,axis)})
+        const autoBtn=document.createElement("button")
+        autoBtn.type="button"; autoBtn.textContent="Auto"; autoBtn.title="Automatic bounds"
+        autoBtn.style.opacity=(axis.autoDomain??true)?"1":"0.45"
+        autoBtn.addEventListener("click",()=>{axis.autoDomain=true;this.graph.drawGraph();this.refreshAxisBlock(block,pretty,axis)})
+        scaleRow.append(scaleLabel,scale,autoBtn); block.append(scaleRow)
+        this.buildDualSlider(block,pretty,axis,autoBtn)
+    }
+    axisSliderRange(pretty,axis){
+        const bounds=this.graph.dataBounds()
+        const isX=(pretty==="X")
+        const dataMin=isX?bounds?.xMin:bounds?.yMin
+        const dataMax=isX?bounds?.xMax:bounds?.yMax
+        const currentMin=axis.domain?.[0]
+        const currentMax=axis.domain?.[1]
+        const refMin=dataMin??currentMin??0
+        const refMax=dataMax??currentMax??1
+        const span=(refMax-refMin)||1
+        return {paddedMin:refMin-0.1*span,paddedMax:refMax+0.1*span,step:span/200,initMin:currentMin??(refMin-0.1*span),initMax:currentMax??(refMax+0.1*span)}
+    }
+    buildDualSlider(block,pretty,axis,autoBtn){
+        const {paddedMin,paddedMax,step,initMin,initMax}=this.axisSliderRange(pretty,axis)
+        this.renderDualSlider(block,axis,autoBtn,paddedMin,paddedMax,step,initMin,initMax)
+    }
+    refreshAxisBlock(block,pretty,axis){
+        const autoBtn=block.querySelector("button[title='Automatic bounds']")
+        if(autoBtn) autoBtn.style.opacity=(axis.autoDomain??true)?"1":"0.45"
+        block.querySelectorAll(":scope > div[data-range]").forEach(elt=>elt.remove())
+        this.buildDualSlider(block,pretty,axis,autoBtn)
+    }
+    renderDualSlider(block,axis,autoBtn,paddedMin,paddedMax,step,initMin,initMax){
+        const rangeRow=document.createElement("div")
+        rangeRow.dataset.range="1"
+        rangeRow.style.display="grid"; rangeRow.style.gridTemplateColumns="auto 1fr"; rangeRow.style.gap="4px"; rangeRow.style.alignItems="center"
+        const rangeLabel=document.createElement("span"); rangeLabel.textContent="Range"; rangeLabel.style.fontSize="0.85em"
+        const sliders=document.createElement("div")
+        sliders.style.position="relative"; sliders.style.height="1.6em"
+        const track=document.createElement("div")
+        track.style.position="absolute"; track.style.left="0"; track.style.right="0"; track.style.top="50%"
+        track.style.height="4px"; track.style.transform="translateY(-50%)"
+        track.style.borderRadius="2px"; track.style.background="rgba(255,255,255,0.25)"
+        const fill=document.createElement("div")
+        fill.style.position="absolute"; fill.style.top="50%"; fill.style.height="4px"; fill.style.transform="translateY(-50%)"
+        fill.style.borderRadius="2px"; fill.style.background="#3498db"; fill.style.pointerEvents="none"
+        const lo=document.createElement("input")
+        lo.type="range"; lo.min=String(paddedMin); lo.max=String(paddedMax); lo.step=String(step); lo.value=String(initMin)
+        const hi=document.createElement("input")
+        hi.type="range"; hi.min=String(paddedMin); hi.max=String(paddedMax); hi.step=String(step); hi.value=String(initMax)
+        lo.classList.add("dual"); hi.classList.add("dual")
+        for(const thumb of [lo,hi]){
+            thumb.style.position="absolute"; thumb.style.inset="0"; thumb.style.width="100%"
+            thumb.style.background="transparent"; thumb.style.pointerEvents="none"
+        }
+        const paint=()=>{
+            const a=Number(lo.value)
+            const b=Number(hi.value)
+            const loPct=((Math.min(a,b)-paddedMin)/(paddedMax-paddedMin))*100
+            const hiPct=((Math.max(a,b)-paddedMin)/(paddedMax-paddedMin))*100
+            fill.style.left=`${loPct}%`
+            fill.style.width=`${Math.max(0,hiPct-loPct)}%`
+            lo.style.zIndex=(a<=b)?"3":"2"
+            hi.style.zIndex=(a<=b)?"2":"3"
+        }
+        const inputsRow=document.createElement("div")
+        inputsRow.style.display="grid"; inputsRow.style.gridTemplateColumns="1fr 1fr"; inputsRow.style.gap="4px"
+        inputsRow.style.gridColumn="1 / -1"
+        const loNum=document.createElement("input")
+        loNum.type="number"; loNum.step="any"; loNum.value=String(initMin)
+        loNum.style.width="100%"; loNum.title="Lower bound"
+        const hiNum=document.createElement("input")
+        hiNum.type="number"; hiNum.step="any"; hiNum.value=String(initMax)
+        hiNum.style.width="100%"; hiNum.title="Upper bound"
+        inputsRow.append(loNum,hiNum)
+        const apply=(a,b,from)=>{
+            a=Number(a); b=Number(b)
+            if(!Number.isFinite(a)||!Number.isFinite(b)) return
+            if(a===b) return
+            if(a>b) [a,b]=[b,a]
+            if(axis.scale==="log"&&(a<=0||b<=0)) return
+            a=Math.min(Math.max(a,paddedMin),paddedMax)
+            b=Math.min(Math.max(b,paddedMin),paddedMax)
+            if(a===b) return
+            axis.domain=[a,b]
+            axis.autoDomain=false
+            this.graph.drawGraph()
+            if(from!=="sliders"){lo.value=String(a); hi.value=String(b); loNum.value=String(a); hiNum.value=String(b)}
+            else {loNum.value=String(a); hiNum.value=String(b)}
+            paint()
+            autoBtn.style.opacity="0.45"
+        }
+        lo.addEventListener("input",()=>apply(lo.value,hi.value,"sliders"))
+        hi.addEventListener("input",()=>apply(lo.value,hi.value,"sliders"))
+        loNum.addEventListener("change",()=>apply(loNum.value,hiNum.value,"numbers"))
+        hiNum.addEventListener("change",()=>apply(loNum.value,hiNum.value,"numbers"))
+        sliders.append(track,fill,lo,hi)
+        rangeRow.append(rangeLabel,sliders,inputsRow); block.append(rangeRow)
+        paint()
+    }
+    collectTraces(){
+        const traces=[]
+        const colors=["#e74c3c","#3498db","#2ecc71","#f39c12","#9b59b6","#1abc9c"]
         for(const input of this.inputs){
-            for(const values of input.values()){
-                for(const value of values){
-                    if(Array.isArray(value)){
-                        for(const pair of value){
-                            if(Array.isArray(pair)&&pair.length>=2){
-                                const x=Number(pair[0])
-                                const y=Number(pair[1])
-                                if(Number.isFinite(x)&&Number.isFinite(y)){
-                                    pairs.push([x,y])
-                                }
-                            }
+            for(const [parent,values] of input){
+                for(const waves of values){
+                    if(!Array.isArray(waves)) continue
+                    for(const wave of waves){
+                        if(wave instanceof Wave){
+                            const traceIndex=traces.length
+                            traces.push(new XYTrace({
+                                id:`${parent.events?.registrationId??parent.title}:${traceIndex}`,
+                                title:wave.metadata.title??parent.title,
+                                wave,
+                                options:{color:colors[traceIndex%colors.length]}
+                            }))
                         }
                     }
                 }
             }
         }
-        return pairs
+        return traces
     }
     async startResolve(){
         this.status="pending"
-        const pairs=this.collectPairs()
-        this.graph.data=pairs
-        if(this.graph.parameters.axis.bottom.scale==="log"&&pairs.some(([x,y])=>x<=0||y<=0)){
+        const traces=this.collectTraces()
+        this.graph.setTraces(traces)
+        this.graph.syncAxisLabels()
+        this.renderInspector()
+        if(this.graph.parameters.axis.bottom.scale==="log"&&this.graph.points.some(([x,y])=>x<=0||y<=0)){
             this.logScaleCheckbox.checked=false
             this.setLogarithmicScale(false)
         }
         this.graph.drawGraph()
-        this.status=pairs.length?"resolved":"error"
+        this.status=traces.length?"resolved":"error"
+    }
+    restoreAfterImport(){
+        this.graph?.setTraces([])
+        this.graph?.drawGraph()
+        this.status="floating"
     }
 }
 
@@ -818,7 +1120,8 @@ class Flow{
                         outputNode:link.outputNode,
                         outputIndex:Number(link.outputAnchor.id)
                     }
-                    this.origin.history.record({
+                    this.origin.history.record(new Command({
+                        label:`Create link ${descriptor.inputNode.title} -> ${descriptor.outputNode.title}`,
                         undo:()=>this.deleteLink(link,{record:false}),
                         redo:()=>{link=this.createLink(
                             descriptor.inputNode,
@@ -826,7 +1129,7 @@ class Flow{
                             descriptor.outputNode,
                             descriptor.outputIndex
                         )}
-                    })
+                    }))
                 }
             }
             document.onmousemove=null;
@@ -895,7 +1198,8 @@ class Flow{
         this.linkList.splice(k,1)
         if(record&&!this.origin.history.replaying){
             let restoredLink=null
-            this.origin.history.record({
+            this.origin.history.record(new Command({
+                label:`Delete link ${descriptor.inputNode.title} -> ${descriptor.outputNode.title}`,
                 undo:()=>{restoredLink=this.createLink(
                     descriptor.inputNode,
                     descriptor.inputIndex,
@@ -903,7 +1207,7 @@ class Flow{
                     descriptor.outputIndex
                 )},
                 redo:()=>this.deleteLink(restoredLink,{record:false})
-            })
+            }))
         }
     }
     stopBuildingLink(e){
@@ -1091,6 +1395,15 @@ class Menu{
 class MainMenu extends Menu{
     constructor(configObject,title,origin,destination){
         super(configObject,title,origin,destination)
+        this.undoItem=null
+        this.redoItem=null
+        for(const elt of this.container.querySelectorAll(".parent")){
+            const text=elt.firstChild?.textContent??""
+            if(text==="Undo") this.undoItem=elt
+            if(text==="Redo") this.redoItem=elt
+        }
+        globalThis.addEventListener("historyChanged",(e)=>this.updateUndoRedo(e.detail.msg))
+        this.updateUndoRedo({canUndo:false,canRedo:false,undoLabel:null,redoLabel:null})
         this.events={
             broadcast:{
                 poppedUp:new CustomEvent("poppedUp",{detail:{msg:"I've just popped up",emitter:this}}),
@@ -1123,6 +1436,16 @@ class MainMenu extends Menu{
             },
             about(e){origin.about()},
         }}
+    }
+    updateUndoRedo({canUndo,canRedo,undoLabel,redoLabel}={}){
+        if(this.undoItem){
+            this.undoItem.firstChild.textContent=canUndo&&undoLabel?`Undo: ${undoLabel}`:"Undo"
+            this.undoItem.style.opacity=canUndo?"1":"0.4"
+        }
+        if(this.redoItem){
+            this.redoItem.firstChild.textContent=canRedo&&redoLabel?`Redo: ${redoLabel}`:"Redo"
+            this.redoItem.style.opacity=canRedo?"1":"0.4"
+        }
     }
 }
 
@@ -1247,10 +1570,11 @@ class MainFlowMenu extends Menu{
                     }
                     if(!origin.history.replaying){
                         const nodeData=nodeHistoryData(node)
-                        origin.history.record({
+                        origin.history.record(new Command({
+                            label:`Create node ${node.title}`,
                             undo:()=>node.suicide({skipHistory:true}),
                             redo:()=>{node=createNodeForHistory(origin,origin.channel.get("mainFlow"),nodeData)}
-                        })
+                        }))
                     }
                 }
             }
@@ -1378,6 +1702,7 @@ class Plot2D{
     constructor(data,title,origin,destination){
         this.title=title
         this.data=data
+        this.traces=[]
         this.origin=origin
         this.destination=destination
         this.container=CE('div',{className:"2dplot container",pilot:this},[]);
@@ -1396,9 +1721,11 @@ class Plot2D{
                 bottom:{
                     drawn:false,
                     domain:[0,1],
+                    autoDomain:true,
                     range:[0,1],
                     position:{left:0,top:1},
                     label:"Abscissa",
+                    autoLabel:true,
                     orientation:"horizontal",
                     scale:"linear",
                     type:"bottom"
@@ -1406,9 +1733,11 @@ class Plot2D{
                 left:{
                     drawn:false,
                     domain:[0,1],
+                    autoDomain:true,
                     range:[1,0],
                     position:{left:0,top:0},
                     label:"Ordinate",
+                    autoLabel:true,
                     orientation:"vertical",
                     scale:"linear",
                     type:"left"
@@ -1430,27 +1759,82 @@ class Plot2D{
             height:this.container.clientHeight-this.parameters.margins.top-this.parameters.margins.bottom
         }
     }
+    setTraces(traces){
+        this.traces=traces.filter(trace=>trace instanceof XYTrace)
+        this.data=this.points
+    }
+    syncAxisLabels(){
+        const reference=this.traces[0]?.wave
+        if(!reference) return
+        if(this.parameters.axis.bottom.autoLabel){
+            this.parameters.axis.bottom.label=reference.labels[0]??"X"
+        }
+        if(this.parameters.axis.left.autoLabel){
+            this.parameters.axis.left.label=reference.labels[1]??"Y"
+        }
+    }
+    get points(){
+        if(this.traces.length){
+            return this.traces.flatMap(trace=>trace.points)
+        }
+        return this.data
+    }
+    dataBounds(){
+        const allPoints=this.points
+        if(!allPoints.length) return null
+        const xValues=allPoints.map(pair=>pair[0])
+        const yValues=allPoints.map(pair=>pair[1])
+        return {
+            xMin:Math.min(...xValues),
+            xMax:Math.max(...xValues),
+            yMin:Math.min(...yValues),
+            yMax:Math.max(...yValues)
+        }
+    }
+    autoDomain(axis,bounds){
+        if(axis==="bottom"){
+            if(this.parameters.axis.bottom.scale==="log"){
+                this.parameters.axis.bottom.domain=[bounds.xMin/1.05,bounds.xMax*1.05]
+            }else{
+                const xPadding=(bounds.xMax-bounds.xMin)||1
+                this.parameters.axis.bottom.domain=[bounds.xMin-0.05*xPadding,bounds.xMax+0.05*xPadding]
+            }
+        }
+        if(axis==="left"){
+            if(this.parameters.axis.bottom.scale==="log"){
+                this.parameters.axis.left.domain=[bounds.yMin/1.05,bounds.yMax*1.05]
+            }else{
+                const yPadding=(bounds.yMax-bounds.yMin)||1
+                this.parameters.axis.left.domain=[bounds.yMin-0.05*yPadding,bounds.yMax+0.05*yPadding]
+            }
+        }
+    }
+    markerPath(shape,size){
+        const s=size??4
+        switch(shape){
+            case "square": return `M${-s},${-s}H${s}V${s}H${-s}Z`
+            case "diamond": return `M0,${-s}L${s},0L0,${s}L${-s},0Z`
+            case "triangle-up": return `M0,${-s}L${s},${s}L${-s},${s}Z`
+            case "triangle-down": return `M0,${s}L${s},${-s}L${-s},${-s}Z`
+            case "cross": return `M${-s},${-s}L${s},${s}M${s},${-s}L${-s},${s}`
+            case "plus": return `M${-s},0H${s}M0,${-s}V${s}`
+            case "circle":
+            default: return null
+        }
+    }
     drawGraph(){
         let range=[]
         let scale={}
         let translate=""
         this.axesSVG={}
         let target=""
-        if(this.data.length){
-            const xValues=this.data.map(pair=>pair[0])
-            const yValues=this.data.map(pair=>pair[1])
-            const xMin=Math.min(...xValues)
-            const xMax=Math.max(...xValues)
-            const yMin=Math.min(...yValues)
-            const yMax=Math.max(...yValues)
-            if(this.parameters.axis.bottom.scale==="log"){
-                this.parameters.axis.bottom.domain=[xMin/1.05,xMax*1.05]
-                this.parameters.axis.left.domain=[yMin/1.05,yMax*1.05]
-            }else{
-                const xPadding=(xMax-xMin)||1
-                const yPadding=(yMax-yMin)||1
-                this.parameters.axis.bottom.domain=[xMin-0.05*xPadding,xMax+0.05*xPadding]
-                this.parameters.axis.left.domain=[yMin-0.05*yPadding,yMax+0.05*yPadding]
+        const bounds=this.dataBounds()
+        if(bounds){
+            if(this.parameters.axis.bottom.autoDomain??true){
+                this.autoDomain("bottom",bounds)
+            }
+            if(this.parameters.axis.left.autoDomain??true){
+                this.autoDomain("left",bounds)
             }
         }
         if(this.parameters.graphzone.drawn){
@@ -1516,19 +1900,81 @@ class Plot2D{
         const yScale=(this.parameters.axis.left.scale==="log"?d3.scaleLog():d3.scaleLinear())
             .domain(this.parameters.axis.left.domain)
             .range([this.graphzone.height,0])
-        const points=this.graphSVG.select(".anchor")
-            .selectAll("circle.point")
-            .data(this.data)
-        points.enter()
-            .append("circle")
-            .attr("class","point")
-            .merge(points)
-            .attr("cx",pair=>xScale(pair[0]))
-            .attr("cy",pair=>yScale(pair[1]))
-            .attr("r",4)
-            .attr("fill","tomato")
-            .attr("stroke","darkgrey")
-        points.exit().remove()
+        const traces=this.traces.length
+            ?this.traces.filter(trace=>!trace.options.hidden)
+            :[{
+                id:"legacy-data",
+                points:this.data,
+                options:{color:"tomato",mode:"points",line:{size:1}}
+            }]
+        const traceGroups=this.graphSVG.select(".anchor")
+            .selectAll("g.trace")
+            .data(traces,trace=>trace.id)
+        const mergedTraceGroups=traceGroups.enter()
+            .append("g")
+            .attr("class","trace")
+            .merge(traceGroups)
+        const line=d3.line()
+            .x(pair=>xScale(pair[0]))
+            .y(pair=>yScale(pair[1]))
+        const owner=this
+        mergedTraceGroups.each(function(trace){
+            const group=d3.select(this)
+            const tracePoints=trace.points
+            const color=trace.options.color
+            const showLine=(trace.options.mode==="lines-between-points"||trace.options.mode==="lines-and-points"||trace.options.mode==="sticks-to-zero")
+            const showMarkers=(trace.options.mode==="points"||trace.options.mode==="lines-and-points")
+            const traceLine=group.selectAll("path.trace-line").data(showLine?[tracePoints]:[])
+            traceLine.enter()
+                .append("path")
+                .attr("class","trace-line")
+                .merge(traceLine)
+                .attr("d",trace.options.mode==="sticks-to-zero"?tracePoints.flatMap(pair=>`M${xScale(pair[0])},${yScale(0)}L${xScale(pair[0])},${yScale(pair[1])}`).join(""):line(tracePoints))
+                .attr("fill","none")
+                .attr("stroke",color)
+                .attr("stroke-width",trace.options.line.size)
+                .attr("stroke-linejoin",trace.options.line.joinStyle)
+                .attr("stroke-linecap",trace.options.line.capStyle)
+                .attr("stroke-miterlimit",trace.options.line.miterLimit)
+            traceLine.exit().remove()
+            if(!showMarkers){
+                group.selectAll(".point").remove()
+                return
+            }
+            const marker=trace.options.marker??{shape:"circle",size:4}
+            const pathD=owner.markerPath(marker.shape,marker.size)
+            const circles=group.selectAll("circle.point")
+            const paths=group.selectAll("path.point")
+            if(pathD){
+                circles.remove()
+                const markerSelection=paths.data(tracePoints)
+                markerSelection.enter()
+                    .append("path")
+                    .attr("class","point")
+                    .merge(markerSelection)
+                    .attr("d",pathD)
+                    .attr("transform",pair=>`translate(${xScale(pair[0])},${yScale(pair[1])})`)
+                    .attr("fill",(marker.shape==="cross"||marker.shape==="plus")?"none":color)
+                    .attr("stroke",(marker.shape==="cross"||marker.shape==="plus")?color:"darkgrey")
+                    .attr("stroke-width",Math.max(1,(trace.options.line?.size??1)))
+                markerSelection.exit().remove()
+            }else{
+                paths.remove()
+                const tracePointsSelection=circles
+                    .data(tracePoints)
+                tracePointsSelection.enter()
+                    .append("circle")
+                    .attr("class","point")
+                    .merge(tracePointsSelection)
+                    .attr("cx",pair=>xScale(pair[0]))
+                    .attr("cy",pair=>yScale(pair[1]))
+                    .attr("r",marker.size??4)
+                    .attr("fill",color)
+                    .attr("stroke","darkgrey")
+                tracePointsSelection.exit().remove()
+            }
+        })
+        traceGroups.exit().remove()
     }
 }
 
