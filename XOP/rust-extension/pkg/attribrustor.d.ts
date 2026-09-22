@@ -17,6 +17,11 @@ export function add(a: number, b: number): number;
 */
 export function arrust(data: Float64Array): void;
 /**
+* @param {Float64Array} data
+* @param {number} scalar
+*/
+export function add_scalar(data: Float64Array, scalar: number): void;
+/**
 * @param {bigint} n
 * @returns {bigint}
 */
@@ -38,6 +43,7 @@ export interface InitOutput {
   readonly compute: (a: number, b: number) => number;
   readonly add: (a: number, b: number) => number;
   readonly arrust: (a: number, b: number, c: number) => void;
+  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
   readonly bench: (a: number) => number;
   readonly sieve: (a: number) => void;
   readonly zeros_matrix: (a: number, b: number) => void;

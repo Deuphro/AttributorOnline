@@ -89,6 +89,16 @@ export function arrust(data) {
 }
 
 /**
+* @param {Float64Array} data
+* @param {number} scalar
+*/
+export function add_scalar(data, scalar) {
+    var ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+    var len0 = WASM_VECTOR_LEN;
+    wasm.add_scalar(ptr0, len0, addHeapObject(data), scalar);
+}
+
+/**
 * @param {bigint} n
 * @returns {bigint}
 */

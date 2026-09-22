@@ -3,6 +3,7 @@ import {save as saveSession, import as importSessionData} from "./sessions.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave, XYTrace} from "./formats.js"
+import {computePool} from "./workerPool.js"
 
 window.raie=new Wave(5)
 window.eiar=new Wave(7)
@@ -338,10 +339,10 @@ class Node{
     async startResolve(){//default for testing
         if(this.status==='resolved') return
         this.status='pending'
-        await new Promise(resolve=>{setTimeout(()=>{
+        await new Promise(resolve=>{setTimeout(async ()=>{
             console.log(this.title)
             if(this.inputs.length){
-                const protoOutput=this.computeOutputs()
+                const protoOutput=await this.computeOutputs()
                 for(let k in this.outputs){
                     this.outputs[k]=[...protoOutput]
                 }
@@ -351,7 +352,7 @@ class Node{
             },
             1000)})
     }
-    computeOutputs(){
+    async computeOutputs(){
         let protoOutput=[]
         for(let input of this.inputs){
             console.log('pour cet input :',input)
@@ -385,7 +386,7 @@ class Operation extends Node{
     operation(value){
         return Number(value)+1
     }
-    computeOutputs(){
+    async computeOutputs(){
         const output=[]
         for(const input of this.inputs){
             if(!(input instanceof Map)){
@@ -401,9 +402,11 @@ class Operation extends Node{
                             continue
                         }
                         const transformed=wave.clone
-                        transformed.core.forEach((value,index)=>{
-                            transformed.core[index]=this.operation(value)
-                        })
+                        //the wave core is copied by postMessage (no transfer:
+                        //the input wave keeps its buffer), the kernel returns a
+                        //fresh transferred buffer which becomes the new core
+                        const {core}=await computePool.run("addScalar",{core:wave.core,params:{scalar:1}})
+                        transformed.core=core
                         transformed.metadata={
                             ...wave.metadata,
                             transformedBy:[...(wave.metadata.transformedBy??[]),this.title]
@@ -444,7 +447,8 @@ class DelimitedTextNode extends NodeWithAccordion{
             columnSeparator:"\\t|,|\\s",
             fileName:"",
             raw:"",
-            pairs:[]
+            pairs:[],
+            labels:["x","y"]
         }
     }
     registered(e){
@@ -462,11 +466,11 @@ class DelimitedTextNode extends NodeWithAccordion{
     }
     restoreState(state){
         if(state?.source){
-            this.parameters.source=state.source
+            this.parameters.source={labels:["x","y"],...state.source}
         }
         this.updateLabel(this.parameters.source.fileName)
         if(this.parameters.source.pairs?.length){
-            this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName})]
+            this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName},this.parameters.source.labels)]
         }else{
             this.outputs[0]=[]
         }
@@ -479,14 +483,22 @@ class DelimitedTextNode extends NodeWithAccordion{
             this.status="floating"
             return
         }
-        this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName})]
+        this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName},this.parameters.source.labels)]
         this.status="resolved"
+    }
+    setColumnLabels(labels){
+        this.parameters.source.labels=Wave.normalizeLabels(labels)
+        const wave=this.outputs[0]?.[0]
+        if(wave instanceof Wave){
+            wave.labels=[...this.parameters.source.labels]
+        }
     }
     clear(){
         this.updateLabel("")
         this.parameters.source.fileName=""
         this.parameters.source.raw=""
         this.parameters.source.pairs=[]
+        this.parameters.source.labels=["x","y"]
         this.outputs[0]=[]
         dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,"floating"))
         this.renderAccordion()
@@ -519,7 +531,8 @@ class DelimitedTextNode extends NodeWithAccordion{
         }
         this.accordion.DOMelt.content.replaceChildren()
         if(this.status==="resolved"){
-            const tableData=[["X","Y"],...this.parameters.source.pairs]
+            const columnLabels=Wave.normalizeLabels(this.parameters.source.labels)
+            this.parameters.source.labels=[...columnLabels]
             const resolvedContent=CE("div",{style:{
                 display:"grid",
                 "grid-template-rows":"minmax(0, 1fr) auto",
@@ -528,7 +541,7 @@ class DelimitedTextNode extends NodeWithAccordion{
                 overflow:"hidden"
             }},[])
             this.accordion.DOMelt.content.appendChild(resolvedContent)
-            new Table(tableData,"XY",this.origin,resolvedContent)
+            new Table(this.parameters.source.pairs,[...columnLabels],this.origin,resolvedContent,{mutable:{hRuler:true},onTitleChange:(labels)=>this.setColumnLabels(labels)})
             resolvedContent.appendChild(CE("button",{pilot:this,handleClick:e=>e.target.pilot.clear()},["Clear"]))
             return
         }
@@ -1873,7 +1886,8 @@ class MainFlowMenu extends Menu{
                     }
                     origin.channel.register("node", node, node.title)
                     if(type === "delimitedText" && source){
-                        node.parameters.source={...node.parameters.source,...source}
+                        node.parameters.source={labels:["x","y"],...node.parameters.source,...source}
+                        node.setColumnLabels?.(node.parameters.source.labels)
                         node.updateLabel(node.parameters.source.fileName)
                         node.startResolve().then(()=>node.renderAccordion())
                     }
@@ -2399,7 +2413,7 @@ class Plot2D{
                     .attr("d",pathD)
                     .attr("transform",pair=>`translate(${xScale(pair[0])},${yScale(pair[1])})`)
                     .attr("fill",(marker.shape==="cross"||marker.shape==="plus")?"none":color)
-                    .attr("stroke",(marker.shape==="cross"||marker.shape==="plus")?color:"darkgrey")
+                    .attr("stroke",(marker.shape==="cross"||marker.shape==="plus")?color:"rgb(110, 122, 138)")
                     .attr("stroke-width",Math.max(1,(trace.options.line?.size??1)))
                 markerSelection.exit().remove()
             }else{
@@ -2414,7 +2428,7 @@ class Plot2D{
                     .attr("cy",pair=>yScale(pair[1]))
                     .attr("r",marker.size??4)
                     .attr("fill",color)
-                    .attr("stroke","darkgrey")
+                    .attr("stroke","rgb(110, 122, 138)")
                 tracePointsSelection.exit().remove()
             }
         })
@@ -2423,31 +2437,26 @@ class Plot2D{
 }
 
 class Table{
-    constructor(data,title=null,origin,destination){
+    constructor(data,title=null,origin,destination,options={}){
         this.drawn=false
         this.origin=origin;
         this.destination=destination;
+        this.onTitleChange=(typeof options?.onTitleChange==="function")?options.onTitleChange:null
         this.parameters={
             mutable:{
-                hRuler:false,
+                hRuler:options?.mutable?.hRuler??options?.mutable===true??false,
             },
             virtualIndex:{top:0,left:0},
             styles:{
                 tables:{
                     "border-spacing":'1px',
                     width:"max-content",
-                    "border-collapse":"separate",
-                    "overflow":"hidden",
-                    "text-overflow":"ellipsis",
-                    outline:"3px solid red"
+                    "border-collapse":"separate"
                 },
                 cells:{
                     "text-align": "center",
                     width:"50px",
-                    height:"20px",
-                    "overflow":"hidden",
-                    "text-overflow":"ellipsis",
-                    outline:"3px solid red"
+                    height:"20px"
                 },
                 lines:{},
                 hRuler:{
@@ -2455,28 +2464,16 @@ class Table{
                         "table-layout":"fixed",
                         "border-spacing":'2px 0px',
                         width:"min-content",
-                        "border-collapse":"separate",
-                        "overflow":"hidden",
-                        "text-overflow":"ellipsis",
-                        "border-bottom":"1px solid darkgrey",
-                        "background-color":"darkgrey",
-                        opacity:"0.5",
-                        cursor:"auto"
+                        "border-collapse":"separate"
                     },
                     cells:{
                         "font-size":"12px",
                         "font-weight":"normal",
-                        "background-color": "blanchedalmond",
-                        "overflow":"hidden",
-                        "text-overflow":"ellipsis",
                         "width":"50px",
                         "height":"20px",
-                        cursor:"auto",
-                        "border-bottom":"1px solid darkgrey"
+                        cursor:"auto"
                     },
-                    lines:{
-                        "border-bottom":"1px solid black"
-                    }
+                    lines:{}
                 },
                 vRuler:{
                     table:{
@@ -2484,20 +2481,13 @@ class Table{
                         "border-spacing":'1px',
                         width:"max-content",
                         "border-collapse":"separate",
-                        "overflow":"hidden",
-                        "text-overflow":"ellipsis",
-                        "border":"none",
-                        cursor:"default",
-                        opacity:"0.5"
+                        cursor:"default"
                     },
                     cells:{
                         "font-size":"12px",
                         "font-weight":"normal",
                         "width":"30px",
-                        "height":"20px",
-                        "background-color": "blanchedalmond",
-                        "overflow":"hidden",
-                        "text-overflow":"ellipsis"
+                        "height":"20px"
                     },
                     lines:{
                     }
@@ -2508,19 +2498,13 @@ class Table{
                         "border-spacing":'2px 1px',
                         width:"min-content",
                         "border-collapse":"separate",
-                        "overflow":"hidden",
-                        "text-overflow":"ellipsis",
                         cursor:"cell",
                         "margin-left":"0px"
                     },
                     cells:{
-                        "background-color":"rgba(245, 245, 220, 0.5)",
                         "width":"50px",
                         "height":"20px",
-                        "opacity": "0.5",
-                        "text-align": "center",
-                        "overflow":"hidden",
-                        "text-overflow":"ellipsis"
+                        "text-align": "center"
                     },
                     lines:{
                     }
@@ -2528,7 +2512,7 @@ class Table{
             }
         }
         this.setData=data
-        this.title=title
+        this.title=Array.isArray(title)?[...title]:title
         this.container=CE('div',{className:"table container",pilot:this},[]);
         stylize(this.container,{
             position:"relative",
@@ -2548,6 +2532,27 @@ class Table{
         this.data=arg
         this.parameters.dataDimension={rows:Table.rowNum(arg),cols:Table.colNum(arg)}
     }
+    setColumnLabel(columnIndex,value){
+        if(!Number.isInteger(columnIndex)||columnIndex<0){
+            return
+        }
+        if(!Array.isArray(this.title)){
+            this.title=[]
+        }
+        while(this.title.length<=columnIndex){
+            this.title.push("")
+        }
+        this.title[columnIndex]=value
+        if(typeof this.onTitleChange==="function"){
+            this.onTitleChange([...this.title],columnIndex,value)
+        }
+    }
+    columnLabel(columnIndex){
+        if(!Array.isArray(this.title)){
+            return ""
+        }
+        return this.title[columnIndex]??""
+    }
     onScroll(e){
         this.parameters.virtualIndex.top=Math.floor(
             this.container.scrollTop/
@@ -2558,7 +2563,7 @@ class Table{
                 (parseInt(this.parameters.styles.hRuler.cells.width) 
                     + 0.5*parseInt(this.parameters.styles.hRuler.table["border-spacing"])))
         const hRulerHeight=this.hRuler.clientHeight
-        for(let k=0;k<this.virtualNbCols;k++){this.hRuler.children[0].children[k].textContent=(this.title[this.parameters.virtualIndex.left+k]===undefined ? "" : this.title[this.parameters.virtualIndex.left+k])}
+        for(let k=0;k<this.virtualNbCols;k++){this.hRuler.children[0].children[k].textContent=(this.columnLabel(this.parameters.virtualIndex.left+k))}
         if(this.hRuler.clientHeight!=hRulerHeight){console.log("SHIFT !!!");this.onHrulerHeightChange()}
         for(let k=0;k<this.virtualNbCols;k++){this.hRuler.children[1].children[k].textContent=`${this.parameters.virtualIndex.left+k}`}
         for(let j=0;j<this.virtualNbRows;j++){this.vRuler.children[j].children[0].textContent=`${this.parameters.virtualIndex.top+j}`}
@@ -2720,15 +2725,15 @@ class Table{
         const leftGap=parseInt(this.parameters.styles.vRuler.cells.width)+2*parseInt(this.parameters.styles.vRuler.table['border-spacing'])
         for(let k=0;k<this.virtualNbCols;k++){
             rulerLine.push(CE('th',{className:"horizontal ruler cell",pilot:this,handleMouseDown:(e)=>{e.target.pilot.columnResizer(e)},style:this.parameters.styles.hRuler.cells},[(this.parameters.virtualIndex.left+k).toString()]));
-            titleLine.push(CE('th',{className:"horizontal title cell",style:this.parameters.styles.hRuler.cells},[this.title[this.parameters.virtualIndex.left+k]===undefined ? "" : this.title[this.parameters.virtualIndex.left+k]]));
+            titleLine.push(CE('th',{className:"horizontal title cell",style:this.parameters.styles.hRuler.cells},[this.columnLabel(this.parameters.virtualIndex.left+k)]));
             rulerLine[k].style["cursor"]="col-resize"
             if(this.parameters.mutable.hRuler){
                 titleLine[k].style["cursor"]="auto"
-                titleLine[k].style["background-color"]="cornsilk"
                 titleLine[k].setAttribute("contenteditable","true")
                 titleLine[k].pilot=this
                 titleLine[k].handleBlur=(e)=>{
-                    e.target.pilot.title[e.target.cellIndex]=e.target.textContent
+                    const columnIndex=e.target.cellIndex+Number(e.target.pilot.parameters.virtualIndex.left||0)
+                    e.target.pilot.setColumnLabel(columnIndex,e.target.textContent)
                 }
                 titleLine[k].handleKeyDown=(e)=>{
                     if(e.key=="Enter"){
@@ -2834,17 +2839,14 @@ class Dialog{
         ]);
         stylize(this.DOMelt.window,{
             position:"absolute",
-            "background-color":"rgba(255, 255, 255, 0.5)",
             "z-index":"1",
             top:"35%",
             left:"35%",
             width:"30%",
             height:"30%",
-            "border-radius":"10px",
             display:"grid",
             "grid-template-rows":"auto 1fr",
             padding:"0.2em",
-            border:"1px dashed greenyellow",
             overflow:"hidden",
             resize:"both",
             "min-height":"2.2em",
@@ -2998,14 +3000,14 @@ class Accordion{
         this.DOMelt.container.style["grid-template-rows"]="auto 0fr"
         this.DOMelt.content.style.border="0px solid black"
         this.DOMelt.handler.style["margin-bottom"]="0px"
-        this.DOMelt.folder.style["background-color"]="rgb(87, 53, 90)"
+        this.DOMelt.folder.style["background-color"]="transparent"
     }
     unfold(){
         this.parameters.folded=false
         this.DOMelt.container.style["grid-template-rows"]="auto 1fr"
         this.DOMelt.content.style.border="1px solid black"
         this.DOMelt.handler.style["margin-bottom"]="1px"
-        this.DOMelt.folder.style["background-color"]="rgb(90, 83, 53)"
+        this.DOMelt.folder.style["background-color"]="rgba(172,255,47,0.18)"
     }
     toggle(){
         if(this.parameters.folded){
@@ -3444,6 +3446,7 @@ class App{
             dims:[0,0],
             raw:"",
             processed:[],
+            labels:["x","y"],
             processRaw(){
                 if(this.reader){
                     this.raw=this.reader.result
@@ -3466,6 +3469,7 @@ class App{
                 columnSeparator:colSeparator.value,
                 fileName:dataVessel.fileName||"",
                 raw:dataVessel.raw,
+                labels:[...(dataVessel.labels??["x","y"])],
                 pairs:dataVessel.processed
                     .filter(line=>Number.isFinite(line[0])&&Number.isFinite(line[1]))
                     .map(line=>[line[0],line[1]])
@@ -3498,8 +3502,10 @@ class App{
             let ellipsisRow=[]
             for(let k in cropData[0]){ellipsisRow.push("...")}
             cropData.push(ellipsisRow)
-            let prevTable=new Table(cropData,[],this,procPreview)
-            prevTable.parameters.mutable.hRuler=true
+            if(!Array.isArray(vessel.labels)){
+                vessel.labels=["x","y"]
+            }
+            new Table(cropData,[...vessel.labels],this,procPreview,{mutable:{hRuler:true},onTitleChange:(labels)=>{vessel.labels=[...labels]}})
         }
         const dropzone=CE('div',{className:"dropzone"},["Drop a text file here"])
         dropzone.addEventListener("dragover",(e)=>{
@@ -3515,13 +3521,13 @@ class App{
             readFile(e.dataTransfer.files[0],dataVessel)
         })
         const loaderElement=CE('input',{type:"file",handleChange:(e)=>{readSingleFile(e,dataVessel)}},["Select a text file"])
-        let rawPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données brutes"])
+        let rawPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Here is the preview of the raw data"])
         rawPreview.setAttribute("contenteditable","true")
         rawPreview.handleInput=(e)=>{
             dataVessel.raw=e.target.textContent+dataVessel.raw.slice(prevLength)
             updatePreviews(dataVessel)
         }
-        let procPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Ici la prévisualisation des données traitées"])
+        let procPreview=CE('div',{style:{margin:"5px","border-radius":"5px",border:"1px solid white",padding:"5px"}},["Here is the preview of the processed data"])
         const lineSeparator=CE('select',{handleInput:(e)=>{updatePreviews(dataVessel)}},[
             CE('option',{value:"\\r\\n|\\r|\\n"},["auto/guess"]),
             CE('option',{value:"\r\n"},["CRLF"]),
@@ -3719,19 +3725,19 @@ class OrbiSpinner{
             .attr("cy",10)
             .attr("r",r)
             .attr('fill','tomato')
-            .attr('stroke','darkgrey')
+            .attr('stroke','rgb(110, 122, 138)')
         let c2=svg.append("circle")
             .attr("cx",10)
             .attr("cy",10)
             .attr("r",r)
-            .attr('fill','blanchedalmond')
+            .attr('fill','#aef22e')
             .attr('stroke','DarkCyan')
         let c3=svg.append("circle")
             .attr("cx",10)
             .attr("cy",10)
             .attr("r",r)
             .attr('fill','purple')
-            .attr('stroke','darkgrey')
+            .attr('stroke','rgb(110, 122, 138)')
         const animLoop=()=>{
             c1
             .attr("cx",0.5*width+0.5*(width-r)*Math.cos(t/200))
@@ -3784,19 +3790,19 @@ class CycloSpinner{
             .attr("cy",10)
             .attr("r",r)
             .attr('fill','tomato')
-            .attr('stroke','darkgrey')
+            .attr('stroke','rgb(110, 122, 138)')
         let c2=svg.append("circle")
             .attr("cx",10)
             .attr("cy",10)
             .attr("r",r)
-            .attr('fill','blanchedalmond')
+            .attr('fill','#aef22e')
             .attr('stroke','DarkCyan')
         let c3=svg.append("circle")
             .attr("cx",10)
             .attr("cy",10)
             .attr("r",r)
             .attr('fill','purple')
-            .attr('stroke','darkgrey')
+            .attr('stroke','rgb(110, 122, 138)')
         const animLoop=()=>{
             const c=(phi)=>0.9*Math.abs(Math.sin((t+phi)/200))**1.5
             c1

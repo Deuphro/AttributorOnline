@@ -1,59 +1,86 @@
+/*
+    Palette adaptée depuis FRONTPAGE :
+    fond #1c2129 · accent #aef22e · texte #dfe6ee / #b9c4d0
+*/
 *{
-    --plot-axis-color: black;
+    --bg:#1c2129;
+    --surface:rgba(255,255,255,0.04);
+    --border:rgba(255,255,255,0.3);
+    --border-strong:rgba(255,255,255,0.4);
+    --accent:#aef22e;
+    --accent-soft:rgba(172,255,47,0.35);
+    --accent-faint:rgba(172,255,47,0.08);
+    --accent-border:rgba(172,255,47,0.6);
+    --text:#dfe6ee;
+    --text-muted:#b9c4d0;
+    --text-dim:#8fa0b3;
+    --code-bg:rgba(0,0,0,0.4);
+    --hover-bg:rgba(0,0,0,0.55);
+    --plot-axis-color: #b9c4d0;
     --plot-axis-font: monospace;
     --plot-axis-font-size: 12px;
     box-sizing: border-box;
     scrollbar-width:thin;
+    scrollbar-color: rgba(255,255,255,0.25) transparent;
     font-family: monospace;
     letter-spacing: -1px;
     font-size: auto;
 }
+
+body{
+    background: var(--bg);
+    color: var(--text);
+}
+
 button{
     border:none;
     border-radius:5px;
-    background: rgba(255, 255, 255, 0.377);
-    border: 1px solid rgba(255, 255, 255, 0.5);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
     width:auto;
     margin:1px;
 }
 button:hover{
-    outline: 1px solid greenyellow;
-    color: blanchedalmond;
-    background: rgba(0, 0, 0, 0.55);
-    box-shadow: 0px 0px 20px 1px greenyellow;
+    outline: 1px solid var(--accent);
+    color: var(--text);
+    background: var(--hover-bg);
+    box-shadow: 0px 0px 20px 1px var(--accent-soft);
 }
 button:disabled{
-    background-color: #ccc;
+    background-color: rgba(255,255,255,0.15);
+    color: var(--text-dim);
     cursor: not-allowed;
 }
 select{
     border:none;
     border-radius:5px;
-    background: rgba(255, 255, 255, 0.377);
-    border: 1px solid rgba(255, 255, 255, 0.5);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
     width:auto;
     margin:1px;
 }
 select:hover{
-    outline: 1px solid greenyellow;
-    color: blanchedalmond;
-    background: rgba(0, 0, 0, 0.55);
-    box-shadow: 0px 0px 20px 1px greenyellow;
+    outline: 1px solid var(--accent);
+    color: var(--text);
+    background: var(--hover-bg);
+    box-shadow: 0px 0px 20px 1px var(--accent-soft);
 }
 .dropzone{
-    border:2px dashed rgba(255, 255, 255, 0.5);
+    border:2px dashed var(--border-strong);
     padding:1em;
     margin-bottom:0.5em;
     text-align:center;
 }
 .dropzone.dragover{
-    background:rgba(240, 240, 240, 0.2);
-    border-color:greenyellow;
+    background:var(--accent-faint);
+    border-color:var(--accent);
 }
 
 div{
-    border:0px solid rgba(0, 0, 0, 0.5);
-    background-color: rgba(64, 73, 85, 0.068);
+    border:0px solid var(--border);
+    background-color: rgba(255,255,255,0.0);
     padding:0px;
 }
 
@@ -73,7 +100,7 @@ div{
     padding:0px 5px 0px 5px;
     text-align: left;
     cursor:pointer;
-    color: rgb(0, 0, 0);
+    color: var(--text);
     white-space: nowrap;
 }
 
@@ -81,7 +108,7 @@ div{
     position:relative;
     display: block;
     width:100%;
-    background: rgba(255, 255, 255, 0.377);
+    background: var(--surface);
     margin:1px 0px 1px 0px;
     border-radius: 5px 5px 5px 5px;
     /*font-size: 11pt;*/
@@ -90,14 +117,14 @@ div{
 }
 
 .parent:hover{
-    outline: 1px solid greenyellow;
-    color: blanchedalmond;
+    outline: 1px solid var(--accent);
+    color: var(--text);
     background: rgba(0, 0, 0, 0.30);
-    box-shadow: 0px 0px 20px 1px greenyellow;
+    box-shadow: 0px 0px 20px 1px var(--accent-soft);
 }
 
 .parent.open {
-    outline: 2px solid greenyellow;
+    outline: 2px solid var(--accent);
     box-shadow: 0px 0px 20px 1px black;
 }
 
@@ -110,8 +137,8 @@ div{
 .child{
     display:none;
     position:relative;
-    border: 1px solid rgba(255, 255, 255, 0.5);
-    background: rgba(33, 40, 43, 0.801);
+    border: 1px solid var(--border);
+    background: rgba(28, 33, 41, 0.92);
     list-style: none;
     padding: 1px 1px 1px 1px;
     margin: 50px;
@@ -168,13 +195,13 @@ div{
 .resizer{
     justify-self: stretch;
     align-self: stretch;
-    background-color: hsl(0, 0%, 55%);
+    background-color: rgba(255,255,255,0.12);
 }
 
 .wrapper{
-    background-color: rgb(43, 43, 61);
+    background-color: #232936;
     border-radius: 5px;
-    border:1px solid blanchedalmond;
+    border:1px solid var(--border-strong);
     height: 100%;
     width:100%;
     justify-self: center;
@@ -182,11 +209,11 @@ div{
     z-index:1;
 }
 .wrapper:hover{
-    background-color: rgb(75, 65, 60);
+    background-color: var(--accent-faint);
     opacity: 100%;
     scale: 3;
     border-radius: 5px;
-    border: 0.1px solid black;
+    border: 0.1px solid var(--accent-border);
     transition: 100ms;
 }
 
@@ -195,7 +222,7 @@ div{
     min-height: 0;
     overflow:auto;
     border:0px solid violet;
-    background: linear-gradient(135deg, #89898080, #A9B2AC80, #BCD0C780);
+    background: linear-gradient(135deg, #1f252f, #232b38, #1f252f);
     border-radius: 5px;
 }
 .panel{
@@ -235,45 +262,45 @@ div{
 }
 
 .accordion.folder:hover{
-    border:1px solid rgb(255, 0, 140);
+    border:1px solid var(--accent);
 }
 
 .accordion.label{
     text-align: center;
-    color:rgb(31, 33, 28);
+    color: var(--text);
 }
 
 .accordion.folder{
-    border:1px solid blanchedalmond;
+    border:1px solid var(--accent-border);
     border-radius: 5px;
-    background-color: rgb(90, 83, 53);
+    background-color: rgba(172,255,47,0.18);
     width: 1em;
     height: 1em;
     align-self: center;
 }
 
 .accordion.menu{
-    border:1px solid blanchedalmond;
+    border:1px solid var(--border-strong);
     border-radius: 5px;
-    background-color: rgb(80, 80, 80);
+    background-color: #3a4250;
     width: 1em;
     height: 1em;
     align-self: center;
 }
 
 .dismisser{
-    border:1px solid blanchedalmond;
+    border:1px solid var(--border-strong);
     border-radius: 5px;
     background-color: rgba(104, 34, 34, 0.671);
 }
 .dismisser:hover{
     background-color: rgba(194, 26, 26, 0.671);
-    border:1px solid rgb(0, 0, 0);
+    border:1px solid var(--border-strong);
 }
 
 .selected{
-    outline: 1px solid blanchedalmond;
-    box-shadow: 0px 0px 20px 1px greenyellow;
+    outline: 1px solid var(--text);
+    box-shadow: 0px 0px 20px 1px var(--accent-soft);
 }
 
 input[type=range].dual{
@@ -298,9 +325,101 @@ input[type=range].dual::-moz-range-thumb{
     cursor: ew-resize;
 }
 
+/* ---- Table (virtualisée) ---- */
+.table.container{
+    position:relative;
+    width:100%;
+    height:100%;
+    overflow:auto;
+    overflow-anchor:none;
+    scroll-behavior:auto;
+    white-space:nowrap;
+}
+.table.ruler.horizontal,
+.table.ruler.vertical{
+    border:none;
+    opacity:0.5;
+    cursor:auto;
+    overflow:hidden;
+}
+.table.ruler.horizontal th,
+.table.ruler.vertical th{
+    font-size:12px;
+    font-weight:normal;
+    color:var(--text-muted);
+    background:rgba(255,255,255,0.06);
+    border-bottom:1px solid var(--border);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    cursor:auto;
+}
+.table.ruler.horizontal th[contenteditable]{
+    background:rgba(172,255,47,0.12);
+    color:var(--text);
+}
+.table.normal td{
+    background:rgba(255,255,255,0.04);
+    color:var(--text);
+    text-align:center;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.table.normal tr{
+    border-bottom:1px solid var(--border);
+}
+
+/* ---- Dialogs ---- */
+.popup.container{
+    background-color:rgba(28,33,41,0.95);
+    border:1px dashed var(--accent-border);
+    border-radius:10px;
+}
+.popup.content{
+    background:var(--code-bg);
+}
+
+/* ---- Menus / navbar ---- */
+#mainMenu{
+    overflow:visible;
+}
+.menu.container{
+    display:flow-root;
+    height:auto;
+    overflow:visible;
+}
+.menu.container>.menu{
+    height:1.8em;
+    display:flex;
+    align-items:center;
+    overflow:visible;
+}
+.menu.container .parent{
+    height:1.7em;
+    line-height:1.7em;
+    padding:0 8px;
+}
+
+/* ---- Champs de formulaire (inspecteurs) ---- */
+input, textarea{
+    background:var(--code-bg);
+    color:var(--text);
+    border:1px solid var(--border);
+    border-radius:3px;
+}
+input:focus, textarea:focus{
+    outline:1px solid var(--accent);
+}
+input[type=color]{
+    padding:0;
+}
+input[type=checkbox]{
+    accent-color:var(--accent);
+}
+
+/* ---- Quadrillage du flux ---- */
 .flow.container{
     background: url('../resources/pattern.svg');
-    background-color: cornsilk;
+    background-color:#20242e;
 }
 
 .flow.workspace{
@@ -321,20 +440,20 @@ input[type=range].dual::-moz-range-thumb{
 }
 
 .node{
-    fill:rgb(215, 215, 160);
-    stroke:grey;
+    fill:rgb(209, 212, 159);
+    stroke:rgb(130, 142, 158);
     stroke-width: 1px;
-    fill-opacity: 50%;
+    fill-opacity: 85%;
     transition:300ms
 }
 .node.pending{
-    fill:rgb(215, 189, 160);
+    fill:rgb(235, 200, 140);
 }
 .node.resolved{
-    fill:rgb(177, 215, 160);
+    fill:rgb(150, 235, 110);
 }
 .node.error{
-    fill:rgb(215, 160, 160);
+    fill:rgb(240, 140, 140);
 }
 .node:focus{
     outline:none;
@@ -350,8 +469,8 @@ input[type=range].dual::-moz-range-thumb{
 }
 
 .anchor{
-    fill: lightgrey;
-    stroke: grey;
+    fill: rgb(160, 172, 188);
+    stroke: rgb(100, 110, 125);
     transition:300ms
 }
 
@@ -362,7 +481,7 @@ input[type=range].dual::-moz-range-thumb{
 }
 
 .flow.field{
-    fill:black;
+    fill:#141921;
 }
 
 .anchor.linked{
@@ -370,10 +489,10 @@ input[type=range].dual::-moz-range-thumb{
 }
 
 .link{
-    stroke: grey;
+    stroke: rgb(170, 205, 253);
     stroke-width: 3px;
     fill: none;
-    opacity:50%;
+    opacity:80%;
 }
 
 .link:hover{

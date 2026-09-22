@@ -62,6 +62,8 @@ function serveStaticFileLimited(req, res) {
         '/scripts/main.js': 'scripts/main.js',
         "/scripts/interface.js":"scripts/interface.js",
         "/scripts/util.js":"scripts/util.js",
+        "/scripts/workerPool.js":"scripts/workerPool.js",
+        "/scripts/kernelWorker.js":"scripts/kernelWorker.js",
         '/XOP/rust-extension/pkg/attribrustor.js':'XOP/rust-extension/pkg/attribrustor.js',
         '/XOP/rust-extension/pkg/attribrustor_bg.wasm':'XOP/rust-extension/pkg/attribrustor_bg.wasm',
         "/resources/config.js":"resources/config.js",

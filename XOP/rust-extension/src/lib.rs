@@ -26,6 +26,13 @@ pub fn arrust(data: &mut [f64]){
 }
 
 #[wasm_bindgen]
+pub fn add_scalar(data: &mut [f64], scalar: f64){
+    for value in data.iter_mut(){
+        *value += scalar;
+    }
+}
+
+#[wasm_bindgen]
 pub fn bench(n: u64) -> u64{
     let mut sum=0;
     for k in 0..n{

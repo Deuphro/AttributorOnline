@@ -103,7 +103,18 @@ class Wave{
         this.labels=new Array(this.degree)
         this.metadata={}
     }
-    static fromPairs(pairs,metadata={}){
+    static normalizeLabels(labels,fallback=["x","y"]){
+        const normalized=[...fallback]
+        if(Array.isArray(labels)){
+            for(let k=0;k<normalized.length;k++){
+                if(typeof labels[k]==="string"&&labels[k].length){
+                    normalized[k]=labels[k]
+                }
+            }
+        }
+        return normalized
+    }
+    static fromPairs(pairs,metadata={},labels=["x","y"]){
         if(!Array.isArray(pairs)){
             throw new TypeError("Wave.fromPairs expects an array of [x, y] pairs")
         }
@@ -121,7 +132,7 @@ class Wave{
             wave.core[wave.index(0,pointIndex)]=x
             wave.core[wave.index(1,pointIndex)]=y
         }
-        wave.labels=["x","y"]
+        wave.labels=Wave.normalizeLabels(labels)
         wave.metadata={...metadata}
         return wave
     }

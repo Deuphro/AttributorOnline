@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Attributor Online — Attribution de formules en spectrométrie de masse</title>
+<style>
+    *{
+        box-sizing:border-box;
+        margin:0;
+        padding:0;
+        font-family:monospace;
+        letter-spacing:-0.5px;
+    }
+    body{
+        background:#1c2129;
+        color:#dfe6ee;
+        line-height:1.6;
+    }
+    a{color:#aef22e;text-decoration:none;}
+    a:hover{text-decoration:underline;}
+    header{
+        text-align:center;
+        padding:80px 20px 60px;
+        background:
+            radial-gradient(circle at 20% 30%, rgba(172,255,47,0.08), transparent 40%),
+            radial-gradient(circle at 80% 70%, rgba(172,255,47,0.06), transparent 40%),
+            #1c2129;
+        border-bottom:1px solid rgba(255,255,255,0.1);
+    }
+    header h1{
+        font-size:3em;
+        color:#aef22e;
+        text-shadow:0 0 20px rgba(172,255,47,0.35);
+    }
+    header p.tagline{
+        margin-top:12px;
+        font-size:1.2em;
+        color:#b9c4d0;
+    }
+    header .cta{
+        display:inline-block;
+        margin-top:32px;
+        padding:12px 28px;
+        border-radius:5px;
+        border:1px solid rgba(172,255,47,0.6);
+        color:#aef22e;
+        font-size:1.1em;
+        transition:300ms;
+    }
+    header .cta:hover{
+        background:rgba(0,0,0,0.55);
+        box-shadow:0 0 20px 1px #aef22e;
+        text-decoration:none;
+    }
+    main{max-width:1000px;margin:0 auto;padding:40px 20px;}
+    h2{
+        color:#aef22e;
+        font-size:1.6em;
+        margin:50px 0 20px;
+        border-left:4px solid #aef22e;
+        padding-left:12px;
+    }
+    .features{
+        display:grid;
+        grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+        gap:16px;
+    }
+    .card{
+        background:rgba(255,255,255,0.04);
+        border:1px solid rgba(255,255,255,0.15);
+        border-radius:5px;
+        padding:18px;
+        transition:300ms;
+    }
+    .card:hover{
+        outline:1px solid #aef22e;
+        box-shadow:0 0 20px 1px rgba(172,255,47,0.35);
+        transform:translateY(-2px);
+    }
+    .card h3{color:#aef22e;margin-bottom:8px;font-size:1.05em;}
+    .card p{color:#b9c4d0;font-size:0.92em;}
+    .pipeline{
+        margin-top:10px;
+        color:#8fa0b3;
+        font-size:0.9em;
+    }
+    .pipeline code{
+        background:rgba(0,0,0,0.4);
+        color:#aef22e;
+        padding:2px 6px;
+        border-radius:3px;
+    }
+    footer{
+        text-align:center;
+        padding:30px 20px;
+        color:#7a8794;
+        font-size:0.85em;
+        border-top:1px solid rgba(255,255,255,0.1);
+        margin-top:60px;
+    }
+</style>
+</head>
+<body>
+
+<header>
+    <h1>Attributor</h1>
+    <p class="tagline">Attribution de formules chimiques en spectrométrie de masse — directement dans votre navigateur.</p>
+    <a class="cta" href="/">Ouvrir l'application →</a>
+</header>
+
+<main>
+
+    <h2>Qu'est-ce qu'Attributor&nbsp;?</h2>
+    <p>
+        Attributor est une plateforme web scientifique dédiée à l'<strong>attribution de formules
+        moléculaires</strong> à partir de spectres de masse (notamment FT-ICR). Elle s'appuie sur un
+        moteur de calcul en <strong>Rust compilé en WebAssembly</strong> (attribrustor) pour offrir des
+        performances natives, et sur une interface de <strong>flux de données</strong> entièrement
+        interactive. Vos données sont traitées côté client&nbsp;: rien n'est installé, il suffit
+        d'un navigateur.
+    </p>
+
+    <h2>Fonctionnalités principales</h2>
+    <div class="features">
+        <div class="card">
+            <h3>⚡ Moteur Rust / WebAssembly</h3>
+            <p>Calculs d'attribution ultra-rapides exécutés localement grâce au noyau <em>attribrustor</em>, sans chargement serveur intensif.</p>
+        </div>
+        <div class="card">
+            <h3>🔗 Flux de données interactif</h3>
+            <p>Construisez votre chaîne de traitement en connectant des nœuds&nbsp;: sources de données, opérations, visualisations.</p>
+        </div>
+        <div class="card">
+            <h3>📈 Visualisation intégrée</h3>
+            <p>Tracés XY interactifs (D3.js) pour explorer vos spectres et résultats directement dans l'interface.</p>
+        </div>
+        <div class="card">
+            <h3>📂 Import de données flexible</h3>
+            <p>Chargement de fichiers texte délimités (XY) et conversion des fichiers bruts (.raw) via le service msConvert (Wine/Mono côté serveur).</p>
+        </div>
+        <div class="card">
+            <h3>💾 Sessions sauvegardables</h3>
+            <p>Export et import de vos sessions complètes au format JSON pour reprendre votre travail là où vous l'avez laissé.</p>
+        </div>
+        <div class="card">
+            <h3>↩️ Undo / Redo complet</h3>
+            <p>Historique d'actions avec annulation et rétablissement, intégré à l'interface.</p>
+        </div>
+    </div>
+
+    <h2>Un traitement en pipeline</h2>
+    <p class="pipeline">
+        <code>Fichier brut (.raw)</code> → conversion <code>msConvert</code> → <code>Texte XY</code> →
+        flux de nœuds Attributor → <code>Attribution (Rust/WASM)</code> → <code>Graphiques &amp; export</code>
+    </p>
+
+    <h2>Écosystème</h2>
+    <div class="features">
+        <div class="card">
+            <h3>🖥️ Application web</h3>
+            <p>L'interface principale, accessible depuis n'importe quel navigateur moderne. <a href="/">Lancer Attributor</a></p>
+        </div>
+        <div class="card">
+            <h3>🧰 Outils en ligne</h3>
+            <p>Convertisseurs de fichiers (msConverter texte → Attributor) disponibles en accès direct. <a href="http://tools.attributor.fr">Ouvrir les outils</a></p>
+        </div>
+        <div class="card">
+            <h3>💻 Version desktop</h3>
+            <p>Une variante de bureau est également en développement pour un usage hors ligne.</p>
+        </div>
+    </div>
+
+</main>
+
+<footer>
+    Attributor Online — Spectrométrie de masse &amp; attribution de formules · IPAG
+</footer>
+
+</body>
+</html>
