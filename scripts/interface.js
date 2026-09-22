@@ -3329,44 +3329,30 @@ class App{
         this.main.addEventListener('contextmenu',(e)=>{
             if(e.target.handleContextmenu){e.target.handleContextmenu(e)}
         })
-        const deepResize=(e)=>{
-            if(e.target.handleResize){
-                e.target.handleResize(e)
+        const observeResizeHandlers=(elt,obs)=>{
+            if(elt.handleResize){
+                obs.observe(elt)
             }
-            for(let child of e.target.children){
-                deepResize({target:child})
-            }
-        }
-        const setDeepResizeObs=(elt,obs)=>{
-            obs.observe(elt)
             for(let child of elt.children){
-                setDeepResizeObs(child,obs)
+                observeResizeHandlers(child,obs)
             }
         }
-        this.resizeObserver=new ResizeObserver((entries)=>{entries.forEach((e)=>deepResize(e))})
-        this.mutObserver=new MutationObserver((mutationsList, observer)=>{
-            mutationsList.forEach((e)=>{
-                //console.log(e)
-                if(e.target.handleResize){
-                    setDeepResizeObs(e.target,this.resizeObserver)
-                    /*if(e.oldValue){
-                        const oldWidth=e.oldValue.match(/width:\s*([^;]+);/)
-                        if(oldWidth!=null){
-                            const oldHeight=e.oldValue.match(/height:\s*([^;]+);/)
-                            if(oldHeight!=null){
-                                if(oldWidth[1]!=e.target.style.width || oldHeight[1]!=e.target.style.height){
-                                    deepResize(e)
-                                }
-                            }
-                        }
-                    }*/
+        this.resizeObserver=new ResizeObserver((entries)=>{
+            for(const entry of entries){
+                entry.target.handleResize?.(entry)
+            }
+        })
+        this.mutObserver=new MutationObserver((mutationsList)=>{
+            for(const mutation of mutationsList){
+                for(const node of mutation.addedNodes){
+                    if(node.nodeType===1){
+                        observeResizeHandlers(node,this.resizeObserver)
+                    }
                 }
             }
-            )
-            }
-            )
-        setDeepResizeObs(this.main,this.resizeObserver)
-        this.mutObserver.observe(this.main,{attributes:true,childList:true,attributeFilter:["style"],attributeOldValue:true,subtree:true})
+        })
+        observeResizeHandlers(this.main,this.resizeObserver)
+        this.mutObserver.observe(this.main,{childList:true,subtree:true})
     }
     msConvert(){
         let message="Server is ready"
