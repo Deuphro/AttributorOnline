@@ -492,6 +492,8 @@ class DelimitedTextNode extends NodeWithAccordion{
         if(wave instanceof Wave){
             wave.labels=[...this.parameters.source.labels]
         }
+        this.status="floating"; // ou "pending"/"dirty" selon ta convention
+        dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,this.status))
     }
     clear(){
         this.updateLabel("")
@@ -780,6 +782,9 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     renderInspector(){
         if(!this.accordion) return
         const root=this.accordion.DOMelt.content
+        root.style.display="block"
+        root.style.minWidth="0"
+        root.style.overflow="auto"
         this.graph.ensureAxes?.()
         //the sections are rebuilt on every refresh, so their collapsed state has to survive the wipe
         this.inspectorSections={}
@@ -791,6 +796,8 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         const section=(title,open=true)=>{
             const details=document.createElement("details")
             details.open=this.inspectorSections?.[title]??open
+            details.style.minWidth="0"
+            details.style.overflow="hidden"
             const summary=document.createElement("summary")
             summary.textContent=title
             details.append(summary)
@@ -812,7 +819,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             }
             const item=document.createElement("div")
             item.style.display="grid"
-            item.style.gridTemplateColumns="auto 1fr auto"
+            item.style.gridTemplateColumns="auto minmax(0,1fr) auto"
             item.style.gap="4px"
             item.style.alignItems="center"
             item.draggable=true
@@ -971,7 +978,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         block.dataset.axis=key
         section.append(block)
         const row=document.createElement("div")
-        row.style.display="grid"; row.style.gridTemplateColumns="auto auto 1fr"; row.style.gap="4px"; row.style.alignItems="center"
+        row.style.display="grid"; row.style.gridTemplateColumns="auto auto minmax(0,1fr)"; row.style.gap="4px"; row.style.alignItems="center"
         const name=document.createElement("strong"); name.textContent=`${pretty}:`
         name.style.opacity=(axis.enabled??true)?"1":"0.45"
         const label=document.createElement("input"); label.value=axis.label??""
@@ -979,7 +986,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         label.addEventListener("input",()=>{axis.label=label.value;axis.autoLabel=false;this.graph.drawGraph()})
         row.append(this.axisShowToggle(axis,"Show this axis",()=>{name.style.opacity=(axis.enabled??true)?"1":"0.45"}),name,label); block.append(row)
         const scaleRow=document.createElement("div")
-        scaleRow.style.display="grid"; scaleRow.style.gridTemplateColumns="auto 1fr auto"; scaleRow.style.gap="4px"; scaleRow.style.alignItems="center"
+        scaleRow.style.display="grid"; scaleRow.style.gridTemplateColumns="auto minmax(0,1fr) auto"; scaleRow.style.gap="4px"; scaleRow.style.alignItems="center"
         const scaleLabel=document.createElement("span"); scaleLabel.textContent="Scale"; scaleLabel.style.fontSize="0.85em"
         const scale=document.createElement("select")
         for(const value of ["linear","log"]){const option=new Option(value,value);option.selected=axis.scale===value;scale.add(option)}
@@ -996,7 +1003,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         block.dataset.axis=key
         section.append(block)
         const row=document.createElement("div")
-        row.style.display="grid"; row.style.gridTemplateColumns="auto auto 1fr"; row.style.gap="4px"; row.style.alignItems="center"
+        row.style.display="grid"; row.style.gridTemplateColumns="auto auto minmax(0,1fr)"; row.style.gap="4px"; row.style.alignItems="center"
         const name=document.createElement("strong"); name.textContent=`${pretty}:`
         const body=document.createElement("div")
         const refreshBody=()=>{
@@ -1012,7 +1019,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             }
             const source=this.graph.axisMirrorOf(key)
             const labelRow=document.createElement("div")
-            labelRow.style.display="grid"; labelRow.style.gridTemplateColumns="auto 1fr"; labelRow.style.gap="4px"; labelRow.style.alignItems="center"
+            labelRow.style.display="grid"; labelRow.style.gridTemplateColumns="auto minmax(0,1fr)"; labelRow.style.gap="4px"; labelRow.style.alignItems="center"; labelRow.style.minWidth="0"
             const labelName=document.createElement("span"); labelName.textContent="Label"; labelName.style.fontSize="0.85em"
             const label=document.createElement("input")
             label.value=axis.label??""
@@ -1054,10 +1061,10 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     renderDualSlider(block,axis,autoBtn,paddedMin,paddedMax,step,initMin,initMax){
         const rangeRow=document.createElement("div")
         rangeRow.dataset.range="1"
-        rangeRow.style.display="grid"; rangeRow.style.gridTemplateColumns="auto 1fr"; rangeRow.style.gap="4px"; rangeRow.style.alignItems="center"
+        rangeRow.style.display="grid"; rangeRow.style.gridTemplateColumns="auto minmax(0,1fr)"; rangeRow.style.gap="4px"; rangeRow.style.alignItems="center"
         const rangeLabel=document.createElement("span"); rangeLabel.textContent="Range"; rangeLabel.style.fontSize="0.85em"
         const sliders=document.createElement("div")
-        sliders.style.position="relative"; sliders.style.height="1.6em"
+        sliders.style.position="relative"; sliders.style.height="1.6em"; sliders.style.minWidth="0"; sliders.style.overflow="hidden"
         const track=document.createElement("div")
         track.style.position="absolute"; track.style.left="0"; track.style.right="0"; track.style.top="50%"
         track.style.height="4px"; track.style.transform="translateY(-50%)"
@@ -1085,7 +1092,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             hi.style.zIndex=(a<=b)?"2":"3"
         }
         const inputsRow=document.createElement("div")
-        inputsRow.style.display="grid"; inputsRow.style.gridTemplateColumns="1fr 1fr"; inputsRow.style.gap="4px"
+        inputsRow.style.display="grid"; inputsRow.style.gridTemplateColumns="minmax(0,1fr) minmax(0,1fr)"; inputsRow.style.gap="4px"; inputsRow.style.minWidth="0"
         inputsRow.style.gridColumn="1 / -1"
         const loNum=document.createElement("input")
         loNum.type="number"; loNum.step="any"; loNum.value=String(initMin)
@@ -2731,7 +2738,7 @@ class Table{
                 titleLine[k].style["cursor"]="auto"
                 titleLine[k].setAttribute("contenteditable","true")
                 titleLine[k].pilot=this
-                titleLine[k].handleBlur=(e)=>{
+                titleLine[k].handleInput=(e)=>{
                     const columnIndex=e.target.cellIndex+Number(e.target.pilot.parameters.virtualIndex.left||0)
                     e.target.pilot.setColumnLabel(columnIndex,e.target.textContent)
                 }
@@ -3428,7 +3435,7 @@ class App{
                 width:"100%",
                 height:"100%",
                 display:"grid",
-                "grid-template-rows":"auto auto 1fr auto auto"},
+                "grid-template-rows":"auto auto minmax(0,1fr) auto auto"},
                 "justify-items": "stretch",
                 "align-items": "stretch"
             },[dropzone,

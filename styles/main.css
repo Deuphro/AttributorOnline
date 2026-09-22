@@ -14,7 +14,7 @@
     --text:#dfe6ee;
     --text-muted:#b9c4d0;
     --text-dim:#8fa0b3;
-    --code-bg:rgba(0,0,0,0.4);
+    --code-bg:#282f3d63;
     --hover-bg:rgba(0,0,0,0.55);
     --plot-axis-color: #b9c4d0;
     --plot-axis-font: monospace;
@@ -222,7 +222,7 @@ div{
     min-height: 0;
     overflow:auto;
     border:0px solid violet;
-    background: linear-gradient(135deg, #1f252f, #232b38, #1f252f);
+    background: linear-gradient(135deg, #1f252fd7, #232b38d7, #1f252fd7);
     border-radius: 5px;
 }
 .panel{
@@ -309,6 +309,7 @@ input[type=range].dual{
     background: transparent;
     pointer-events: none;
     margin: 0;
+    min-width: 0;
 }
 input[type=range].dual::-webkit-slider-runnable-track{
     background: transparent;
@@ -323,6 +324,18 @@ input[type=range].dual::-moz-range-track{
 input[type=range].dual::-moz-range-thumb{
     pointer-events: auto;
     cursor: ew-resize;
+}
+
+/* ---- Inspecteur SimpleXYPlot (accordéon droit) ---- */
+.accordion.content details{
+    min-width: 0;
+    overflow: hidden;
+}
+.accordion.content details input,
+.accordion.content details select,
+.accordion.content details button{
+    min-width: 0;
+    max-width: 100%;
 }
 
 /* ---- Table (virtualisée) ---- */
@@ -370,7 +383,7 @@ input[type=range].dual::-moz-range-thumb{
 
 /* ---- Dialogs ---- */
 .popup.container{
-    background-color:rgba(28,33,41,0.95);
+    background-color:rgba(28,33,41,0.5);
     border:1px dashed var(--accent-border);
     border-radius:10px;
 }
@@ -413,7 +426,7 @@ input[type=color]{
     padding:0;
 }
 input[type=checkbox]{
-    accent-color:var(--accent);
+    accent-color:var(--accent-soft);
 }
 
 /* ---- Quadrillage du flux ---- */
