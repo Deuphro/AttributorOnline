@@ -1623,14 +1623,29 @@ class Flow{
         //parents (their outputs are already available in memory)
         await this.parentSynapse(node,this.parentsMap(node))
     }
-    async resolveNode(node){
+    async resolveNode(node,resolutions=new Map(),ancestors=new Set()){
+        if(ancestors.has(node)){
+            return
+        }
+        if(resolutions.has(node)){
+            return resolutions.get(node)
+        }
+        const nextAncestors=new Set(ancestors)
+        nextAncestors.add(node)
         const parentsMap=this.parentsMap(node)
-        await Promise.all(parentsMap.keys().toArray().map(parent=>this.resolveNode(parent)))
-        await this.parentSynapse(node,parentsMap)
-        await node.startResolve()
+        const resolution=(async()=>{
+            await Promise.all(parentsMap.keys().toArray().map(parent=>
+                this.resolveNode(parent,resolutions,nextAncestors)
+            ))
+            await this.parentSynapse(node,parentsMap)
+            await node.startResolve()
+        })()
+        resolutions.set(node,resolution)
+        return resolution
     }
     async resolveFlow(){
-        await Promise.all([...this.leaves].map(leaf=>this.resolveNode(leaf)))
+        const resolutions=new Map()
+        await Promise.all([...this.leaves].map(leaf=>this.resolveNode(leaf,resolutions)))
     }
     forwardStatus(node, status){
         this.childrenMap(node).keys().toArray().map(child=>this.forwardStatus(child,status))
