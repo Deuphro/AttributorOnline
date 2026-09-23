@@ -414,8 +414,8 @@ export class GLTraceLayer{
         buffers.colors=new Float32Array(this.capacity.points*4)
         buffers.sizes=new Float32Array(this.capacity.points)
         buffers.shapes=new Float32Array(this.capacity.points)
-        buffers.linePositions=new Float32Array(this.capacity.segments*3)
-        buffers.lineColors=new Float32Array(this.capacity.segments*4)
+        buffers.linePositions=new Float32Array(this.capacity.segments*6)
+        buffers.lineColors=new Float32Array(this.capacity.segments*8)
         return true
     }
 
