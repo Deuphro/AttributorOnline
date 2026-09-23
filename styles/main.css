@@ -536,3 +536,24 @@ input[type=checkbox]{
     font-size: var(--plot-axis-font-size);
     font-family: var(--plot-axis-font);
 }
+
+/* ---- Sandwich architecture: WebGL back layer under the SVG overlay ---- */
+/* the container becomes a stacking context so that the negative z-index of
+   the back layer can never escape behind another panel */
+.plot2d.container{
+    position:relative;
+    z-index:0;
+}
+/* the persistent WebGL canvas, exactly as wide/high as the graphzone
+   (left/top/width/height are written by Plot2DWebGL.syncTraceViewport) */
+canvas.trace-layer{
+    position:absolute;
+    z-index:-1;
+    display:block;
+    pointer-events:none;
+}
+/* the D3/SVG overlay stays in front, interaction included */
+.plot2d.container>svg.main{
+    position:relative;
+    z-index:1;
+}

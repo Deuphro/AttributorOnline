@@ -1,0 +1,506 @@
+class Plot2D{
+    constructor(data,title,origin,destination){
+        this.title=title
+        this.data=data
+        this.traces=[]
+        this.origin=origin
+        this.destination=destination
+        this.container=CE('div',{className:"2dplot container",pilot:this},[]);
+        this.parameters={
+            graphzone:{
+                drawn:false,
+                opacity:"0.5"
+            },
+            baseMargins:{
+                top:12,
+                bottom:52,
+                left:40,
+                right:15
+            },
+            margins:{
+                top:12,
+                bottom:52,
+                left:40,
+                right:15
+            },
+            axis:DC(this.defaultAxes)
+        }
+        this.updateMargins()
+        stylize(this.container,{
+            position:"relative",
+            width:"100%",
+            height:"100%",
+        })
+        this.destination.appendChild(this.container)
+        this.drawGraph()
+        this.container.handleResize=(e)=>e.target.pilot.drawGraph()
+    }
+    get graphzone(){
+        return {
+            width:Math.max(0,this.container.clientWidth-this.parameters.margins.left-this.parameters.margins.right),
+            height:Math.max(0,this.container.clientHeight-this.parameters.margins.top-this.parameters.margins.bottom)
+        }
+    }
+    get defaultAxes(){
+        return {
+            bottom:{
+                drawn:false,
+                enabled:true,
+                mirror:null,
+                domain:[0,1],
+                autoDomain:true,
+                range:[0,1],
+                position:{left:0,top:1},
+                label:"Abscissa",
+                autoLabel:true,
+                orientation:"horizontal",
+                scale:"linear",
+                type:"bottom"
+            },
+            left:{
+                drawn:false,
+                enabled:true,
+                mirror:null,
+                domain:[0,1],
+                autoDomain:true,
+                range:[1,0],
+                position:{left:0,top:0},
+                label:"Ordinate",
+                autoLabel:true,
+                orientation:"vertical",
+                scale:"linear",
+                type:"left"
+            },
+            top:{
+                drawn:false,
+                enabled:false,
+                mirror:"bottom",
+                domain:[0,1],
+                autoDomain:true,
+                range:[0,1],
+                position:{left:0,top:0},
+                label:"",
+                autoLabel:true,
+                orientation:"horizontal",
+                scale:"linear",
+                type:"top"
+            },
+            right:{
+                drawn:false,
+                enabled:false,
+                mirror:"left",
+                domain:[0,1],
+                autoDomain:true,
+                range:[1,0],
+                position:{left:1,top:0},
+                label:"",
+                autoLabel:true,
+                orientation:"vertical",
+                scale:"linear",
+                type:"right"
+            }
+        }
+    }
+    ensureAxes(){
+        for(const [key,fallback] of Object.entries(this.defaultAxes)){
+            const axis=this.parameters.axis[key]
+            if(!axis){
+                this.parameters.axis[key]=DC(fallback)
+                continue
+            }
+            for(const [field,value] of Object.entries(fallback)){
+                if(axis[field]===undefined){
+                    axis[field]=DC(value)
+                }
+            }
+        }
+    }
+    updateMargins(){
+        if(!this.parameters.baseMargins){
+            this.parameters.baseMargins={...this.parameters.margins}
+        }
+        const margins={...this.parameters.baseMargins}
+        if(this.axisShown("top")){
+            margins.top=Math.max(margins.top,52)
+        }
+        if(this.axisShown("right")){
+            margins.right=Math.max(margins.right,40)
+        }
+        this.parameters.margins=margins
+        return margins
+    }
+    axisShown(key){
+        const axis=this.parameters.axis[key]
+        return Boolean(axis&&(axis.enabled??true))
+    }
+    axisMirrorOf(key){
+        const mirror=this.parameters.axis[key]?.mirror
+        return mirror?this.parameters.axis[mirror]??null:null
+    }
+    //the axis a drawn axis takes its scale and domain from (itself unless it is a mirrored axis)
+    axisSource(key){
+        return this.axisMirrorOf(key)??this.parameters.axis[key]
+    }
+    axisLabelText(key){
+        const axis=this.parameters.axis[key]
+        if(axis?.label) return axis.label
+        return this.axisMirrorOf(key)?.label??""
+    }
+    //coordinates are expressed inside the anchor group, so they only need the graphzone and a free margin
+    axisLabelPlacement(key){
+        const type=this.parameters.axis[key]?.type??key
+        switch(type){
+            case "top":
+                return {rotate:null,x:this.graphzone.width/2,y:-38}
+            case "left":
+                return {rotate:-90,x:-this.graphzone.height/2,y:-28}
+            case "right":
+                return {rotate:90,x:this.graphzone.height/2,y:-28}
+            case "bottom":
+            default:
+                return {rotate:null,x:this.graphzone.width/2,y:38}
+        }
+    }
+    setTraces(traces){
+        this.traces=traces.filter(trace=>trace instanceof XYTrace)
+        this.data=this.traces.length?this.points:[]
+    }
+    syncAxisLabels(){
+        const reference=this.traces[0]?.wave
+        if(!reference) return
+        if(this.parameters.axis.bottom.autoLabel){
+            this.parameters.axis.bottom.label=reference.labels[0]??"X"
+        }
+        if(this.parameters.axis.left.autoLabel){
+            this.parameters.axis.left.label=reference.labels[1]??"Y"
+        }
+    }
+    get points(){
+        if(this.traces.length){
+            return this.traces.flatMap(trace=>trace.points)
+        }
+        return this.data
+    }
+    dataBounds(){
+        const allPoints=this.points.filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
+        if(!allPoints.length) return null
+        let xMin=allPoints[0][0]
+        let xMax=xMin
+        let yMin=allPoints[0][1]
+        let yMax=yMin
+        for(const [x,y] of allPoints.slice(1)){
+            xMin=Math.min(xMin,x)
+            xMax=Math.max(xMax,x)
+            yMin=Math.min(yMin,y)
+            yMax=Math.max(yMax,y)
+        }
+        return {
+            xMin,
+            xMax,
+            yMin,
+            yMax
+        }
+    }
+    ensureValidScales(bounds){
+        const limits={bottom:[bounds?.xMin,bounds?.xMax],left:[bounds?.yMin,bounds?.yMax]}
+        for(const [key,[dataMin,dataMax]] of Object.entries(limits)){
+            const axis=this.parameters.axis[key]
+            const domain=axis.domain??[]
+            const invalidData=!(dataMin>0)||!(dataMax>0)
+            const invalidManualDomain=!axis.autoDomain&&(!(domain[0]>0)||!(domain[1]>0))
+            if(axis.scale==="log"&&(invalidData||invalidManualDomain)){
+                axis.scale="linear"
+                axis.autoDomain=true
+            }
+        }
+    }
+    autoDomain(axis,bounds){
+        if(axis==="bottom"){
+            if(this.parameters.axis.bottom.scale==="log"){
+                this.parameters.axis.bottom.domain=[bounds.xMin/1.05,bounds.xMax*1.05]
+            }else{
+                const xPadding=(bounds.xMax-bounds.xMin)||1
+                this.parameters.axis.bottom.domain=[bounds.xMin-0.05*xPadding,bounds.xMax+0.05*xPadding]
+            }
+        }
+        if(axis==="left"){
+            if(this.parameters.axis.left.scale==="log"){
+                this.parameters.axis.left.domain=[bounds.yMin/1.05,bounds.yMax*1.05]
+            }else{
+                const yPadding=(bounds.yMax-bounds.yMin)||1
+                this.parameters.axis.left.domain=[bounds.yMin-0.05*yPadding,bounds.yMax+0.05*yPadding]
+            }
+        }
+    }
+    markerPath(shape,size){
+        const s=size??4
+        switch(shape){
+            case "square": return `M${-s},${-s}H${s}V${s}H${-s}Z`
+            case "diamond": return `M0,${-s}L${s},0L0,${s}L${-s},0Z`
+            case "triangle-up": return `M0,${-s}L${s},${s}L${-s},${s}Z`
+            case "triangle-down": return `M0,${s}L${s},${-s}L${-s},${-s}Z`
+            case "cross": return `M${-s},${-s}L${s},${s}M${s},${-s}L${-s},${s}`
+            case "plus": return `M${-s},0H${s}M0,${-s}V${s}`
+            case "circle":
+            default: return null
+        }
+    }
+    drawGraph(){
+        this.ensureAxes()
+        this.updateMargins()
+        let range=[]
+        let scale={}
+        let translate=""
+        this.axesSVG={}
+        let target=""
+        const bounds=this.dataBounds()
+        this.ensureValidScales(bounds)
+        if(bounds){
+            if(this.parameters.axis.bottom.autoDomain??true){
+                this.autoDomain("bottom",bounds)
+            }
+            if(this.parameters.axis.left.autoDomain??true){
+                this.autoDomain("left",bounds)
+            }
+        }
+        if(this.parameters.graphzone.drawn){
+        } else {
+            this.parameters.graphzone.drawn=true
+            this.graphSVG=d3.select(this.container)
+                .append("svg")
+                    .attr("width",this.container.clientWidth)
+                    .attr("height",this.container.clientHeight)
+                    .attr("class","main")
+            this.graphSVG.append("g")
+                    .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
+                    .attr('class',"anchor")
+        }
+        this.graphSVG
+            .attr("width",this.container.clientWidth)
+            .attr("height",this.container.clientHeight)
+        this.graphSVG
+            .select(".anchor")
+                .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
+        this.graphSVG.attr('opacity',this.parameters.graphzone.opacity)
+        for(let axis of Object.keys(this.parameters.axis)){
+            if(!this.axisShown(axis)){
+                this.graphSVG.select(".anchor").select(`.${axis}`).remove()
+                this.parameters.axis[axis].drawn=false
+                continue
+            }
+            if(this.parameters.axis[axis].drawn){
+                //MAJ
+            }else{
+                //INIT (before the traces, so that a re-shown axis does not end up on top of the points)
+                this.graphSVG.select(".anchor").insert("g",".trace").attr("class",axis)
+            }
+            target=`.${axis}`
+            translate=`translate(${this.parameters.axis[axis].position.left*this.graphzone.width},${this.parameters.axis[axis].position.top*this.graphzone.height})`
+            if(this.parameters.axis[axis].orientation=="horizontal"){
+                range=[this.parameters.axis[axis].range[0]*this.graphzone.width,this.parameters.axis[axis].range[1]*this.graphzone.width]
+            } else if (this.parameters.axis[axis].orientation=="vertical"){
+                range=[this.parameters.axis[axis].range[0]*this.graphzone.height,this.parameters.axis[axis].range[1]*this.graphzone.height]
+            }
+            const source=this.axisSource(axis)
+            scale=(source.scale==="log"?d3.scaleLog():d3.scaleLinear())
+                .domain(source.domain)
+                .range(range)
+            this.axesSVG[axis]=this.graphSVG.select(".anchor").select(target)
+            this.axesSVG[axis].attr("transform",translate)
+            this.axesSVG[axis].attr("class",`${axis} plot-axis`)
+            switch (this.parameters.axis[axis].type){
+                case "left":
+                    this.axesSVG[axis].call(d3.axisLeft(scale))
+                    break
+                case "right":
+                    this.axesSVG[axis].call(d3.axisRight(scale))
+                    break
+                case "top":
+                    this.axesSVG[axis].call(d3.axisTop(scale))
+                    break
+                case "bottom":
+                    this.axesSVG[axis].call(d3.axisBottom(scale))
+                    break
+                default:
+            }
+            const label=this.axisLabelText(axis)
+            const placement=this.axisLabelPlacement(axis)
+            const axisLabel=this.axesSVG[axis].selectAll("text.axis-label").data([label])
+            axisLabel.enter()
+                .append("text")
+                .attr("class","axis-label")
+                .merge(axisLabel)
+                .attr("text-anchor","middle")
+                .attr("transform",placement.rotate===null?null:`rotate(${placement.rotate})`)
+                .attr("x",placement.x)
+                .attr("y",placement.y)
+                .text(label)
+            axisLabel.exit().remove()
+            this.parameters.axis[axis].drawn=true
+        }
+        const xScale=(this.parameters.axis.bottom.scale==="log"?d3.scaleLog():d3.scaleLinear())
+            .domain(this.parameters.axis.bottom.domain)
+            .range([0,this.graphzone.width])
+        const yScale=(this.parameters.axis.left.scale==="log"?d3.scaleLog():d3.scaleLinear())
+            .domain(this.parameters.axis.left.domain)
+            .range([this.graphzone.height,0])
+        const traces=this.traces.length
+            ?this.traces.filter(trace=>!trace.options.hidden)
+            :[{
+                id:"legacy-data",
+                points:this.data,
+                options:{color:"tomato",mode:"points",line:{size:1}}
+            }]
+        const traceGroups=this.graphSVG.select(".anchor")
+            .selectAll("g.trace")
+            .data(traces,trace=>trace.id)
+        //traces are rendered on the WebGL sandwich layer: drop every legacy
+        //SVG geometry so no <path>/<circle> node survives to consume CPU
+        traceGroups.selectAll("path.trace-line,.point").remove()
+        traceGroups.exit().selectAll("path.trace-line,.point").remove()
+        traceGroups.exit().remove()
+        this.drawTracesWebGL(traces,xScale,yScale)
+    }
+    ensureTraceCanvas(){
+        //in-place sandwich layer: one canvas behind the SVG, clipped exactly
+        //to the graphzone (margins offsets), SVG stays on top for axes/events
+        let canvas=this.container.querySelector("canvas.trace-layer")
+        if(!canvas){
+            canvas=document.createElement("canvas")
+            canvas.className="trace-layer"
+            this.container.insertBefore(canvas,this.container.firstChild)
+        }
+        stylize(canvas,{
+            position:"absolute",
+            left:`${this.parameters.margins.left}px`,
+            top:`${this.parameters.margins.top}px`,
+            width:`${this.graphzone.width}px`,
+            height:`${this.graphzone.height}px`,
+            pointerEvents:"none",
+            zIndex:"0"
+        })
+        const displayWidth=Math.max(1,Math.round(this.graphzone.width))
+        const displayHeight=Math.max(1,Math.round(this.graphzone.height))
+        if(canvas.width!==displayWidth||canvas.height!==displayHeight){
+            canvas.width=displayWidth
+            canvas.height=displayHeight
+        }
+        if(this.graphSVG){
+            this.graphSVG.style("position","relative")
+            this.graphSVG.style("z-index","1")
+            this.graphSVG.style("pointer-events","auto")
+        }
+        return canvas
+    }
+    webglMarkerSymbol(shape){
+        switch(shape){
+            case "cross":
+            case "plus":
+                return symbolCross
+            case "square":
+                return symbolSquare
+            case "diamond":
+                return symbolDiamond
+            case "triangle-up":
+            case "triangle":
+                return symbolTriangle
+            case "circle":
+            default:
+                return symbolCircle
+        }
+    }
+    webglColorOf(cssColor){
+        const probe=document.createElement("div")
+        probe.style.color=cssColor
+        document.body.appendChild(probe)
+        const computed=getComputedStyle(probe).color
+        probe.remove()
+        const match=computed.match(/[\d.]+/g)?.map(Number)??[255,0,0]
+        const [r,g,b,a]=[match[0]/255,match[1]/255,match[2]/255,match[3]??1]
+        return [r,g,b,a]
+    }
+    buildTraceSubSeries(trace,tracePoints,xScale,yScale){
+        const series=[]
+        const color=trace.options.color
+        const lineSize=trace.options.line?.size??1
+        const mode=trace.options.mode
+        const accessors={crossValue:pair=>pair[0],mainValue:pair=>pair[1]}
+        if(mode==="lines-between-points"||mode==="lines-and-points"){
+            series.push(fc.seriesWebglLine()
+                .xScale(xScale)
+                .yScale(yScale)
+                .crossValue(accessors.crossValue)
+                .mainValue(accessors.mainValue)
+                .lineWidth(lineSize)
+                .decorate(program=>{
+                    fc.webglStrokeColor().value(this.webglColorOf(color)).data(tracePoints)(program)
+                }))
+        }
+        if(mode==="sticks-to-zero"){
+            const baseValue=this.parameters.axis.left.scale==="log"?this.parameters.axis.left.domain[0]:0
+            series.push(fc.seriesWebglBar()
+                .xScale(xScale)
+                .yScale(yScale)
+                .crossValue(accessors.crossValue)
+                .mainValue(accessors.mainValue)
+                .baseValue(()=>baseValue)
+                .bandwidth(()=>Math.max(1,lineSize))
+                .decorate(program=>{
+                    fc.webglFillColor().value(this.webglColorOf(color)).data(tracePoints)(program)
+                }))
+        }
+        if(mode==="points"||mode==="lines-and-points"){
+            const marker=trace.options.marker??{shape:"circle",size:4}
+            const outline=(marker.shape==="cross"||marker.shape==="plus")
+            series.push(fc.seriesWebglPoint()
+                .xScale(xScale)
+                .yScale(yScale)
+                .crossValue(accessors.crossValue)
+                .mainValue(accessors.mainValue)
+                .size(Math.pow(marker.size??4,2))
+                .type(this.webglMarkerSymbol(marker.shape))
+                .decorate(program=>{
+                    if(outline){
+                        fc.webglStrokeColor().value(this.webglColorOf(color)).data(tracePoints)(program)
+                        fc.webglFillColor().value([0,0,0,0]).data(tracePoints)(program)
+                    }else{
+                        fc.webglFillColor().value(this.webglColorOf(color)).data(tracePoints)(program)
+                        fc.webglStrokeColor().value(this.webglColorOf("rgb(110, 122, 138)")).data(tracePoints)(program)
+                    }
+                }))
+        }
+        return series
+    }
+    drawTracesWebGL(traces,xScale,yScale){
+        const canvas=this.ensureTraceCanvas()
+        const gl=canvas.getContext("webgl",{antialias:true,alpha:true})
+        if(!gl){
+            return
+        }
+        gl.viewport(0,0,canvas.width,canvas.height)
+        gl.clearColor(0,0,0,0)
+        gl.clear(gl.COLOR_BUFFER_BIT)
+        const subSeries=[]
+        const seriesData=[]
+        for(const trace of traces){
+            const tracePoints=(Array.isArray(trace.points)?trace.points:[]).filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
+            if(!tracePoints.length){
+                continue
+            }
+            for(const sub of this.buildTraceSubSeries(trace,tracePoints,xScale,yScale)){
+                subSeries.push(sub)
+                seriesData.push(tracePoints)
+            }
+        }
+        if(!subSeries.length){
+            return
+        }
+        const multi=fc.seriesWebglMulti()
+            .series(subSeries)
+            .mapping((data,index)=>seriesData[index])
+            .xScale(xScale)
+            .yScale(yScale)
+            .context(gl)
+        d3.select(canvas).datum(subSeries.map((_,index)=>index)).call(multi)
+    }
+}

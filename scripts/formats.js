@@ -102,6 +102,9 @@ class Wave{
         }
         this.labels=new Array(this.degree)
         this.metadata={}
+        //bumped by every mutation helper: consumers that cache the core (the
+        //WebGL buffer pipeline) can then know they must rebuild their buffers
+        this.revision=0
     }
     static normalizeLabels(labels,fallback=["x","y"]){
         const normalized=[...fallback]
@@ -147,6 +150,7 @@ class Wave{
         this.indices=imported.indices
         this.labels=imported.labels
         this.metadata=imported.metadata
+        this.revision=(this.revision??0)+1
         return this
     }
     toPairs(){
@@ -197,6 +201,13 @@ class Wave{
     }
     set fill(v){
         this.core.fill(v)
+        this.revision=(this.revision??0)+1
+    }
+    //call it after writing core in place (a wasm kernel filling the buffer,
+    //a worker streaming into it, …): the cached buffers are then refreshed
+    touch(){
+        this.revision=(this.revision??0)+1
+        return this
     }
     valueAt(...coords){
         let res=0
@@ -640,6 +651,8 @@ class Trace{
             color:"#ff0000",
             hidden:false,
             mode:"lines-between-points",
+            //"gl" = WebGL canvas (massive clouds), "svg" = D3/SVG (interactive)
+            layer:"gl",
             grouping:"none",
             errorBars:false,
             offset:false,

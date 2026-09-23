@@ -4,6 +4,7 @@ import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave, XYTrace} from "./formats.js"
 import {computePool} from "./workerPool.js"
+import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 
 window.raie=new Wave(5)
 window.eiar=new Wave(7)
@@ -649,7 +650,7 @@ class NodeWithAccordionGraph extends Node{
             height:"100%"
         })
         channel.register(`${registrationName}:graph`,this.graphDialog,`${label} graph`)
-        this.graph=new Plot2D([],
+        this.graph=new Plot2DWebGL([],
             `${label} graph`,
             this.origin,
             this.graphDialog.DOMelt.content
@@ -689,6 +690,8 @@ class NodeWithAccordionGraph extends Node{
         this.graph?.drawGraph()
     }
     suicide(options={}){
+        //the WebGL context and the GPU buffers are released with the dialog
+        this.graph?.dispose?.()
         this.graphDialog?.suicide()
         this.accordion?.suicide()
         super.suicide(options)
@@ -719,7 +722,7 @@ class NodeWithRightAccordionGraph extends Node{
             height:"100%"
         })
         channel.register(`${registrationName}:graph`,this.graphDialog,`${label} graph`)
-        this.graph=new Plot2D([],`${label} graph`,this.origin,this.graphDialog.DOMelt.content)
+        this.graph=new Plot2DWebGL([],`${label} graph`,this.origin,this.graphDialog.DOMelt.content)
     }
     serializeState(){
         if(!this.graph){
@@ -755,6 +758,8 @@ class NodeWithRightAccordionGraph extends Node{
         this.graph?.drawGraph()
     }
     suicide(options={}){
+        //the WebGL context and the GPU buffers are released with the dialog
+        this.graph?.dispose?.()
         this.graphDialog?.suicide()
         this.accordion?.suicide()
         super.suicide(options)
@@ -929,6 +934,11 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             }
             mode.addEventListener("change",()=>{trace.options.mode=mode.value;this.graph.drawGraph()})
             control("Mode",mode)
+            const layer=document.createElement("select")
+            for(const [value,text] of [["gl","Canvas (WebGL)"],["svg","SVG (D3)"]]){const option=new Option(text,value);option.selected=(trace.options.layer??"gl")===value;layer.add(option)}
+            layer.title="Canvas: massive clouds, SVG: interactive traces"
+            layer.addEventListener("change",()=>{trace.options.layer=layer.value;this.graph.drawGraph()})
+            control("Layer",layer)
             const markerShape=document.createElement("select")
             for(const [value,text] of [["circle","Circle"],["square","Square"],["diamond","Diamond"],["triangle-up","Triangle up"],["triangle-down","Triangle down"],["cross","Cross"],["plus","Plus"]]){
                 const option=new Option(text,value); option.selected=(trace.options.marker.shape??"circle")===value; markerShape.add(option)
@@ -2184,7 +2194,9 @@ class Plot2D{
     }
     setTraces(traces){
         this.traces=traces.filter(trace=>trace instanceof XYTrace)
-        this.data=this.traces.length?this.points:[]
+        //the flat legacy holder only matters while no trace exists: rebuilding
+        //it from the traces would allocate one array per point on every resolve
+        this.data=this.traces.length?[]:this.data
     }
     syncAxisLabels(){
         const reference=this.traces[0]?.wave
@@ -2202,19 +2214,58 @@ class Plot2D{
         }
         return this.data
     }
+    //allocation free equivalent of the historical
+    //filter/slice walk: the same points are visited, but no per point array
+    //is ever materialised (mandatory for datasets in the million range)
     dataBounds(){
-        const allPoints=this.points.filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
-        if(!allPoints.length) return null
-        let xMin=allPoints[0][0]
-        let xMax=xMin
-        let yMin=allPoints[0][1]
-        let yMax=yMin
-        for(const [x,y] of allPoints.slice(1)){
-            xMin=Math.min(xMin,x)
-            xMax=Math.max(xMax,x)
-            yMin=Math.min(yMin,y)
-            yMax=Math.max(yMax,y)
+        let xMin=Infinity
+        let xMax=-Infinity
+        let yMin=Infinity
+        let yMax=-Infinity
+        const sources=this.traces.length?this.traces:[{points:this.data}]
+        for(const source of sources){
+            const wave=source.wave
+            if(wave?.core&&wave.degree===2&&wave.dims[0]===2){
+                //flat interleaved core: the cheapest possible source
+                const core=wave.core
+                const count=wave.dims[1]
+                for(let i=0;i<count;i++){
+                    const x=core[i+i]
+                    const y=core[i+i+1]
+                    if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                    if(x<xMin) xMin=x
+                    if(x>xMax) xMax=x
+                    if(y<yMin) yMin=y
+                    if(y>yMax) yMax=y
+                }
+                continue
+            }
+            const points=source.points
+            if(!points) continue
+            if(points instanceof Float32Array||points instanceof Float64Array){
+                for(let i=0;i+1<points.length;i+=2){
+                    const x=points[i]
+                    const y=points[i+1]
+                    if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                    if(x<xMin) xMin=x
+                    if(x>xMax) xMax=x
+                    if(y<yMin) yMin=y
+                    if(y>yMax) yMax=y
+                }
+                continue
+            }
+            for(const pair of points){
+                if(!Array.isArray(pair)) continue
+                const x=pair[0]
+                const y=pair[1]
+                if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                if(x<xMin) xMin=x
+                if(x>xMax) xMax=x
+                if(y<yMin) yMin=y
+                if(y>yMax) yMax=y
+            }
         }
+        if(xMin===Infinity||yMin===Infinity) return null
         return {
             xMin,
             xMax,
@@ -2275,6 +2326,8 @@ class Plot2D{
         this.axesSVG={}
         let target=""
         const bounds=this.dataBounds()
+        //the back layer reuses this very pass as its float precision reference
+        this.lastDataBounds=bounds
         this.ensureValidScales(bounds)
         if(bounds){
             if(this.parameters.axis.bottom.autoDomain??true){
@@ -2359,19 +2412,34 @@ class Plot2D{
             axisLabel.exit().remove()
             this.parameters.axis[axis].drawn=true
         }
+        const {xScale,yScale}=this.plotScales()
+        this.drawTraces(xScale,yScale)
+    }
+    //the axes and the WebGL back layer share these very scales: deriving the
+    //camera bounds from them guarantees a pixel perfect superposition
+    plotScales(){
         const xScale=(this.parameters.axis.bottom.scale==="log"?d3.scaleLog():d3.scaleLinear())
             .domain(this.parameters.axis.bottom.domain)
             .range([0,this.graphzone.width])
         const yScale=(this.parameters.axis.left.scale==="log"?d3.scaleLog():d3.scaleLinear())
             .domain(this.parameters.axis.left.domain)
             .range([this.graphzone.height,0])
-        const traces=this.traces.length
+        return {xScale,yScale}
+    }
+    //the trace list rendered by both layers: hidden traces are dropped and the
+    //legacy plain-array data is wrapped once as a synthetic trace
+    resolveRenderTraces(){
+        return this.traces.length
             ?this.traces.filter(trace=>!trace.options.hidden)
             :[{
                 id:"legacy-data",
                 points:this.data,
                 options:{color:"tomato",mode:"points",line:{size:1}}
             }]
+    }
+    //D3/SVG trace rendering (the front layer keeps the interactive traces).
+    //`traces` is injectable so a subclass can route a subset to the WebGL batch.
+    drawTraces(xScale,yScale,traces=this.resolveRenderTraces()){
         const traceGroups=this.graphSVG.select(".anchor")
             .selectAll("g.trace")
             .data(traces,trace=>trace.id)
@@ -2440,6 +2508,505 @@ class Plot2D{
             }
         })
         traceGroups.exit().remove()
+    }
+}
+
+/* =====================================================================
+    Plot2DWebGL — the "sandwich" plot
+    ---------------------------------------------------------------------
+    Same layout math, same D3/SVG axis pipeline, same ResizeObserver /
+    MutationObserver lifecycle as Plot2D; only the trace rendering is
+    swapped for the WebGL back layer (scripts/plot2d-gl.js).
+
+        BACK  : persistent <canvas class="trace-layer"> + one Three.js
+                renderer/scene/orthographic camera (gl.POINTS + gl.LINES)
+        FRONT : the untouched D3/SVG overlay (axes, ticks, labels,
+                interaction widgets) drawn on top of the canvas
+
+    The data path is flat Float32Array only, filled in a single traversal
+    and re-filled only when the data, the axis transform or the styling
+    changed: a resize/pan is strictly a GPU matrix swap.
+   ===================================================================== */
+
+const GL_RENDER_DEFAULTS={
+    enabled:true,
+    opacity:0.7,
+    pixelRatioCap:2,
+    //subtract the data minimum from every vertex (float32 precision guard)
+    referenceOrigin:true
+}
+
+//how many times the post-draw watch may refill the buffers on its own before
+//giving up and asking the application for an explicit refresh()
+const GL_UPLOAD_CHECK_ATTEMPTS=8
+
+class Plot2DWebGL extends Plot2D{
+    constructor(data,title,origin,destination){
+        super(data,title,origin,destination)
+        //the base constructor already ran a first drawGraph, whose lazy
+        //bootstrap may have created the layer: never clobber it here (each
+        //replacement would leak a WebGL context and an orphan canvas)
+        this.glLayer=this.glLayer??null
+        //instances owned by the class and never recreated in the draw loop
+        this.glRenderer=this.glRenderer??null
+        this.glScene=this.glScene??null
+        this.glCamera=this.glCamera??null
+        this.glPoints=this.glPoints??null
+        this.glLines=this.glLines??null
+        this.glSignature=this.glSignature??null
+        this.glDataRevision=this.glDataRevision??0
+        this.glRenderOptions=this.glRenderOptions??{...GL_RENDER_DEFAULTS}
+        //precision reference of the uploaded vertices
+        this.glReference=this.glReference??{x:0,y:0}
+        //identity of the arrays currently on the GPU (stale upload detection)
+        this.glUploadedSources=this.glUploadedSources??null
+        this.glSourceScratch=this.glSourceScratch??[]
+        this.glCheckFrame=this.glCheckFrame??null
+        this.glCheckAttempts=this.glCheckAttempts??0
+        this.lastDataBounds=this.lastDataBounds??null
+        this.resizeFrame=this.resizeFrame??null
+        //the back layer needs its own stacking context (see styles/main.css)
+        this.container.classList.remove("2dplot")
+        this.container.classList.add("plot2d")
+        stylize(this.container,{position:"relative",zIndex:"0"})
+        this.ensureTraceCanvas()
+        //the recursive ResizeObserver pipeline now drives the GPU fast path
+        this.container.handleResize=(e)=>this.handleResize(e)
+        this.drawGraph()
+    }
+
+    /* -----------------------------------------------------------------
+       Setup phase — bootstrap the Three.js subsystem ONCE
+      ----------------------------------------------------------------- */
+    ensureTraceCanvas(){
+        const renderOptions=this.glRenderOptions??GL_RENDER_DEFAULTS
+        if(!this.glLayer&&renderOptions.enabled){
+            let canvas=null
+            try{
+                canvas=CE("canvas",{className:"trace-layer"},[])
+                stylize(canvas,{
+                    position:"absolute",
+                    left:"0px",
+                    top:"0px",
+                    display:"block",
+                    pointerEvents:"none",
+                    zIndex:"-1"
+                })
+                this.traceCanvas=canvas
+                this.glLayer=new GLTraceLayer(canvas,{
+                    opacity:renderOptions.opacity,
+                    pixelRatioCap:renderOptions.pixelRatioCap
+                })
+                this.glLayer.onContextRestored=()=>{
+                    //context loss wipes the GPU side buffers: force a re-upload
+                    this.glSignature=null
+                    this.drawGraph()
+                }
+                this.glRenderer=this.glLayer.renderer
+                this.glScene=this.glLayer.scene
+                this.glCamera=this.glLayer.camera
+                this.glPoints=this.glLayer.points
+                this.glLines=this.glLayer.lines
+            }catch(error){
+                console.warn(`Plot2DWebGL: WebGL layer unavailable (${THREE_CDN}), falling back to the SVG renderer`,error)
+                canvas?.remove?.()
+                this.traceCanvas=null
+                this.glLayer=null
+                this.glRenderOptions={...GL_RENDER_DEFAULTS,enabled:false}
+            }
+        }
+        //the canvas is the first child so that the SVG overlay stays on top
+        if(this.traceCanvas&&this.container.firstChild!==this.traceCanvas){
+            this.container.insertBefore(this.traceCanvas,this.container.firstChild)
+        }
+        //defensive: never leave orphan canvases behind (each one owns a context)
+        for(const child of [...this.container.children]){
+            if(child!==this.traceCanvas&&child.classList?.contains("trace-layer")){
+                child.remove()
+            }
+        }
+        return this.glLayer
+    }
+
+    /* -----------------------------------------------------------------
+       CPU side of the data path: traces → one descriptor per trace.
+       Nothing here is per point, so the cost does not depend on the
+       number of samples.
+      ----------------------------------------------------------------- */
+    buildTraceDescriptors(traces){
+        const descriptors=[]
+        for(const trace of traces){
+            const options=trace.options??{}
+            const marker=options.marker??{}
+            const line=options.line??{}
+            const mode=options.mode??"points"
+            const markerSize=Number(marker.size??4)
+            const lineSize=Number(line.size??1)
+            const wave=trace.wave
+            //flat interleaved [x,y,x,y,…]: Wave.core already is a Float64Array,
+            //which is also the shape a Rust/Wasm worker will hand over
+            let buffer=null
+            let pairs=null
+            let count=0
+            if(wave?.core&&wave.degree===2&&wave.dims[0]===2){
+                buffer=wave.core
+                count=wave.dims[1]
+            }else{
+                const points=trace.points??[]
+                if(points instanceof Float32Array||points instanceof Float64Array){
+                    buffer=points
+                    count=Math.floor(points.length/2)
+                }else{
+                    pairs=points
+                    count=points.length
+                }
+            }
+            descriptors.push({
+                buffer,
+                pairs,
+                count,
+                //colour resolution is a cached dictionary lookup: no DOM, no layout
+                color:parseCssColor(options.color??"#ff0000"),
+                //sprite diameter: one unit of the sprite is marker.size (half extent)
+                size:markerSize*2,
+                shape:shapeId(marker.shape??"circle"),
+                markers:(mode==="points"||mode==="lines-and-points")&&markerSize>0,
+                lines:(mode==="lines-between-points"||mode==="lines-and-points")&&lineSize>0,
+                sticks:mode==="sticks-to-zero"&&lineSize>0
+            })
+        }
+        return descriptors
+    }
+
+    //cheap O(#traces) fingerprint: the GPU buffers are refilled only when the
+    //data, the axis transforms or the trace styling actually changed
+    traceSignature(traces){
+        const parts=[
+            this.glDataRevision??0,
+            this.parameters.axis.bottom.scale,
+            this.parameters.axis.left.scale,
+            traces.length
+        ]
+        for(const trace of traces){
+            const options=trace.options??{}
+            const marker=options.marker??{}
+            const line=options.line??{}
+            const wave=trace.wave
+            parts.push(
+                trace.id??"",
+                options.color??"",
+                options.mode??"",
+                marker.shape??"",
+                marker.size??"",
+                line.size??"",
+                wave?wave.dims[1]:(trace.points?.length??0)
+            )
+        }
+        return parts.join("|")
+    }
+
+    /* -----------------------------------------------------------------
+       GPU buffer pre-allocation pipeline (scripts/plot2d-gl.js):
+       filtering + filling happen in a single traversal, into persistent
+       flat Float32Array buffers bound to one BufferGeometry.
+
+       Guarantees, in this order (all inside drawGraph, hence AFTER
+       dataBounds/autoDomain/plotScales have settled):
+         • the axis transforms (log) and the reference origin are known;
+         • the buffers are refilled as soon as the data, the styling, the
+           scales OR the identity of the underlying array changed;
+         • a one frame watch re-checks the sources so a producer that
+           swaps wave.core right after the draw cannot leave a stale
+           partial cloud on screen.
+      ----------------------------------------------------------------- */
+    uploadTracesToGPU(traces){
+        if(!this.glLayer){
+            return false
+        }
+        const renderOptions=this.glRenderOptions??GL_RENDER_DEFAULTS
+        const sources=this.glSourceIdentity(traces,this.glSourceScratch)
+        const signature=this.traceSignature(traces)
+        if(signature===this.glSignature&&!this.sourcesChanged(sources)){
+            //same data, same styling, same scales, same source arrays
+            return false
+        }
+        this.glSignature=signature
+        const logX=this.parameters.axis.bottom.scale==="log"
+        const logY=this.parameters.axis.left.scale==="log"
+        const reference=this.glReferenceOrigin(logX,logY)
+        this.glReference=reference
+        //a logarithmic axis has no zero: sticks are dropped, as in the SVG version
+        const stickBase=logY?Math.log10(0):0
+        this.glLayer.upload(this.buildTraceDescriptors(traces),{
+            logX,
+            logY,
+            stickBase,
+            referenceX:reference.x,
+            referenceY:reference.y
+        })
+        //remember what was uploaded (identity of every source array)
+        this.glUploadedSources=Array.prototype.slice.call(sources)
+        this.glUploadedReference={...reference}
+        this.scheduleUploadCheck()
+        return true
+    }
+
+    //identity of the array behind each trace: a producer that replaces
+    //wave.core (see Operation.computeOutputs) must not be able to leave the
+    //GPU with the previous buffer. O(#traces), never O(#points).
+    glSourceIdentity(traces,target=[]){
+        let index=0
+        for(const trace of traces){
+            const wave=trace.wave
+            target[index++]=wave?wave.core:(trace.points??null)
+        }
+        target.length=index
+        return target
+    }
+
+    //the origin subtracted from the uploaded vertices: the smallest coordinate
+    //of the dataset, in the space the GPU works in. Deriving it from the data
+    //bounds (not from the axis domain) keeps it stable while the user pans or
+    //zooms, so those gestures still need no re-upload at all.
+    glReferenceOrigin(logX,logY){
+        const renderOptions=this.glRenderOptions??GL_RENDER_DEFAULTS
+        const bounds=this.lastDataBounds??this.dataBounds()
+        if(!renderOptions.referenceOrigin||!bounds){
+            return {x:0,y:0}
+        }
+        const xMin=logX?(bounds.xMin>0?bounds.xMin:1):bounds.xMin
+        const yMin=logY?(bounds.yMin>0?bounds.yMin:1):bounds.yMin
+        return {
+            x:Number.isFinite(xMin)?(logX?Math.log10(xMin):xMin):0,
+            y:Number.isFinite(yMin)?(logY?Math.log10(yMin):yMin):0
+        }
+    }
+
+    //cheap O(#traces) fingerprint: the GPU buffers are refilled only when the
+    //data, the axis transforms or the trace styling actually changed
+    traceSignature(traces){
+        const reference=this.glReferenceOrigin(
+            this.parameters.axis.bottom.scale==="log",
+            this.parameters.axis.left.scale==="log"
+        )
+        const parts=[
+            this.glDataRevision??0,
+            this.parameters.axis.bottom.scale,
+            this.parameters.axis.left.scale,
+            reference.x,
+            reference.y,
+            traces.length
+        ]
+        for(const trace of traces){
+            const options=trace.options??{}
+            const marker=options.marker??{}
+            const line=options.line??{}
+            const wave=trace.wave
+            parts.push(
+                trace.id??"",
+                options.color??"",
+                options.mode??"",
+                options.layer??"gl",
+                marker.shape??"",
+                marker.size??"",
+                line.size??"",
+                wave?(wave.revision??0):0,
+                wave?wave.dims[1]:(trace.points?.length??0)
+            )
+        }
+        return parts.join("|")
+    }
+
+    //did a producer swap the array behind one of the traces since the upload?
+    sourcesChanged(sources){
+        const uploaded=this.glUploadedSources
+        if(!uploaded||uploaded.length!==sources.length){
+            return true
+        }
+        for(let index=0;index<sources.length;index++){
+            if(uploaded[index]!==sources[index]){
+                return true
+            }
+        }
+        return false
+    }
+
+    /* -----------------------------------------------------------------
+       Safety net for the asynchronous producers: Operation.computeOutputs
+       (and any worker kernel) can replace wave.core right AFTER a draw
+       has already been served. One frame later the sources are compared
+       again and, if they moved, the buffers are refilled and repainted,
+       so the first display can never stay partial.
+      ----------------------------------------------------------------- */
+    scheduleUploadCheck(){
+        if(this.glCheckFrame!==null&&this.glCheckFrame!==undefined){
+            return
+        }
+        this.glCheckFrame=requestAnimationFrame(()=>{
+            this.glCheckFrame=null
+            if(!this.glLayer){
+                return
+            }
+            const traces=this.resolveRenderTraces()
+            const sources=this.glSourceIdentity(traces,this.glSourceScratch)
+            if(!this.sourcesChanged(sources)){
+                return
+            }
+            if((this.glCheckAttempts??0)>=GL_UPLOAD_CHECK_ATTEMPTS){
+                console.warn("Plot2DWebGL: the plotted data is still being rewritten; call plot.refresh() once it is final")
+                return
+            }
+            this.glCheckAttempts=(this.glCheckAttempts??0)+1
+            //the arrays changed after the draw: refill and repaint immediately
+            this.glSignature=null
+            this.uploadTracesToGPU(traces)
+            this.glLayer?.render()
+        })
+    }
+
+    //to be called by an asynchronous producer once its data is really final
+    refresh(){
+        this.invalidateTraces()
+        this.drawGraph()
+    }
+
+    //the canvas covers exactly the graphzone: the margins stay owned by the SVG
+    syncTraceViewport(){
+        if(!this.glLayer&&!this.ensureTraceCanvas()){
+            return false
+        }
+        const zone=this.graphzone
+        const style=this.traceCanvas.style
+        style.left=`${this.parameters.margins.left}px`
+        style.top=`${this.parameters.margins.top}px`
+        this.glLayer.setViewport(zone.width,zone.height)
+        return true
+    }
+
+    /* -----------------------------------------------------------------
+       Camera: the bounds are read back from the very scales the axes are
+       drawn with, so the WebGL layer and the SVG overlay can never drift
+       apart. On a log axis both the data and the bounds go through log10,
+       which turns the log mapping into the linear mapping the GPU expects.
+      ----------------------------------------------------------------- */
+    refreshCamera(xScale,yScale){
+        if(!this.glLayer) return false
+        const logX=this.parameters.axis.bottom.scale==="log"
+        const logY=this.parameters.axis.left.scale==="log"
+        //the uploaded vertices live in the precision reference frame (see
+        //glReferenceOrigin): the camera has to use that same frame
+        const reference=this.glReference??{x:0,y:0}
+        const leftSource=xScale.invert(0)
+        const rightSource=xScale.invert(this.graphzone.width)
+        const topSource=yScale.invert(0)
+        const bottomSource=yScale.invert(this.graphzone.height)
+        return this.glLayer.setBounds({
+            left:(logX?Math.log10(leftSource):leftSource)-reference.x,
+            right:(logX?Math.log10(rightSource):rightSource)-reference.x,
+            top:(logY?Math.log10(topSource):topSource)-reference.y,
+            bottom:(logY?Math.log10(bottomSource):bottomSource)-reference.y
+        })
+    }
+
+    /* -----------------------------------------------------------------
+       Render: replaces Plot2D.drawTraces. The D3/SVG implementation is
+       kept as a graceful fallback when WebGL is unavailable.
+      ----------------------------------------------------------------- */
+    drawTraces(xScale,yScale){
+        const renderOptions=this.glRenderOptions??GL_RENDER_DEFAULTS
+        if(!renderOptions.enabled||(!this.glLayer&&!this.ensureTraceCanvas())){
+            super.drawTraces(xScale,yScale)
+            return
+        }
+        /* per trace routing: massive clouds go to the GPU, the traces that must
+           stay interactive (DOM events, hit-testing, per point widgets) stay in
+           the SVG layer — options.layer = "gl" (default) | "svg" */
+        const all=this.resolveRenderTraces()
+        const glTraces=[]
+        const svgTraces=[]
+        for(const trace of all){
+            if(trace.options?.layer==="svg"){
+                svgTraces.push(trace)
+            }else{
+                glTraces.push(trace)
+            }
+        }
+        //called even with an empty list, so D3 removes the groups that were
+        //just moved over to the canvas
+        super.drawTraces(xScale,yScale,svgTraces)
+        this.syncTraceViewport()
+        this.uploadTracesToGPU(glTraces)
+        if(this.refreshCamera(xScale,yScale)){
+            this.glRenderer.render(this.glScene,this.glCamera)
+        }
+        //an explicit draw restarts the retry budget of the upload watch
+        this.glCheckAttempts=0
+    }
+
+    /* -----------------------------------------------------------------
+       Instantaneous resize, driven by the App ResizeObserver pipeline.
+       No data loop, no reallocation: setSize, one projection matrix
+       update, one render — the GPU does the rest.
+      ----------------------------------------------------------------- */
+    handleResize(){
+        this.resizeTraceLayer()
+        //the SVG overlay (axes, ticks, labels) catches up on the next frame,
+        //coalesced so a drag-resize cannot redraw it twice within a frame
+        if(this.resizeFrame===null){
+            this.resizeFrame=requestAnimationFrame(()=>{
+                this.resizeFrame=null
+                this.drawGraph()
+            })
+        }
+    }
+
+    resizeTraceLayer(){
+        if(!this.glLayer) return false
+        const {xScale,yScale}=this.plotScales()
+        if(!this.syncTraceViewport()) return false
+        const ready=this.refreshCamera(xScale,yScale)
+        if(ready) this.glRenderer.render(this.glScene,this.glCamera)
+        return ready
+    }
+
+    setTraces(traces){
+        super.setTraces(traces)
+        //the data changed: the next draw has to refill the GPU buffers
+        this.glDataRevision++
+    }
+
+    //for data mutated in place (e.g. a Wasm buffer written by a worker)
+    invalidateTraces(){
+        this.glDataRevision++
+        this.glSignature=null
+    }
+
+    glLayerStats(){
+        if(!this.glLayer) return null
+        return {...this.glLayer.getStats(),uploaded:this.glSignature!==null}
+    }
+
+    dispose(){
+        if(this.resizeFrame!==null){
+            cancelAnimationFrame(this.resizeFrame)
+            this.resizeFrame=null
+        }
+        if(this.glCheckFrame!==null&&this.glCheckFrame!==undefined){
+            cancelAnimationFrame(this.glCheckFrame)
+            this.glCheckFrame=null
+        }
+        this.glLayer?.dispose()
+        this.glLayer=null
+        this.glRenderer=null
+        this.glScene=null
+        this.glCamera=null
+        this.glPoints=null
+        this.glLines=null
+        this.glSignature=null
+        this.traceCanvas?.remove()
+        this.traceCanvas=null
+        //a disposed plot keeps working, but through the SVG renderer
+        this.glRenderOptions={...GL_RENDER_DEFAULTS,enabled:false}
     }
 }
 
@@ -4026,4 +4593,4 @@ class PetitGazFusion {
 
 
 
-export {App}
+export {App, Plot2D, Plot2DWebGL}
