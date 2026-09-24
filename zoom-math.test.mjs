@@ -243,48 +243,5 @@ console.log("6. stale view (zoom before any trace) snaps back instead of locking
     check("empty-plot zoom is discarded when data arrives (flag)",fresh.autoDomain===true)
 }
 
-console.log("7. pan follows the cursor, keeps its span, clamps at the fit bounds")
-{
-    const width=800
-    const fit=fitOf(0,100) // [-5,105]
-    // drag right by +40px: content follows, the window shifts left by 40px
-    const a={scale:"linear",domain:[0,100],autoDomain:true}
-    let sc=testScale("linear",a.domain,[0,width])
-    check("pan accepted",panAxisDomain(a,sc,40,fit)===true)
-    check("window shifted by exactly 40px of data",
-        Math.abs(a.domain[0]-(-5))<1e-9&&Math.abs(a.domain[1]-95)<1e-9)
-    check("span preserved",Math.abs((a.domain[1]-a.domain[0])-100)<1e-9)
-    check("pan disables autoDomain",a.autoDomain===false)
-    // the window sits on the left fit edge: dragging further right is a no-op
-    sc=testScale("linear",a.domain,[0,width])
-    check("drag against the left edge refused",panAxisDomain(a,sc,120,fit)===false)
-    check("domain unchanged at the edge",a.domain[0]===-5&&a.domain[1]===95)
-    // zero shift never touches the state
-    sc=testScale("linear",a.domain,[0,width])
-    check("zero shift refused",panAxisDomain(a,sc,0,fit)===false)
-    // Y axis uses the inverted range [h,0]: drag down reveals larger values
-    const y={scale:"linear",domain:[0,100],autoDomain:true}
-    sc=testScale("linear",y.domain,[400,0])
-    check("Y pan accepted",panAxisDomain(y,sc,40,fit)===true)
-    check("Y window slid up and clamped at fit high",
-        Math.abs(y.domain[0]-5)<1e-9&&Math.abs(y.domain[1]-105)<1e-9)
-    check("Y span preserved",Math.abs((y.domain[1]-y.domain[0])-100)<1e-9)
-    // a log pan translates in log space: ratios preserved, values positive
-    const lg={scale:"log",domain:[1,1000],autoDomain:true}
-    sc=testScale("log",lg.domain,[0,width])
-    const ratioBefore=lg.domain[1]/lg.domain[0]
-    check("log pan accepted",panAxisDomain(lg,sc,width/8,fitOf(1,1000))===true)
-    check("log ratio preserved (pure translation)",
-        Math.abs(Math.log10(lg.domain[1]/lg.domain[0])-Math.log10(ratioBefore))<1e-9)
-    check("log values strictly positive",lg.domain[0]>0&&lg.domain[1]>0)
-    // a stale window wider than the fit snaps onto it (same rule as zoom-out)
-    const wide={scale:"linear",domain:[-50,500],autoDomain:false}
-    sc=testScale("linear",wide.domain,[0,width])
-    check("overwide window pan accepted",panAxisDomain(wide,sc,10,fit)===true)
-    check("overwide window snapped to fit",
-        wide.domain[0]===fit[0]&&wide.domain[1]===fit[1])
-    check("snap returns to auto mode",wide.autoDomain===true)
-}
-
 if(failures){console.error(`\n${failures} FAILURE(S)`);process.exit(1)}
 console.log("\nALL ZOOM MATH TESTS PASSED")

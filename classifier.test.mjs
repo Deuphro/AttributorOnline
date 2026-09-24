@@ -10,10 +10,10 @@ function check(name,cond){
 const near=(a,b,eps=1e-9)=>Math.abs(a-b)<=eps
 
 // --- replicas ---
-const CLASSIFIER_MIN_SLOPE=1+1e-6
-const CLASSIFIER_MAX_SLOPE=1e12
+const CLASSIFIER_MIN_SLOPE=1e-12
+const CLASSIFIER_MAX_SLOPE=1-1e-6
 function clampClassifierSlope(value){
-    if(Number.isNaN(value)) return CLASSIFIER_MIN_SLOPE
+    if(Number.isNaN(value)) return CLASSIFIER_MAX_SLOPE
     return Math.min(CLASSIFIER_MAX_SLOPE,Math.max(CLASSIFIER_MIN_SLOPE,value))
 }
 function keepAllSlope(pairs){
@@ -58,41 +58,41 @@ function isKept(pair,slope){
     return pair.death<=slope*pair.birth
 }
 
-console.log("1. clamp keeps the slope strictly above 1")
+console.log("1. clamp keeps the slope strictly below 1")
 {
-    check("small slope clamped to MIN",clampClassifierSlope(0.5)===CLASSIFIER_MIN_SLOPE)
+    check("large slope clamped to MAX",clampClassifierSlope(2.7)===CLASSIFIER_MAX_SLOPE)
     check("negative slope clamped to MIN",clampClassifierSlope(-3)===CLASSIFIER_MIN_SLOPE)
-    check("NaN clamped to MIN",clampClassifierSlope(NaN)===CLASSIFIER_MIN_SLOPE)
+    check("NaN clamped to MAX",clampClassifierSlope(NaN)===CLASSIFIER_MAX_SLOPE)
     check("+Infinity clamped to MAX",clampClassifierSlope(Infinity)===CLASSIFIER_MAX_SLOPE)
-    check("valid slope untouched",clampClassifierSlope(2.7)===2.7)
-    check("MIN is above 1",CLASSIFIER_MIN_SLOPE>1)
-    check("clamp never returns below 1",clampClassifierSlope(0)>1)
+    check("valid slope untouched",clampClassifierSlope(0.4)===0.4)
+    check("MAX is below 1",CLASSIFIER_MAX_SLOPE<1)
+    check("clamp never returns at or above 1",clampClassifierSlope(1)<1)
 }
 
 console.log("2. click computes the slope of the line through the click")
 {
-    check("click (3,12) gives slope 4",near(slopeFromClick(3,12),4))
-    check("click below the diagonal clamps to MIN",slopeFromClick(3,0.5)===CLASSIFIER_MIN_SLOPE)
+    check("click (3,1.2) gives slope 0.4",near(slopeFromClick(3,1.2),0.4))
+    check("click above the diagonal clamps to MAX",slopeFromClick(3,6)===CLASSIFIER_MAX_SLOPE)
     check("click on the Y axis (0,7) clamps to MAX",slopeFromClick(0,7)===CLASSIFIER_MAX_SLOPE)
-    check("click on the origin (0,0) clamps to MIN",slopeFromClick(0,0)===CLASSIFIER_MIN_SLOPE)
-    check("click on the diagonal (1,1) clamps above 1",slopeFromClick(1,1)>1)
+    check("click on the origin (0,0) clamps to MAX",slopeFromClick(0,0)===CLASSIFIER_MAX_SLOPE)
+    check("click on the diagonal (1,1) clamps below 1",slopeFromClick(1,1)<1)
     // idempotency: same pixel -> identical float -> the === guard skips work
-    check("same click is bit-stable",slopeFromClick(3,12)===slopeFromClick(3,12))
+    check("same click is bit-stable",slopeFromClick(3,1.2)===slopeFromClick(3,1.2))
 }
 
 console.log("3. keepAllSlope default keeps every positive-birth pair")
 {
     const pairs=[
-        {birth:1,death:5},
-        {birth:2,death:3},
-        {birth:0.5,death:1},
+        {birth:1,death:0.5},
+        {birth:2,death:1},
+        {birth:0.5,death:0.2},
         {birth:-1,death:2} // can never sit under a line through the origin
     ]
     const slope=keepAllSlope(pairs)
-    check("default slope above 1",slope>1)
-    check("(1,5) kept",isKept(pairs[0],slope))
-    check("(2,3) kept",isKept(pairs[1],slope))
-    check("(0.5,1) kept",isKept(pairs[2],slope))
+    check("default slope below 1",slope<1)
+    check("(1,0.5) kept",isKept(pairs[0],slope))
+    check("(2,1) kept",isKept(pairs[1],slope))
+    check("(0.5,0.2) kept",isKept(pairs[2],slope))
     check("boundary pair exactly on the line kept",isKept({birth:1,death:slope},slope))
     check("birth<=0 pair documented as not keepable",!isKept(pairs[3],slope))
     check("empty pairs fall back to MIN",keepAllSlope([])===CLASSIFIER_MIN_SLOPE)
@@ -100,20 +100,20 @@ console.log("3. keepAllSlope default keeps every positive-birth pair")
 
 console.log("4. filter partitions the cloud")
 {
-    const slope=2
+    const slope=0.5
     const pairs=[
-        {birth:1,death:1.5}, // under
-        {birth:1,death:3},   // above
-        {birth:2,death:4},   // exactly on the line
-        {birth:4,death:7.9}, // under
-        {birth:4,death:8.1}  // above
+        {birth:1,death:0.4}, // under
+        {birth:1,death:0.6}, // above
+        {birth:2,death:1},   // exactly on the line
+        {birth:4,death:1.9}, // under
+        {birth:4,death:2.1}  // above
     ]
     const kept=pairs.filter(p=>isKept(p,slope))
     const discarded=pairs.filter(p=>!isKept(p,slope))
     check("kept = under + on-line",kept.length===3)
     check("discarded = above",discarded.length===2)
     check("no pair lost",kept.length+discarded.length===pairs.length)
-    check("on-line pair lands in kept",kept.some(p=>p.death===4))
+    check("on-line pair lands in kept",kept.some(p=>p.death===1))
     check("null slope keeps everything",pairs.every(p=>isKept(p,null)))
 }
 
@@ -139,7 +139,7 @@ console.log("6. the drawn line spans the whole graph zone (not cut at birth 10)"
     const xScale=(v)=>(v-xDom[0])/(xDom[1]-xDom[0])*width
     const xInv=(p)=>xDom[0]+p/width*(xDom[1]-xDom[0])
     const yScale=(v)=>height-(v-yDom[0])/(yDom[1]-yDom[0])*height
-    const slope=2
+    const slope=0.5
     // replica of the fixed sampling: the whole visible x-range
     const b0=xInv(0), b1=xInv(width)
     const clipped=clipSegmentToRect(xScale(b0),yScale(slope*b0),xScale(b1),yScale(slope*b1),width,height)

@@ -629,16 +629,16 @@ class DelimitedTextNode extends NodeWithAccordion{
     }
 }
 
-/* classifier: a line through the origin, death = slope × birth. All pairs
-   live strictly above the diagonal (death > birth), so a slope ≤ 1 could
-   never keep anything: the parameter is clamped into (1, MAX] */
-const CLASSIFIER_MIN_SLOPE=1+1e-6
-const CLASSIFIER_MAX_SLOPE=1e12
+/* classifier: a line through the origin, death = slope × birth. Superlevel
+   pairs live strictly below the diagonal (death < birth), so the slope is
+   clamped into [MIN, MAX], with MAX just below 1. */
+const CLASSIFIER_MIN_SLOPE=1e-12
+const CLASSIFIER_MAX_SLOPE=1-1e-6
 function clampClassifierSlope(value){
-    if(Number.isNaN(value)) return CLASSIFIER_MIN_SLOPE
+    if(Number.isNaN(value)) return CLASSIFIER_MAX_SLOPE
     return Math.min(CLASSIFIER_MAX_SLOPE,Math.max(CLASSIFIER_MIN_SLOPE,value))
 }
-//6 significant digits: meaningful for slopes just above 1, unlike toFixed(3)
+//6 significant digits: meaningful for slopes just below 1, unlike toFixed(3)
 function formatSlope(value){
     return String(Number(Number(value).toPrecision(6)))
 }
@@ -693,7 +693,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         //until the first data (then fitted to keep every pair) or a click
         this.parameters.slope=null
         this.parameters.slopeAnchorBirth=null // where the marker sits on the line
-        this.parameters.filtrationMode="sublevel" // "sublevel" or "superlevel"
+        this.parameters.filtrationMode="superlevel" // "sublevel" or "superlevel"
         this.parameters.logLogAxes=false
         this.pairsData=null
         this.lastInputWave=null
@@ -755,7 +755,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             step: "any",
             value: Number.isFinite(this.parameters.slope) ? formatSlope(this.parameters.slope) : "",
             placeholder: "auto",
-            title: "Classifier slope: pairs under death = slope × birth are kept",
+            title: "Classifier slope (< 1): pairs under death = slope × birth are kept",
             style: { width: "100%", padding: "2px" }
         }, [])
         this.slopeInput.addEventListener("change", () => {
@@ -881,7 +881,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             sumBirth += pair.birth
             sumDeath += pair.death
         }
-        //death > birth pair-wise guarantees the ratio is above 1 when valid
+        //superlevel pairs have death < birth pair-wise; the ratio is below 1 when valid
         if(sumBirth > 0 && Number.isFinite(sumDeath / sumBirth)){
             return clampClassifierSlope(sumDeath / sumBirth)
         }
