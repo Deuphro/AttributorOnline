@@ -698,7 +698,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
         }, [])
 
-        const thresholdLabel = CE("span", { style: { fontWeight: "bold" } }, ["Seuil:"])
+        const thresholdLabel = CE("span", { style: { fontWeight: "bold" } }, ["Threshold:"])
         this.thresholdInput = CE("input", {
             type: "number",
             step: "any",
@@ -749,7 +749,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             this.graph.parameters.axis.left.scale = scale
             this.graph.parameters.axis.bottom.autoDomain = true
             this.graph.parameters.axis.left.autoDomain = true
-            this.logLogBtn.textContent = this.parameters.logLogAxes ? "Log–log" : "Linear"
+            this.logLogBtn.textContent = this.parameters.logLogAxes ? "Log" : "Linear"
             this.graph.drawGraph()
         })
 
@@ -1748,7 +1748,13 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         return traces
     }
     applyTraceOptions(traces){
-        const saved=this.traceOptions
+        const saved = this.traceOptions?.length
+            ? this.traceOptions
+            : this.graph?.traces?.map(trace => ({
+                id: trace.id,
+                title: trace.title,
+                options: trace.options
+            }))
         if(!Array.isArray(saved)||!saved.length){
             return traces
         }
