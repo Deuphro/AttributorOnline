@@ -629,19 +629,70 @@ class DelimitedTextNode extends NodeWithAccordion{
     }
 }
 
+/* classifier: a line through the origin, death = slope × birth. All pairs
+   live strictly above the diagonal (death > birth), so a slope ≤ 1 could
+   never keep anything: the parameter is clamped into (1, MAX] */
+const CLASSIFIER_MIN_SLOPE=1+1e-6
+const CLASSIFIER_MAX_SLOPE=1e12
+function clampClassifierSlope(value){
+    if(Number.isNaN(value)) return CLASSIFIER_MIN_SLOPE
+    return Math.min(CLASSIFIER_MAX_SLOPE,Math.max(CLASSIFIER_MIN_SLOPE,value))
+}
+//6 significant digits: meaningful for slopes just above 1, unlike toFixed(3)
+function formatSlope(value){
+    return String(Number(Number(value).toPrecision(6)))
+}
+//slope of a line that keeps every pair with a positive birth (birth ≤ 0
+//pairs can never sit under a line through the origin)
+function keepAllSlope(pairs){
+    let slope=CLASSIFIER_MIN_SLOPE
+    for(const pair of pairs){
+        if(!(pair.birth>0)) continue
+        const ratio=pair.death/pair.birth
+        if(Number.isFinite(ratio)&&ratio>slope) slope=ratio
+    }
+    return clampClassifierSlope(slope)
+}
+//Liang-Barsky: the segment of an infinite line inside the rect, or null
+function clipSegmentToRect(x0,y0,x1,y1,width,height){
+    let t0=0
+    let t1=1
+    const dx=x1-x0
+    const dy=y1-y0
+    const p=[-dx,dx,-dy,dy]
+    const q=[x0,width-x0,y0,height-y0]
+    for(let i=0;i<4;i++){
+        if(p[i]===0){
+            if(q[i]<0) return null
+            continue
+        }
+        const r=q[i]/p[i]
+        if(p[i]<0){
+            if(r>t1) return null
+            if(r>t0) t0=r
+        }else{
+            if(r<t0) return null
+            if(r<t1) t1=r
+        }
+    }
+    return [x0+t0*dx,y0+t0*dy,x0+t1*dx,y0+t1*dy]
+}
+
 class PersistentHomology0DNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(
             title,
-            [[], []], // 2 inputs: [0] = wave, [1] = threshold
+            [[], []], // 2 inputs: [0] = wave, [1] = classifier slope
             [[], []], // 2 outputs: [0] = death/birth pairs, [1] = original points
             origin,
             destinationFlow,
             position
         )
         this.status="floating"
-        this.parameters.threshold=null
-        this.parameters.thresholdSide="gte" // "gte" (>=) or "lte" (<=)
+        //classifier: a line through the origin, death = slope × birth; null
+        //until the first data (then fitted to keep every pair) or a click
+        this.parameters.slope=null
+        this.parameters.slopeAnchorBirth=null // where the marker sits on the line
         this.parameters.filtrationMode="sublevel" // "sublevel" or "superlevel"
         this.parameters.logLogAxes=false
         this.pairsData=null
@@ -652,7 +703,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         // Tooltips on SVG anchors for clarity
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: Wave (XY or 1D)</title>'
-        if(inputAnchors[1]) inputAnchors[1].innerHTML='<title>Input: Threshold (optional)</title>'
+        if(inputAnchors[1]) inputAnchors[1].innerHTML='<title>Input: Classifier slope (optional)</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: Death vs Birth pairs</title>'
         if(outputAnchors[1]) outputAnchors[1].innerHTML='<title>Output: Corresponding (X, Y) points</title>'
@@ -688,7 +739,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         const controls = CE("div", {
             style: {
                 display: "grid",
-                gridTemplateColumns: "auto 1fr auto auto auto auto",
+                gridTemplateColumns: "auto 1fr auto auto auto",
                 alignItems: "center",
                 gap: "4px",
                 fontSize: "0.85em",
@@ -698,42 +749,31 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
         }, [])
 
-        const thresholdLabel = CE("span", { style: { fontWeight: "bold" } }, ["Threshold:"])
-        this.thresholdInput = CE("input", {
+        const slopeLabel = CE("span", { style: { fontWeight: "bold" } }, ["Slope:"])
+        this.slopeInput = CE("input", {
             type: "number",
             step: "any",
-            value: this.parameters.threshold !== null ? String(this.parameters.threshold) : "",
-            placeholder: "mean(Y)",
+            value: Number.isFinite(this.parameters.slope) ? formatSlope(this.parameters.slope) : "",
+            placeholder: "auto",
+            title: "Classifier slope: pairs under death = slope × birth are kept",
             style: { width: "100%", padding: "2px" }
         }, [])
-        this.thresholdInput.addEventListener("change", () => {
-            const val = parseFloat(this.thresholdInput.value)
+        this.slopeInput.addEventListener("change", () => {
+            const val = parseFloat(this.slopeInput.value)
             if(Number.isFinite(val)){
-                this.setThreshold(val, true)
+                this.setSlope(val, true)
             }
-        })
-
-        this.sideBtn = CE("button", {
-            type: "button",
-            title: "Toggle kept side",
-            style: { cursor: "pointer", padding: "2px 6px" }
-        }, [this.parameters.thresholdSide === "gte" ? "≥ T" : "≤ T"])
-        this.sideBtn.addEventListener("click", () => {
-            this.parameters.thresholdSide = this.parameters.thresholdSide === "gte" ? "lte" : "gte"
-            this.sideBtn.textContent = this.parameters.thresholdSide === "gte" ? "≥ T" : "≤ T"
-            this.applyThresholdFilter()
-            this.resolveChildren()
         })
 
         const guessBtn = CE("button", {
             type: "button",
-            title: "Recalculate threshold as mean(Y)",
+            title: "Fit the line through the mean point (mean death / mean birth)",
             style: { cursor: "pointer", padding: "2px 6px" }
         }, ["Guess"])
         guessBtn.addEventListener("click", () => {
-            this.guessThreshold()
-            if(this.parameters.threshold !== null){
-                this.setThreshold(this.parameters.threshold, true)
+            const slope = this.guessSlope()
+            if(slope !== null){
+                this.setSlope(slope, true)
             }
         })
 
@@ -757,7 +797,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             style: { opacity: "0.8", whiteSpace: "nowrap", justifySelf: "end" }
         }, ["0 pairs"])
 
-        controls.append(thresholdLabel, this.thresholdInput, this.sideBtn, guessBtn, this.logLogBtn, this.countLabel)
+        controls.append(slopeLabel, this.slopeInput, guessBtn, this.logLogBtn, this.countLabel)
 
         // 2. Graph container
         const graphContainer = CE("div", {
@@ -780,12 +820,14 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         this.graph.parameters.axis.left.label = "Death"
         this.graph.parameters.axis.left.autoLabel = false
 
-        // Hook drawGraph so it always repaints the SVG threshold bar
+        // Hook drawGraph so it always repaints the SVG classifier, and let a
+        // plain click anywhere on the plot place it (see handleClassifierClick)
         const origDrawGraph = this.graph.drawGraph.bind(this.graph)
         this.graph.drawGraph = () => {
             origDrawGraph()
-            this.updateThresholdBarSVG()
+            this.updateClassifierSVG()
         }
+        this.graph.container.addEventListener("click", (event) => this.handleClassifierClick(event))
 
         this.graph.drawGraph()
     }
@@ -807,7 +849,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         return null
     }
 
-    extractInputThreshold(){
+    extractInputSlope(){
         const input = this.inputs[1]
         if(!(input instanceof Map)) return null
         for(const values of input.values()){
@@ -829,25 +871,22 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         return null
     }
 
-    guessThreshold(){
-        if(!this.lastInputWave) return
-        const wave = this.lastInputWave
-        let count = 0
-        let sum = 0
-        if(wave.degree === 2 && wave.dims[0] === 2){
-            count = wave.dims[1]
-            for(let i = 0; i < count; i++){
-                sum += wave.core[2 * i + 1]
-            }
-        }else{
-            count = wave.core.length
-            for(let i = 0; i < count; i++){
-                sum += wave.core[i]
-            }
+    //slope of the line through the origin and the centroid of the pairs —
+    //a neutral split of the cloud (the old guess placed a threshold at mean(Y))
+    guessSlope(){
+        if(!this.pairsData?.length) return null
+        let sumBirth = 0
+        let sumDeath = 0
+        for(const pair of this.pairsData){
+            sumBirth += pair.birth
+            sumDeath += pair.death
         }
-        if(count > 0){
-            this.parameters.threshold = sum / count
+        //death > birth pair-wise guarantees the ratio is above 1 when valid
+        if(sumBirth > 0 && Number.isFinite(sumDeath / sumBirth)){
+            return clampClassifierSlope(sumDeath / sumBirth)
         }
+        //degenerate cloud (no positive birth): fall back to the keep-all fit
+        return keepAllSlope(this.pairsData)
     }
 
     async startResolve(){
@@ -861,10 +900,10 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         this.status = "pending"
         this.lastInputWave = inputWave
 
-        // Check if an external threshold is connected
-        const externalThreshold = this.extractInputThreshold()
-        if(externalThreshold !== null && Number.isFinite(externalThreshold)){
-            this.parameters.threshold = externalThreshold
+        // Check if an external classifier slope is connected on input [1]
+        const externalSlope = this.extractInputSlope()
+        if(externalSlope !== null && Number.isFinite(externalSlope)){
+            this.parameters.slope = clampClassifierSlope(externalSlope)
         }
 
         // Extract X and Y buffers
@@ -889,12 +928,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
         }
 
-        // Default guess for threshold if unset: mean(Y)
-        if(this.parameters.threshold === null || !Number.isFinite(this.parameters.threshold)){
-            let sum = 0
-            for(let i = 0; i < count; i++) sum += yBuffer[i]
-            this.parameters.threshold = count > 0 ? (sum / count) : 0
-        }
+        //the default slope is fitted on the parsed pairs below (keep-all)
 
         try{
             const { pairs } = await computePool.run("persistentHomology0D", {
@@ -927,8 +961,13 @@ class PersistentHomology0DNode extends NodeWithAccordion{
                 }
             }
             this.pairsData = parsed
+            //first resolve without any slope yet: fit the line so every pair
+            //is kept (the previous default behaved the same way)
+            if(parsed.length && !Number.isFinite(this.parameters.slope)){
+                this.parameters.slope = keepAllSlope(parsed)
+            }
             this.status = "resolved"
-            this.applyThresholdFilter()
+            this.applySlopeFilter()
             this.updateControlsUI()
         }catch(err){
             console.error("[PersistentHomology0DNode] Error resolving:", err)
@@ -936,15 +975,17 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         }
     }
 
-    applyThresholdFilter(){
+    applySlopeFilter(){
         if(!this.pairsData) return
-        const threshold = this.parameters.threshold ?? 0
-        const side = this.parameters.thresholdSide ?? "gte"
+        const slope = this.parameters.slope
+        //no slope fitted yet (empty plot): keep everything, like before
+        const keepAll = !Number.isFinite(slope)
 
         const kept = []
         const discarded = []
         for(const pair of this.pairsData){
-            const pass = side === "gte" ? (pair.birth >= threshold) : (pair.birth <= threshold)
+            //under the classifier line: death <= slope × birth
+            const pass = keepAll || pair.death <= slope * pair.birth
             if(pass){
                 kept.push(pair)
             }else{
@@ -956,10 +997,10 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         const keptPoints = kept.map(p => [p.birthX, p.birthY])
 
         this.outputs[0] = keptPairs.length
-            ? [Wave.fromPairs(keptPairs, { title: `${this.title} (Death vs Birth)`, threshold, side }, ["birth", "death"])]
+            ? [Wave.fromPairs(keptPairs, { title: `${this.title} (Death vs Birth)`, slope }, ["birth", "death"])]
             : []
         this.outputs[1] = keptPoints.length
-            ? [Wave.fromPairs(keptPoints, { title: `${this.title} (Points)`, threshold, side }, ["x", "y"])]
+            ? [Wave.fromPairs(keptPoints, { title: `${this.title} (Points)`, slope }, ["x", "y"])]
             : []
 
         // Update WebGL traces on Plot2DWebGL
@@ -994,7 +1035,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
             this.graph.setTraces(traces)
             this.graph.drawGraph()
-            this.updateThresholdBarSVG()
+            this.updateClassifierSVG()
         }
 
         if(this.countLabel){
@@ -1003,8 +1044,8 @@ class PersistentHomology0DNode extends NodeWithAccordion{
     }
 
     updateControlsUI(){
-        if(this.thresholdInput && this.parameters.threshold !== null){
-            this.thresholdInput.value = Number(this.parameters.threshold).toFixed(3)
+        if(this.slopeInput && Number.isFinite(this.parameters.slope)){
+            this.slopeInput.value = formatSlope(this.parameters.slope)
         }
         if(this.countLabel && this.pairsData){
             const keptCount = this.outputs[0]?.[0]?.dims?.[1] ?? 0
@@ -1012,115 +1053,116 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         }
     }
 
-    updateThresholdBarSVG(){
+    //the classifier: a dashed line through the origin (death = slope × birth)
+    //clipped to the graph zone, plus the marker point that fixes the slope
+    //(see handleClassifierClick)
+    updateClassifierSVG(){
         if(!this.graph || !this.graph.graphSVG) return
         const anchor = this.graph.graphSVG.select(".anchor")
         if(anchor.empty()) return
 
-        const threshold = this.parameters.threshold
-        if(threshold === null || !Number.isFinite(threshold)) return
-
-        const { xScale } = this.graph.plotScales()
-        const xPix = xScale(threshold)
-        const height = this.graph.graphzone.height
-
-        let barGroup = anchor.select(".threshold-bar-group")
-        if(barGroup.empty()){
-            barGroup = anchor.append("g")
-                .attr("class", "threshold-bar-group")
-                .style("cursor", "ew-resize")
-
-            barGroup.append("line")
-                .attr("class", "threshold-visual-line")
+        let group = anchor.select(".classifier-group")
+        if(group.empty()){
+            group = anchor.append("g")
+                .attr("class", "classifier-group")
+            group.append("title")
+                .text("Classifier — click on the graph to place it: every pair under the line is kept")
+            group.append("line")
+                .attr("class", "classifier-line")
                 .attr("stroke", "#e74c3c")
                 .attr("stroke-width", 2)
-                .attr("stroke-dasharray", "4,3")
-                .attr("y1", 0)
-
-            const badge = barGroup.append("g").attr("class", "threshold-badge")
-            badge.append("rect")
-                .attr("class", "badge-bg")
+                .attr("stroke-dasharray", "6,4")
+            group.append("circle")
+                .attr("class", "classifier-point")
+                .attr("r", 5)
                 .attr("fill", "#e74c3c")
-                .attr("rx", 3)
-                .attr("ry", 3)
-                .attr("y", 2)
-                .attr("height", 16)
-            badge.append("text")
-                .attr("class", "badge-text")
-                .attr("fill", "#ffffff")
-                .attr("font-size", "10px")
-                .attr("font-weight", "bold")
-                .attr("text-anchor", "middle")
-                .attr("y", 14)
-
-            barGroup.append("line")
-                .attr("class", "threshold-hitbox")
-                .attr("stroke", "transparent")
-                .attr("stroke-width", 16)
-                .attr("y1", 0)
-                .attr("cursor", "ew-resize")
-                .style("pointer-events", "all")
-                .on("mousedown", (e) => this.startThresholdDrag(e))
-
-            badge.style("cursor", "ew-resize")
-                .on("mousedown", (e) => this.startThresholdDrag(e))
+                .attr("stroke", "#ffffff")
+                .attr("stroke-width", 1.5)
         }
 
-        barGroup.select(".threshold-visual-line")
-            .attr("x1", xPix)
-            .attr("x2", xPix)
-            .attr("y2", height)
+        const slope = this.parameters.slope
+        if(!Number.isFinite(slope)){
+            group.style("display", "none")
+            return
+        }
+        group.style("display", null)
 
-        barGroup.select(".threshold-hitbox")
-            .attr("x1", xPix)
-            .attr("x2", xPix)
-            .attr("y2", height)
+        const zone = this.graph.graphzone
+        const { xScale, yScale } = this.graph.plotScales()
 
-        const label = `T: ${threshold.toFixed(2)}`
-        const textWidth = Math.max(48, label.length * 7)
-        barGroup.select(".badge-bg")
-            .attr("x", xPix - textWidth / 2)
-            .attr("width", textWidth)
+        //the line death = slope × birth sampled across the whole visible
+        //x-range, so the segment always spans the graph zone and the clip
+        //only trims its ends (a birth 1→10 sample used to cut it at 10)
+        let b0 = xScale.invert(0)
+        let b1 = xScale.invert(zone.width)
+        if(this.graph.parameters.axis.left.scale === "log"){
+            //a log axis has no zero: keep the sampled deaths strictly positive
+            b0 = Math.max(b0, 1e-300)
+            b1 = Math.max(b1, 1e-300)
+        }
+        const x0 = xScale(b0), y0 = yScale(slope * b0)
+        const x1 = xScale(b1), y1 = yScale(slope * b1)
+        const finite = [x0, y0, x1, y1].every(Number.isFinite)
+        const clipped = finite ? clipSegmentToRect(x0, y0, x1, y1, zone.width, zone.height) : null
+        const line = group.select(".classifier-line")
+        if(clipped){
+            line.style("display", null)
+                .attr("x1", clipped[0])
+                .attr("y1", clipped[1])
+                .attr("x2", clipped[2])
+                .attr("y2", clipped[3])
+        }else{
+            line.style("display", "none")
+        }
 
-        barGroup.select(".badge-text")
-            .attr("x", xPix)
-            .text(label)
+        //the marker sits on the line at the last clicked birth (mid-view
+        //until the first click): data space, so it follows zoom and pan
+        const anchorBirth = Number.isFinite(this.parameters.slopeAnchorBirth)
+            ? this.parameters.slopeAnchorBirth
+            : xScale.invert(zone.width / 2)
+        const px = xScale(anchorBirth)
+        const py = yScale(slope * anchorBirth)
+        const inside = Number.isFinite(px) && Number.isFinite(py)
+            && px >= 0 && px <= zone.width && py >= 0 && py <= zone.height
+        const point = group.select(".classifier-point")
+        if(!inside){
+            point.style("display", "none")
+            return
+        }
+        point.style("display", null).attr("cx", px).attr("cy", py)
     }
 
-    startThresholdDrag(e){
-        e.preventDefault()
-        e.stopPropagation()
+    //a plain click places the classifier: the line passes through the origin
+    //and the clicked point, so its slope is death/birth — clamped above 1
+    //since every pair lives strictly above the diagonal death = birth
+    handleClassifierClick(event){
         if(!this.graph) return
-        const { xScale } = this.graph.plotScales()
-        const startX = e.clientX
-        const startThreshold = this.parameters.threshold ?? 0
-        const startXPix = xScale(startThreshold)
-
-        const onMouseMove = (moveEvent) => {
-            moveEvent.preventDefault()
-            const dx = moveEvent.clientX - startX
-            const newXPix = Math.max(0, Math.min(this.graph.graphzone.width, startXPix + dx))
-            const newThreshold = xScale.invert(newXPix)
-            this.setThreshold(newThreshold, false)
-        }
-
-        const onMouseUp = (upEvent) => {
-            window.removeEventListener("mousemove", onMouseMove)
-            window.removeEventListener("mouseup", onMouseUp)
-            this.setThreshold(this.parameters.threshold, true)
-        }
-
-        window.addEventListener("mousemove", onMouseMove)
-        window.addEventListener("mouseup", onMouseUp)
+        //the tail of a pan drag also fires a click: ignore it (like dblclick)
+        if(performance.now()-(this.graph.lastPanEndAt??-Infinity)<PAN_DBLCLICK_GUARD) return
+        const zone=this.graph.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        const rect=this.graph.container.getBoundingClientRect()
+        const px=Math.min(Math.max(event.clientX-rect.left-this.graph.parameters.margins.left,0),zone.width)
+        const py=Math.min(Math.max(event.clientY-rect.top-this.graph.parameters.margins.top,0),zone.height)
+        const {xScale,yScale}=this.graph.plotScales()
+        const birth=xScale.invert(px)
+        const death=yScale.invert(py)
+        const slope=clampClassifierSlope(death/birth)
+        //re-clicking the very same pixel must not redo the whole chain
+        if(this.parameters.slope===slope&&this.parameters.slopeAnchorBirth===birth) return
+        //remember where the marker sits on the line (data space: it follows
+        //zoom and pan, and stays on the line whatever the slope becomes)
+        this.parameters.slopeAnchorBirth=birth
+        this.setSlope(slope,true)
     }
 
-    setThreshold(newThreshold, commit = false){
-        this.parameters.threshold = Number(newThreshold)
-        if(this.thresholdInput){
-            this.thresholdInput.value = Number(newThreshold).toFixed(3)
+    setSlope(newSlope, commit = false){
+        this.parameters.slope = clampClassifierSlope(newSlope)
+        if(this.slopeInput){
+            this.slopeInput.value = formatSlope(this.parameters.slope)
         }
-        this.updateThresholdBarSVG()
-        this.applyThresholdFilter()
+        this.updateClassifierSVG()
+        this.applySlopeFilter()
 
         if(commit){
             if(this.dragDebounceTimer){
@@ -1168,8 +1210,8 @@ class PersistentHomology0DNode extends NodeWithAccordion{
 
     serializeState(){
         return {
-            threshold: this.parameters.threshold,
-            thresholdSide: this.parameters.thresholdSide,
+            slope: this.parameters.slope,
+            slopeAnchorBirth: this.parameters.slopeAnchorBirth,
             filtrationMode: this.parameters.filtrationMode,
             status: this.status
         }
@@ -1177,8 +1219,8 @@ class PersistentHomology0DNode extends NodeWithAccordion{
 
     restoreState(state){
         if(!state) return
-        if(state.threshold !== undefined) this.parameters.threshold = state.threshold
-        if(state.thresholdSide !== undefined) this.parameters.thresholdSide = state.thresholdSide
+        if(Number.isFinite(state.slope)) this.parameters.slope = state.slope
+        if(Number.isFinite(state.slopeAnchorBirth)) this.parameters.slopeAnchorBirth = state.slopeAnchorBirth
         if(state.filtrationMode !== undefined) this.parameters.filtrationMode = state.filtrationMode
         this.status = state.status ?? "floating"
         this.updateControlsUI()
@@ -2668,7 +2710,6 @@ class Plot2D{
             position:"relative",
             width:"100%",
             height:"100%",
-            cursor:"grab",
         })
         this.destination.appendChild(this.container)
         this.drawGraph()
@@ -2943,7 +2984,7 @@ class Plot2D{
        bounds a double-click restores. autoDomain is switched off: drawGraph
        then keeps the manual domains, the SVG overlay, the WebGL camera
        (refreshCamera reads these very scales) and the widgets drawn on top
-       (threshold bar …) all follow through the regular redraw path.
+       (the classifier line …) all follow through the regular redraw path.
       ----------------------------------------------------------------- */
     handleWheelZoom(event){
         //a plain horizontal scroll (deltaY 0) must not freeze autoDomain
@@ -3196,9 +3237,8 @@ class Plot2D{
         if(event.button!==0) return
         const zone=this.graphzone
         if(!(zone.width>0&&zone.height>0)) return
-        //widgets drawn on the plot (threshold bar…) stop propagation and
-        //keep their own drag: this listener never even sees them
-        //block text selection / native focus moves for the whole gesture
+        //the plot is dragged as a whole; text selection and native focus
+        //moves are blocked for the whole gesture
         event.preventDefault()
         //flush a pending wheel burst so it cannot fold into the pan command
         this.commitZoomGesture()
@@ -3238,7 +3278,7 @@ class Plot2D{
         const onUp=()=>{
             window.removeEventListener("mousemove",onMove)
             window.removeEventListener("mouseup",onUp)
-            this.container.style.cursor="grab"
+            this.container.style.cursor=""
             if(!active) return
             //the click completing this drag must not finish a double-click
             this.lastPanEndAt=performance.now()
