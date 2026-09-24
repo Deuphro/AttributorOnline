@@ -4810,10 +4810,18 @@ class Accordion{
         this.DOMelt.content.style.display=mode==="viewport"?"grid":"block"
         this.DOMelt.content.style.height=mode==="viewport"?"100%":"auto"
         this.DOMelt.content.style.overflow=mode==="viewport"?"hidden":"visible"
+        if(this.parameters.folded){
+            this.DOMelt.container.style.height=""
+            this.DOMelt.content.style.height="0"
+            this.DOMelt.content.style.overflow="hidden"
+        }
     }
     fold(){
         this.parameters.folded=true
+        this.DOMelt.container.style.height=""
         this.DOMelt.container.style["grid-template-rows"]="auto 0fr"
+        this.DOMelt.content.style.height="0"
+        this.DOMelt.content.style.overflow="hidden"
         this.DOMelt.content.style.border="0px solid black"
         this.DOMelt.handler.style["margin-bottom"]="0px"
         this.DOMelt.folder.style["background-color"]="transparent"
@@ -4821,6 +4829,9 @@ class Accordion{
     unfold(){
         this.parameters.folded=false
         this.DOMelt.container.style["grid-template-rows"]="auto 1fr"
+        this.DOMelt.container.style.height=this.parameters.sizing==="viewport"&&Number.isFinite(this.parameters.viewportHeight)?`${this.parameters.viewportHeight}px`:""
+        this.DOMelt.content.style.height=this.parameters.sizing==="viewport"?"100%":"auto"
+        this.DOMelt.content.style.overflow=this.parameters.sizing==="viewport"?"hidden":"visible"
         this.DOMelt.content.style.border="1px solid black"
         this.DOMelt.handler.style["margin-bottom"]="1px"
         this.DOMelt.folder.style["background-color"]="rgba(172,255,47,0.18)"
