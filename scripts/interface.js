@@ -2671,6 +2671,7 @@ class Plot2D{
         this.zoomDrawFrame=null
         this.zoomGestureBefore=null
         this.zoomGestureTimer=null
+        this.zoomedWhileEmpty=false
         this.container.addEventListener("wheel",(event)=>this.handleWheelZoom(event),{passive:false})
         this.container.addEventListener("dblclick",(event)=>this.handleZoomReset(event))
     }
@@ -2961,6 +2962,9 @@ class Plot2D{
             changed=this.zoomAxisDomain("left",yScale.invert(pixelY),factor)||changed
         }
         if(!changed) return
+        //a wheel zoom made before any trace fits no data: remember it so
+        //the first drawGraph carrying real bounds discards that manual view
+        if(!this.lastDataBounds) this.zoomedWhileEmpty=true
         this.beginZoomGesture()
         this.scheduleZoomDraw()
     }
@@ -2981,6 +2985,8 @@ class Plot2D{
         let nextStart=at+(start-at)*factor
         let nextEnd=at+(end-at)*factor
         if(!Number.isFinite(nextStart)||!Number.isFinite(nextEnd)) return false
+        //set when the clamp snaps a stale view back onto the fit bounds
+        let snapped=false
         //zooming out never goes past the auto-fit bounds a double-click
         //restores (the same bounds drawGraph applies through autoDomain)
         if(factor>1){
@@ -2991,9 +2997,13 @@ class Plot2D{
                 if(Number.isFinite(low)&&Number.isFinite(high)){
                     nextStart=Math.max(nextStart,low)
                     nextEnd=Math.min(nextEnd,high)
-                    //the view sits outside the bounds (stale manual domain):
-                    //refuse the gesture rather than emit an inverted domain
-                    if(!(nextEnd>nextStart)) return false
+                    //the stale view sits entirely outside the fit bounds:
+                    //wheel-out means "show everything", so snap to the fit
+                    if(!(nextEnd>nextStart)){
+                        nextStart=low
+                        nextEnd=high
+                        snapped=true
+                    }
                 }
             }
         }
@@ -3005,8 +3015,9 @@ class Plot2D{
         //so a wheel stuck against the bounds neither redraws nor records
         if(clamped[0]===domain[0]&&clamped[1]===domain[1]) return false
         axis.domain=clamped
-        //from now on the view is manual: drawGraph must not refit it
-        axis.autoDomain=false
+        //landing on the fit bounds (snap) IS the auto view: back to auto
+        //mode, otherwise the view is manual and drawGraph must keep it
+        axis.autoDomain=snapped
         return true
     }
     //wheel events arrive in bursts: the domains move immediately but the
@@ -3120,6 +3131,13 @@ class Plot2D{
         this.lastDataBounds=bounds
         this.ensureValidScales(bounds)
         if(bounds){
+            //a wheel zoom performed while the plot was empty fits no data:
+            //discard that manual view so the first real trace is fitted
+            if(this.zoomedWhileEmpty){
+                this.zoomedWhileEmpty=false
+                this.parameters.axis.bottom.autoDomain=true
+                this.parameters.axis.left.autoDomain=true
+            }
             if(this.parameters.axis.bottom.autoDomain??true){
                 this.autoDomain("bottom",bounds)
             }
