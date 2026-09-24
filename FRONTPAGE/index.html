@@ -114,38 +114,50 @@
     <h2>Qu'est-ce qu'Attributor&nbsp;?</h2>
     <p>
         Attributor est une plateforme web scientifique dédiée à l'<strong>attribution de formules
-        moléculaires</strong> à partir de spectres de masse (notamment FT-ICR). Elle s'appuie sur un
-        moteur de calcul en <strong>Rust compilé en WebAssembly</strong> (attribrustor) pour offrir des
-        performances natives, et sur une interface de <strong>flux de données</strong> entièrement
-        interactive. Vos données sont traitées côté client&nbsp;: rien n'est installé, il suffit
-        d'un navigateur.
+        moléculaires</strong> à partir de spectres de masse. Elle associe un moteur de calcul
+        <strong>Rust compilé en WebAssembly</strong> (Attribrustor), des traitements intensifs exécutés
+        <strong>hors du thread principal</strong> et une interface scientifique fondée sur un
+        <strong>flux de données visuel et interactif</strong>. L'analyse s'exécute dans votre navigateur,
+        sans installation&nbsp;: importez vos données, construisez votre traitement et explorez les résultats.
     </p>
 
     <h2>Fonctionnalités principales</h2>
     <div class="features">
         <div class="card">
-            <h3>⚡ Moteur Rust / WebAssembly</h3>
-            <p>Calculs d'attribution ultra-rapides exécutés localement grâce au noyau <em>attribrustor</em>, sans chargement serveur intensif.</p>
+            <h3>⚡ Calculs Rust / WebAssembly</h3>
+            <p>Des noyaux numériques compilés en WebAssembly pour traiter rapidement les données spectrales, directement dans le navigateur.</p>
+        </div>
+        <div class="card">
+            <h3>🧵 Calculs non bloquants</h3>
+            <p>Les opérations lourdes s'exécutent dans des workers dédiés&nbsp;: l'interface reste fluide pendant le calcul, même sur de grands jeux de données.</p>
+        </div>
+        <div class="card">
+            <h3>🧮 Pool de calcul adaptatif</h3>
+            <p>Les tâches sont réparties entre plusieurs workers selon les capacités du navigateur, avec une file d'attente et un repli JavaScript si nécessaire.</p>
         </div>
         <div class="card">
             <h3>🔗 Flux de données interactif</h3>
-            <p>Construisez votre chaîne de traitement en connectant des nœuds&nbsp;: sources de données, opérations, visualisations.</p>
+            <p>Ajoutez des nœuds, déplacez-les et reliez les étapes de votre analyse. Le flux se lance, se met à jour et visualise clairement la propagation des données.</p>
         </div>
         <div class="card">
-            <h3>📈 Visualisation intégrée</h3>
-            <p>Tracés XY interactifs (D3.js) pour explorer vos spectres et résultats directement dans l'interface.</p>
+            <h3>📈 Visualisation WebGL intégrée</h3>
+            <p>Explorez les spectres XY dans des graphiques interactifs rendus avec WebGL, conçus pour garder une visualisation fluide des données volumineuses.</p>
         </div>
         <div class="card">
-            <h3>📂 Import de données flexible</h3>
-            <p>Chargement de fichiers texte délimités (XY) et conversion des fichiers bruts (.raw) via le service msConvert (Wine/Mono côté serveur).</p>
+            <h3>🔬 Homologie persistante 0D</h3>
+            <p>Un module d'analyse topologique détecte les structures de sous- et super-niveaux et restitue leurs naissances, morts et indices associés.</p>
         </div>
         <div class="card">
-            <h3>💾 Sessions sauvegardables</h3>
-            <p>Export et import de vos sessions complètes au format JSON pour reprendre votre travail là où vous l'avez laissé.</p>
+            <h3>📂 Import flexible</h3>
+            <p>Chargez des fichiers texte délimités avec séparation et colonnes configurables, ou convertissez vos fichiers bruts <code>.raw</code> via le service msConvert.</p>
         </div>
         <div class="card">
-            <h3>↩️ Undo / Redo complet</h3>
-            <p>Historique d'actions avec annulation et rétablissement, intégré à l'interface.</p>
+            <h3>💾 Sessions portables</h3>
+            <p>Exportez et importez le flux complet au format JSON, avec versionnage de la session et restauration fidèle des structures de données.</p>
+        </div>
+        <div class="card">
+            <h3>↩️ Expérimentation sans risque</h3>
+            <p>Annulez et rétablissez vos actions grâce à un historique complet, ajustez les paramètres et comparez les résultats de vos scénarios.</p>
         </div>
     </div>
 
