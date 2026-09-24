@@ -2623,6 +2623,13 @@ class Channel{
     }
 }
 
+//mouse zoom: the domain expansion per wheel notch is exp(deltaY × this);
+//0.002 ≈ ±20% for a classic 100px notch, smooth for trackpad deltas
+const WHEEL_ZOOM_SENSITIVITY=0.002
+//quiet period after the last wheel event before the gesture is committed
+//to the history as a single undoable command
+const ZOOM_GESTURE_DELAY=300
+
 class Plot2D{
     constructor(data,title,origin,destination){
         this.title=title
@@ -2659,6 +2666,13 @@ class Plot2D{
         this.destination.appendChild(this.container)
         this.drawGraph()
         this.container.handleResize=(e)=>e.target.pilot.drawGraph()
+        //mouse zoom: the wheel rescales the domains under the cursor, a
+        //double-click gives the automatic (data fitted) view back
+        this.zoomDrawFrame=null
+        this.zoomGestureBefore=null
+        this.zoomGestureTimer=null
+        this.container.addEventListener("wheel",(event)=>this.handleWheelZoom(event),{passive:false})
+        this.container.addEventListener("dblclick",(event)=>this.handleZoomReset(event))
     }
     get graphzone(){
         return {
@@ -2884,23 +2898,201 @@ class Plot2D{
             }
         }
     }
-    autoDomain(axis,bounds){
+    //the domain a double-click reset lands on: also the outer bound the
+    //wheel zoom-out never crosses (single source of truth for both)
+    autoDomainFor(axis,bounds){
+        if(!bounds) return null
         if(axis==="bottom"){
             if(this.parameters.axis.bottom.scale==="log"){
-                this.parameters.axis.bottom.domain=[bounds.xMin/1.05,bounds.xMax*1.05]
-            }else{
-                const xPadding=(bounds.xMax-bounds.xMin)||1
-                this.parameters.axis.bottom.domain=[bounds.xMin-0.05*xPadding,bounds.xMax+0.05*xPadding]
+                return [bounds.xMin/1.05,bounds.xMax*1.05]
             }
+            const xPadding=(bounds.xMax-bounds.xMin)||1
+            return [bounds.xMin-0.05*xPadding,bounds.xMax+0.05*xPadding]
         }
         if(axis==="left"){
             if(this.parameters.axis.left.scale==="log"){
-                this.parameters.axis.left.domain=[bounds.yMin/1.05,bounds.yMax*1.05]
-            }else{
-                const yPadding=(bounds.yMax-bounds.yMin)||1
-                this.parameters.axis.left.domain=[bounds.yMin-0.05*yPadding,bounds.yMax+0.05*yPadding]
+                return [bounds.yMin/1.05,bounds.yMax*1.05]
+            }
+            const yPadding=(bounds.yMax-bounds.yMin)||1
+            return [bounds.yMin-0.05*yPadding,bounds.yMax+0.05*yPadding]
+        }
+        return null
+    }
+    autoDomain(axis,bounds){
+        const domain=this.autoDomainFor(axis,bounds)
+        if(domain){
+            this.parameters.axis[axis].domain=domain
+        }
+    }
+    /* -----------------------------------------------------------------
+       Mouse zoom — the wheel rescales both domains around the data point
+       under the cursor, computed in the space of each axis scale (identity
+       for a linear axis, log10 for a logarithmic one) so the anchored
+       point never moves on screen. Zooming out stops at the auto-fit
+       bounds a double-click restores. autoDomain is switched off: drawGraph
+       then keeps the manual domains, the SVG overlay, the WebGL camera
+       (refreshCamera reads these very scales) and the widgets drawn on top
+       (threshold bar …) all follow through the regular redraw path.
+      ----------------------------------------------------------------- */
+    handleWheelZoom(event){
+        //a plain horizontal scroll (deltaY 0) must not freeze autoDomain
+        if(!event.deltaY) return
+        //the plot owns the wheel gesture: no ancestor may scroll while zooming
+        event.preventDefault()
+        const zone=this.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        //deltaMode: 0 pixels, 1 lines (×16), 2 pages (×plot height)
+        const unit=event.deltaMode===1?16:event.deltaMode===2?zone.height:1
+        const factor=Math.exp(event.deltaY*unit*WHEEL_ZOOM_SENSITIVITY)
+        if(!Number.isFinite(factor)||factor<=0) return
+        //cursor position inside the anchor group (the margins are excluded)
+        const rect=this.container.getBoundingClientRect()
+        const pixelX=Math.min(Math.max(event.clientX-rect.left-this.parameters.margins.left,0),zone.width)
+        const pixelY=Math.min(Math.max(event.clientY-rect.top-this.parameters.margins.top,0),zone.height)
+        const {xScale,yScale}=this.plotScales()
+        //plain wheel: both axes, shift: Y only, ctrl: X only (alt kept as an alias of ctrl)
+        const zoomX=!event.shiftKey
+        const zoomY=!event.ctrlKey&&!event.altKey
+        let changed=false
+        if(zoomX){
+            changed=this.zoomAxisDomain("bottom",xScale.invert(pixelX),factor)||changed
+        }
+        if(zoomY){
+            changed=this.zoomAxisDomain("left",yScale.invert(pixelY),factor)||changed
+        }
+        if(!changed) return
+        this.beginZoomGesture()
+        this.scheduleZoomDraw()
+    }
+    //one axis domain scaled around the anchor value, computed in the scale
+    //space so a log axis stays strictly positive by construction
+    zoomAxisDomain(key,anchor,factor){
+        const axis=this.parameters.axis[key]
+        const domain=axis?.domain
+        if(!Array.isArray(domain)||domain.length<2) return false
+        if(!Number.isFinite(anchor)||!Number.isFinite(domain[0])||!Number.isFinite(domain[1])) return false
+        const log=axis.scale==="log"
+        if(log&&!(anchor>0)) return false
+        const to=log?(value=>Math.log10(value)):(value=>value)
+        const from=log?(value=>10**value):(value=>value)
+        const start=to(domain[0])
+        const end=to(domain[1])
+        const at=to(anchor)
+        let nextStart=at+(start-at)*factor
+        let nextEnd=at+(end-at)*factor
+        if(!Number.isFinite(nextStart)||!Number.isFinite(nextEnd)) return false
+        //zooming out never goes past the auto-fit bounds a double-click
+        //restores (the same bounds drawGraph applies through autoDomain)
+        if(factor>1){
+            const fit=this.autoDomainFor(key,this.lastDataBounds??this.dataBounds())
+            if(Array.isArray(fit)&&Number.isFinite(fit[0])&&Number.isFinite(fit[1])){
+                const low=to(fit[0])
+                const high=to(fit[1])
+                if(Number.isFinite(low)&&Number.isFinite(high)){
+                    nextStart=Math.max(nextStart,low)
+                    nextEnd=Math.min(nextEnd,high)
+                    //the view sits outside the bounds (stale manual domain):
+                    //refuse the gesture rather than emit an inverted domain
+                    if(!(nextEnd>nextStart)) return false
+                }
             }
         }
+        //refuse to collapse the domain into (or through) a single float
+        const minSpan=Math.max(Math.abs(nextStart),Math.abs(nextEnd),1)*Number.EPSILON*4
+        if(Math.abs(nextEnd-nextStart)<minSpan) return false
+        const clamped=[from(nextStart),from(nextEnd)]
+        //already sitting on the (possibly clamped) target: no state change,
+        //so a wheel stuck against the bounds neither redraws nor records
+        if(clamped[0]===domain[0]&&clamped[1]===domain[1]) return false
+        axis.domain=clamped
+        //from now on the view is manual: drawGraph must not refit it
+        axis.autoDomain=false
+        return true
+    }
+    //wheel events arrive in bursts: the domains move immediately but the
+    //redraw (axes, traces, camera, widgets) runs at most once per frame
+    scheduleZoomDraw(){
+        if(this.zoomDrawFrame!==null&&this.zoomDrawFrame!==undefined) return
+        this.zoomDrawFrame=requestAnimationFrame(()=>{
+            this.zoomDrawFrame=null
+            this.drawGraph()
+        })
+    }
+    //the domains are snapshotted once per gesture (debounced): a whole
+    //wheel burst lands in the history as one single undoable command
+    beginZoomGesture(){
+        if(!this.zoomGestureBefore){
+            this.zoomGestureBefore=this.captureZoomState()
+        }
+        clearTimeout(this.zoomGestureTimer)
+        this.zoomGestureTimer=setTimeout(()=>this.commitZoomGesture(),ZOOM_GESTURE_DELAY)
+    }
+    captureZoomState(){
+        return {
+            bottom:this.captureAxisZoomState("bottom"),
+            left:this.captureAxisZoomState("left")
+        }
+    }
+    captureAxisZoomState(key){
+        const axis=this.parameters.axis[key]
+        return {
+            domain:Array.isArray(axis?.domain)?[...axis.domain]:[0,1],
+            autoDomain:Boolean(axis?.autoDomain)
+        }
+    }
+    applyZoomState(state){
+        for(const key of ["bottom","left"]){
+            const axis=this.parameters.axis[key]
+            const saved=state?.[key]
+            if(!axis||!saved) continue
+            axis.domain=[...saved.domain]
+            axis.autoDomain=saved.autoDomain
+        }
+    }
+    zoomStatesEqual(a,b){
+        return ["bottom","left"].every(key=>
+            a[key].autoDomain===b[key].autoDomain
+            &&a[key].domain[0]===b[key].domain[0]
+            &&a[key].domain[1]===b[key].domain[1]
+        )
+    }
+    commitZoomGesture(){
+        clearTimeout(this.zoomGestureTimer)
+        this.zoomGestureTimer=null
+        const before=this.zoomGestureBefore
+        this.zoomGestureBefore=null
+        if(!before) return
+        const after=this.captureZoomState()
+        if(this.zoomStatesEqual(before,after)) return
+        //the command resolves the domains at execution time through the
+        //captured snapshots, so a later redraw cannot desync undo/redo
+        this.origin?.history?.record?.(new Command({
+            label:`Zoom ${this.title??"plot"}`,
+            undo:()=>{this.applyZoomState(before);this.drawGraph()},
+            redo:()=>{this.applyZoomState(after);this.drawGraph()}
+        }))
+    }
+    //double-click: give the automatic (data fitted) view back
+    handleZoomReset(event){
+        event.preventDefault()
+        const before=this.captureZoomState()
+        this.parameters.axis.bottom.autoDomain=true
+        this.parameters.axis.left.autoDomain=true
+        clearTimeout(this.zoomGestureTimer)
+        this.zoomGestureTimer=null
+        this.zoomGestureBefore=null
+        if(this.zoomDrawFrame!==null&&this.zoomDrawFrame!==undefined){
+            cancelAnimationFrame(this.zoomDrawFrame)
+            this.zoomDrawFrame=null
+        }
+        const after=this.captureZoomState()
+        if(this.zoomStatesEqual(before,after)) return
+        this.origin?.history?.record?.(new Command({
+            label:`Reset zoom ${this.title??"plot"}`,
+            undo:()=>{this.applyZoomState(before);this.drawGraph()},
+            redo:()=>{this.applyZoomState(after);this.drawGraph()}
+        }))
+        this.drawGraph()
     }
     markerPath(shape,size){
         const s=size??4
@@ -3589,6 +3781,16 @@ class Plot2DWebGL extends Plot2D{
             cancelAnimationFrame(this.resizeFrame)
             this.resizeFrame=null
         }
+        //a disposed plot must not leave a pending zoom redraw or gesture behind
+        if(this.zoomDrawFrame!==null&&this.zoomDrawFrame!==undefined){
+            cancelAnimationFrame(this.zoomDrawFrame)
+            this.zoomDrawFrame=null
+        }
+        if(this.zoomGestureTimer!==null&&this.zoomGestureTimer!==undefined){
+            clearTimeout(this.zoomGestureTimer)
+            this.zoomGestureTimer=null
+        }
+        this.zoomGestureBefore=null
         if(this.glCheckFrame!==null&&this.glCheckFrame!==undefined){
             cancelAnimationFrame(this.glCheckFrame)
             this.glCheckFrame=null
