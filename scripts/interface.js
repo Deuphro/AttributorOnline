@@ -643,6 +643,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         this.parameters.threshold=null
         this.parameters.thresholdSide="gte" // "gte" (>=) or "lte" (<=)
         this.parameters.filtrationMode="sublevel" // "sublevel" or "superlevel"
+        this.parameters.logLogAxes=false
         this.pairsData=null
         this.lastInputWave=null
         this.dragDebounceTimer=null
@@ -687,7 +688,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         const controls = CE("div", {
             style: {
                 display: "grid",
-                gridTemplateColumns: "auto 1fr auto auto auto",
+                gridTemplateColumns: "auto 1fr auto auto auto auto",
                 alignItems: "center",
                 gap: "4px",
                 fontSize: "0.85em",
@@ -736,11 +737,27 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
         })
 
+        this.logLogBtn = CE("button", {
+            type: "button",
+            title: "Toggle logarithmic axes (log-log)",
+            style: { cursor: "pointer", padding: "2px 6px" }
+        }, [this.parameters.logLogAxes ? "Log–log" : "Linear"])
+        this.logLogBtn.addEventListener("click", () => {
+            this.parameters.logLogAxes = !this.parameters.logLogAxes
+            const scale = this.parameters.logLogAxes ? "log" : "linear"
+            this.graph.parameters.axis.bottom.scale = scale
+            this.graph.parameters.axis.left.scale = scale
+            this.graph.parameters.axis.bottom.autoDomain = true
+            this.graph.parameters.axis.left.autoDomain = true
+            this.logLogBtn.textContent = this.parameters.logLogAxes ? "Log–log" : "Linear"
+            this.graph.drawGraph()
+        })
+
         this.countLabel = CE("span", {
             style: { opacity: "0.8", whiteSpace: "nowrap", justifySelf: "end" }
         }, ["0 pairs"])
 
-        controls.append(thresholdLabel, this.thresholdInput, this.sideBtn, guessBtn, this.countLabel)
+        controls.append(thresholdLabel, this.thresholdInput, this.sideBtn, guessBtn, this.logLogBtn, this.countLabel)
 
         // 2. Graph container
         const graphContainer = CE("div", {
@@ -2784,6 +2801,10 @@ class Plot2D{
     //filter/slice walk: the same points are visited, but no per point array
     //is ever materialised (mandatory for datasets in the million range)
     dataBounds(){
+        const logX=this.parameters?.axis?.bottom?.scale==="log"
+        const logY=this.parameters?.axis?.left?.scale==="log"
+        const validX=x=>Number.isFinite(x)&&(!logX||x>0)
+        const validY=y=>Number.isFinite(y)&&(!logY||y>0)
         let xMin=Infinity
         let xMax=-Infinity
         let yMin=Infinity
@@ -2798,7 +2819,7 @@ class Plot2D{
                 for(let i=0;i<count;i++){
                     const x=core[i+i]
                     const y=core[i+i+1]
-                    if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                    if(!validX(x)||!validY(y)) continue
                     if(x<xMin) xMin=x
                     if(x>xMax) xMax=x
                     if(y<yMin) yMin=y
@@ -2812,7 +2833,7 @@ class Plot2D{
                 for(let i=0;i+1<points.length;i+=2){
                     const x=points[i]
                     const y=points[i+1]
-                    if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                    if(!validX(x)||!validY(y)) continue
                     if(x<xMin) xMin=x
                     if(x>xMax) xMax=x
                     if(y<yMin) yMin=y
@@ -2824,7 +2845,7 @@ class Plot2D{
                 if(!Array.isArray(pair)) continue
                 const x=pair[0]
                 const y=pair[1]
-                if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                if(!validX(x)||!validY(y)) continue
                 if(x<xMin) xMin=x
                 if(x>xMax) xMax=x
                 if(y<yMin) yMin=y
