@@ -2629,6 +2629,12 @@ const WHEEL_ZOOM_SENSITIVITY=0.002
 //quiet period after the last wheel event before the gesture is committed
 //to the history as a single undoable command
 const ZOOM_GESTURE_DELAY=300
+//left-drag must travel further than this (px) before it becomes a pan, so
+//plain clicks and double-clicks never move the view
+const PAN_DEAD_ZONE=4
+//after an activated pan, the dblclick reset is ignored for this long (ms):
+//the click completing a drag must not trigger it by accident
+const PAN_DBLCLICK_GUARD=350
 
 class Plot2D{
     constructor(data,title,origin,destination){
@@ -2662,18 +2668,22 @@ class Plot2D{
             position:"relative",
             width:"100%",
             height:"100%",
+            cursor:"grab",
         })
         this.destination.appendChild(this.container)
         this.drawGraph()
         this.container.handleResize=(e)=>e.target.pilot.drawGraph()
-        //mouse zoom: the wheel rescales the domains under the cursor, a
-        //double-click gives the automatic (data fitted) view back
+        //mouse zoom & pan: the wheel rescales the domains under the cursor,
+        //left-drag translates them (clamped like the zoom), a double-click
+        //gives the automatic (data fitted) view back
         this.zoomDrawFrame=null
         this.zoomGestureBefore=null
         this.zoomGestureTimer=null
         this.zoomedWhileEmpty=false
+        this.lastPanEndAt=-Infinity
         this.container.addEventListener("wheel",(event)=>this.handleWheelZoom(event),{passive:false})
         this.container.addEventListener("dblclick",(event)=>this.handleZoomReset(event))
+        this.container.addEventListener("mousedown",(event)=>this.handlePanStart(event))
     }
     get graphzone(){
         return {
@@ -2990,8 +3000,8 @@ class Plot2D{
         //zooming out never goes past the auto-fit bounds a double-click
         //restores (the same bounds drawGraph applies through autoDomain)
         if(factor>1){
-            const fit=this.autoDomainFor(key,this.lastDataBounds??this.dataBounds())
-            if(Array.isArray(fit)&&Number.isFinite(fit[0])&&Number.isFinite(fit[1])){
+            const fit=this.fitBoundsFor(key)
+            if(fit){
                 const low=to(fit[0])
                 const high=to(fit[1])
                 if(Number.isFinite(low)&&Number.isFinite(high)){
@@ -3020,8 +3030,8 @@ class Plot2D{
         axis.autoDomain=snapped
         return true
     }
-    //wheel events arrive in bursts: the domains move immediately but the
-    //redraw (axes, traces, camera, widgets) runs at most once per frame
+    //wheel bursts and mouse drags both move the domains immediately while
+    //the redraw (axes, traces, camera, widgets) runs at most once per frame
     scheduleZoomDraw(){
         if(this.zoomDrawFrame!==null&&this.zoomDrawFrame!==undefined) return
         this.zoomDrawFrame=requestAnimationFrame(()=>{
@@ -3085,6 +3095,8 @@ class Plot2D{
     }
     //double-click: give the automatic (data fitted) view back
     handleZoomReset(event){
+        //the click completing a just-finished pan must not reset the view
+        if(performance.now()-this.lastPanEndAt<PAN_DBLCLICK_GUARD) return
         event.preventDefault()
         const before=this.captureZoomState()
         this.parameters.axis.bottom.autoDomain=true
@@ -3104,6 +3116,142 @@ class Plot2D{
             redo:()=>{this.applyZoomState(after);this.drawGraph()}
         }))
         this.drawGraph()
+    }
+    //the outer bounds both the wheel zoom-out and the pan clamp against:
+    //exactly what a double-click reset shows (see autoDomainFor); null
+    //while no data has ever been drawn
+    fitBoundsFor(key){
+        const fit=this.autoDomainFor(key,this.lastDataBounds??this.dataBounds())
+        if(!Array.isArray(fit)||!Number.isFinite(fit[0])||!Number.isFinite(fit[1])) return null
+        return fit
+    }
+    //translates one axis domain by a pixel shift (the content follows the
+    //cursor), through the very scale drawGraph renders with: a log axis
+    //then translates in log space and stays strictly positive. The window
+    //is clamped inside the fit bounds — it can slide within them but never
+    //past them (a window wider than them snaps onto them, the same stale
+    //view rule as the wheel zoom-out)
+    panAxisDomain(key,scale,shift){
+        const axis=this.parameters.axis[key]
+        const domain=axis?.domain
+        if(!Array.isArray(domain)||domain.length<2) return false
+        if(!Number.isFinite(domain[0])||!Number.isFinite(domain[1])) return false
+        if(!Number.isFinite(shift)||!shift) return false
+        const log=axis.scale==="log"
+        const to=log?(value=>Math.log10(value)):(value=>value)
+        const from=log?(value=>10**value):(value=>value)
+        //each endpoint lives at its own range pixel: translate it there
+        const pixels=scale.range()
+        const rangePixels=Math.abs(pixels[1]-pixels[0])
+        if(!(rangePixels>0)) return false
+        let start=to(scale.invert(pixels[0]-shift))
+        let end=to(scale.invert(pixels[1]-shift))
+        if(!Number.isFinite(start)||!Number.isFinite(end)) return false
+        let snapped=false
+        const fit=this.fitBoundsFor(key)
+        if(fit){
+            const low=to(fit[0])
+            const high=to(fit[1])
+            if(Number.isFinite(low)&&Number.isFinite(high)){
+                if(high-low<=end-start){
+                    //wider than (or parked on) the bounds: snap onto them
+                    start=low
+                    end=high
+                    snapped=true
+                }else{
+                    //slide the window back inside, span preserved
+                    if(start<low){
+                        end+=low-start
+                        start=low
+                    }
+                    if(end>high){
+                        start-=end-high
+                        end=high
+                    }
+                }
+            }
+        }
+        //refuse to collapse the domain into (or through) a single float
+        const minSpan=Math.max(Math.abs(start),Math.abs(end),1)*Number.EPSILON*4
+        if(Math.abs(end-start)<minSpan) return false
+        //sub-pixel drift (the clamp held the window against an edge) must
+        //neither redraw nor pollute the history
+        const movedPx=Math.abs(start-to(domain[0]))/(end-start)*rangePixels
+        if(!(movedPx>0.01)) return false
+        const clamped=[from(start),from(end)]
+        if(!Number.isFinite(clamped[0])||!Number.isFinite(clamped[1])) return false
+        if(log&&!(clamped[0]>0&&clamped[1]>0)) return false
+        axis.domain=clamped
+        //snapping onto the fit bounds IS the auto view; anything else is a
+        //manual view drawGraph must keep (same rule as the wheel zoom)
+        axis.autoDomain=snapped
+        return true
+    }
+    //left-drag pans both domains (content follows the cursor); the window
+    //is clamped inside the same fit bounds as the wheel zoom-out, redraws
+    //go through the rAF-coalesced zoom pipeline, and one whole drag lands
+    //in the history as a single undoable command
+    handlePanStart(event){
+        //only the left button pans: the right one keeps its menu
+        if(event.button!==0) return
+        const zone=this.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        //widgets drawn on the plot (threshold bar…) stop propagation and
+        //keep their own drag: this listener never even sees them
+        //block text selection / native focus moves for the whole gesture
+        event.preventDefault()
+        //flush a pending wheel burst so it cannot fold into the pan command
+        this.commitZoomGesture()
+        const startX=event.clientX
+        const startY=event.clientY
+        let lastX=startX
+        let lastY=startY
+        let active=false
+        let before=null
+        const onMove=(moveEvent)=>{
+            moveEvent.preventDefault()
+            if(!active){
+                //dead zone: plain clicks and double-clicks never pan
+                if(Math.hypot(moveEvent.clientX-startX,moveEvent.clientY-startY)<PAN_DEAD_ZONE) return
+                active=true
+                before=this.captureZoomState()
+                this.container.style.cursor="grabbing"
+                //apply the whole travel from the grab point, not just this step
+                lastX=startX
+                lastY=startY
+            }
+            const dx=moveEvent.clientX-lastX
+            const dy=moveEvent.clientY-lastY
+            lastX=moveEvent.clientX
+            lastY=moveEvent.clientY
+            if(!dx&&!dy) return
+            const {xScale,yScale}=this.plotScales()
+            let changed=false
+            if(dx) changed=this.panAxisDomain("bottom",xScale,dx)||changed
+            if(dy) changed=this.panAxisDomain("left",yScale,dy)||changed
+            if(!changed) return
+            //same escape hatch as the wheel: a pan before any trace is
+            //discarded when the first real bounds arrive
+            if(!this.lastDataBounds) this.zoomedWhileEmpty=true
+            this.scheduleZoomDraw()
+        }
+        const onUp=()=>{
+            window.removeEventListener("mousemove",onMove)
+            window.removeEventListener("mouseup",onUp)
+            this.container.style.cursor="grab"
+            if(!active) return
+            //the click completing this drag must not finish a double-click
+            this.lastPanEndAt=performance.now()
+            const after=this.captureZoomState()
+            if(this.zoomStatesEqual(before,after)) return
+            this.origin?.history?.record?.(new Command({
+                label:`Pan ${this.title??"plot"}`,
+                undo:()=>{this.applyZoomState(before);this.drawGraph()},
+                redo:()=>{this.applyZoomState(after);this.drawGraph()}
+            }))
+        }
+        window.addEventListener("mousemove",onMove)
+        window.addEventListener("mouseup",onUp)
     }
     markerPath(shape,size){
         const s=size??4
