@@ -36,14 +36,14 @@ export function sieve(): string;
 */
 export function zeros_matrix(n: number): Int32Array;
 /**
-* WASM export returning a flat Float64Array of 4-tuples:
-* [birth, death, birth_idx, death_idx, ...]
-* death is NaN when None (essential persistent feature).
-* @param {Float64Array} x
-* @param {Float64Array} y
+* Computes 0D persistent homology on a 1D sequence of values (Y values).
+* Supports sublevel (default) and superlevel set filtration.
+* Returns a flat vector of [birth, death, birth_idx, death_idx, ...].
+* @param {Float64Array} data
+* @param {string} mode
 * @returns {Float64Array}
 */
-export function persistent_homology_0d(x: Float64Array, y: Float64Array): Float64Array;
+export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -60,6 +60,7 @@ export interface InitOutput {
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;

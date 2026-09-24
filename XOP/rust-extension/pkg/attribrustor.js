@@ -166,24 +166,78 @@ export function zeros_matrix(n) {
     }
 }
 
+const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder('utf-8') : { encode: () => { throw Error('TextEncoder not available') } } );
+
+const encodeString = (typeof cachedTextEncoder.encodeInto === 'function'
+    ? function (arg, view) {
+    return cachedTextEncoder.encodeInto(arg, view);
+}
+    : function (arg, view) {
+    const buf = cachedTextEncoder.encode(arg);
+    view.set(buf);
+    return {
+        read: arg.length,
+        written: buf.length
+    };
+});
+
+function passStringToWasm0(arg, malloc, realloc) {
+
+    if (realloc === undefined) {
+        const buf = cachedTextEncoder.encode(arg);
+        const ptr = malloc(buf.length, 1) >>> 0;
+        getUint8Memory0().subarray(ptr, ptr + buf.length).set(buf);
+        WASM_VECTOR_LEN = buf.length;
+        return ptr;
+    }
+
+    let len = arg.length;
+    let ptr = malloc(len, 1) >>> 0;
+
+    const mem = getUint8Memory0();
+
+    let offset = 0;
+
+    for (; offset < len; offset++) {
+        const code = arg.charCodeAt(offset);
+        if (code > 0x7F) break;
+        mem[ptr + offset] = code;
+    }
+
+    if (offset !== len) {
+        if (offset !== 0) {
+            arg = arg.slice(offset);
+        }
+        ptr = realloc(ptr, len, len = offset + arg.length * 3, 1) >>> 0;
+        const view = getUint8Memory0().subarray(ptr + offset, ptr + len);
+        const ret = encodeString(arg, view);
+
+        offset += ret.written;
+        ptr = realloc(ptr, len, offset, 1) >>> 0;
+    }
+
+    WASM_VECTOR_LEN = offset;
+    return ptr;
+}
+
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64Memory0().subarray(ptr / 8, ptr / 8 + len);
 }
 /**
-* WASM export returning a flat Float64Array of 4-tuples:
-* [birth, death, birth_idx, death_idx, ...]
-* death is NaN when None (essential persistent feature).
-* @param {Float64Array} x
-* @param {Float64Array} y
+* Computes 0D persistent homology on a 1D sequence of values (Y values).
+* Supports sublevel (default) and superlevel set filtration.
+* Returns a flat vector of [birth, death, birth_idx, death_idx, ...].
+* @param {Float64Array} data
+* @param {string} mode
 * @returns {Float64Array}
 */
-export function persistent_homology_0d(x, y) {
+export function persistent_homology_0d(data, mode) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(x, wasm.__wbindgen_malloc);
+        const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(y, wasm.__wbindgen_malloc);
+        const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         wasm.persistent_homology_0d(retptr, ptr0, len0, ptr1, len1);
         var r0 = getInt32Memory0()[retptr / 4 + 0];
