@@ -297,6 +297,22 @@ div{
     background-color: rgba(194, 26, 26, 0.671);
     border:1px solid var(--border-strong);
 }
+.popup.container.folded{
+    grid-template-rows:auto;
+}
+.popup.container.maximized{
+    resize:none;
+}
+.dismisser.disabled{
+    background-color: rgba(143, 160, 179, 0.18);
+    border-color: rgba(143, 160, 179, 0.45);
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+.dismisser.disabled:hover{
+    background-color: rgba(143, 160, 179, 0.18);
+    border-color: rgba(143, 160, 179, 0.45);
+}
 
 .selected{
     outline: 1px solid var(--text);

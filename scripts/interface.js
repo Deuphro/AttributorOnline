@@ -1249,7 +1249,10 @@ class NodeWithAccordionGraph extends Node{
         )
         channel.register(`${registrationName}:accordion`,this.accordion,label)
         this.graphDialog=new Dialog(`${label} graph`,this.origin,this.origin.midCentralContent)
-        this.graphDialog.DOMelt.dismisser.hidden=true
+        const dismisser=this.graphDialog.DOMelt.dismisser
+        delete dismisser.handleClick
+        dismisser.classList.add("disabled")
+        dismisser.setAttribute("aria-disabled","true")
         stylize(this.graphDialog.DOMelt.window,{
             top:"0px",
             left:"0px",
@@ -1321,7 +1324,10 @@ class NodeWithRightAccordionGraph extends Node{
         )
         channel.register(`${registrationName}:accordion`,this.accordion,label)
         this.graphDialog=new Dialog(`${label} graph`,this.origin,this.origin.midCentralContent)
-        this.graphDialog.DOMelt.dismisser.hidden=true
+        const dismisser=this.graphDialog.DOMelt.dismisser
+        delete dismisser.handleClick
+        dismisser.classList.add("disabled")
+        dismisser.setAttribute("aria-disabled","true")
         stylize(this.graphDialog.DOMelt.window,{
             top:"0px",
             left:"0px",
@@ -4466,10 +4472,14 @@ class Dialog{
         this.DOMelt={};
         this.DOMelt.dismisser=CE('div',{className:"dismisser",pilot:this},[]);
         this.DOMelt.dismisser.handleClick=(e)=>e.target.pilot.suicide();
-        this.DOMelt.label=CE('div',{className:"label",pilot:this},[title.toString()]);
+        this.DOMelt.folder=CE('div',{className:"accordion handler folder",pilot:this,handleClick:(e)=>e.target.pilot.toggleFolded()},[]);
+        this.DOMelt.folder.setAttribute("role","button");
+        this.DOMelt.folder.setAttribute("aria-expanded","true");
+        this.DOMelt.folder.setAttribute("aria-label","Replier la fenêtre");
+        this.DOMelt.label=CE('div',{className:"label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggleMaximized(e)},[title.toString()]);
         this.DOMelt.label.handleMouseDown=(e)=>e.target.pilot.drag(e);
         this.DOMelt.label.handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.selected)}
-        this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.dismisser]);
+        this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.folder,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
         this.DOMelt.window=CE('div',{className:"popup container",pilot:this},[
             this.DOMelt.handler,
@@ -4492,7 +4502,7 @@ class Dialog{
         });
         stylize(this.DOMelt.handler,{
             display:"grid",
-            "grid-template-columns":"1fr 1em",
+            "grid-template-columns":"1fr 1em 1em",
             "border-radius":"10px",
             padding:"0em"
         })
@@ -4515,8 +4525,107 @@ class Dialog{
             width:"1em",
             "align-self":"center"
         })
+        stylize(this.DOMelt.folder,{
+            height:"1em",
+            width:"1em",
+            "align-self":"center"
+        })
         this.DOMelt.window.handleResize=(e)=>e.target.pilot.resize(e)
         destination.appendChild(this.DOMelt.window)
+    }
+    setFolderFoldedState(folded){
+        this.DOMelt.folder.style.backgroundColor=folded?"transparent":"rgba(172,255,47,0.18)"
+        this.DOMelt.folder.setAttribute("aria-expanded",folded?"false":"true")
+        this.DOMelt.folder.setAttribute("aria-label",folded?"Déplier la fenêtre":"Replier la fenêtre")
+    }
+    fold(){
+        if(this.folded) return
+        this.folded=true
+        const windowStyle=this.DOMelt.window.style
+        this.unfoldedSize={
+            height:windowStyle.height,
+            minHeight:windowStyle.minHeight,
+            resize:windowStyle.resize,
+            bottom:windowStyle.bottom
+        }
+        this.DOMelt.content.hidden=true
+        this.DOMelt.window.classList.add("folded")
+        windowStyle.height="auto"
+        windowStyle.minHeight="0"
+        //A dragged dialog has both top and bottom. Keeping bottom would
+        //stretch the folded dialog back to its full previous height.
+        windowStyle.bottom="auto"
+        windowStyle.resize="none"
+        this.setFolderFoldedState(true)
+    }
+    unfold(){
+        if(!this.folded) return
+        this.folded=false
+        const windowStyle=this.DOMelt.window.style
+        this.DOMelt.content.hidden=false
+        this.DOMelt.window.classList.remove("folded")
+        windowStyle.height=this.unfoldedSize.height
+        windowStyle.minHeight=this.unfoldedSize.minHeight
+        windowStyle.bottom=this.unfoldedSize.bottom
+        windowStyle.resize=this.unfoldedSize.resize
+        this.setFolderFoldedState(false)
+    }
+    toggleFolded(){
+        if(this.folded){
+            this.unfold()
+        }else{
+            this.fold()
+        }
+    }
+    toggleMaximized(event){
+        event.preventDefault()
+        event.stopPropagation()
+        const windowStyle=this.DOMelt.window.style
+        if(!this.maximized){
+            this.preMaximizeState={
+                folded:Boolean(this.folded),
+                styles:{
+                    top:windowStyle.top,
+                    right:windowStyle.right,
+                    bottom:windowStyle.bottom,
+                    left:windowStyle.left,
+                    width:windowStyle.width,
+                    height:windowStyle.height,
+                    minWidth:windowStyle.minWidth,
+                    minHeight:windowStyle.minHeight,
+                    resize:windowStyle.resize
+                }
+            }
+            if(this.folded) this.unfold()
+            this.maximized=true
+            this.DOMelt.window.classList.add("maximized")
+            windowStyle.top="0px"
+            windowStyle.left="0px"
+            windowStyle.width="100%"
+            windowStyle.height="100%"
+            windowStyle.right="auto"
+            windowStyle.bottom="auto"
+            windowStyle.minWidth="0"
+            windowStyle.minHeight="0"
+            windowStyle.resize="none"
+            this.DOMelt.folder.setAttribute("aria-label","Restaurer la fenêtre")
+        }else{
+            this.maximized=false
+            this.DOMelt.window.classList.remove("maximized")
+            const saved=this.preMaximizeState
+            for(const [property,value] of Object.entries(saved.styles)){
+                windowStyle[property]=value
+            }
+            if(saved.folded){
+                this.DOMelt.content.hidden=true
+                this.DOMelt.window.classList.add("folded")
+                this.folded=true
+                this.setFolderFoldedState(true)
+            }else{
+                this.folded=false
+                this.setFolderFoldedState(false)
+            }
+        }
     }
     suicide(){
         this.DOMelt.window.remove()
@@ -4547,7 +4656,9 @@ class Dialog{
             }
             if(gap.top>=0 && gap.bottom>=0){
                 pilot.DOMelt.window.style.top=`${100*gap.top/boundary.height}%`;
-                pilot.DOMelt.window.style.bottom=`${100*gap.bottom/boundary.height}%`;
+                if(!pilot.folded){
+                    pilot.DOMelt.window.style.bottom=`${100*gap.bottom/boundary.height}%`;
+                }
             }
             dx=e.clientX;
             dy=e.clientY;
@@ -4559,6 +4670,7 @@ class Dialog{
         }
     }
     resize(e){
+        if(this.folded) return
         //console.log(e.target)
         let gap={
             left:e.target.offsetLeft,
@@ -4918,6 +5030,9 @@ class App{
         this.main.addEventListener('click',(e)=>{
             //console.log(e.target)
             if(e.target.handleClick){e.target.handleClick(e)}
+        })
+        this.main.addEventListener('dblclick',(e)=>{
+            if(e.target.handleDblClick){e.target.handleDblClick(e)}
         })
         this.main.addEventListener('mousedown',function(e){
             if(e.target.handleMouseDown){e.target.handleMouseDown(e)}
