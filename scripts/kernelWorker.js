@@ -26,7 +26,82 @@ const kernels={
             }
         }
         return {core}
+    },
+    async persistentHomology0D({core,params}){
+        const mode=params?.mode??"sublevel"
+        let pairs=null
+        try{
+            await ensureWasm()
+            if(typeof rust.persistent_homology_0d!=="function"){
+                throw new Error("rust persistent_homology_0d is missing (stale pkg build?)")
+            }
+            const res=rust.persistent_homology_0d(core,mode)
+            pairs=res instanceof Float64Array?res:new Float64Array(res)
+        }catch(err){
+            console.warn("[kernelWorker] rust persistent_homology_0d unavailable, JS fallback:",err)
+            pairs=computePersistentHomology0D_JS(core,mode)
+        }
+        return {pairs}
     }
+}
+
+function computePersistentHomology0D_JS(data,mode="sublevel"){
+    const n=data.length
+    if(n<2) return new Float64Array(0)
+    const isSuperlevel=mode==="superlevel"
+    const parent=new Uint32Array(n)
+    const birthVal=new Float64Array(n)
+    const birthIdx=new Uint32Array(n)
+    for(let i=0;i<n;i++){
+        parent[i]=i
+        birthVal[i]=data[i]
+        birthIdx[i]=i
+    }
+    function find(i){
+        let root=i
+        while(root!==parent[root]) root=parent[root]
+        while(i!==root){
+            const next=parent[i]
+            parent[i]=root
+            i=next
+        }
+        return root
+    }
+    const edges=new Array(n-1)
+    for(let i=0;i<n-1;i++){
+        const w=isSuperlevel?Math.min(data[i],data[i+1]):Math.max(data[i],data[i+1])
+        edges[i]={u:i,v:i+1,weight:w}
+    }
+    if(isSuperlevel){
+        edges.sort((a,b)=>b.weight-a.weight)
+    }else{
+        edges.sort((a,b)=>a.weight-b.weight)
+    }
+    const res=[]
+    for(let k=0;k<edges.length;k++){
+        const edge=edges[k]
+        const ru=find(edge.u)
+        const rv=find(edge.v)
+        if(ru!==rv){
+            const bu=birthVal[ru]
+            const bv=birthVal[rv]
+            const uIsOlder=isSuperlevel
+                ?(bu>bv||(bu===bv&&ru<rv))
+                :(bu<bv||(bu===bv&&ru<rv))
+            const death=edge.weight
+            const deathIdx=isSuperlevel
+                ?(data[edge.u]<=data[edge.v]?edge.u:edge.v)
+                :(data[edge.u]>=data[edge.v]?edge.u:edge.v)
+            if(uIsOlder){
+                res.push(bv,death,birthIdx[rv],deathIdx)
+                parent[rv]=ru
+            }else{
+                res.push(bu,death,birthIdx[ru],deathIdx)
+                parent[ru]=rv
+            }
+        }
+    }
+    return new Float64Array(res)
 }
 
 self.addEventListener("message",async e=>{
@@ -37,7 +112,9 @@ self.addEventListener("message",async e=>{
             throw new Error(`unknown kernel "${kernel}"`)
         }
         const result=await kernelFn(payload)
-        const transfer=result?.core?.buffer?[result.core.buffer]:[]
+        const transfer=[]
+        if(result?.core?.buffer) transfer.push(result.core.buffer)
+        if(result?.pairs?.buffer) transfer.push(result.pairs.buffer)
         self.postMessage({id,ok:true,result},transfer)
     }catch(err){
         self.postMessage({id,ok:false,error:err?.message??String(err)})

@@ -29,6 +29,7 @@ const defaultMenu={
         },
         "Operation":{
             "+1 on each pair element":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Operation +1',type:'operation'}}}))},
+            "0D Persistent Homology":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'0D Persistent Homology',type:'persistentHomology0D'}}}))},
         },
         "Display":{
             "Simple XY plot":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY plot',type:'simpleXYPlot'}}}))},

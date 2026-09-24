@@ -35,6 +35,15 @@ export function sieve(): string;
 * @returns {Int32Array}
 */
 export function zeros_matrix(n: number): Int32Array;
+/**
+* WASM export returning a flat Float64Array of 4-tuples:
+* [birth, death, birth_idx, death_idx, ...]
+* death is NaN when None (essential persistent feature).
+* @param {Float64Array} x
+* @param {Float64Array} y
+* @returns {Float64Array}
+*/
+export function persistent_homology_0d(x: Float64Array, y: Float64Array): Float64Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -47,6 +56,7 @@ export interface InitOutput {
   readonly bench: (a: number) => number;
   readonly sieve: (a: number) => void;
   readonly zeros_matrix: (a: number, b: number) => void;
+  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;

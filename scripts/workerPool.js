@@ -77,6 +77,66 @@ function runKernelLocally(kernel,payload){
         //same shape as the worker kernels: {core: Float64Array}
         return {core:result}
     }
+    if(kernel==="persistentHomology0D"){
+        const {core,params}=payload
+        const mode=params?.mode??"sublevel"
+        const n=core.length
+        if(n<2) return {pairs:new Float64Array(0)}
+        const isSuperlevel=mode==="superlevel"
+        const parent=new Uint32Array(n)
+        const birthVal=new Float64Array(n)
+        const birthIdx=new Uint32Array(n)
+        for(let i=0;i<n;i++){
+            parent[i]=i
+            birthVal[i]=core[i]
+            birthIdx[i]=i
+        }
+        function find(i){
+            let root=i
+            while(root!==parent[root]) root=parent[root]
+            while(i!==root){
+                const next=parent[i]
+                parent[i]=root
+                i=next
+            }
+            return root
+        }
+        const edges=new Array(n-1)
+        for(let i=0;i<n-1;i++){
+            const w=isSuperlevel?Math.min(core[i],core[i+1]):Math.max(core[i],core[i+1])
+            edges[i]={u:i,v:i+1,weight:w}
+        }
+        if(isSuperlevel){
+            edges.sort((a,b)=>b.weight-a.weight)
+        }else{
+            edges.sort((a,b)=>a.weight-b.weight)
+        }
+        const res=[]
+        for(let k=0;k<edges.length;k++){
+            const edge=edges[k]
+            const ru=find(edge.u)
+            const rv=find(edge.v)
+            if(ru!==rv){
+                const bu=birthVal[ru]
+                const bv=birthVal[rv]
+                const uIsOlder=isSuperlevel
+                    ?(bu>bv||(bu===bv&&ru<rv))
+                    :(bu<bv||(bu===bv&&ru<rv))
+                const death=edge.weight
+                const deathIdx=isSuperlevel
+                    ?(core[edge.u]<=core[edge.v]?edge.u:edge.v)
+                    :(core[edge.u]>=core[edge.v]?edge.u:edge.v)
+                if(uIsOlder){
+                    res.push(bv,death,birthIdx[rv],deathIdx)
+                    parent[rv]=ru
+                }else{
+                    res.push(bu,death,birthIdx[ru],deathIdx)
+                    parent[ru]=rv
+                }
+            }
+        }
+        return {pairs:new Float64Array(res)}
+    }
     throw new Error(`unknown kernel "${kernel}"`)
 }
 

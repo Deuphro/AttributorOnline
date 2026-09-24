@@ -629,6 +629,546 @@ class DelimitedTextNode extends NodeWithAccordion{
     }
 }
 
+class PersistentHomology0DNode extends NodeWithAccordion{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        super(
+            title,
+            [[], []], // 2 inputs: [0] = wave, [1] = threshold
+            [[], []], // 2 outputs: [0] = death/birth pairs, [1] = original points
+            origin,
+            destinationFlow,
+            position
+        )
+        this.status="floating"
+        this.parameters.threshold=null
+        this.parameters.thresholdSide="gte" // "gte" (>=) or "lte" (<=)
+        this.parameters.filtrationMode="sublevel" // "sublevel" or "superlevel"
+        this.pairsData=null
+        this.lastInputWave=null
+        this.dragDebounceTimer=null
+        this.graph=null
+
+        // Tooltips on SVG anchors for clarity
+        const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
+        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: Wave (XY or 1D)</title>'
+        if(inputAnchors[1]) inputAnchors[1].innerHTML='<title>Input: Threshold (optional)</title>'
+        const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: Death vs Birth pairs</title>'
+        if(outputAnchors[1]) outputAnchors[1].innerHTML='<title>Output: Corresponding (X, Y) points</title>'
+    }
+
+    registered(e){
+        if(e.detail.msg.caster !== this || this.accordion){
+            return
+        }
+        super.registered(e)
+        this.setupAccordionUI()
+    }
+
+    setupAccordionUI(){
+        if(!this.accordion) return
+        const content = this.accordion.DOMelt.content
+        content.replaceChildren()
+        stylize(content, {
+            display: "grid",
+            "grid-template-rows": "auto minmax(0, 1fr)",
+            minHeight: "0",
+            height: "100%",
+            overflow: "hidden",
+            padding: "4px",
+            gap: "4px"
+        })
+        if(this.accordion.DOMelt.container){
+            this.accordion.DOMelt.container.style.height = "360px"
+            this.accordion.DOMelt.container.style.maxHeight = "75%"
+        }
+
+        // 1. Controls bar
+        const controls = CE("div", {
+            style: {
+                display: "grid",
+                gridTemplateColumns: "auto 1fr auto auto auto",
+                alignItems: "center",
+                gap: "4px",
+                fontSize: "0.85em",
+                padding: "2px 4px",
+                borderRadius: "4px",
+                background: "rgba(255,255,255,0.05)"
+            }
+        }, [])
+
+        const thresholdLabel = CE("span", { style: { fontWeight: "bold" } }, ["Seuil:"])
+        this.thresholdInput = CE("input", {
+            type: "number",
+            step: "any",
+            value: this.parameters.threshold !== null ? String(this.parameters.threshold) : "",
+            placeholder: "mean(Y)",
+            style: { width: "100%", padding: "2px" }
+        }, [])
+        this.thresholdInput.addEventListener("change", () => {
+            const val = parseFloat(this.thresholdInput.value)
+            if(Number.isFinite(val)){
+                this.setThreshold(val, true)
+            }
+        })
+
+        this.sideBtn = CE("button", {
+            type: "button",
+            title: "Toggle kept side",
+            style: { cursor: "pointer", padding: "2px 6px" }
+        }, [this.parameters.thresholdSide === "gte" ? "≥ T" : "≤ T"])
+        this.sideBtn.addEventListener("click", () => {
+            this.parameters.thresholdSide = this.parameters.thresholdSide === "gte" ? "lte" : "gte"
+            this.sideBtn.textContent = this.parameters.thresholdSide === "gte" ? "≥ T" : "≤ T"
+            this.applyThresholdFilter()
+            this.resolveChildren()
+        })
+
+        const guessBtn = CE("button", {
+            type: "button",
+            title: "Recalculate threshold as mean(Y)",
+            style: { cursor: "pointer", padding: "2px 6px" }
+        }, ["Guess"])
+        guessBtn.addEventListener("click", () => {
+            this.guessThreshold()
+            if(this.parameters.threshold !== null){
+                this.setThreshold(this.parameters.threshold, true)
+            }
+        })
+
+        this.countLabel = CE("span", {
+            style: { opacity: "0.8", whiteSpace: "nowrap", justifySelf: "end" }
+        }, ["0 pairs"])
+
+        controls.append(thresholdLabel, this.thresholdInput, this.sideBtn, guessBtn, this.countLabel)
+
+        // 2. Graph container
+        const graphContainer = CE("div", {
+            className: "persistence-graph-container",
+            style: {
+                position: "relative",
+                width: "100%",
+                height: "100%",
+                minHeight: "180px",
+                overflow: "hidden"
+            }
+        }, [])
+
+        content.append(controls, graphContainer)
+
+        // 3. Plot2DWebGL instance
+        this.graph = new Plot2DWebGL([], `${this.title} graph`, this.origin, graphContainer)
+        this.graph.parameters.axis.bottom.label = "Birth"
+        this.graph.parameters.axis.bottom.autoLabel = false
+        this.graph.parameters.axis.left.label = "Death"
+        this.graph.parameters.axis.left.autoLabel = false
+
+        // Hook drawGraph so it always repaints the SVG threshold bar
+        const origDrawGraph = this.graph.drawGraph.bind(this.graph)
+        this.graph.drawGraph = () => {
+            origDrawGraph()
+            this.updateThresholdBarSVG()
+        }
+
+        this.graph.drawGraph()
+    }
+
+    extractInputWave(){
+        const input = this.inputs[0]
+        if(!(input instanceof Map)) return null
+        for(const values of input.values()){
+            for(const waves of values){
+                if(Array.isArray(waves)){
+                    for(const wave of waves){
+                        if(wave instanceof Wave) return wave
+                    }
+                }else if(waves instanceof Wave){
+                    return waves
+                }
+            }
+        }
+        return null
+    }
+
+    extractInputThreshold(){
+        const input = this.inputs[1]
+        if(!(input instanceof Map)) return null
+        for(const values of input.values()){
+            for(const item of values){
+                if(typeof item === "number" && Number.isFinite(item)) return item
+                if(Array.isArray(item)){
+                    for(const sub of item){
+                        if(typeof sub === "number" && Number.isFinite(sub)) return sub
+                        if(sub instanceof Wave && sub.core.length){
+                            return sub.core[0]
+                        }
+                    }
+                }
+                if(item instanceof Wave && item.core.length){
+                    return item.core[0]
+                }
+            }
+        }
+        return null
+    }
+
+    guessThreshold(){
+        if(!this.lastInputWave) return
+        const wave = this.lastInputWave
+        let count = 0
+        let sum = 0
+        if(wave.degree === 2 && wave.dims[0] === 2){
+            count = wave.dims[1]
+            for(let i = 0; i < count; i++){
+                sum += wave.core[2 * i + 1]
+            }
+        }else{
+            count = wave.core.length
+            for(let i = 0; i < count; i++){
+                sum += wave.core[i]
+            }
+        }
+        if(count > 0){
+            this.parameters.threshold = sum / count
+        }
+    }
+
+    async startResolve(){
+        const inputWave = this.extractInputWave()
+        if(!inputWave){
+            this.status = "floating"
+            this.outputs[0] = []
+            this.outputs[1] = []
+            return
+        }
+        this.status = "pending"
+        this.lastInputWave = inputWave
+
+        // Check if an external threshold is connected
+        const externalThreshold = this.extractInputThreshold()
+        if(externalThreshold !== null && Number.isFinite(externalThreshold)){
+            this.parameters.threshold = externalThreshold
+        }
+
+        // Extract X and Y buffers
+        let count = 0
+        let xBuffer = null
+        let yBuffer = null
+        if(inputWave.degree === 2 && inputWave.dims[0] === 2){
+            count = inputWave.dims[1]
+            xBuffer = new Float64Array(count)
+            yBuffer = new Float64Array(count)
+            for(let i = 0; i < count; i++){
+                xBuffer[i] = inputWave.core[2 * i]
+                yBuffer[i] = inputWave.core[2 * i + 1]
+            }
+        }else{
+            count = inputWave.core.length
+            xBuffer = new Float64Array(count)
+            yBuffer = new Float64Array(count)
+            for(let i = 0; i < count; i++){
+                xBuffer[i] = i
+                yBuffer[i] = inputWave.core[i]
+            }
+        }
+
+        // Default guess for threshold if unset: mean(Y)
+        if(this.parameters.threshold === null || !Number.isFinite(this.parameters.threshold)){
+            let sum = 0
+            for(let i = 0; i < count; i++) sum += yBuffer[i]
+            this.parameters.threshold = count > 0 ? (sum / count) : 0
+        }
+
+        try{
+            const { pairs } = await computePool.run("persistentHomology0D", {
+                core: yBuffer,
+                params: { mode: this.parameters.filtrationMode ?? "sublevel" }
+            })
+
+            const parsed = []
+            if(pairs && pairs.length){
+                for(let i = 0; i + 3 < pairs.length; i += 4){
+                    const birth = pairs[i]
+                    const death = pairs[i + 1]
+                    const bIdx = Math.round(pairs[i + 2])
+                    const dIdx = Math.round(pairs[i + 3])
+                    parsed.push({
+                        birth,
+                        death,
+                        birthIdx: bIdx,
+                        deathIdx: dIdx,
+                        birthX: xBuffer[bIdx] ?? bIdx,
+                        birthY: yBuffer[bIdx] ?? birth,
+                        deathX: xBuffer[dIdx] ?? dIdx,
+                        deathY: yBuffer[dIdx] ?? death
+                    })
+                }
+            }
+            this.pairsData = parsed
+            this.status = "resolved"
+            this.applyThresholdFilter()
+            this.updateControlsUI()
+        }catch(err){
+            console.error("[PersistentHomology0DNode] Error resolving:", err)
+            this.status = "error"
+        }
+    }
+
+    applyThresholdFilter(){
+        if(!this.pairsData) return
+        const threshold = this.parameters.threshold ?? 0
+        const side = this.parameters.thresholdSide ?? "gte"
+
+        const kept = []
+        const discarded = []
+        for(const pair of this.pairsData){
+            const pass = side === "gte" ? (pair.birth >= threshold) : (pair.birth <= threshold)
+            if(pass){
+                kept.push(pair)
+            }else{
+                discarded.push(pair)
+            }
+        }
+
+        const keptPairs = kept.map(p => [p.birth, p.death])
+        const keptPoints = kept.map(p => [p.birthX, p.birthY])
+
+        this.outputs[0] = keptPairs.length
+            ? [Wave.fromPairs(keptPairs, { title: `${this.title} (Death vs Birth)`, threshold, side }, ["birth", "death"])]
+            : []
+        this.outputs[1] = keptPoints.length
+            ? [Wave.fromPairs(keptPoints, { title: `${this.title} (Points)`, threshold, side }, ["x", "y"])]
+            : []
+
+        // Update WebGL traces on Plot2DWebGL
+        if(this.graph){
+            const traces = []
+            if(keptPairs.length){
+                traces.push(new XYTrace({
+                    id: `${this.title}:kept`,
+                    title: `Kept (${keptPairs.length})`,
+                    wave: Wave.fromPairs(keptPairs, {}, ["birth", "death"]),
+                    options: {
+                        color: "#2ecc71",
+                        mode: "points",
+                        marker: { shape: "circle", size: 4 },
+                        layer: "gl"
+                    }
+                }))
+            }
+            if(discarded.length){
+                const discardedPairs = discarded.map(p => [p.birth, p.death])
+                traces.push(new XYTrace({
+                    id: `${this.title}:discarded`,
+                    title: `Discarded (${discardedPairs.length})`,
+                    wave: Wave.fromPairs(discardedPairs, {}, ["birth", "death"]),
+                    options: {
+                        color: "#7f8c8d",
+                        mode: "points",
+                        marker: { shape: "circle", size: 3 },
+                        layer: "gl"
+                    }
+                }))
+            }
+            this.graph.setTraces(traces)
+            this.graph.drawGraph()
+            this.updateThresholdBarSVG()
+        }
+
+        if(this.countLabel){
+            this.countLabel.textContent = `${kept.length}/${this.pairsData.length} pairs`
+        }
+    }
+
+    updateControlsUI(){
+        if(this.thresholdInput && this.parameters.threshold !== null){
+            this.thresholdInput.value = Number(this.parameters.threshold).toFixed(3)
+        }
+        if(this.countLabel && this.pairsData){
+            const keptCount = this.outputs[0]?.[0]?.dims?.[1] ?? 0
+            this.countLabel.textContent = `${keptCount}/${this.pairsData.length} pairs`
+        }
+    }
+
+    updateThresholdBarSVG(){
+        if(!this.graph || !this.graph.graphSVG) return
+        const anchor = this.graph.graphSVG.select(".anchor")
+        if(anchor.empty()) return
+
+        const threshold = this.parameters.threshold
+        if(threshold === null || !Number.isFinite(threshold)) return
+
+        const { xScale } = this.graph.plotScales()
+        const xPix = xScale(threshold)
+        const height = this.graph.graphzone.height
+
+        let barGroup = anchor.select(".threshold-bar-group")
+        if(barGroup.empty()){
+            barGroup = anchor.append("g")
+                .attr("class", "threshold-bar-group")
+                .style("cursor", "ew-resize")
+
+            barGroup.append("line")
+                .attr("class", "threshold-visual-line")
+                .attr("stroke", "#e74c3c")
+                .attr("stroke-width", 2)
+                .attr("stroke-dasharray", "4,3")
+                .attr("y1", 0)
+
+            const badge = barGroup.append("g").attr("class", "threshold-badge")
+            badge.append("rect")
+                .attr("class", "badge-bg")
+                .attr("fill", "#e74c3c")
+                .attr("rx", 3)
+                .attr("ry", 3)
+                .attr("y", 2)
+                .attr("height", 16)
+            badge.append("text")
+                .attr("class", "badge-text")
+                .attr("fill", "#ffffff")
+                .attr("font-size", "10px")
+                .attr("font-weight", "bold")
+                .attr("text-anchor", "middle")
+                .attr("y", 14)
+
+            barGroup.append("line")
+                .attr("class", "threshold-hitbox")
+                .attr("stroke", "transparent")
+                .attr("stroke-width", 16)
+                .attr("y1", 0)
+                .attr("cursor", "ew-resize")
+                .style("pointer-events", "all")
+                .on("mousedown", (e) => this.startThresholdDrag(e))
+
+            badge.style("cursor", "ew-resize")
+                .on("mousedown", (e) => this.startThresholdDrag(e))
+        }
+
+        barGroup.select(".threshold-visual-line")
+            .attr("x1", xPix)
+            .attr("x2", xPix)
+            .attr("y2", height)
+
+        barGroup.select(".threshold-hitbox")
+            .attr("x1", xPix)
+            .attr("x2", xPix)
+            .attr("y2", height)
+
+        const label = `T: ${threshold.toFixed(2)}`
+        const textWidth = Math.max(48, label.length * 7)
+        barGroup.select(".badge-bg")
+            .attr("x", xPix - textWidth / 2)
+            .attr("width", textWidth)
+
+        barGroup.select(".badge-text")
+            .attr("x", xPix)
+            .text(label)
+    }
+
+    startThresholdDrag(e){
+        e.preventDefault()
+        e.stopPropagation()
+        if(!this.graph) return
+        const { xScale } = this.graph.plotScales()
+        const startX = e.clientX
+        const startThreshold = this.parameters.threshold ?? 0
+        const startXPix = xScale(startThreshold)
+
+        const onMouseMove = (moveEvent) => {
+            moveEvent.preventDefault()
+            const dx = moveEvent.clientX - startX
+            const newXPix = Math.max(0, Math.min(this.graph.graphzone.width, startXPix + dx))
+            const newThreshold = xScale.invert(newXPix)
+            this.setThreshold(newThreshold, false)
+        }
+
+        const onMouseUp = (upEvent) => {
+            window.removeEventListener("mousemove", onMouseMove)
+            window.removeEventListener("mouseup", onMouseUp)
+            this.setThreshold(this.parameters.threshold, true)
+        }
+
+        window.addEventListener("mousemove", onMouseMove)
+        window.addEventListener("mouseup", onMouseUp)
+    }
+
+    setThreshold(newThreshold, commit = false){
+        this.parameters.threshold = Number(newThreshold)
+        if(this.thresholdInput){
+            this.thresholdInput.value = Number(newThreshold).toFixed(3)
+        }
+        this.updateThresholdBarSVG()
+        this.applyThresholdFilter()
+
+        if(commit){
+            if(this.dragDebounceTimer){
+                clearTimeout(this.dragDebounceTimer)
+                this.dragDebounceTimer = null
+            }
+            this.resolveChildren()
+        }else{
+            if(this.dragDebounceTimer) clearTimeout(this.dragDebounceTimer)
+            this.dragDebounceTimer = setTimeout(() => {
+                this.resolveChildren()
+            }, 120)
+        }
+    }
+
+    async resolveChildren(){
+        const flow = this.destination
+        if(!flow) return
+        const descendants = new Set()
+        const collectDescendants = (n) => {
+            const children = flow.childrenMap(n)
+            for(const child of children.keys()){
+                if(!descendants.has(child)){
+                    descendants.add(child)
+                    collectDescendants(child)
+                }
+            }
+        }
+        collectDescendants(this)
+        if(descendants.size === 0) return
+
+        for(const desc of descendants){
+            flow.forwardStatus(desc, "floating")
+        }
+
+        const subLeaves = Array.from(descendants).filter(d => {
+            const kids = Array.from(flow.childrenMap(d).keys())
+            return kids.length === 0 || kids.every(k => !descendants.has(k))
+        })
+
+        const resolutions = new Map()
+        resolutions.set(this, Promise.resolve())
+        await Promise.all(subLeaves.map(leaf => flow.resolveNode(leaf, resolutions)))
+    }
+
+    serializeState(){
+        return {
+            threshold: this.parameters.threshold,
+            thresholdSide: this.parameters.thresholdSide,
+            filtrationMode: this.parameters.filtrationMode,
+            status: this.status
+        }
+    }
+
+    restoreState(state){
+        if(!state) return
+        if(state.threshold !== undefined) this.parameters.threshold = state.threshold
+        if(state.thresholdSide !== undefined) this.parameters.thresholdSide = state.thresholdSide
+        if(state.filtrationMode !== undefined) this.parameters.filtrationMode = state.filtrationMode
+        this.status = state.status ?? "floating"
+        this.updateControlsUI()
+    }
+
+    suicide(options={}){
+        this.graph?.dispose?.()
+        this.accordion?.suicide()
+        super.suicide(options)
+    }
+}
+
 class NodeWithAccordionGraph extends Node{
     registered(e){
         const {channel, registrationName, label, caster} = e.detail.msg
@@ -1301,6 +1841,9 @@ function createNodeForHistory(origin,flow,data){
         case "Operation":
             node=new Operation(data.title,origin,flow,position)
             break
+        case "PersistentHomology0DNode":
+            node=new PersistentHomology0DNode(data.title,origin,flow,position)
+            break
         default:
             node=new Node(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
             break
@@ -1899,6 +2442,14 @@ class MainFlowMenu extends Menu{
                             break
                         case "operation":
                             node = new Operation(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
+                        case "persistentHomology0D":
+                            node = new PersistentHomology0DNode(
                                 title,
                                 origin,
                                 origin.channel.get("mainFlow"),
@@ -4222,10 +4773,11 @@ class App{
                     NodeWithRightAccordionGraph,
                     SimpleXYPlotNode,
                     DelimitedTextNode,
-                    Operation
+                    Operation,
+                    PersistentHomology0DNode
                 }
                 const NodeType=constructors[data.type]??Node
-                if(NodeType===DelimitedTextNode||NodeType===Operation){
+                if(NodeType===DelimitedTextNode||NodeType===Operation||NodeType===PersistentHomology0DNode){
                     return new NodeType(data.title,app,flow,data.position)
                 }
                 return new NodeType(
@@ -4608,4 +5160,4 @@ class PetitGazFusion {
 
 
 
-export {App, Plot2D, Plot2DWebGL}
+export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode}
