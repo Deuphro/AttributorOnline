@@ -2973,6 +2973,48 @@ class Plot2D{
         }
         return null
     }
+    //Y bounds restricted to the X window currently shown. Used by the
+    //single-axis X zoom so points outside that window cannot keep Y too
+    //compressed. Keeps the allocation-free typed/Wave traversal of dataBounds.
+    dataBoundsInXDomain(){
+        const xAxis=this.parameters?.axis?.bottom
+        const yAxis=this.parameters?.axis?.left
+        const xDomain=xAxis?.domain
+        if(!Array.isArray(xDomain)||xDomain.length<2) return null
+        if(!Number.isFinite(xDomain[0])||!Number.isFinite(xDomain[1])) return null
+        const logX=xAxis.scale==="log"
+        const logY=yAxis?.scale==="log"
+        if((logX&&!(xDomain[0]>0))||(logY&&!(xDomain[1]>0))) return null
+        const validX=x=>Number.isFinite(x)&&x>=xDomain[0]&&x<=xDomain[1]&&(!logX||x>0)
+        const validY=y=>Number.isFinite(y)&&(!logY||y>0)
+        let yMin=Infinity
+        let yMax=-Infinity
+        const visit=(x,y)=>{
+            if(validX(x)&&validY(y)){
+                if(y<yMin) yMin=y
+                if(y>yMax) yMax=y
+            }
+        }
+        const sources=this.traces.length?this.traces:[{points:this.data}]
+        for(const source of sources){
+            const wave=source.wave
+            if(wave?.core&&wave.degree===2&&wave.dims[0]===2){
+                const core=wave.core
+                for(let i=0,n=wave.dims[1]*2;i<n;i+=2) visit(core[i],core[i+1])
+                continue
+            }
+            const points=source.points
+            if(!points) continue
+            if(points instanceof Float32Array||points instanceof Float64Array){
+                for(let i=0;i+1<points.length;i+=2) visit(points[i],points[i+1])
+                continue
+            }
+            for(const pair of points){
+                if(Array.isArray(pair)) visit(pair[0],pair[1])
+            }
+        }
+        return yMin===Infinity?null:{yMin,yMax}
+    }
     autoDomain(axis,bounds){
         const domain=this.autoDomainFor(axis,bounds)
         if(domain){
@@ -3011,6 +3053,19 @@ class Plot2D{
         let changed=false
         if(zoomX){
             changed=this.zoomAxisDomain("bottom",xScale.invert(pixelX),factor)||changed
+            //Ctrl/Alt is the X-only gesture. Refit Y to the points inside
+            //the new X window so the vertical signal uses the available
+            //height. Plain wheel keeps the existing linked two-axis zoom.
+            if(changed&&!zoomY){
+                const visibleBounds=this.dataBoundsInXDomain()
+                const yFit=this.autoDomainFor("left",visibleBounds)
+                if(yFit){
+                    this.parameters.axis.left.domain=yFit
+                    //This is a fit to the current X window, not the global
+                    //data bounds drawGraph would restore in auto mode.
+                    this.parameters.axis.left.autoDomain=false
+                }
+            }
         }
         if(zoomY){
             changed=this.zoomAxisDomain("left",yScale.invert(pixelY),factor)||changed

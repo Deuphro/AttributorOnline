@@ -243,5 +243,30 @@ console.log("6. stale view (zoom before any trace) snaps back instead of locking
     check("empty-plot zoom is discarded when data arrives (flag)",fresh.autoDomain===true)
 }
 
+console.log("6. X-only zoom refits Y from points inside the visible X window")
+{
+    const points=[[0,100],[10,90],[20,20],[30,10]]
+    const xDomain=[18,32]
+    let yMin=Infinity
+    let yMax=-Infinity
+    for(const [x,y] of points){
+        if(x>=xDomain[0]&&x<=xDomain[1]){
+            yMin=Math.min(yMin,y)
+            yMax=Math.max(yMax,y)
+        }
+    }
+    const padding=(yMax-yMin)*0.05
+    const yDomain=[yMin-padding,yMax+padding]
+    check("X-only fit ignores distant Y values",yMin===10&&yMax===20)
+    check("X-only fit occupies padded local Y range",yDomain[0]===9.5&&yDomain[1]===20.5)
+    const yAxis={domain:[0,105],autoDomain:true}
+    yAxis.domain=yDomain
+    yAxis.autoDomain=false
+    //drawGraph must preserve a manual local fit instead of replacing it
+    //with the global Y bounds [0,105].
+    if(yAxis.autoDomain) yAxis.domain=[0,105]
+    check("redraw preserves the local manual Y fit",yAxis.domain[0]===9.5&&yAxis.domain[1]===20.5)
+}
+
 if(failures){console.error(`\n${failures} FAILURE(S)`);process.exit(1)}
 console.log("\nALL ZOOM MATH TESTS PASSED")
