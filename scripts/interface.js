@@ -904,11 +904,16 @@ class PersistentHomology0DNode extends NodeWithAccordion{
 
             const parsed = []
             if(pairs && pairs.length){
-                for(let i = 0; i + 3 < pairs.length; i += 4){
-                    const birth = pairs[i]
-                    const death = pairs[i + 1]
-                    const bIdx = Math.round(pairs[i + 2])
-                    const dIdx = Math.round(pairs[i + 3])
+                const pairCount = Math.floor(pairs.length / 4)
+                const birthsOffset = 0
+                const deathsOffset = pairCount
+                const birthIndicesOffset = pairCount * 2
+                const deathIndicesOffset = pairCount * 3
+                for(let i = 0; i < pairCount; i++){
+                    const birth = pairs[birthsOffset + i]
+                    const death = pairs[deathsOffset + i]
+                    const bIdx = Math.round(pairs[birthIndicesOffset + i])
+                    const dIdx = Math.round(pairs[deathIndicesOffset + i])
                     parsed.push({
                         birth,
                         death,

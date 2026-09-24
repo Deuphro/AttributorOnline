@@ -59,7 +59,8 @@ pub fn zeros_matrix(n: usize) -> Vec<i32> {
 
 /// Computes 0D persistent homology on a 1D sequence of values (Y values).
 /// Supports sublevel (default) and superlevel set filtration.
-/// Returns a flat vector of [birth, death, birth_idx, death_idx, ...].
+/// Returns a flat, non-interleaved vector with four contiguous blocks:
+/// [births..., deaths..., birth_indices..., death_indices...].
 #[wasm_bindgen]
 pub fn persistent_homology_0d(data: &[f64], mode: &str) -> Vec<f64> {
     let n = data.len();
@@ -109,7 +110,7 @@ pub fn persistent_homology_0d(data: &[f64], mode: &str) -> Vec<f64> {
         edges.sort_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
     }
 
-    let mut result: Vec<f64> = Vec::with_capacity((n - 1) * 4);
+    let mut pairs: Vec<(f64, f64, usize, usize)> = Vec::with_capacity(n - 1);
 
     for edge in edges {
         let ru = find(&mut parent, edge.u);
@@ -133,21 +134,21 @@ pub fn persistent_homology_0d(data: &[f64], mode: &str) -> Vec<f64> {
             };
 
             if u_is_older {
-                result.push(bv);
-                result.push(death);
-                result.push(birth_idx[rv] as f64);
-                result.push(death_idx as f64);
+                pairs.push((bv, death, birth_idx[rv], death_idx));
                 parent[rv] = ru;
             } else {
-                result.push(bu);
-                result.push(death);
-                result.push(birth_idx[ru] as f64);
-                result.push(death_idx as f64);
+                pairs.push((bu, death, birth_idx[ru], death_idx));
                 parent[ru] = rv;
             }
         }
     }
 
+    let pair_count = pairs.len();
+    let mut result = Vec::with_capacity(pair_count * 4);
+    result.extend(pairs.iter().map(|pair| pair.0));
+    result.extend(pairs.iter().map(|pair| pair.1));
+    result.extend(pairs.iter().map(|pair| pair.2 as f64));
+    result.extend(pairs.iter().map(|pair| pair.3 as f64));
     result
 }
 
@@ -159,12 +160,13 @@ mod tests {
     fn test_persistent_homology_sublevel() {
         let y = [1.0, 3.0, 2.0, 4.0, 0.0];
         let pairs = persistent_homology_0d(&y, "sublevel");
-        // Each pair has 4 floats: [birth, death, birth_idx, death_idx]
-        assert_eq!(pairs.len(), 4 * 4);
-        for chunk in pairs.chunks_exact(4) {
-            let birth = chunk[0];
-            let death = chunk[1];
-            assert!(death >= birth, "In sublevel, death must be >= birth");
+        // Non-interleaved blocks: births | deaths | birth indices | death indices.
+        let pair_count = pairs.len() / 4;
+        assert_eq!(pairs.len(), 4 * pair_count);
+        for i in 0..pair_count {
+            assert!(pairs[pair_count + i] >= pairs[i], "In sublevel, death must be >= birth");
+            assert!(pairs[3 * pair_count + i] >= 0.0);
+            assert!(pairs[4 * pair_count - 1 - i] >= 0.0);
         }
     }
 
@@ -172,11 +174,12 @@ mod tests {
     fn test_persistent_homology_superlevel() {
         let y = [1.0, 3.0, 2.0, 4.0, 0.0];
         let pairs = persistent_homology_0d(&y, "superlevel");
-        assert_eq!(pairs.len(), 4 * 4);
-        for chunk in pairs.chunks_exact(4) {
-            let birth = chunk[0];
-            let death = chunk[1];
-            assert!(birth >= death, "In superlevel, birth must be >= death");
+        let pair_count = pairs.len() / 4;
+        assert_eq!(pairs.len(), 4 * pair_count);
+        for i in 0..pair_count {
+            assert!(pairs[i] >= pairs[pair_count + i], "In superlevel, birth must be >= death");
+            assert!(pairs[3 * pair_count + i] >= 0.0);
+            assert!(pairs[4 * pair_count - 1 - i] >= 0.0);
         }
     }
 }

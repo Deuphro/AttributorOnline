@@ -111,7 +111,10 @@ function runKernelLocally(kernel,payload){
         }else{
             edges.sort((a,b)=>a.weight-b.weight)
         }
-        const res=[]
+        const births=[]
+        const deaths=[]
+        const birthIndices=[]
+        const deathIndices=[]
         for(let k=0;k<edges.length;k++){
             const edge=edges[k]
             const ru=find(edge.u)
@@ -127,15 +130,27 @@ function runKernelLocally(kernel,payload){
                     ?(core[edge.u]<=core[edge.v]?edge.u:edge.v)
                     :(core[edge.u]>=core[edge.v]?edge.u:edge.v)
                 if(uIsOlder){
-                    res.push(bv,death,birthIdx[rv],deathIdx)
+                    births.push(bv)
+                    deaths.push(death)
+                    birthIndices.push(birthIdx[rv])
+                    deathIndices.push(deathIdx)
                     parent[rv]=ru
                 }else{
-                    res.push(bu,death,birthIdx[ru],deathIdx)
+                    births.push(bu)
+                    deaths.push(death)
+                    birthIndices.push(birthIdx[ru])
+                    deathIndices.push(deathIdx)
                     parent[ru]=rv
                 }
             }
         }
-        return {pairs:new Float64Array(res)}
+        const pairCount=births.length
+        const result=new Float64Array(pairCount*4)
+        result.set(births,0)
+        result.set(deaths,pairCount)
+        result.set(birthIndices,pairCount*2)
+        result.set(deathIndices,pairCount*3)
+        return {pairs:result}
     }
     throw new Error(`unknown kernel "${kernel}"`)
 }

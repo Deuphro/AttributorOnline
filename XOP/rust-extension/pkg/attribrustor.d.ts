@@ -38,7 +38,8 @@ export function zeros_matrix(n: number): Int32Array;
 /**
 * Computes 0D persistent homology on a 1D sequence of values (Y values).
 * Supports sublevel (default) and superlevel set filtration.
-* Returns a flat vector of [birth, death, birth_idx, death_idx, ...].
+* Returns a flat, non-interleaved vector with four contiguous blocks:
+* [births..., deaths..., birth_indices..., death_indices...].
 * @param {Float64Array} data
 * @param {string} mode
 * @returns {Float64Array}
