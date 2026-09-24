@@ -4443,6 +4443,7 @@ class Table{
 }
 
 class Dialog{
+    static zIndex=1
     constructor(title,origin,destination){
         this.title=title
         this.events={
@@ -4452,16 +4453,7 @@ class Dialog{
             },
             listen:{
                 selected(e){
-                    console.log("oupinez "+e.detail.emitter.events.registrationId+" a été selectionné !!")
-                    if (e.detail.emitter.events.registrationId===this.events.registrationId) {
-                        console.log("hey mais c moi car je suis:",this.events.registrationId)
-                        this.DOMelt.window.classList.add('selected')
-                        this.DOMelt.window.style["z-index"]="10"
-                    } else {
-                        console.log("ha oui mais c'est pas moi car je suis:",this.events.registrationId)
-                        this.DOMelt.window.classList.remove('selected')
-                        this.DOMelt.window.style["z-index"]="2"//1 is for interface
-                    }
+                    console.log(e.detail.emitter.title+" a reçu le focus")
                 },
                 killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationId)},
                 importDelimitedText(e){console.log(e)}
@@ -4478,7 +4470,7 @@ class Dialog{
         this.DOMelt.folder.setAttribute("aria-label","Replier la fenêtre");
         this.DOMelt.label=CE('div',{className:"label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggleMaximized(e)},[title.toString()]);
         this.DOMelt.label.handleMouseDown=(e)=>e.target.pilot.drag(e);
-        this.DOMelt.label.handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.selected)}
+        this.DOMelt.label.handleClick=(e)=>this.focus(e)
         this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.folder,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
         this.DOMelt.window=CE('div',{className:"popup container",pilot:this},[
@@ -4488,6 +4480,7 @@ class Dialog{
         stylize(this.DOMelt.window,{
             position:"absolute",
             "z-index":"1",
+            tabIndex:0,
             top:"35%",
             left:"35%",
             width:"30%",
@@ -4531,7 +4524,29 @@ class Dialog{
             "align-self":"center"
         })
         this.DOMelt.window.handleResize=(e)=>e.target.pilot.resize(e)
+        this.DOMelt.window.handleMouseDown=(e)=>this.focus(e)
         destination.appendChild(this.DOMelt.window)
+        this.DOMelt.window.setAttribute("tabindex","0")
+        this.DOMelt.window.setAttribute("role","dialog")
+        this.DOMelt.window.setAttribute("aria-label",title.toString())
+        this.DOMelt.window.handleFocus=(e)=>this.focus(e)
+        this.focus()
+    }
+    focus(event){
+        if(Dialog.focused!==this){
+            Dialog.focused?.DOMelt.window.classList.remove("selected")
+            Dialog.focused=this
+        }
+        this.DOMelt.window.classList.add("selected")
+        this.DOMelt.window.style.zIndex=String(++Dialog.zIndex)
+        if(event||!this.DOMelt.window.contains(document.activeElement)){
+            dispatchEvent(this.events.broadcast.selected)
+        }
+    }
+    blur(){
+        if(Dialog.focused!==this) return
+        this.DOMelt.window.classList.remove("selected")
+        Dialog.focused=null
     }
     setFolderFoldedState(folded){
         this.DOMelt.folder.style.backgroundColor=folded?"transparent":"rgba(172,255,47,0.18)"
@@ -5034,8 +5049,16 @@ class App{
         this.main.addEventListener('dblclick',(e)=>{
             if(e.target.handleDblClick){e.target.handleDblClick(e)}
         })
-        this.main.addEventListener('mousedown',function(e){
-            if(e.target.handleMouseDown){e.target.handleMouseDown(e)}
+        this.main.addEventListener('mousedown',(e)=>{
+            const dialog=e.target.closest?.(".popup.container")
+            if(!dialog){
+                Dialog.focused?.blur()
+            }
+            let target=e.target
+            while(target&&target!==this.main&&!target.handleMouseDown){
+                target=target.parentElement
+            }
+            if(target?.handleMouseDown){target.handleMouseDown(e)}
         })
         this.main.addEventListener('mouseup',function(e){
             if(e.target.handleMouseUp){e.target.handleMouseUp(e)}
@@ -5060,8 +5083,12 @@ class App{
         this.main.addEventListener('blur',(e)=>{
             if(e.target.handleBlur){e.target.handleBlur(e)}
         },true)
-        this.main.addEventListener('focus',(e)=>{
-            if(e.target.handleFocus){e.target.handleFocus(e)}
+        this.main.addEventListener('focusin',(e)=>{
+            let target=e.target
+            while(target&&target!==this.main&&!target.handleFocus){
+                target=target.parentElement
+            }
+            if(target?.handleFocus){target.handleFocus(e)}
         })
         this.main.addEventListener('input',(e)=>{
             if(e.target.handleInput){e.target.handleInput(e)}
