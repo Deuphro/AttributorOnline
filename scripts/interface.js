@@ -533,7 +533,11 @@ class DelimitedTextNode extends NodeWithAccordion{
             return
         }
         this.accordion.DOMelt.content.replaceChildren()
+        this.table?.dispose()
+        this.table=null
+        this.accordion.setSizingMode("content")
         if(this.status==="resolved"){
+            this.accordion.setSizingMode("viewport",{height:360})
             const columnLabels=Wave.normalizeLabels(this.parameters.source.labels)
             this.parameters.source.labels=[...columnLabels]
             const resolvedContent=CE("div",{style:{
@@ -544,7 +548,7 @@ class DelimitedTextNode extends NodeWithAccordion{
                 overflow:"hidden"
             }},[])
             this.accordion.DOMelt.content.appendChild(resolvedContent)
-            new Table(this.parameters.source.pairs,[...columnLabels],this.origin,resolvedContent,{mutable:{hRuler:true},onTitleChange:(labels)=>this.setColumnLabels(labels)})
+            this.table=new Table(this.parameters.source.pairs,[...columnLabels],this.origin,resolvedContent,{mutable:{hRuler:true},onTitleChange:(labels)=>this.setColumnLabels(labels)})
             resolvedContent.appendChild(CE("button",{pilot:this,handleClick:e=>e.target.pilot.clear()},["Clear"]))
             return
         }
@@ -626,6 +630,11 @@ class DelimitedTextNode extends NodeWithAccordion{
             validate
         ]))
         updatePreview()
+    }
+    suicide(options={}){
+        this.table?.dispose()
+        this.table=null
+        super.suicide(options)
     }
 }
 
@@ -1415,7 +1424,6 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             const details=document.createElement("details")
             details.open=this.inspectorSections?.[title]??open
             details.style.minWidth="0"
-            details.style.overflow="hidden"
             const summary=document.createElement("summary")
             summary.textContent=title
             details.append(summary)
@@ -4179,6 +4187,8 @@ class Table{
         this.drawVirtual()
         this.container.handleScroll=(e)=>e.target.pilot.onScroll(e);
         this.container.handleResize=(e)=>e.target.pilot.onResize()
+        this.resizeObserver=new ResizeObserver(()=>this.scheduleVirtualDraw())
+        this.resizeObserver.observe(this.container)
     }
     set setData(arg){
         this.data=arg
@@ -4241,7 +4251,20 @@ class Table{
         this.bTable=this.virtualTable()
         this.container.replaceChild(this.bTable,this.container.children[4])
     }
+    scheduleVirtualDraw(){
+        if(this.virtualDrawScheduled){
+            return
+        }
+        this.virtualDrawScheduled=true
+        requestAnimationFrame(()=>{
+            this.virtualDrawScheduled=false
+            this.onResize()
+        })
+    }
     onResize(){
+        if(!this.drawn||!this.container.isConnected){
+            return
+        }
         this.hRuler=this.virtualhRuler()
         this.container.replaceChild(this.hRuler,this.container.children[1])
         this.vRuler=this.virtualvRuler()
@@ -4439,6 +4462,10 @@ class Table{
             res.push(CE('td',{className:"normal cell"},[k.toString()]))
         }
         return res
+    }
+    dispose(){
+        this.resizeObserver?.disconnect()
+        this.container.remove()
     }
     static colNum(data){
         let res=0
@@ -4767,6 +4794,22 @@ class Accordion{
         stylize(this.DOMelt.handler,this.parameters.handler.style);
         stylize(this.DOMelt.content,this.parameters.content.style);
         this.destination.appendChild(this.DOMelt.container)
+        this.setSizingMode("content")
+    }
+    setSizingMode(mode,{height=null}={}){
+        if(!["content","viewport"].includes(mode)){
+            throw new Error(`Unknown accordion sizing mode: ${mode}`)
+        }
+        this.parameters.sizing=mode
+        this.parameters.viewportHeight=height
+        this.DOMelt.container.classList.toggle("sizing-content",mode==="content")
+        this.DOMelt.container.classList.toggle("sizing-viewport",mode==="viewport")
+        this.DOMelt.content.classList.toggle("sizing-content",mode==="content")
+        this.DOMelt.content.classList.toggle("sizing-viewport",mode==="viewport")
+        this.DOMelt.container.style.height=mode==="viewport"&&Number.isFinite(height)?`${height}px`:""
+        this.DOMelt.content.style.display=mode==="viewport"?"grid":"block"
+        this.DOMelt.content.style.height=mode==="viewport"?"100%":"auto"
+        this.DOMelt.content.style.overflow=mode==="viewport"?"hidden":"visible"
     }
     fold(){
         this.parameters.folded=true

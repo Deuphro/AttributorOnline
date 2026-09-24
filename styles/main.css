@@ -236,15 +236,22 @@ div{
 }
 .accordion.container{
     min-height:0;
-    max-height:70%;
     overflow:hidden;
 }
 .accordion.content{
+    min-width:0;
+    min-height:0;
+}
+.accordion.content.sizing-content{
+    display:block;
+    height:auto;
+    overflow:visible;
+}
+.accordion.content.sizing-viewport{
     display:grid;
     grid-template-rows:minmax(0, 1fr);
-    min-height:0;
-    max-height:100%;
-    overflow:auto;
+    height:100%;
+    overflow:hidden;
 }
 
 .app{
@@ -368,7 +375,6 @@ input[type=range].dual::-moz-range-thumb{
 /* ---- Inspecteur SimpleXYPlot (accordéon droit) ---- */
 .accordion.content details{
     min-width: 0;
-    overflow: hidden;
 }
 .accordion.content details input,
 .accordion.content details select,
