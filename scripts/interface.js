@@ -1435,13 +1435,18 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             if(!trace.options.marker||typeof trace.options.marker!=="object"){
                 trace.options.marker={shape:"circle",size:4}
             }
+            const traceGroup=document.createElement("div")
+            traceGroup.className="trace-group"
             const item=document.createElement("div")
+            item.className="trace-item"
             item.style.display="grid"
             item.style.gridTemplateColumns="auto minmax(0,1fr) auto"
             item.style.gap="4px"
             item.style.alignItems="center"
             item.draggable=true
-            if(trace.id===this.selectedTraceId) item.classList.add("selected")
+            if(trace.id===this.selectedTraceId){
+                item.classList.add("selected")
+            }
             const swatchWrap=document.createElement("label")
             swatchWrap.title="Trace color"
             swatchWrap.style.width="1.2em"
@@ -1510,7 +1515,8 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
                     this.renderInspector()
                 }
             })
-            traceList.append(item)
+            traceGroup.append(item)
+            traceList.append(traceGroup)
         }
         const trace=this.graph.traces.find(candidate=>candidate.id===this.selectedTraceId)
         if(trace){
@@ -1518,6 +1524,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
                 trace.options.marker={shape:"circle",size:4}
             }
             const editor=document.createElement("div")
+            editor.className="trace-editor"
             editor.style.display="grid"
             editor.style.gap="4px"
             editor.style.padding="4px"
@@ -1568,7 +1575,8 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             size.style.width="100%"
             size.addEventListener("input",()=>{trace.options.line.size=Number(size.value);this.graph.drawGraph()})
             control("Line size",size)
-            tracesSection.append(editor)
+            const selectedGroup=traceList.querySelector(`.trace-group:has(.trace-item.selected)`)
+            if(selectedGroup) selectedGroup.append(editor)
         }
         const axesSection=section("Axes",false)
         for(const [key,axis] of Object.entries(this.graph.parameters.axis)){

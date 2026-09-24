@@ -318,6 +318,29 @@ div{
     outline: 1px solid var(--text);
     box-shadow: 0px 0px 20px 1px var(--accent-soft);
 }
+.trace-group{
+    display:grid;
+    min-width:0;
+    gap:4px;
+}
+.trace-item.selected{
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.55), 0 0 10px rgba(172,255,47,0.28);
+}
+.trace-editor{
+    background:rgba(42, 51, 63, 0.92);
+    border:1px solid rgba(111, 132, 151, 0.72)!important;
+    box-shadow:inset 0 0 0 1px rgba(167, 183, 198, 0.18), 0 1px 4px rgba(0,0,0,0.28);
+}
+.trace-editor::before{
+    content:"Trace settings";
+    color:#9aafc1;
+    font-size:0.8em;
+    font-weight:600;
+    letter-spacing:0.04em;
+    text-transform:uppercase;
+}
 
 input[type=range].dual{
     -webkit-appearance: none;
