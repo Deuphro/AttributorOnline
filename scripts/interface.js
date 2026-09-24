@@ -960,6 +960,9 @@ class PersistentHomology0DNode extends NodeWithAccordion{
                     })
                 }
             }
+            // Output order follows the original X coordinate, not Y or the
+            // filtration order. birthIdx makes equal-X ordering deterministic.
+            parsed.sort((a,b)=>a.birthX-b.birthX||a.birthIdx-b.birthIdx)
             this.pairsData = parsed
             //first resolve without any slope yet: fit the line so every pair
             //is kept (the previous default behaved the same way)

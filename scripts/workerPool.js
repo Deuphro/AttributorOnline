@@ -81,7 +81,7 @@ function runKernelLocally(kernel,payload){
         const {core,params}=payload
         const mode=params?.mode??"sublevel"
         const n=core.length
-        if(n<2) return {pairs:new Float64Array(0)}
+        if(n===0) return {pairs:new Float64Array(0)}
         const isSuperlevel=mode==="superlevel"
         const parent=new Uint32Array(n)
         const birthVal=new Float64Array(n)
@@ -143,6 +143,18 @@ function runKernelLocally(kernel,payload){
                     parent[ru]=rv
                 }
             }
+        }
+        //A superlevel component containing the global maximum never dies:
+        //return it explicitly as (birth=max, death=0) for downstream filtering.
+        if(isSuperlevel){
+            let maximumIdx=0
+            for(let i=1;i<n;i++){
+                if(core[i]>core[maximumIdx]) maximumIdx=i
+            }
+            births.push(core[maximumIdx])
+            deaths.push(0)
+            birthIndices.push(maximumIdx)
+            deathIndices.push(maximumIdx)
         }
         const pairCount=births.length
         const result=new Float64Array(pairCount*4)

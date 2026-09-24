@@ -64,7 +64,7 @@ pub fn zeros_matrix(n: usize) -> Vec<i32> {
 #[wasm_bindgen]
 pub fn persistent_homology_0d(data: &[f64], mode: &str) -> Vec<f64> {
     let n = data.len();
-    if n < 2 {
+    if n == 0 {
         return Vec::new();
     }
 
@@ -143,6 +143,19 @@ pub fn persistent_homology_0d(data: &[f64], mode: &str) -> Vec<f64> {
         }
     }
 
+    // A superlevel component containing the global maximum never dies. Add it
+    // explicitly as (birth=max, death=0), so downstream classifiers keep the
+    // most intense original point regardless of their threshold.
+    if is_superlevel {
+        let mut maximum_idx = 0;
+        for i in 1..n {
+            if data[i] > data[maximum_idx] {
+                maximum_idx = i;
+            }
+        }
+        pairs.push((data[maximum_idx], 0.0, maximum_idx, maximum_idx));
+    }
+
     let pair_count = pairs.len();
     let mut result = Vec::with_capacity(pair_count * 4);
     result.extend(pairs.iter().map(|pair| pair.0));
@@ -181,5 +194,25 @@ mod tests {
             assert!(pairs[3 * pair_count + i] >= 0.0);
             assert!(pairs[4 * pair_count - 1 - i] >= 0.0);
         }
+
+        // The component of the global maximum never dies in superlevel mode.
+        // It is returned explicitly as (birth=4, death=0), with index 3.
+        let synthetic = pair_count - 1;
+        assert_eq!(pairs[synthetic], 4.0);
+        assert_eq!(pairs[pair_count + synthetic], 0.0);
+        assert_eq!(pairs[2 * pair_count + synthetic], 3.0);
+        assert_eq!(pairs[3 * pair_count + synthetic], 3.0);
+    }
+
+    #[test]
+    fn test_persistent_homology_superlevel_single_point() {
+        let pairs = persistent_homology_0d(&[7.5], "superlevel");
+        assert_eq!(pairs, vec![7.5, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_persistent_homology_sublevel_keeps_infinite_component_omitted() {
+        let pairs = persistent_homology_0d(&[1.0, 3.0, 2.0], "sublevel");
+        assert_eq!(pairs.len() / 4, 2);
     }
 }
