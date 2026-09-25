@@ -441,8 +441,9 @@ export class GLTraceLayer{
     _castBuffers(descriptors){
         const out=descriptors.map(trace=>{
             const buffer=trace.buffer
+            const yBuffer=trace.yBuffer
             const pairs=trace.pairs
-            if(buffer){
+            if(buffer && yBuffer){
                 if(!(buffer instanceof Float32Array)){
                     //explicit Float64 -> Float32 (trace.buffer must be a typed
                     //array: Float32Array or Float64Array; anything else is left
@@ -451,11 +452,11 @@ export class GLTraceLayer{
                         return trace
                     }
                     const c=new Float32Array(buffer.length)
-                    //one native copy per buffer, no per-element JS calls
-                    for(let i=0;i<buffer.length;i++){
-                        c[i]=buffer[i]
-                    }
-                    return {...trace,buffer:c}
+                    const cy=new Float32Array(yBuffer.length)
+                    //one native copy per source buffer, no per-element JS calls
+                    for(let i=0;i<buffer.length;i++) c[i]=buffer[i]
+                    for(let i=0;i<yBuffer.length;i++) cy[i]=yBuffer[i]
+                    return {...trace,buffer:c,yBuffer:cy}
                 }
                 return trace
             }
@@ -508,6 +509,7 @@ export class GLTraceLayer{
             //descriptors, so reading from sources is safe for both.
             const trace=sources[t]
             const buffer=trace.buffer
+            const yBuffer=trace.yBuffer
             const pairs=trace.pairs
             const count=trace.count|0
             const withMarkers=trace.markers
@@ -526,9 +528,9 @@ export class GLTraceLayer{
             for(let i=0;i<count;i++){
                 let x
                 let y
-                if(buffer!==null){
-                    x=buffer[i+i]
-                    y=buffer[i+i+1]
+                if(buffer!==null && yBuffer!==null && yBuffer!==undefined){
+                    x=buffer[i]
+                    y=yBuffer[i]
                 }else{
                     const pair=pairs[i]
                     if(!pair){

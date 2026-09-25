@@ -6,7 +6,7 @@ import { Data , Vector, Wave, XYTrace} from "./formats.js"
 import {computePool} from "./workerPool.js"
 import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 
-window.raie=new Wave(5)
+window.raie=new Wave(10,2)
 window.eiar=new Wave(7)
 
 class Command{
@@ -662,6 +662,15 @@ function keepAllSlope(pairs){
     }
     return clampClassifierSlope(slope)
 }
+function keepAllSlopeFromFlat(births,deaths){
+    let slope=CLASSIFIER_MIN_SLOPE
+    for(let i=0;i<births.length;i++){
+        if(!(births[i]>0)) continue
+        const ratio=deaths[i]/births[i]
+        if(Number.isFinite(ratio)&&ratio>slope) slope=ratio
+    }
+    return clampClassifierSlope(slope)
+}
 //Liang-Barsky: the segment of an infinite line inside the rect, or null
 function clipSegmentToRect(x0,y0,x1,y1,width,height){
     let t0=0
@@ -883,19 +892,19 @@ class PersistentHomology0DNode extends NodeWithAccordion{
     //slope of the line through the origin and the centroid of the pairs —
     //a neutral split of the cloud (the old guess placed a threshold at mean(Y))
     guessSlope(){
-        if(!this.pairsData?.length) return null
-        let sumBirth = 0
-        let sumDeath = 0
-        for(const pair of this.pairsData){
-            sumBirth += pair.birth
-            sumDeath += pair.death
+        const births=this.persistenceBirths
+        const deaths=this.persistenceDeaths
+        if(!births?.length) return null
+        let sumBirth=0
+        let sumDeath=0
+        for(let i=0;i<births.length;i++){
+            sumBirth+=births[i]
+            sumDeath+=deaths[i]
         }
-        //superlevel pairs have death < birth pair-wise; the ratio is below 1 when valid
-        if(sumBirth > 0 && Number.isFinite(sumDeath / sumBirth)){
+        if(sumBirth>0 && Number.isFinite(sumDeath / sumBirth)){
             return clampClassifierSlope(sumDeath / sumBirth)
         }
-        //degenerate cloud (no positive birth): fall back to the keep-all fit
-        return keepAllSlope(this.pairsData)
+        return keepAllSlopeFromFlat(births,deaths)
     }
 
     async startResolve(){
@@ -915,71 +924,24 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             this.parameters.slope = clampClassifierSlope(externalSlope)
         }
 
-        // Extract X and Y buffers
-        let count = 0
-        let xBuffer = null
-        let yBuffer = null
-        if(inputWave.degree === 2 && inputWave.dims[0] === 2){
-            count = inputWave.dims[1]
-            xBuffer = new Float64Array(count)
-            yBuffer = new Float64Array(count)
-            for(let i = 0; i < count; i++){
-                xBuffer[i] = inputWave.core[2 * i]
-                yBuffer[i] = inputWave.core[2 * i + 1]
-            }
-        }else{
-            count = inputWave.core.length
-            xBuffer = new Float64Array(count)
-            yBuffer = new Float64Array(count)
-            for(let i = 0; i < count; i++){
-                xBuffer[i] = i
-                yBuffer[i] = inputWave.core[i]
-            }
-        }
-
-        //the default slope is fitted on the parsed pairs below (keep-all)
+        const stride=inputWave.degree===2&&inputWave.dims[1]===2?2:1
 
         try{
-            const { pairs } = await computePool.run("persistentHomology0D", {
-                core: yBuffer,
-                params: { mode: this.parameters.filtrationMode ?? "sublevel" }
+            const analysis=await computePool.run("persistentHomology0D", {
+                core: inputWave.core,
+                params: { mode: this.parameters.filtrationMode ?? "sublevel", stride }
             })
-
-            const parsed = []
-            if(pairs && pairs.length){
-                const pairCount = Math.floor(pairs.length / 4)
-                const birthsOffset = 0
-                const deathsOffset = pairCount
-                const birthIndicesOffset = pairCount * 2
-                const deathIndicesOffset = pairCount * 3
-                for(let i = 0; i < pairCount; i++){
-                    const birth = pairs[birthsOffset + i]
-                    const death = pairs[deathsOffset + i]
-                    const bIdx = Math.round(pairs[birthIndicesOffset + i])
-                    const dIdx = Math.round(pairs[deathIndicesOffset + i])
-                    parsed.push({
-                        birth,
-                        death,
-                        birthIdx: bIdx,
-                        deathIdx: dIdx,
-                        birthX: xBuffer[bIdx] ?? bIdx,
-                        birthY: yBuffer[bIdx] ?? birth,
-                        deathX: xBuffer[dIdx] ?? dIdx,
-                        deathY: yBuffer[dIdx] ?? death
-                    })
-                }
+            this.persistenceBirths=analysis.births
+            this.persistenceDeaths=analysis.deaths
+            this.persistencePointsX=analysis.pointsX
+            this.persistencePointsY=analysis.pointsY
+            this.persistenceBirthIndices=analysis.birthIndices
+            this.pairsData={count:this.persistenceBirths.length}
+            if(!Number.isFinite(this.parameters.slope) && Number.isFinite(analysis.slope)){
+                this.parameters.slope=analysis.slope
             }
-            // Output order follows the original X coordinate, not Y or the
-            // filtration order. birthIdx makes equal-X ordering deterministic.
-            parsed.sort((a,b)=>a.birthX-b.birthX||a.birthIdx-b.birthIdx)
-            this.pairsData = parsed
-            //first resolve without any slope yet: fit the line so every pair
-            //is kept (the previous default behaved the same way)
-            if(parsed.length && !Number.isFinite(this.parameters.slope)){
-                this.parameters.slope = keepAllSlope(parsed)
-            }
-            this.status = "resolved"
-            this.applySlopeFilter()
+            this.status="resolved"
+            await this.applySlopeFilter()
             this.updateControlsUI()
         }catch(err){
             console.error("[PersistentHomology0DNode] Error resolving:", err)
@@ -987,72 +949,46 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         }
     }
 
-    applySlopeFilter(){
-        if(!this.pairsData) return
-        const slope = this.parameters.slope
-        //no slope fitted yet (empty plot): keep everything, like before
-        const keepAll = !Number.isFinite(slope)
+    async applySlopeFilter(){
+        if(!this.persistenceBirths) return
+        const slope=Number.isFinite(this.parameters.slope)?this.parameters.slope:0
+        const classification=await computePool.run("classifyPersistence0D",{
+            births:this.persistenceBirths,
+            deaths:this.persistenceDeaths,
+            pointsX:this.persistencePointsX,
+            pointsY:this.persistencePointsY,
+            params:{slope}
+        })
+        const pairCount=this.persistenceBirths.length
+        this.outputs[0]=classification.keptBirths.length
+            ?[Wave.fromCoordinates(classification.keptBirths,classification.keptDeaths,{title:`${this.title} (Death vs Birth)`,slope},["birth","death"])]
+            :[]
+        this.outputs[1]=classification.keptPointsX.length
+            ?[Wave.fromCoordinates(classification.keptPointsX,classification.keptPointsY,{title:`${this.title} (Points)`,slope})]
+            :[]
 
-        const kept = []
-        const discarded = []
-        for(const pair of this.pairsData){
-            //under the classifier line: death <= slope × birth
-            const pass = keepAll || pair.death <= slope * pair.birth
-            if(pass){
-                kept.push(pair)
-            }else{
-                discarded.push(pair)
-            }
-        }
-
-        const keptPairs = kept.map(p => [p.birth, p.death])
-        const keptPoints = kept.map(p => [p.birthX, p.birthY])
-
-        this.outputs[0] = keptPairs.length
-            ? [Wave.fromPairs(keptPairs, { title: `${this.title} (Death vs Birth)`, slope }, ["birth", "death"])]
-            : []
-        this.outputs[1] = keptPoints.length
-            ? [Wave.fromPairs(keptPoints, { title: `${this.title} (Points)`, slope }, ["x", "y"])]
-            : []
-
-        // Update WebGL traces on Plot2DWebGL
         if(this.graph){
-            const traces = []
-            if(keptPairs.length){
+            const traces=[]
+            if(classification.keptBirths.length){
                 traces.push(new XYTrace({
-                    id: `${this.title}:kept`,
-                    title: `Kept (${keptPairs.length})`,
-                    wave: Wave.fromPairs(keptPairs, {}, ["birth", "death"]),
-                    options: {
-                        color: "#2ecc71",
-                        mode: "points",
-                        marker: { shape: "circle", size: 4 },
-                        layer: "gl"
-                    }
+                    id:`${this.title}:kept`,title:`Kept (${classification.keptCount})`,
+                    wave:Wave.fromCoordinates(classification.keptBirths,classification.keptDeaths,{},["birth","death"]),
+                    options:{color:"#2ecc71",mode:"points",marker:{shape:"circle",size:4},layer:"gl"}
                 }))
             }
-            if(discarded.length){
-                const discardedPairs = discarded.map(p => [p.birth, p.death])
+            if(classification.discardedBirths.length){
                 traces.push(new XYTrace({
-                    id: `${this.title}:discarded`,
-                    title: `Discarded (${discardedPairs.length})`,
-                    wave: Wave.fromPairs(discardedPairs, {}, ["birth", "death"]),
-                    options: {
-                        color: "#7f8c8d",
-                        mode: "points",
-                        marker: { shape: "circle", size: 3 },
-                        layer: "gl"
-                    }
+                    id:`${this.title}:discarded`,
+                    title:`Discarded (${classification.discardedBirths.length})`,
+                    wave:Wave.fromCoordinates(classification.discardedBirths,classification.discardedDeaths,{},["birth","death"]),
+                    options:{color:"#7f8c8d",mode:"points",marker:{shape:"circle",size:3},layer:"gl"}
                 }))
             }
             this.graph.setTraces(traces)
             this.graph.drawGraph()
             this.updateClassifierSVG()
         }
-
-        if(this.countLabel){
-            this.countLabel.textContent = `${kept.length}/${this.pairsData.length} pairs`
-        }
+        if(this.countLabel) this.countLabel.textContent=`${classification.keptCount}/${pairCount} pairs`
     }
 
     updateControlsUI(){
@@ -1061,7 +997,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         }
         if(this.countLabel && this.pairsData){
             const keptCount = this.outputs[0]?.[0]?.dims?.[1] ?? 0
-            this.countLabel.textContent = `${keptCount}/${this.pairsData.length} pairs`
+            this.countLabel.textContent = `${keptCount}/${this.pairsData.count} pairs`
         }
     }
 
@@ -2914,13 +2850,13 @@ class Plot2D{
         const sources=this.traces.length?this.traces:[{points:this.data}]
         for(const source of sources){
             const wave=source.wave
-            if(wave?.core&&wave.degree===2&&wave.dims[0]===2){
-                //flat interleaved core: the cheapest possible source
+            if(wave?.core&&wave.degree===2&&wave.dims[1]===2){
+                //Wave.core is canonical [x0..xN, y0..yN].
                 const core=wave.core
-                const count=wave.dims[1]
+                const count=wave.dims[0]
                 for(let i=0;i<count;i++){
-                    const x=core[i+i]
-                    const y=core[i+i+1]
+                    const x=core[i]
+                    const y=core[count+i]
                     if(!validX(x)||!validY(y)) continue
                     if(x<xMin) xMin=x
                     if(x>xMax) xMax=x
@@ -3020,9 +2956,10 @@ class Plot2D{
         const sources=this.traces.length?this.traces:[{points:this.data}]
         for(const source of sources){
             const wave=source.wave
-            if(wave?.core&&wave.degree===2&&wave.dims[0]===2){
+            if(wave?.core&&wave.degree===2&&wave.dims[1]===2){
                 const core=wave.core
-                for(let i=0,n=wave.dims[1]*2;i<n;i+=2) visit(core[i],core[i+1])
+                const count=wave.dims[0]
+                for(let i=0;i<count;i++) visit(core[i],core[count+i])
                 continue
             }
             const points=source.points
@@ -3719,14 +3656,15 @@ class Plot2DWebGL extends Plot2D{
             const markerSize=Number(marker.size??4)
             const lineSize=Number(line.size??1)
             const wave=trace.wave
-            //flat interleaved [x,y,x,y,…]: Wave.core already is a Float64Array,
-            //which is also the shape a Rust/Wasm worker will hand over
             let buffer=null
+            let yBuffer=null
             let pairs=null
             let count=0
-            if(wave?.core&&wave.degree===2&&wave.dims[0]===2){
-                buffer=wave.core
-                count=wave.dims[1]
+            if(wave?.core&&wave.degree===2&&wave.dims[1]===2){
+                //Wave.core is canonical [x0..xN, y0..yN], not interleaved.
+                count=wave.dims[0]
+                buffer=wave.core.subarray(0,count)
+                yBuffer=wave.core.subarray(count,count*2)
             }else{
                 const points=trace.points??[]
                 if(points instanceof Float32Array||points instanceof Float64Array){
@@ -3739,6 +3677,7 @@ class Plot2DWebGL extends Plot2D{
             }
             descriptors.push({
                 buffer,
+                yBuffer,
                 pairs,
                 count,
                 //colour resolution is a cached dictionary lookup: no DOM, no layout
@@ -3775,7 +3714,7 @@ class Plot2DWebGL extends Plot2D{
                 marker.shape??"",
                 marker.size??"",
                 line.size??"",
-                wave?wave.dims[1]:(trace.points?.length??0)
+                wave?wave.dims[0]:(trace.points?.length??0)
             )
         }
         return parts.join("|")
@@ -3887,7 +3826,7 @@ class Plot2DWebGL extends Plot2D{
                 marker.size??"",
                 line.size??"",
                 wave?(wave.revision??0):0,
-                wave?wave.dims[1]:(trace.points?.length??0)
+                wave?wave.dims[0]:(trace.points?.length??0)
             )
         }
         return parts.join("|")

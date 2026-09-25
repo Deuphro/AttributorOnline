@@ -77,7 +77,7 @@ function runKernelLocally(kernel,payload){
         //same shape as the worker kernels: {core: Float64Array}
         return {core:result}
     }
-    if(kernel==="persistentHomology0D"){
+    if(kernel==="legacyPersistentHomology0D"){
         const {core,params}=payload
         const mode=params?.mode??"sublevel"
         const n=core.length
@@ -164,7 +164,42 @@ function runKernelLocally(kernel,payload){
         result.set(deathIndices,pairCount*3)
         return {pairs:result}
     }
+    if(kernel==="persistentHomology0D"){
+        return runPersistenceAnalysisLocal(payload)
+    }
+    if(kernel==="classifyPersistence0D"){
+        return runPersistenceClassificationLocal(payload)
+    }
     throw new Error(`unknown kernel "${kernel}"`)
+}
+
+function runPersistenceAnalysisLocal({core,params={}}){
+    const stride=params.stride??1, mode=params.mode??"sublevel", n=Math.floor(core.length/stride)
+    const y=stride===2?core.subarray(n):core
+    const raw=runKernelLocallyOldH0(y,mode), count=raw.length/4
+    const rows=Array.from({length:count},(_,i)=>{const idx=Math.round(raw[count*2+i]);return{x:stride===2?core[idx]:idx,birth:raw[i],death:raw[count+i],idx}})
+    rows.sort((a,b)=>a.x-b.x||a.idx-b.idx)
+    const births=new Float64Array(count),deaths=new Float64Array(count),pointsX=new Float64Array(count),pointsY=new Float64Array(count),birthIndices=new Float64Array(count)
+    let sumBirth=0,sumDeath=0
+    rows.forEach((p,i)=>{births[i]=p.birth;deaths[i]=p.death;pointsX[i]=p.x;pointsY[i]=y[p.idx];birthIndices[i]=p.idx;sumBirth+=p.birth;sumDeath+=p.death})
+    const slope=sumBirth>0&&Number.isFinite(sumDeath/sumBirth)?Math.min(1-1e-12,Math.max(1e-9,sumDeath/sumBirth)):1-1e-12
+    return {births,deaths,pointsX,pointsY,birthIndices,slope}
+}
+function runKernelLocallyOldH0(data,mode){
+    const n=data.length
+    if(!n) return new Float64Array(0)
+    const superlevel=mode==="superlevel", parent=Array.from({length:n},(_,i)=>i), birthIdx=Array.from({length:n},(_,i)=>i), births=[],deaths=[],bIdx=[],dIdx=[]
+    const find=i=>{let r=i;while(r!==parent[r])r=parent[r];while(i!==r){const p=parent[i];parent[i]=r;i=p}return r}
+    const edges=Array.from({length:Math.max(0,n-1)},(_,i)=>({u:i,v:i+1,w:superlevel?Math.min(data[i],data[i+1]):Math.max(data[i],data[i+1])}))
+    edges.sort((a,b)=>superlevel?b.w-a.w:a.w-b.w)
+    for(const e of edges){const ru=find(e.u),rv=find(e.v);if(ru===rv)continue;const bu=data[birthIdx[ru]],bv=data[birthIdx[rv]],older=superlevel?(bu>bv||(bu===bv&&ru<rv)):(bu<bv||(bu===bv&&ru<rv));const death=e.w,di=superlevel?(data[e.u]<=data[e.v]?e.u:e.v):(data[e.u]>=data[e.v]?e.u:e.v);if(older){births.push(bv);deaths.push(death);bIdx.push(birthIdx[rv]);dIdx.push(di);parent[rv]=ru}else{births.push(bu);deaths.push(death);bIdx.push(birthIdx[ru]);dIdx.push(di);parent[ru]=rv}}
+    if(superlevel){let mi=0;for(let i=1;i<n;i++)if(data[i]>data[mi])mi=i;births.push(data[mi]);deaths.push(0);bIdx.push(mi);dIdx.push(mi)}
+    const c=births.length,out=new Float64Array(c*4);births.forEach((v,i)=>{out[i]=v;out[c+i]=deaths[i];out[2*c+i]=bIdx[i];out[3*c+i]=dIdx[i]});return out
+}
+function runPersistenceClassificationLocal({births,deaths,pointsX,pointsY,params={}}){
+    const count=births.length,keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count);let kept=0,discarded=0
+    for(let i=0;i<count;i++){const pass=deaths[i]<=params.slope*births[i]||deaths[i]<=params.slope*births[i]+1e-9*Math.max(1,Math.abs(births[i]));if(pass){keptBirths[kept]=births[i];keptDeaths[kept]=deaths[i];keptPointsX[kept]=pointsX[i];keptPointsY[kept]=pointsY[i];kept++}else{discardedBirths[discarded]=births[i];discardedDeaths[discarded]=deaths[i];discarded++}}
+    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
 }
 
 export const computePool=new WorkerPool()

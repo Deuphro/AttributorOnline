@@ -69,7 +69,8 @@ function serveStaticFileLimited(req, res) {
         "/resources/config.js":"resources/config.js",
         "/scripts/formats.js":"scripts/formats.js",
         "/resources/pattern.svg":"resources/pattern.svg",
-        "/scripts/sessions.js":"scripts/sessions.js"
+        "/scripts/sessions.js":"scripts/sessions.js",
+        "/scripts/plot2d-gl.js":"scripts/plot2d-gl.js"
     }
     const filePath = filePathMap[req.url]
     console.log("This file is served by serveStaticFileLimited: ",req.url)

@@ -29,21 +29,84 @@ const kernels={
     },
     async persistentHomology0D({core,params}){
         const mode=params?.mode??"sublevel"
-        let pairs=null
+        const stride=params?.stride??1
+        let result
         try{
             await ensureWasm()
-            if(typeof rust.persistent_homology_0d!=="function"){
-                throw new Error("rust persistent_homology_0d is missing (stale pkg build?)")
+            if(typeof rust.persistent_homology_0d_waves!=="function"){
+                throw new Error("rust persistent_homology_0d_waves is missing (stale pkg build?)")
             }
-            const res=rust.persistent_homology_0d(core,mode)
-            pairs=res instanceof Float64Array?res:new Float64Array(res)
+            const analysis=rust.persistent_homology_0d_waves(core,stride,mode)
+            result={
+                births:toFloat64(analysis.births),
+                deaths:toFloat64(analysis.deaths),
+                pointsX:toFloat64(analysis.points_x),
+                pointsY:toFloat64(analysis.points_y),
+                birthIndices:toFloat64(analysis.birth_indices),
+                slope:analysis.slope
+            }
         }catch(err){
-            console.warn("[kernelWorker] rust persistent_homology_0d unavailable, JS fallback:",err)
-            pairs=computePersistentHomology0D_JS(core,mode)
+            console.warn("[kernelWorker] rust H0 unavailable, JS fallback:",err)
+            result=analysePersistence0DJS(core,stride,mode)
         }
-        return {pairs}
+        return result
+    },
+    async classifyPersistence0D({births,deaths,pointsX,pointsY,params}){
+        const slope=params?.slope
+        if(!Number.isFinite(slope)) throw new Error("classification requires a finite slope")
+        let result
+        try{
+            await ensureWasm()
+            if(typeof rust.classify_persistence_0d!=="function"){
+                throw new Error("rust classify_persistence_0d is missing (stale pkg build?)")
+            }
+            const classification=rust.classify_persistence_0d(births,deaths,pointsX,pointsY,slope)
+            result={
+                keptBirths:toFloat64(classification.kept_births),
+                keptDeaths:toFloat64(classification.kept_deaths),
+                keptPointsX:toFloat64(classification.kept_points_x),
+                keptPointsY:toFloat64(classification.kept_points_y),
+                discardedBirths:toFloat64(classification.discarded_births),
+                discardedDeaths:toFloat64(classification.discarded_deaths),
+                keptCount:classification.kept_count
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust classification unavailable, JS fallback:",err)
+            result=classifyPersistence0DJS(births,deaths,pointsX,pointsY,slope)
+        }
+        return result
     }
 }
+
+function toFloat64(value){
+    return value instanceof Float64Array?value:new Float64Array(value)
+}
+
+function analysePersistence0DJS(core,stride=1,mode="sublevel"){
+    const n=Math.floor(core.length/stride), offset=stride===2?n:0
+    const y=stride===2?core.subarray(offset):core
+    const raw=computePersistentHomology0D_JS(y,mode),count=raw.length/4
+    const rows=Array.from({length:count},(_,i)=>{const idx=Math.round(raw[count*2+i]);return{x:stride===2?core[idx]:idx,birth:raw[i],death:raw[count+i],idx}})
+    rows.sort((a,b)=>a.x-b.x||a.idx-b.idx)
+    const births=new Float64Array(count),deaths=new Float64Array(count),pointsX=new Float64Array(count),pointsY=new Float64Array(count),birthIndices=new Float64Array(count)
+    let sumBirth=0,sumDeath=0
+    rows.forEach((p,i)=>{births[i]=p.birth;deaths[i]=p.death;pointsX[i]=p.x;pointsY[i]=y[p.idx];birthIndices[i]=p.idx;sumBirth+=p.birth;sumDeath+=p.death})
+    const slope=sumBirth>0&&Number.isFinite(sumDeath/sumBirth)?clampJS(sumDeath/sumBirth):clampJS(keepAllSlopeJS(births,deaths))
+    return {births,deaths,pointsX,pointsY,birthIndices,slope}
+}
+function classifyPersistence0DJS(births,deaths,pointsX,pointsY,slope){
+    const count=births.length
+    const keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count)
+    let kept=0,discarded=0
+    for(let i=0;i<count;i++){
+        if(deaths[i]<=slope*births[i]||deaths[i]<=slope*births[i]+1e-9*Math.max(1,Math.abs(births[i]))){
+            keptBirths[kept]=births[i];keptDeaths[kept]=deaths[i];keptPointsX[kept]=pointsX[i];keptPointsY[kept]=pointsY[i];kept++
+        }else{discardedBirths[discarded]=births[i];discardedDeaths[discarded]=deaths[i];discarded++}
+    }
+    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
+}
+function clampJS(v){return Number.isFinite(v)?Math.min(1-1e-12,Math.max(1e-9,v)):1-1e-12}
+function keepAllSlopeJS(births,deaths){let r=0;for(let i=0;i<births.length;i++)if(births[i]>0)r=Math.max(r,deaths[i]/births[i]);return r}
 
 function computePersistentHomology0D_JS(data,mode="sublevel"){
     const n=data.length
@@ -139,9 +202,10 @@ self.addEventListener("message",async e=>{
             throw new Error(`unknown kernel "${kernel}"`)
         }
         const result=await kernelFn(payload)
-        const transfer=[]
-        if(result?.core?.buffer) transfer.push(result.core.buffer)
-        if(result?.pairs?.buffer) transfer.push(result.pairs.buffer)
+        const transfer=Object.values(result??{})
+            .filter(value=>value instanceof Float64Array)
+            .map(value=>value.buffer)
+            .filter((buffer,index,buffers)=>buffers.indexOf(buffer)===index)
         self.postMessage({id,ok:true,result},transfer)
     }catch(err){
         self.postMessage({id,ok:false,error:err?.message??String(err)})

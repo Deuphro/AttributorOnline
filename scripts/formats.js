@@ -117,11 +117,25 @@ class Wave{
         }
         return normalized
     }
+    //Adopts the canonical Wave layout [x0..xN, y0..yN] without copying either
+    //Float64Array. This is the only supported core layout for a 2D Wave.
+    static fromCoordinates(x,y,metadata={},labels=["x","y"]){
+        if(!(x instanceof Float64Array)||!(y instanceof Float64Array)||x.length!==y.length){
+            throw new TypeError("Wave.fromCoordinates expects equally-sized Float64Array x and y")
+        }
+        const wave=new Wave(x.length,2)
+        const core=new Float64Array(x.length*2)
+        core.set(x,0); core.set(y,x.length)
+        wave.core=core
+        wave.labels=Wave.normalizeLabels(labels)
+        wave.metadata={...metadata}
+        return wave
+    }
     static fromPairs(pairs,metadata={},labels=["x","y"]){
         if(!Array.isArray(pairs)){
             throw new TypeError("Wave.fromPairs expects an array of [x, y] pairs")
         }
-        const wave=new Wave(2,pairs.length)
+        const wave=new Wave(pairs.length,2)
         for(let pointIndex=0;pointIndex<pairs.length;pointIndex++){
             const pair=pairs[pointIndex]
             if(!Array.isArray(pair)||pair.length<2){
@@ -132,8 +146,8 @@ class Wave{
             if(!Number.isFinite(x)||!Number.isFinite(y)){
                 throw new TypeError(`XY pair at index ${pointIndex} must contain finite numbers`)
             }
-            wave.core[wave.index(0,pointIndex)]=x
-            wave.core[wave.index(1,pointIndex)]=y
+            wave.core[wave.index(pointIndex,0)]=x
+            wave.core[wave.index(pointIndex,1)]=y
         }
         wave.labels=Wave.normalizeLabels(labels)
         wave.metadata={...metadata}
@@ -154,12 +168,12 @@ class Wave{
         return this
     }
     toPairs(){
-        if(this.degree!==2||this.dims[0]!==2){
-            throw new TypeError("Wave.toPairs requires a Wave with dimensions [2, pointCount]")
+        if(this.degree!==2||this.dims[1]!==2){
+            throw new TypeError("Wave.toPairs requires a Wave with dimensions [pointCount, 2]")
         }
-        return Array.from({length:this.dims[1]},(_,pointIndex)=>[
-            this.core[this.index(0,pointIndex)],
-            this.core[this.index(1,pointIndex)]
+        return Array.from({length:this.dims[0]},(_,pointIndex)=>[
+            this.core[this.index(pointIndex,0)],
+            this.core[this.index(pointIndex,1)]
         ])
     }
     [Symbol.iterator](){
@@ -681,13 +695,13 @@ class Trace{
 class XYTrace extends Trace{
     constructor({id,title="XY trace",wave,options={}}={}){
         super({id,title,options})
-        if(!(wave instanceof Wave)||wave.degree!==2||wave.dims[0]!==2){
-            throw new TypeError("XYTrace requires a Wave with dimensions [2, pointCount]")
+        if(!(wave instanceof Wave)||wave.degree!==2||wave.dims[1]!==2){
+            throw new TypeError("XYTrace requires a Wave with dimensions [pointCount, 2]")
         }
         this.wave=wave
     }
     get pointCount(){
-        return this.wave.dims[1]
+        return this.wave.dims[0]
     }
     get points(){
         return this.wave.toPairs()

@@ -1,5 +1,10 @@
 #![allow(unused)]
 use wasm_bindgen::prelude::*;
+mod persistence;
+pub use persistence::{
+    classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,
+    PersistenceClassification,
+};
 
 #[wasm_bindgen]
 pub fn compute(a: i32,b: i32) -> i32{
@@ -134,10 +139,20 @@ pub fn persistent_homology_0d(data: &[f64], mode: &str) -> Vec<f64> {
             };
 
             if u_is_older {
-                pairs.push((bv, death, birth_idx[rv], death_idx));
+                //At a plateau edge, a component born at this exact filtration
+                //level merges immediately and has no interval of persistence.
+                if bv == death {
+                    pairs.push((bu, death, birth_idx[ru], death_idx));
+                } else if bv < death || (is_superlevel && bv > death) {
+                    pairs.push((bv, death, birth_idx[rv], death_idx));
+                }
                 parent[rv] = ru;
             } else {
-                pairs.push((bu, death, birth_idx[ru], death_idx));
+                if bu == death {
+                    pairs.push((bv, death, birth_idx[rv], death_idx));
+                } else if bu < death || (is_superlevel && bu > death) {
+                    pairs.push((bu, death, birth_idx[ru], death_idx));
+                }
                 parent[ru] = rv;
             }
         }

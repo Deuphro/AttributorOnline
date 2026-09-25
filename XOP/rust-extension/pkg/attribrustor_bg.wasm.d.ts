@@ -1,6 +1,23 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export function __wbg_persistenceanalysis_free(a: number): void;
+export function persistenceanalysis_births(a: number, b: number): void;
+export function persistenceanalysis_deaths(a: number, b: number): void;
+export function persistenceanalysis_points_x(a: number, b: number): void;
+export function persistenceanalysis_points_y(a: number, b: number): void;
+export function persistenceanalysis_birth_indices(a: number, b: number): void;
+export function persistenceanalysis_slope(a: number): number;
+export function __wbg_persistenceclassification_free(a: number): void;
+export function persistenceclassification_kept_births(a: number, b: number): void;
+export function persistenceclassification_kept_count(a: number): number;
+export function persistent_homology_0d_waves(a: number, b: number, c: number, d: number, e: number): number;
+export function classify_persistence_0d(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number): number;
+export function persistenceclassification_kept_deaths(a: number, b: number): void;
+export function persistenceclassification_kept_points_x(a: number, b: number): void;
+export function persistenceclassification_kept_points_y(a: number, b: number): void;
+export function persistenceclassification_discarded_births(a: number, b: number): void;
+export function persistenceclassification_discarded_deaths(a: number, b: number): void;
 export function compute(a: number, b: number): number;
 export function add(a: number, b: number): number;
 export function arrust(a: number, b: number, c: number): void;
@@ -9,7 +26,7 @@ export function bench(a: number): number;
 export function sieve(a: number): void;
 export function zeros_matrix(a: number, b: number): void;
 export function persistent_homology_0d(a: number, b: number, c: number, d: number, e: number): void;
-export function __wbindgen_malloc(a: number, b: number): number;
 export function __wbindgen_add_to_stack_pointer(a: number): number;
 export function __wbindgen_free(a: number, b: number, c: number): void;
+export function __wbindgen_malloc(a: number, b: number): number;
 export function __wbindgen_realloc(a: number, b: number, c: number, d: number): number;
