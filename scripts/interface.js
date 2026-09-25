@@ -2686,6 +2686,9 @@ const PAN_DEAD_ZONE=4
 //after an activated pan, the dblclick reset is ignored for this long (ms):
 //the click completing a drag must not trigger it by accident
 const PAN_DBLCLICK_GUARD=350
+//an axis may be dragged outside the graph zone on purpose: drawing it past
+//the fit bounds is how you read a value the data does not reach
+const AXIS_POSITION_LIMIT=3
 
 class Plot2D{
     constructor(data,title,origin,destination){
@@ -2731,6 +2734,7 @@ class Plot2D{
         this.zoomGestureTimer=null
         this.zoomedWhileEmpty=false
         this.lastPanEndAt=-Infinity
+        this.axisDrag=null
         this.container.addEventListener("wheel",(event)=>this.handleWheelZoom(event),{passive:false})
         this.container.addEventListener("dblclick",(event)=>this.handleZoomReset(event))
         this.container.addEventListener("mousedown",(event)=>this.handlePanStart(event))
@@ -3497,6 +3501,9 @@ class Plot2D{
             this.parameters.axis[axis].drawn=true
         }
         const {xScale,yScale}=this.plotScales()
+        //the axis groups exist only now: the drag behaviour is (re)bound here
+        //so a freshly drawn axis is grabbable
+        this.attachAxisDrag()
         this.drawTraces(xScale,yScale)
     }
     //the axes and the WebGL back layer share these very scales: deriving the
@@ -3530,6 +3537,71 @@ class Plot2D{
         return Number.isFinite(yMin)&&yMin>0?yMin/2:NaN
     }
 
+    /* -----------------------------------------------------------------
+       Axis dragging — grab an axis and it MOVES: only its position (the
+       SVG translate) changes, the data domain is left untouched, so the
+       plot itself never shifts. A horizontal axis follows the vertical
+       pointer, a vertical one the horizontal pointer. The pointer is NOT
+       clamped to the zone: an axis is meant to be pulled outside to read a
+       value the data does not reach.
+       ---------------------------------------------------------------- */
+    axisDragPointer(horizontal,event){
+        //no clamp: leaving the graphzone is the whole point
+        return horizontal?event.y:event.x
+    }
+    attachAxisDrag(){
+        for(const key of Object.keys(this.parameters.axis)){
+            if(!this.axisShown(key)) continue
+            const group=this.axesSVG[key]
+            if(!group||group.empty()) continue
+            const axis=this.parameters.axis[key]
+            const horizontal=axis.orientation==="horizontal"
+            group.style("cursor",horizontal?"ns-resize":"ew-resize")
+            group.call(d3.drag()
+                .on("start",(event)=>{
+                    //flush a pending wheel burst so it cannot fold into this
+                    this.commitZoomGesture()
+                    this.axisDrag={
+                        key,
+                        axis,
+                        before:{left:axis.position.left,top:axis.position.top},
+                        originPointer:this.axisDragPointer(horizontal,event),
+                        originPosition:horizontal?axis.position.top:axis.position.left
+                    }
+                })
+                .on("drag",(event)=>{
+                    const drag=this.axisDrag
+                    if(!drag) return
+                    const zoneSize=horizontal?this.graphzone.height:this.graphzone.width
+                    if(!(zoneSize>0)) return
+                    const pointer=this.axisDragPointer(horizontal,event)
+                    //position is a FRACTION of the zone, and it is deliberately
+                    //allowed to leave [0,1] so the axis can be read past the fit
+                    const raw=drag.originPosition+(pointer-drag.originPointer)/zoneSize
+                    const next=Math.min(Math.max(raw,-AXIS_POSITION_LIMIT),AXIS_POSITION_LIMIT)
+                    if(horizontal) drag.axis.position.top=next
+                    else drag.axis.position.left=next
+                    this.scheduleZoomDraw()
+                })
+                .on("end",()=>{
+                    const drag=this.axisDrag
+                    this.axisDrag=null
+                    if(!drag) return
+                    //the click ending this drag must not trigger the dblclick reset
+                    this.lastPanEndAt=performance.now()
+                    const after={left:drag.axis.position.left,top:drag.axis.position.top}
+                    //a pure axis move is its own intention: it gets its own
+                    //history entry instead of folding into the zoom command
+                    if(drag.before.left===after.left&&drag.before.top===after.top) return
+                    this.origin?.history?.record?.(new Command({
+                        label:`Move ${drag.key} axis`,
+                        undo:()=>{drag.axis.position={...drag.before};this.drawGraph()},
+                        redo:()=>{drag.axis.position={...after};this.drawGraph()}
+                    }))
+                })
+            )
+        }
+    }
     //D3/SVG trace rendering (the front layer keeps the interactive traces).
     //`traces` is injectable so a subclass can route a subset to the WebGL batch.
     drawTraces(xScale,yScale,traces=this.resolveRenderTraces()){
