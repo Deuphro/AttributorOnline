@@ -696,7 +696,418 @@ function clipSegmentToRect(x0,y0,x1,y1,width,height){
     return [x0+t0*dx,y0+t0*dy,x0+t1*dx,y0+t1*dy]
 }
 
+/* -----------------------------------------------------------------
+   Trimmer method registry. Methods are DATA, not code branches: the node
+   asks the registry for the list, for the fields to render, and for a
+   guess, so adding one later touches nothing in the shell.
+   ---------------------------------------------------------------- */
+//3 significant digits for a cursor position. toPrecision already switches to
+//scientific notation once the exponent reaches the precision, so 100000
+//renders as 1.00e+5 with no extra branching, and parseFloat reads it back.
+const formatCursorValue=(value)=>{
+    const numeric=Number(value)
+    if(!Number.isFinite(numeric)) return ""
+    return numeric===0?"0":numeric.toPrecision(3)
+}
+
+const TRIM_METHODS={
+    passthrough:{
+        label:"No trim (pass-through)",
+        hint:"The spectrum passes through untouched.",
+        fields:[],
+        guess:()=>0
+    },
+    madResidual:{
+        label:"k·MAD on moving-average residual",
+        hint:"Noise estimated on the residual of a moving average. Guess only, for now.",
+        fields:[{key:"k",value:5,min:1,step:1},{key:"window",value:9,min:3,step:2}],
+        guess:()=>0.25
+    },
+    intensityThreshold:{
+        label:"Intensity threshold",
+        hint:"Drops every point below the threshold.",
+        fields:[],
+        guess:()=>0.1
+    }
+}
+
+class TrimmerNode extends NodeWithAccordion{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        super(title,[[]],[[]],origin,destinationFlow,position)
+        this.status="floating"
+        this.parameters.method="passthrough"
+        this.parameters.methodParams={}
+        //the two cursors live in DATA space on the value axis
+        this.parameters.lowBound=null
+        this.parameters.highBound=null
+        //log Y toggle: the frame is a histogram, and the low tail is exactly
+        //where a trim threshold lives, so it is where linear wastes the space
+        this.parameters.logY=false
+        //the linear value span, kept aside so the log toggle can restore it
+        this.linearValueDomain=[0,100000]
+        this.dragDebounceTimer=null
+        this.graph=null
+        //deterministic placeholder, generated ONCE: re-rolling per draw
+        //would make the frame flicker and the drag impossible to judge
+        this.placeholderBins=TrimmerNode.makePlaceholderBins(10,100000,900)
+        const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
+        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D)</title>'
+        const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: trimmed Wave</title>'
+    }
+    //10 bins over [0,maxValue], each with a plausible count. Counts must be
+    //realistic: a 0/1 range produced 1px bars and looked like "nothing drawn".
+    static makePlaceholderBins(count,maxValue,maxCount){
+        const bins=[]
+        //fixed LCG: identical numbers on every reload and every machine
+        let seed=0x2f6e2b1
+        const random=()=>{
+            seed=(seed*1664525+1013904223)>>>0
+            return seed/0xffffffff
+        }
+        for(let i=0;i<count;i++){
+            bins.push({
+                value:(maxValue/count)*(i+0.5),
+                count:Math.round(0.15*maxCount+random()*0.85*maxCount)
+            })
+        }
+        return bins
+    }
+    registered(e){
+        if(e.detail.msg.caster!==this||this.accordion){
+            return
+        }
+        super.registered(e)
+        this.setupTrimmerUI()
+    }
+    currentMethod(){
+        return TRIM_METHODS[this.parameters.method]??TRIM_METHODS.passthrough
+    }
+    methodParams(){
+        const params={...this.parameters.methodParams}
+        for(const field of this.currentMethod().fields){
+            if(!Number.isFinite(params[field.key])) params[field.key]=field.value
+        }
+        this.parameters.methodParams=params
+        return params
+    }
+
+    //Value axis domain for the CURRENT scale mode. A log scale has no zero:
+    //Plot2D.stickBaseline already deals with that by dropping to half the
+    //smallest positive datum, but here the datum is BINNED, so the honest
+    //proxy is half a bin width. That is precisely the room the first bin
+    //leaves below its own centre, and it keeps the floor strictly positive,
+    //which log(0) = -Infinity would not.
+    trimValueDomain(){
+        const linear=this.linearValueDomain
+        if(!this.parameters.logY) return [...linear]
+        const halfBinWidth=this.placeholderBins.length>1
+            ?(this.placeholderBins[1].value-this.placeholderBins[0].value)/2
+            :linear[1]/100
+        //never above half the span: a single bin would give a negative floor
+        return [Math.max(Math.min(halfBinWidth,linear[1]/2),Number.MIN_VALUE),linear[1]]
+    }
+    setLogY(on){
+        if(this.parameters.logY===on) return
+        this.parameters.logY=on
+        if(this.graph){
+            //plotScales() already honours axis.left.scale, so the toggle only
+            //has to swap the scale and re-pin the matching domain
+            this.graph.parameters.axis.left.scale=on?"log":"linear"
+            this.graph.parameters.axis.left.domain=this.trimValueDomain()
+        }
+        this.refreshTrimmerUI()
+    }
+    setupTrimmerUI(){
+        if(!this.accordion) return
+        const content=this.accordion.DOMelt.content
+        content.replaceChildren()
+        stylize(content,{
+            display:"grid",
+            "grid-template-rows":"auto minmax(0, 1fr)",
+            minHeight:"0",
+            height:"100%",
+            overflow:"hidden",
+            padding:"4px",
+            gap:"4px"
+        })
+        this.accordion.setSizingMode("viewport",{height:420})
+        this.accordion.DOMelt.container.style.maxHeight="75%"
+        const controls=CE("div",{
+            style:{
+                display:"grid",
+                gridTemplateColumns:"minmax(0,1fr) auto auto auto",
+                alignItems:"center",
+                gap:"4px",
+                fontSize:"0.85em",
+                padding:"2px 4px",
+                borderRadius:"4px",
+                background:"rgba(255,255,255,0.05)"
+            }
+        },[])
+        const methodSelect=CE("select",{title:"Trimming method"},[])
+        for(const [key,method] of Object.entries(TRIM_METHODS)){
+            methodSelect.append(new Option(method.label,key))
+        }
+        methodSelect.value=this.parameters.method
+        methodSelect.addEventListener("change",()=>{
+            this.parameters.method=methodSelect.value
+            this.applyGuess()
+            this.refreshTrimmerUI()
+        })
+        const hintLabel=CE("span",{style:{opacity:"0.75"}},[""])
+        this.methodHintLabel=hintLabel
+        const guessBtn=CE("button",{type:"button",title:"Use the guess provided by the selected method"},["Guess"])
+        guessBtn.addEventListener("click",()=>{this.applyGuess();this.refreshTrimmerUI()})
+        const logToggle=CE("input",{type:"checkbox",title:"Logarithmic value axis"},[])
+        logToggle.checked=this.parameters.logY
+        logToggle.addEventListener("change",()=>this.setLogY(logToggle.checked))
+        controls.append(methodSelect,hintLabel,guessBtn,logToggle)
+        content.append(controls)
+        const graphContainer=CE("div",{
+            className:"trim-graph-container",
+            style:{position:"relative",width:"100%",height:"100%",minHeight:"200px",overflow:"hidden"}
+        },[])
+        content.append(graphContainer)
+        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer)
+        //fixed frame: no wheel zoom, the histogram must stay fully readable
+        this.graph.allowZoom=false
+        this.graph.parameters.axis.bottom.label="Count"
+        this.graph.parameters.axis.bottom.autoLabel=false
+        this.graph.parameters.axis.left.label="Value"
+        this.graph.parameters.axis.left.autoLabel=false
+        //no trace yet, so dataBounds() is null and the auto fit has nothing to
+        //work from: pin both domains so the frame is readable straight away
+        const maxCount=Math.max(...this.placeholderBins.map(bin=>bin.count),1)
+        this.graph.parameters.axis.bottom.domain=[0,maxCount*1.1]
+        this.graph.parameters.axis.bottom.autoDomain=false
+        this.graph.parameters.axis.left.domain=this.trimValueDomain()
+        this.graph.parameters.axis.left.autoDomain=false
+        this.graph.parameters.axis.left.scale=this.parameters.logY?"log":"linear"
+        const origDrawGraph=this.graph.drawGraph.bind(this.graph)
+        this.graph.drawGraph=()=>{
+            origDrawGraph()
+            this.drawTrimmerOverlay()
+        }
+        this.graph.container.addEventListener("pointerdown",(event)=>this.handleTrimPointerDown(event))
+        this.graph.container.addEventListener("pointermove",(event)=>this.handleTrimHover(event))
+        this.graph.container.addEventListener("pointerleave",()=>this.setTrimHover(null))
+        this.drawTrimmerOverlay()
+        this.graph.drawGraph()
+    }
+    //the method owns its guess: the shell only asks and places the result
+    applyGuess(){
+        const ratio=this.currentMethod().guess(this.methodParams())
+        const domain=this.trimValueDomain()
+        if(!domain.every(Number.isFinite)) return
+        this.parameters.highBound=domain[1]
+        this.parameters.lowBound=domain[0]+(domain[1]-domain[0])*ratio
+    }
+    refreshTrimmerUI(){
+        this.graph?.drawGraph()
+    }
+    //bars + cursors, each cursor carrying its own number field
+    drawTrimmerOverlay(){
+        const graph=this.graph
+        if(!graph?.graphSVG) return
+        const zone=graph.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        const {xScale,yScale}=graph.plotScales()
+        const anchor=graph.graphSVG.select(".anchor")
+        let layer=anchor.select(".trim-layer")
+        if(layer.empty()) layer=anchor.append("g").attr("class","trim-layer")
+        layer.selectAll("*").remove()
+        //first paint only: seed the bounds from the axis domain
+        if(this.parameters.highBound===null){
+            //this.parameters.left does not exist: the domain lives on the
+            //graph. The old path returned undefined and bailed out HERE,
+            //before any bar was drawn, on every first paint.
+            const domain=this.trimValueDomain()
+            if(!domain.every(Number.isFinite)) return
+            this.parameters.highBound=domain[1]
+            this.applyGuess()
+        }
+        const x0=xScale(0)
+        //horizontal bars: X = count, Y = the bin value
+        const thickness=this.placeholderBins.length>1
+            ?Math.abs(yScale(this.placeholderBins[1].value)-yScale(this.placeholderBins[0].value))*0.6
+            :4
+        for(const bin of this.placeholderBins){
+            const y=yScale(bin.value)
+            const x1=xScale(bin.count)
+            if(!Number.isFinite(y)||!Number.isFinite(x1)) continue
+            layer.append("rect")
+                .attr("class","trim-bar")
+                .attr("x",Math.min(x0,x1))
+                .attr("y",y-thickness/2)
+                .attr("width",Math.max(1,Math.abs(x1-x0)))
+                .attr("height",Math.max(2,thickness))
+                .attr("fill","#4a90d9")
+                .style("pointer-events","none")
+        }
+        for(const [key,color] of [["lowBound","#e67e22"],["highBound","#2ecc71"]]){
+            const value=this.parameters[key]
+            if(!Number.isFinite(value)) continue
+            //a value bound is a HORIZONTAL line: X is the count axis and Y the
+            //value axis, so the bound cuts the bars at their own value
+            const y=yScale(value)
+            if(!Number.isFinite(y)) continue
+            const group=layer.append("g")
+                .attr("class",`trim-cursor trim-cursor-${key}`)
+                .style("cursor","ns-resize")
+            group.append("title").text(key==="lowBound"?"Lower bound — drag to move":"Upper bound — drag to move")
+            group.append("line")
+                .attr("x1",0).attr("x2",zone.width).attr("y1",y).attr("y2",y)
+                .attr("stroke",color).attr("stroke-width",2)
+            //the field rides its own line: the control sits where it applies
+            const field=document.createElement("input")
+            field.type="number"
+            field.step="any"
+            field.value=formatCursorValue(value)
+            //wider than 5.5em: values reach 100000 and carry decimals, and the
+            //native spin buttons are pure noise here (you never nudge a
+            //threshold by one, you drag the cursor or type it)
+            field.style.cssText="width:88px;box-sizing:border-box;padding:1px 4px;font-size:0.8em;-moz-appearance:textfield;appearance:textfield"
+            field.addEventListener("change",()=>{
+                const parsed=parseFloat(field.value)
+                if(!Number.isFinite(parsed)){field.value=String(value);return}
+                this.setTrimBound(key,parsed)
+            })
+            group.append("foreignObject")
+                .attr("x",zone.width*0.5-46).attr("y",y-10)
+                .attr("width",92).attr("height",20)
+                .append(()=>field)
+        }
+    }
+
+    setTrimBound(key,value){
+        //the two bounds can never cross: each stops at the other
+        if(key==="lowBound"&&Number.isFinite(this.parameters.highBound)){
+            value=Math.min(value,this.parameters.highBound)
+        }else if(key==="highBound"&&Number.isFinite(this.parameters.lowBound)){
+            value=Math.max(value,this.parameters.lowBound)
+        }
+        if(this.parameters[key]===value) return
+        this.parameters[key]=value
+        this.refreshTrimmerUI()
+    }
+    trimBoundsSnapshot(){
+        return {low:this.parameters.lowBound,high:this.parameters.highBound}
+    }
+    restoreTrimBounds(snapshot){
+        this.parameters.lowBound=snapshot.low
+        this.parameters.highBound=snapshot.high
+        this.refreshTrimmerUI()
+    }
+    recordTrimBounds(before,after,label){
+        if(before.low===after.low&&before.high===after.high) return
+        this.origin?.history?.record?.(new Command({
+            label,
+            undo:()=>this.restoreTrimBounds(before),
+            redo:()=>this.restoreTrimBounds(after)
+        }))
+    }
+    handleTrimPointerDown(event){
+        const graph=this.graph
+        if(!graph) return
+        const zone=graph.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        event.preventDefault()
+        const rect=graph.container.getBoundingClientRect()
+        const {yScale}=graph.plotScales()
+        const toValue=(y)=>yScale.invert(Math.min(Math.max(y,0),zone.height))
+        const pointer=()=>event.clientY-rect.top-graph.parameters.margins.top
+        //TELEPORT the nearest cursor to the pointer. Grabbing requires going
+        //to fetch the cursor first, which is precisely the friction this
+        //removes: the hand is already where the bound should land.
+        //Non finite bounds are filtered out, otherwise a null highBound makes
+        //yScale return NaN and the reduce below can only ever pick the other.
+        const candidates=["lowBound","highBound"]
+            .map(key=>{
+                const value=this.parameters[key]
+                if(!Number.isFinite(value)) return null
+                const y=yScale(value)
+                return Number.isFinite(y)?{key,distance:Math.abs(y-pointer())}:null
+            })
+            .filter(Boolean)
+        const grabbed=candidates.reduce((best,entry)=>entry.distance<best.distance?entry:best,candidates[0]??null)
+        if(!grabbed) return
+        const key=grabbed.key
+        const before=this.trimBoundsSnapshot()
+        this.setTrimBound(key,toValue(pointer()))
+        const onMove=(moveEvent)=>{
+            this.setTrimBound(key,toValue(moveEvent.clientY-rect.top-graph.parameters.margins.top))
+        }
+        const onUp=()=>{
+            window.removeEventListener("pointermove",onMove)
+            window.removeEventListener("pointerup",onUp)
+            this.recordTrimBounds(before,this.trimBoundsSnapshot(),"Trimmer bounds")
+        }
+        window.addEventListener("pointermove",onMove)
+        window.addEventListener("pointerup",onUp)
+    }
+    setTrimHover(index){
+        const layer=this.graph?.graphSVG?.select(".trim-layer")
+        if(!layer||layer.empty()) return
+        layer.selectAll(".trim-bar")
+            .attr("fill",(binIndex)=>binIndex===index?"#f1c40f":"#4a90d9")
+    }
+    handleTrimHover(event){
+        const graph=this.graph
+        if(!graph?.graphSVG) return
+        const rect=graph.container.getBoundingClientRect()
+        const py=event.clientY-rect.top-graph.parameters.margins.top
+        const {yScale}=graph.plotScales()
+        let best=null
+        let bestDistance=Infinity
+        this.placeholderBins.forEach((bin,index)=>{
+            const distance=Math.abs(yScale(bin.value)-py)
+            if(distance<bestDistance){bestDistance=distance;best=index}
+        })
+        //half a bin, not a fixed pixel count: the snap follows the zoom level
+        const half=this.placeholderBins.length>1
+            ?Math.abs(yScale(this.placeholderBins[1].value)-yScale(this.placeholderBins[0].value))/2
+            :4
+        this.setTrimHover(bestDistance<=Math.max(half,4)?best:null)
+    }
+    async startResolve(){
+        const links=this.destination?.linkList?.filter(link=>link.inputNode===this)??[]
+        if(links.length>1){
+            this.status="error"
+            this.outputs[0]=[]
+            console.error("[TrimmerNode] exactly one link is required")
+            return
+        }
+        const input=this.inputs[0]
+        let inputWave=null
+        if(input instanceof Map){
+            for(const values of input.values()){
+                for(const waves of values){
+                    const found=Array.isArray(waves)
+                        ?waves.find(wave=>wave instanceof Wave)
+                        :(waves instanceof Wave?waves:null)
+                    if(found){inputWave=found;break}
+                }
+                if(inputWave) break
+            }
+        }
+        if(!inputWave){
+            this.status="floating"
+            this.outputs[0]=[]
+            this.refreshTrimmerUI()
+            return
+        }
+        this.status="pending"
+        //no kernel yet: the output is the input, unchanged. The kernel takes
+        //over here later, and nothing else in this class has to change.
+        this.outputs[0]=[inputWave]
+        this.status="resolved"
+        this.refreshTrimmerUI()
+    }
+}
+
 class PersistentHomology0DNode extends NodeWithAccordion{
+
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(
             title,
@@ -1928,6 +2339,9 @@ function createNodeForHistory(origin,flow,data){
         case "PersistentHomology0DNode":
             node=new PersistentHomology0DNode(data.title,origin,flow,position)
             break
+        case "TrimmerNode":
+            node=new TrimmerNode(data.title,origin,flow,position)
+            break
         default:
             node=new Node(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
             break
@@ -2440,6 +2854,10 @@ class MainFlowMenu extends Menu{
                     const {title,type,source} = e.detail.msg
                     let node
                     switch (type) {
+                        case "trimmer": {
+                            node = new TrimmerNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
+                            break
+                        }
                         case "delimitedText":
                             node = new DelimitedTextNode(
                                 title,
@@ -3048,6 +3466,9 @@ class Plot2D{
        (the classifier line …) all follow through the regular redraw path.
       ----------------------------------------------------------------- */
     handleWheelZoom(event){
+        //a plot can opt out of the wheel zoom (the trimmer frame is a fixed
+        //histogram: zooming it would only shrink the bars out of reach)
+        if(this.allowZoom===false) return
         //a plain horizontal scroll (deltaY 0) must not freeze autoDomain
         if(!event.deltaY) return
         //the plot owns the wheel gesture: no ancestor may scroll while zooming
@@ -6013,4 +6434,4 @@ class PetitGazFusion {
 
 
 
-export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode}
+export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode, TrimmerNode}

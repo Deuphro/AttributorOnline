@@ -383,6 +383,20 @@ input[type=range].dual::-moz-range-thumb{
     max-width: 100%;
 }
 
+/* ---- Trimmer: cursor bounds ride their own histogram line ---- */
+/* the native number spinners are useless on a threshold: you drag the
+   cursor or type a value, you never nudge it by one step */
+.trim-cursor input[type=number]::-webkit-outer-spin-button,
+.trim-cursor input[type=number]::-webkit-inner-spin-button{
+    -webkit-appearance:none;
+    margin:0;
+}
+.trim-cursor input[type=number]::-moz-outer-spin-button,
+.trim-cursor input[type=number]::-moz-inner-spin-button{
+    -moz-appearance:none;
+    display:none;
+}
+
 /* ---- Table (virtualisée) ---- */
 .table.container{
     position:relative;
