@@ -747,8 +747,14 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             gap: "4px"
         })
         if(this.accordion.DOMelt.container){
-            this.accordion.DOMelt.container.style.height = "360px"
-            this.accordion.DOMelt.container.style.maxHeight = "75%"
+            //A WebGL plot inside an auto-height ("content") accordion is a
+            //ResizeObserver feedback loop: fold() blanks the container height,
+            //the plot then measures a free box, the box grows with the plot,
+            //and the whole left panel is swallowed by the 75% cap. Viewport
+            //sizing hands the plot a BOUNDED box (the content becomes a grid
+            //row), which is exactly what this accordion layout needs.
+            this.accordion.setSizingMode("viewport",{height:360})
+            this.accordion.DOMelt.container.style.maxHeight="75%"
         }
 
         // 1. Controls bar
@@ -4838,16 +4844,21 @@ class Accordion{
         this.DOMelt.content.style.overflow=mode==="viewport"?"hidden":"visible"
         if(this.parameters.folded){
             this.DOMelt.container.style.height=""
-            this.DOMelt.content.style.height="0"
-            this.DOMelt.content.style.overflow="hidden"
+            //display:none, not visibility:hidden: a collapsed accordion must
+            //occupy NO row at all. visibility kept the box in the flow, and the
+            //grid child (graph wrapper, min-height:180px) kept pushing the
+            //collapsed row open, leaving a visible gap between accordions.
+            //The plot gets a single transient resize on unfold, not a loop.
+            this.DOMelt.content.style.display="none"
         }
     }
     fold(){
         this.parameters.folded=true
         this.DOMelt.container.style.height=""
         this.DOMelt.container.style["grid-template-rows"]="auto 0fr"
-        this.DOMelt.content.style.height="0"
-        this.DOMelt.content.style.overflow="hidden"
+        //out of the flow entirely: a collapsed accordion takes no room and
+        //cannot leak its absolutely positioned layers (WebGL canvas z-index:-1)
+        this.DOMelt.content.style.display="none"
         this.DOMelt.content.style.border="0px solid black"
         this.DOMelt.handler.style["margin-bottom"]="0px"
         this.DOMelt.folder.style["background-color"]="transparent"
@@ -4858,6 +4869,7 @@ class Accordion{
         this.DOMelt.container.style.height=this.parameters.sizing==="viewport"&&Number.isFinite(this.parameters.viewportHeight)?`${this.parameters.viewportHeight}px`:""
         this.DOMelt.content.style.height=this.parameters.sizing==="viewport"?"100%":"auto"
         this.DOMelt.content.style.overflow=this.parameters.sizing==="viewport"?"hidden":"visible"
+        this.DOMelt.content.style.display=this.parameters.sizing==="viewport"?"grid":"block"
         this.DOMelt.content.style.border="1px solid black"
         this.DOMelt.handler.style["margin-bottom"]="1px"
         this.DOMelt.folder.style["background-color"]="rgba(172,255,47,0.18)"
