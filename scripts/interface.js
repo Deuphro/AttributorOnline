@@ -1510,6 +1510,32 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             if(selectedGroup) selectedGroup.append(editor)
         }
         const axesSection=section("Axes",false)
+        //one registry per render, so a re-rendered inspector never stacks
+        //listeners and always refreshes the blocks it actually owns
+        //detach FIRST: it clears axisBlocks, so creating the registry before
+        //it would hand back a null Map and silently register nothing
+        this.detachAxisSync?.()
+        this.axisBlocks=new Map()
+        this.onPlotViewChanged=()=>{
+            //two guards: a re-entrancy one, and one so that rebuilding the
+            //widgets can never fight with a slider the user is dragging
+            if(this.syncingAxisBlocks||this.axisInteraction) return
+            this.syncingAxisBlocks=true
+            try{
+                for(const [axisKey,block] of this.axisBlocks??[]){
+                    const axis=this.graph.parameters.axis[axisKey]
+                    if(!axis||axis.mirror) continue
+                    this.refreshAxisBlock(block,axis)
+                }
+            }finally{
+                this.syncingAxisBlocks=false
+            }
+        }
+        this.detachAxisSync=()=>{
+            this.graph.onViewChange=null
+            this.axisBlocks=null
+        }
+        this.graph.onViewChange=this.onPlotViewChanged
         for(const [key,axis] of Object.entries(this.graph.parameters.axis)){
             const pretty=this.axisDisplayName(key)
             if(axis.mirror){
@@ -1539,6 +1565,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         const block=document.createElement("div")
         block.dataset.axis=key
         section.append(block)
+        this.axisBlocks?.set(key,block)
         const row=document.createElement("div")
         row.style.display="grid"; row.style.gridTemplateColumns="auto auto minmax(0,1fr)"; row.style.gap="4px"; row.style.alignItems="center"
         const name=document.createElement("strong"); name.textContent=`${pretty}:`
@@ -1605,10 +1632,31 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         const dataMax=isX?bounds?.xMax:bounds?.yMax
         const currentMin=axis.domain?.[0]
         const currentMax=axis.domain?.[1]
-        const refMin=dataMin??currentMin??0
-        const refMax=dataMax??currentMax??1
+        //The track must always CONTAIN the current view, otherwise a window
+        //zoomed past the data extents gets clamped back to it by the input
+        //min/max and the thumbs silently lie about the plotted domain. The
+        //data extent is the preferred reference, the live domain only widens
+        //it (this is the "zoomed before any data" case: bounds are null, so
+        //the view itself is the only reference available).
+        const candidates=[dataMin,dataMax,currentMin,currentMax]
+            .filter(value=>Number.isFinite(value))
+        if(candidates.length<2) return {paddedMin:0,paddedMax:1,step:0.005,initMin:0,initMax:1}
+        const refMin=Math.min(...candidates)
+        const refMax=Math.max(...candidates)
         const span=(refMax-refMin)||1
-        return {paddedMin:refMin-0.1*span,paddedMax:refMax+0.1*span,step:span/200,initMin:currentMin??(refMin-0.1*span),initMax:currentMax??(refMax+0.1*span)}
+        //the step keeps following the DATA extent, not the widened track: a
+        //track grown by a large zoom-out would otherwise coarsen the slider
+        //granularity for the rest of the session
+        const dataSpan=(Number.isFinite(dataMin)&&Number.isFinite(dataMax)&&dataMax>dataMin)
+            ?(dataMax-dataMin)
+            :span
+        return {
+            paddedMin:refMin-0.1*span,
+            paddedMax:refMax+0.1*span,
+            step:(dataSpan||1)/200,
+            initMin:Number.isFinite(currentMin)?currentMin:(refMin-0.1*span),
+            initMax:Number.isFinite(currentMax)?currentMax:(refMax+0.1*span)
+        }
     }
     buildDualSlider(block,axis,autoBtn){
         const {paddedMin,paddedMax,step,initMin,initMax}=this.axisSliderRange(axis)
@@ -1674,23 +1722,30 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             if(a===b) return
             if(a>b) [a,b]=[b,a]
             if(axis.scale==="log"&&(a<=0||b<=0)) return
-            const loBound=Number(lo.min)
-            const hiBound=Number(lo.max)
-            a=Math.min(Math.max(a,loBound),hiBound)
-            b=Math.min(Math.max(b,loBound),hiBound)
-            if(a===b) return
-            axis.domain=[a,b]
-            axis.autoDomain=false
-            this.graph.drawGraph()
-            lo.value=String(a); hi.value=String(b)
-            if(from!=="numbers"){
-                //the number fields are only rewritten when the change comes from
-                //the sliders: rewriting them from their own typing would clobber
-                //an in-progress value (and made negative numbers impossible)
-                loNum.value=String(a); hiNum.value=String(b)
+            //the rebuild triggered by the redraw must not fight this gesture
+            this.axisInteraction=true
+            try{
+                const loBound=Number(lo.min)
+                const hiBound=Number(lo.max)
+                a=Math.min(Math.max(a,loBound),hiBound)
+                b=Math.min(Math.max(b,loBound),hiBound)
+                if(a===b) return
+                axis.domain=[a,b]
+                axis.autoDomain=false
+                this.graph.drawGraph()
+                lo.value=String(a); hi.value=String(b)
+                if(from!=="numbers"){
+                    //the number fields are only rewritten when the change comes from
+                    //the sliders: rewriting them from their own typing would clobber
+                    //an in-progress value (and made negative numbers impossible)
+                    loNum.value=String(a); hiNum.value=String(b)
+                }
+                paint()
+                autoBtn.style.opacity="0.45"
+            }finally{
+                //a single early return must never leave the guard stuck
+                this.axisInteraction=false
             }
-            paint()
-            autoBtn.style.opacity="0.45"
         }
         const commitNumbers=()=>{
             if(!parseOk(loNum.value)||!parseOk(hiNum.value)) return
@@ -3075,6 +3130,13 @@ class Plot2D{
         axis.autoDomain=snapped
         return true
     }
+    //The plot view changed programmatically (wheel zoom, pan, reset). The
+    //inspector registers a direct callback instead of a DOM event: the slider
+    //blocks are rebuilt from axis.domain, which is the single source of truth.
+    notifyViewChanged(){
+        this.onViewChange?.()
+    }
+
     //wheel bursts and mouse drags both move the domains immediately while
     //the redraw (axes, traces, camera, widgets) runs at most once per frame
     scheduleZoomDraw(){
@@ -3082,6 +3144,8 @@ class Plot2D{
         this.zoomDrawFrame=requestAnimationFrame(()=>{
             this.zoomDrawFrame=null
             this.drawGraph()
+            //a pan rebuilds the inspector sliders on every frame otherwise
+            if(!this.panInProgress) this.notifyViewChanged()
         })
     }
     //the domains are snapshotted once per gesture (debounced): a whole
@@ -3161,6 +3225,7 @@ class Plot2D{
             redo:()=>{this.applyZoomState(after);this.drawGraph()}
         }))
         this.drawGraph()
+        this.notifyViewChanged()
     }
     //the outer bounds both the wheel zoom-out and the pan clamp against:
     //exactly what a double-click reset shows (see autoDomainFor); null
@@ -3248,6 +3313,7 @@ class Plot2D{
         this.commitZoomGesture()
         const startX=event.clientX
         const startY=event.clientY
+        this.panInProgress=true
         let lastX=startX
         let lastY=startY
         let active=false
@@ -3282,7 +3348,11 @@ class Plot2D{
         const onUp=()=>{
             window.removeEventListener("mousemove",onMove)
             window.removeEventListener("mouseup",onUp)
+            window.removeEventListener("blur",onUp)
+            this.detachPanOnBlur=null
             this.container.style.cursor=""
+            this.panInProgress=false
+            this.notifyViewChanged()
             if(!active) return
             //the click completing this drag must not finish a double-click
             this.lastPanEndAt=performance.now()
@@ -3296,6 +3366,11 @@ class Plot2D{
         }
         window.addEventListener("mousemove",onMove)
         window.addEventListener("mouseup",onUp)
+        //a drag released outside the window never delivers a mouseup: without
+        //this the pan guard would stay stuck and silently kill every later
+        //wheel-zoom resync (the inspector would freeze for the whole session)
+        window.addEventListener("blur",onUp)
+        this.detachPanOnBlur=()=>window.removeEventListener("blur",onUp)
     }
     markerPath(shape,size){
         const s=size??4
@@ -3329,6 +3404,9 @@ class Plot2D{
                 this.zoomedWhileEmpty=false
                 this.parameters.axis.bottom.autoDomain=true
                 this.parameters.axis.left.autoDomain=true
+                //the first real bounds land here: the view jumps back to auto,
+                //so the inspector has to be told its widgets are now stale
+                this.notifyViewChanged()
             }
             if(this.parameters.axis.bottom.autoDomain??true){
                 this.autoDomain("bottom",bounds)
