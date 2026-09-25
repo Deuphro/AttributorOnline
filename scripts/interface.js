@@ -761,7 +761,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         const controls = CE("div", {
             style: {
                 display: "grid",
-                gridTemplateColumns: "auto 1fr auto auto auto",
+                gridTemplateColumns: "minmax(0,1fr) auto auto auto",
                 alignItems: "center",
                 gap: "4px",
                 fontSize: "0.85em",
@@ -771,7 +771,9 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
         }, [])
 
-        const slopeLabel = CE("span", { style: { fontWeight: "bold" } }, ["Slope:"])
+        //no "Slope:" caption: it only stole a grid column and pushed the
+        //neighbouring panels; the input carries the explanation in its title
+        //and the value stays visible and editable
         this.slopeInput = CE("input", {
             type: "number",
             step: "any",
@@ -815,11 +817,14 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             this.graph.drawGraph()
         })
 
+        //no unit in the text: it costs width on the narrowest element of the
+        //bar, the ratio is self-explanatory and the tooltip spells it out
         this.countLabel = CE("span", {
+            title: "Pairs kept / total pairs — persistence intervals kept under the classifier line",
             style: { opacity: "0.8", whiteSpace: "nowrap", justifySelf: "end" }
-        }, ["0 pairs"])
+        }, ["0/0"])
 
-        controls.append(slopeLabel, this.slopeInput, guessBtn, this.logLogBtn, this.countLabel)
+        controls.append(this.slopeInput, guessBtn, this.logLogBtn, this.countLabel)
 
         // 2. Graph container
         const graphContainer = CE("div", {
@@ -981,7 +986,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             this.graph.drawGraph()
             this.updateClassifierSVG()
         }
-        if(this.countLabel) this.countLabel.textContent=`${classification.keptCount}/${pairCount} pairs`
+        if(this.countLabel) this.countLabel.textContent=`${classification.keptCount}/${pairCount}`
     }
 
     updateControlsUI(){
@@ -990,7 +995,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         }
         if(this.countLabel && this.pairsData){
             const keptCount = this.outputs[0]?.[0]?.dims?.[0] ?? 0
-            this.countLabel.textContent = `${keptCount}/${this.pairsData.count} pairs`
+            this.countLabel.textContent = `${keptCount}/${this.pairsData.count}`
         }
     }
 
@@ -3470,18 +3475,27 @@ class Plot2D{
             this.axesSVG[axis]=this.graphSVG.select(".anchor").select(target)
             this.axesSVG[axis].attr("transform",translate)
             this.axesSVG[axis].attr("class",`${axis} plot-axis`)
+            const axisLength=Math.abs(range[1]-range[0])
             switch (this.parameters.axis[axis].type){
                 case "left":
-                    this.axesSVG[axis].call(d3.axisLeft(scale))
+                    this.axesSVG[axis].call(
+                        this.applyTickReadability(d3.axisLeft(scale),axis,scale,axisLength)
+                    )
                     break
                 case "right":
-                    this.axesSVG[axis].call(d3.axisRight(scale))
+                    this.axesSVG[axis].call(
+                        this.applyTickReadability(d3.axisRight(scale),axis,scale,axisLength)
+                    )
                     break
                 case "top":
-                    this.axesSVG[axis].call(d3.axisTop(scale))
+                    this.axesSVG[axis].call(
+                        this.applyTickReadability(d3.axisTop(scale),axis,scale,axisLength)
+                    )
                     break
                 case "bottom":
-                    this.axesSVG[axis].call(d3.axisBottom(scale))
+                    this.axesSVG[axis].call(
+                        this.applyTickReadability(d3.axisBottom(scale),axis,scale,axisLength)
+                    )
                     break
                 default:
             }
@@ -3602,7 +3616,34 @@ class Plot2D{
             )
         }
     }
-    //D3/SVG trace rendering (the front layer keeps the interactive traces).
+    /* -----------------------------------------------------------------
+       Tick readability. Two independent causes of unreadable axes:
+        • too many ticks for the room available → the count is derived from
+          the ACTUAL pixel length of the axis (~1 tick per 80px);
+        • labels too wide (12,345,678.9) → SI shorthand, and a scientific
+          form on log axes where the span is huge.
+       Both are applied to the four axis orientations.
+       ---------------------------------------------------------------- */
+    axisTickConfig(axis,scale,rangePixels){
+        const length=Math.abs(rangePixels)
+        const count=Math.max(2,Math.floor(length/80))
+        const log=this.parameters.axis[axis].scale==="log"
+        const formatter=log
+            ? (value => {
+                if(!Number.isFinite(value)) return ""
+                if(value===0) return "0"
+                const magnitude=Math.abs(value)
+                return (magnitude<1e-3||magnitude>=1e4)
+                    ? value.toExponential(0)
+                    : String(value)
+            })
+            : d3.format(".3~s")
+        return {count,formatter}
+    }
+    applyTickReadability(generator,axis,scale,rangePixels){
+        const {count,formatter}=this.axisTickConfig(axis,scale,rangePixels)
+        return generator.ticks(count).tickFormat(formatter)
+    }
     //`traces` is injectable so a subclass can route a subset to the WebGL batch.
     drawTraces(xScale,yScale,traces=this.resolveRenderTraces()){
         const traceGroups=this.graphSVG.select(".anchor")
