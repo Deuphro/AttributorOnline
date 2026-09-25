@@ -700,8 +700,8 @@ class PersistentHomology0DNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(
             title,
-            [[], []], // 2 inputs: [0] = wave, [1] = classifier slope
-            [[], []], // 2 outputs: [0] = death/birth pairs, [1] = original points
+            [[]],  // 1 input: 1D or 2D wave
+            [[]],  // 1 output: filtered original points
             origin,
             destinationFlow,
             position
@@ -720,11 +720,9 @@ class PersistentHomology0DNode extends NodeWithAccordion{
 
         // Tooltips on SVG anchors for clarity
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
-        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: Wave (XY or 1D)</title>'
-        if(inputAnchors[1]) inputAnchors[1].innerHTML='<title>Input: Classifier slope (optional)</title>'
+        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D)</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
-        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: Death vs Birth pairs</title>'
-        if(outputAnchors[1]) outputAnchors[1].innerHTML='<title>Output: Corresponding (X, Y) points</title>'
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: Filtered original points</title>'
     }
 
     registered(e){
@@ -867,28 +865,6 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         return null
     }
 
-    extractInputSlope(){
-        const input = this.inputs[1]
-        if(!(input instanceof Map)) return null
-        for(const values of input.values()){
-            for(const item of values){
-                if(typeof item === "number" && Number.isFinite(item)) return item
-                if(Array.isArray(item)){
-                    for(const sub of item){
-                        if(typeof sub === "number" && Number.isFinite(sub)) return sub
-                        if(sub instanceof Wave && sub.core.length){
-                            return sub.core[0]
-                        }
-                    }
-                }
-                if(item instanceof Wave && item.core.length){
-                    return item.core[0]
-                }
-            }
-        }
-        return null
-    }
-
     //slope of the line through the origin and the centroid of the pairs —
     //a neutral split of the cloud (the old guess placed a threshold at mean(Y))
     guessSlope(){
@@ -907,22 +883,36 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         return keepAllSlopeFromFlat(births,deaths)
     }
 
+    incomingLinks(){
+        return this.destination?.linkList?.filter(link=>link.inputNode===this)??[]
+    }
+
+    fail(message){
+        this.status="error"
+        this.outputs[0]=[]
+        this.persistenceBirths=null
+        this.persistenceDeaths=null
+        this.persistencePointsX=null
+        this.persistencePointsY=null
+        console.error(`[PersistentHomology0DNode] ${message}`)
+        this.graph?.setTraces([])
+        this.graph?.drawGraph()
+    }
+
     async startResolve(){
+        const links=this.incomingLinks()
+        if(links.length>1 || links.some(link=>link.inputAnchor.id!=="0")){
+            this.fail("exactly one link on input 0 is required")
+            return
+        }
         const inputWave = this.extractInputWave()
         if(!inputWave){
             this.status = "floating"
             this.outputs[0] = []
-            this.outputs[1] = []
             return
         }
         this.status = "pending"
         this.lastInputWave = inputWave
-
-        // Check if an external classifier slope is connected on input [1]
-        const externalSlope = this.extractInputSlope()
-        if(externalSlope !== null && Number.isFinite(externalSlope)){
-            this.parameters.slope = clampClassifierSlope(externalSlope)
-        }
 
         const stride=inputWave.degree===2&&inputWave.dims[1]===2?2:1
 
@@ -960,10 +950,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             params:{slope}
         })
         const pairCount=this.persistenceBirths.length
-        this.outputs[0]=classification.keptBirths.length
-            ?[Wave.fromCoordinates(classification.keptBirths,classification.keptDeaths,{title:`${this.title} (Death vs Birth)`,slope},["birth","death"])]
-            :[]
-        this.outputs[1]=classification.keptPointsX.length
+        this.outputs[0]=classification.keptPointsX.length
             ?[Wave.fromCoordinates(classification.keptPointsX,classification.keptPointsY,{title:`${this.title} (Points)`,slope})]
             :[]
 
@@ -996,7 +983,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             this.slopeInput.value = formatSlope(this.parameters.slope)
         }
         if(this.countLabel && this.pairsData){
-            const keptCount = this.outputs[0]?.[0]?.dims?.[1] ?? 0
+            const keptCount = this.outputs[0]?.[0]?.dims?.[0] ?? 0
             this.countLabel.textContent = `${keptCount}/${this.pairsData.count} pairs`
         }
     }

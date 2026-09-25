@@ -301,6 +301,13 @@ function importSession(serialized, options = {}) {
             const node = nodes.get(nodeData.id)
             node.inputs = decodeValue(nodeData.inputs, registrations)
             node.outputs = decodeValue(nodeData.outputs, registrations)
+            // Legacy persistent-homology sessions had a slope input and two
+            // outputs. Only the original-points output survives; the slope link
+            // is dropped and the points output becomes output 0.
+            if (node.constructor.name === "PersistentHomology0DNode") {
+                node.inputs = [new Map()]
+                node.outputs = [[]]
+            }
             if (node.parameters) {
                 node.parameters.position = decodeValue(nodeData.position, registrations)
             }
@@ -315,6 +322,13 @@ function importSession(serialized, options = {}) {
             const outputNode = nodes.get(linkData.outputNode)
             if (!inputNode || !outputNode) {
                 throw new Error("Cannot restore link: node not found")
+            }
+            if (inputNode.constructor.name === "PersistentHomology0DNode") {
+                if (linkData.inputIndex !== 0) continue
+            }
+            if (outputNode.constructor.name === "PersistentHomology0DNode") {
+                if (linkData.outputIndex === 0) continue
+                linkData = {...linkData, outputIndex: 0}
             }
             if (typeof options.createLink !== "function") {
                 throw new TypeError("importSession requires options.createLink")
