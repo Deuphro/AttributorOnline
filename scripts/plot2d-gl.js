@@ -514,7 +514,9 @@ export class GLTraceLayer{
             const count=trace.count|0
             const withMarkers=trace.markers
             const withLines=trace.lines&&count>1
-            const withSticks=trace.sticks&&sticksEnabled
+            //stickBase arrives already expressed in the uploaded (translated)
+            //space, exactly like the vertices: see uploadTracesToGPU.
+            const withSticks=trace.sticks&&Number.isFinite(config.stickBase)
             const color=trace.color
             const r=color[0]
             const g=color[1]
@@ -572,7 +574,7 @@ export class GLTraceLayer{
                     if(write){
                         const lineOffset=segmentIndex*6
                         linePositions[lineOffset]=px
-                        linePositions[lineOffset+1]=stickBase
+                        linePositions[lineOffset+1]=config.stickBase
                         linePositions[lineOffset+2]=0
                         linePositions[lineOffset+3]=px
                         linePositions[lineOffset+4]=py

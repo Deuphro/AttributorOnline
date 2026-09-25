@@ -3437,6 +3437,15 @@ class Plot2D{
                 options:{color:"tomato",mode:"points",line:{size:1}}
             }]
     }
+    //Data-space value the "sticks to zero" segments drop to: 0 on a linear
+    //axis, half the smallest positive datum on a log axis (which has no zero).
+    stickBaseline(){
+        if(this.parameters.axis.left.scale!=="log") return 0
+        const bounds=this.lastDataBounds??this.dataBounds()
+        const yMin=bounds?.yMin
+        return Number.isFinite(yMin)&&yMin>0?yMin/2:NaN
+    }
+
     //D3/SVG trace rendering (the front layer keeps the interactive traces).
     //`traces` is injectable so a subclass can route a subset to the WebGL batch.
     drawTraces(xScale,yScale,traces=this.resolveRenderTraces()){
@@ -3451,6 +3460,7 @@ class Plot2D{
             .x(pair=>xScale(pair[0]))
             .y(pair=>yScale(pair[1]))
         const owner=this
+        const stickBaseY=owner.stickBaseline()
         mergedTraceGroups.each(function(trace){
             const group=d3.select(this)
             const tracePoints=trace.points.filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
@@ -3462,7 +3472,7 @@ class Plot2D{
                 .append("path")
                 .attr("class","trace-line")
                 .merge(traceLine)
-                .attr("d",trace.options.mode==="sticks-to-zero"?tracePoints.flatMap(pair=>`M${xScale(pair[0])},${yScale(0)}L${xScale(pair[0])},${yScale(pair[1])}`).join(""):line(tracePoints))
+                .attr("d",trace.options.mode==="sticks-to-zero"?tracePoints.flatMap(pair=>`M${xScale(pair[0])},${yScale(stickBaseY)}L${xScale(pair[0])},${yScale(pair[1])}`).join(""):line(tracePoints))
                 .attr("fill","none")
                 .attr("stroke",color)
                 .attr("stroke-width",trace.options.line.size)
@@ -3737,8 +3747,20 @@ class Plot2DWebGL extends Plot2D{
         const logY=this.parameters.axis.left.scale==="log"
         const reference=this.glReferenceOrigin(logX,logY)
         this.glReference=reference
-        //a logarithmic axis has no zero: sticks are dropped, as in the SVG version
-        const stickBase=logY?Math.log10(0):0
+        //Stick base, expressed in the SAME translated space as the vertices
+        //(every Y has already had referenceY subtracted from it), so a plain 0
+        //would place the sticks at the wrong height. A log axis has no zero:
+        //the sticks stop halfway below the smallest positive datum instead,
+        //which keeps them inside the log space.
+        let stickBase
+        const stickBounds=this.lastDataBounds??this.dataBounds()
+        if(logY){
+            const yMin=stickBounds?.yMin
+            const floor=Number.isFinite(yMin)&&yMin>0?Math.log10(yMin/2):NaN
+            stickBase=Number.isFinite(floor)?floor-reference.y:NaN
+        }else{
+            stickBase=-reference.y
+        }
         this.glLayer.upload(this.buildTraceDescriptors(traces),{
             logX,
             logY,
