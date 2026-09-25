@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Attributor Online — Attribution de formules en spectrométrie de masse</title>
+<title>Attributor Online — Mass spectrometry formula attribution</title>
 <style>
     *{
         box-sizing:border-box;
@@ -99,94 +99,331 @@
         border-top:1px solid rgba(255,255,255,0.1);
         margin-top:60px;
     }
+    .docs{
+        background:rgba(255,255,255,0.03);
+        border:1px solid rgba(255,255,255,0.12);
+        border-radius:5px;
+        padding:22px;
+        margin-top:10px;
+    }
+    .docs h3{
+        color:#dfe6ee;
+        font-size:1.15em;
+        margin:26px 0 10px;
+        padding-bottom:6px;
+        border-bottom:1px solid rgba(255,255,255,0.12);
+    }
+    .docs h3:first-of-type{margin-top:0;}
+    .docs h4{color:#aef22e;font-size:1em;margin:18px 0 6px;}
+    .docs p{color:#b9c4d0;font-size:0.94em;margin:10px 0;}
+    .docs ul{color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;}
+    .docs li{margin:4px 0;}
+    .docs code{
+        background:rgba(0,0,0,0.4);
+        color:#aef22e;
+        padding:2px 6px;
+        border-radius:3px;
+    }
+    .docs pre{
+        background:rgba(0,0,0,0.45);
+        border:1px solid rgba(255,255,255,0.12);
+        border-left:3px solid #aef22e;
+        border-radius:3px;
+        padding:14px;
+        overflow-x:auto;
+        color:#c8d3de;
+        font-size:0.88em;
+        line-height:1.5;
+        margin:12px 0;
+    }
+    table.spec{
+        width:100%;
+        border-collapse:collapse;
+        margin:12px 0;
+        font-size:0.9em;
+    }
+    table.spec th,table.spec td{
+        border:1px solid rgba(255,255,255,0.12);
+        padding:8px 10px;
+        text-align:left;
+        vertical-align:top;
+    }
+    table.spec th{
+        background:rgba(0,0,0,0.3);
+        color:#aef22e;
+        font-weight:bold;
+    }
+    table.spec td{color:#b9c4d0;}
+    .badge{
+        display:inline-block;
+        font-size:0.78em;
+        padding:1px 8px;
+        border-radius:10px;
+        border:1px solid rgba(174,242,46,0.5);
+        color:#aef22e;
+        margin-left:8px;
+        vertical-align:middle;
+    }
+    .badge.warn{
+        border-color:rgba(255,176,46,0.6);
+        color:#ffb02e;
+    }
+    .badge.req{
+        border-color:rgba(255,99,99,0.6);
+        color:#ff6363;
+    }
 </style>
 </head>
 <body>
 
 <header>
     <h1>Attributor</h1>
-    <p class="tagline">Attribution de formules chimiques en spectrométrie de masse — directement dans votre navigateur.</p>
-    <a class="cta" href="/">Ouvrir l'application →</a>
+    <p class="tagline">Chemical formula attribution in mass spectrometry — directly in your browser.</p>
+    <a class="cta" href="/">Open the application →</a>
 </header>
 
 <main>
 
-    <h2>Qu'est-ce qu'Attributor&nbsp;?</h2>
+    <h2>What is Attributor?</h2>
     <p>
-        Attributor est une plateforme web scientifique dédiée à l'<strong>attribution de formules
-        moléculaires</strong> à partir de spectres de masse. Elle associe un moteur de calcul
-        <strong>Rust compilé en WebAssembly</strong> (Attribrustor), des traitements intensifs exécutés
-        <strong>hors du thread principal</strong> et une interface scientifique fondée sur un
-        <strong>flux de données visuel et interactif</strong>. L'analyse s'exécute dans votre navigateur,
-        sans installation&nbsp;: importez vos données, construisez votre traitement et explorez les résultats.
+        Attributor is a scientific web platform dedicated to the <strong>attribution of molecular
+        formulas</strong> from mass spectra. It combines a compute engine written in
+        <strong>Rust and compiled to WebAssembly</strong> (Attribrustor), heavy processing executed
+        <strong>outside the main thread</strong>, and a scientific interface built on a
+        <strong>visual, interactive data-flow</strong>. Everything runs in your browser, with nothing to
+        install: import your data, assemble your processing pipeline and explore the results.
     </p>
 
-    <h2>Fonctionnalités principales</h2>
+    <h2>Main features</h2>
     <div class="features">
         <div class="card">
-            <h3>⚡ Calculs Rust / WebAssembly</h3>
-            <p>Des noyaux numériques compilés en WebAssembly pour traiter rapidement les données spectrales, directement dans le navigateur.</p>
+            <h3>⚡ Rust / WebAssembly compute</h3>
+            <p>Numerical kernels compiled to WebAssembly process spectral data quickly, directly in the browser.</p>
         </div>
         <div class="card">
-            <h3>🧵 Calculs non bloquants</h3>
-            <p>Les opérations lourdes s'exécutent dans des workers dédiés&nbsp;: l'interface reste fluide pendant le calcul, même sur de grands jeux de données.</p>
+            <h3>🧵 Non-blocking compute</h3>
+            <p>Heavy operations run in dedicated workers, so the interface stays responsive even on very large datasets.</p>
         </div>
         <div class="card">
-            <h3>🧮 Pool de calcul adaptatif</h3>
-            <p>Les tâches sont réparties entre plusieurs workers selon les capacités du navigateur, avec une file d'attente et un repli JavaScript si nécessaire.</p>
+            <h3>🧮 Adaptive compute pool</h3>
+            <p>Tasks are distributed across several workers according to the browser capabilities, with a queue and a JavaScript fallback if needed.</p>
         </div>
         <div class="card">
-            <h3>🔗 Flux de données interactif</h3>
-            <p>Ajoutez des nœuds, déplacez-les et reliez les étapes de votre analyse. Le flux se lance, se met à jour et visualise clairement la propagation des données.</p>
+            <h3>🔗 Interactive data flow</h3>
+            <p>Add nodes, move them and link the steps of your analysis. The pipeline runs, updates and clearly visualises how data propagates.</p>
         </div>
         <div class="card">
-            <h3>📈 Visualisation WebGL intégrée</h3>
-            <p>Explorez les spectres XY dans des graphiques interactifs rendus avec WebGL, conçus pour garder une visualisation fluide des données volumineuses.</p>
+            <h3>📈 Integrated WebGL rendering</h3>
+            <p>Explore XY data in interactive WebGL plots designed to keep large datasets fluid while panning and zooming.</p>
         </div>
         <div class="card">
-            <h3>🔬 Homologie persistante 0D</h3>
-            <p>Un module d'analyse topologique détecte les structures de sous- et super-niveaux et restitue leurs naissances, morts et indices associés.</p>
+            <h3>🔬 0D persistent homology</h3>
+            <p>A topological analysis module detects sub- and superlevel structures, returns their births and deaths, and filters the original points with a classifier line.</p>
         </div>
         <div class="card">
-            <h3>📂 Import flexible</h3>
-            <p>Chargez des fichiers texte délimités avec séparation et colonnes configurables, ou convertissez vos fichiers bruts <code>.raw</code> via le service msConvert.</p>
+            <h3>📂 Flexible import</h3>
+            <p>Load delimited text files with configurable separator and columns, or convert raw <code>.raw</code> files through the msConvert service.</p>
         </div>
         <div class="card">
-            <h3>💾 Sessions portables</h3>
-            <p>Exportez et importez le flux complet au format JSON, avec versionnage de la session et restauration fidèle des structures de données.</p>
+            <h3>💾 Portable sessions</h3>
+            <p>Export and import the complete pipeline as JSON, with session versioning and faithful restoration of the data structures.</p>
         </div>
         <div class="card">
-            <h3>↩️ Expérimentation sans risque</h3>
-            <p>Annulez et rétablissez vos actions grâce à un historique complet, ajustez les paramètres et comparez les résultats de vos scénarios.</p>
+            <h3>↩️ Risk-free experimentation</h3>
+            <p>Undo and redo every action through a complete history, tune parameters and compare the results of your scenarios.</p>
         </div>
     </div>
 
-    <h2>Un traitement en pipeline</h2>
+    <h2>A pipeline approach</h2>
     <p class="pipeline">
-        <code>Fichier brut (.raw)</code> → conversion <code>msConvert</code> → <code>Texte XY</code> →
-        flux de nœuds Attributor → <code>Attribution (Rust/WASM)</code> → <code>Graphiques &amp; export</code>
+        <code>Raw file (.raw)</code> → <code>msConvert</code> → <code>XY text</code> →
+        Attributor node pipeline → <code>Attribution (Rust/WASM)</code> → <code>Plots &amp; export</code>
     </p>
 
-    <h2>Écosystème</h2>
+    <h2>Ecosystem</h2>
     <div class="features">
         <div class="card">
-            <h3>🖥️ Application web</h3>
-            <p>L'interface principale, accessible depuis n'importe quel navigateur moderne. <a href="/">Lancer Attributor</a></p>
+            <h3>🖥️ Web application</h3>
+            <p>The main interface, available from any modern browser. <a href="/">Launch Attributor</a></p>
         </div>
         <div class="card">
-            <h3>🧰 Outils en ligne</h3>
-            <p>Convertisseurs de fichiers (msConverter texte → Attributor) disponibles en accès direct. <a href="http://tools.attributor.fr">Ouvrir les outils</a></p>
+            <h3>🧰 Online tools</h3>
+            <p>File converters (text → Attributor) available as direct endpoints. <a href="http://tools.attributor.fr">Open the tools</a></p>
         </div>
         <div class="card">
-            <h3>💻 Version desktop</h3>
-            <p>Une variante de bureau est également en développement pour un usage hors ligne.</p>
+            <h3>💻 Desktop version</h3>
+            <p>A desktop variant is also under development for offline use.</p>
         </div>
+    </div>
+
+    <h2>Technical documentation</h2>
+    <p>
+        This section is the reference for the Attributor processing nodes. For each node it documents
+        its purpose, its inputs and outputs, the constraints it enforces, and the way its data is laid
+        out in memory.
+    </p>
+
+    <div class="docs">
+
+        <h3>Global conventions</h3>
+
+        <h4>Wave data layout</h4>
+        <p>
+            A <code>Wave</code> is a typed-array container. Its <code>dims</code> property lists the size of
+            each dimension, and <code>degree</code> is the number of dimensions. The core is stored
+            <strong>non-interleaved</strong>: the first dimension is the fastest-varying axis.
+        </p>
+        <pre>new Wave(pointCount, 2)   // 2D wave: dims = [pointCount, 2]
+
+core = [ x0, x1, x2, ..., y0, y1, y2, ... ]
+
+core[i]              // X of point i
+core[pointCount + i]  // Y of point i
+index(i, 0)          // X of point i
+index(i, 1)          // Y of point i</pre>
+        <p>
+            This is the only supported layout for a 2D wave. Interleaved data such as
+            <code>[x0, y0, x1, y1, ...]</code> is never produced and never expected.
+        </p>
+        <p>
+            A 1D wave is declared as <code>new Wave(n)</code> and its core is simply <code>[y0, y1, ...]</code>.
+        </p>
+
+        <h4>Compute layer</h4>
+        <ul>
+            <li>Numerical kernels are written in Rust and compiled to WebAssembly.</li>
+            <li>Kernels run inside dedicated workers, never on the main thread.</li>
+            <li>Kernels exchange only flat <code>Float64Array</code> buffers — never arrays of objects or nested pairs.</li>
+            <li>Output buffers are transferred (zero-copy ownership transfer) back to the UI thread.</li>
+            <li>A JavaScript fallback implements the same semantics if WebAssembly or workers are unavailable.</li>
+        </ul>
+
+        <h3>Node reference</h3>
+
+        <h4>Persistent Homology <span class="badge">0D</span></h4>
+        <p>
+            Computes 0D persistent homology (H<sub>0</sub>) on a single input wave, then filters the
+            original points with a classifier line through the origin. Births and deaths are computed in
+            Rust, the default slope is derived from the persistence pairs, and the filtering itself is also
+            performed in Rust.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>1 input</strong> — a single 1D or 2D wave.<br>
+                    <span class="badge req">required</span>
+                    exactly one link on input <code>0</code>
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — the original points kept by the classifier, as a
+                    non-interleaved 2D wave <code>[X…, Y…]</code>.<br>
+                    The birth/death pairs are internal: they feed the persistence diagram only.
+                </td>
+            </tr>
+            <tr>
+                <td>Input layout</td>
+                <td>
+                    1D: <code>[y0, y1, ...]</code> &nbsp;·&nbsp;
+                    2D: <code>[x0, x1, ..., y0, y1, ...]</code>
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>filtrationMode</code> — <code>sublevel</code> or <code>superlevel</code> (default
+                    <code>superlevel</code>).<br>
+                    <code>slope</code> — classifier slope, strictly below 1. <code>null</code> means
+                    “not fitted yet”.<br>
+                    <code>logLogAxes</code> — logarithmic display of the persistence diagram.
+                </td>
+            </tr>
+        </table>
+
+        <h4>Algorithm</h4>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li>The kernel reads the Y block of the input core directly (no copy, no interleaving).</li>
+            <li>
+                For <code>superlevel</code>, points are activated by decreasing Y; for
+                <code>sublevel</code>, by increasing Y. Ties are broken by increasing X.
+            </li>
+            <li>Union-find merges adjacent components as the filtration level changes.</li>
+            <li>
+                Each input point yields one persistence pair: a birth equal to its own Y, and a death
+                recorded when its component merges. The surviving component keeps <code>death = 0</code>.
+            </li>
+            <li>Results are reordered by increasing X, so the output is always X-sorted.</li>
+            <li>
+                The default slope is computed from the pairs, clamped to
+                <code>[1e-9, 1 - 1e-12]</code>.
+            </li>
+            <li>
+                The filter keeps every pair with <code>death &lt;= slope × birth</code>, and returns the
+                corresponding original points.
+            </li>
+        </ol>
+
+        <h4>Interactive behaviour</h4>
+        <ul>
+            <li>
+                The persistence diagram shows kept pairs in green and discarded pairs in grey, on a
+                WebGL canvas.
+            </li>
+            <li>
+                The classifier line is an SVG overlay drawn through the origin:
+                <code>death = slope × birth</code>.
+            </li>
+            <li>Clicking the diagram places the classifier at that location and recomputes the filter.</li>
+            <li>Changing the slope never recomputes H0: only the classification kernel is re-run.</li>
+        </ul>
+
+        <h4>Error conditions</h4>
+        <ul>
+            <li>
+                <span class="badge req">error</span>
+                more than one link connected to the node, or a link targeting a removed input.
+            </li>
+            <li>
+                <span class="badge warn">floating</span>
+                no wave connected yet, or the connected value carries no usable wave.
+            </li>
+            <li>
+                <span class="badge warn">fallback</span>
+                WebAssembly or workers unavailable: an equivalent JavaScript implementation is used.
+            </li>
+        </ul>
+
+        <h4>Session behaviour</h4>
+        <p>
+            The classifier slope, its marker position and the filtration mode are serialised with the
+            session and restored on reload, so a fitted slope is never silently recomputed. Legacy sessions
+            are migrated automatically: the removed slope input and birth/death output are dropped, and the
+            points output is remapped to output <code>0</code>.
+        </p>
+
+        <h4>Data flow</h4>
+        <pre>input wave core
+   → kernel: persistent_homology_0d_waves(mode, stride)
+   → births, deaths, pointsX, pointsY, defaultSlope
+   → kernel: classify_persistence_0d(slope)
+   → keptPointsX, keptPointsY, keptCount
+   → output wave [X…, Y…]</pre>
+
+
     </div>
 
 </main>
 
 <footer>
-    Attributor Online — Spectrométrie de masse &amp; attribution de formules · IPAG
+    Attributor Online — Mass spectrometry &amp; formula attribution · IPAG
 </footer>
 
 </body>
