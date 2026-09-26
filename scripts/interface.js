@@ -865,7 +865,8 @@ class TrimmerNode extends NodeWithAccordion{
             //plotScales() already honours axis.left.scale, so the toggle only
             //has to swap the scale and re-pin the matching domain
             this.graph.parameters.axis.left.scale=on?"log":"linear"
-            this.graph.parameters.axis.left.domain=this.trimValueDomain()
+            //the COUNT axis follows too: it is part of the same log reading
+            this.pinTrimDomains()
         }
         this.refreshTrimmerUI()
         //the BINS themselves change with the scale, not only their position: a
@@ -951,6 +952,14 @@ class TrimmerNode extends NodeWithAccordion{
         },[])
         content.append(graphContainer)
         this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer)
+        //The trimmer frame holds NO traces, so Plot2D.dataBounds() is null, and
+        //ensureValidScales reads a missing bound as "not strictly positive" and
+        //forces EVERY log axis back to linear. The bars are binned in log, so on
+        //a linear value axis they land unevenly and the log reading is lost.
+        //Both domains here are pinned from the histogram, which already reports
+        //strictly positive min/max, so that guard has nothing to protect: it
+        //would only undo the scale the node asked for.
+        this.graph.ensureValidScales=()=>{}
         //fixed frame: no wheel zoom, the histogram must stay fully readable
         this.graph.allowZoom=false
         this.graph.parameters.axis.bottom.label="Count"
@@ -1073,7 +1082,23 @@ class TrimmerNode extends NodeWithAccordion{
         if(!this.graph) return
         const bins=this.currentBins()
         const maxCount=Math.max(...bins.map(bin=>bin.count),1)
-        this.graph.parameters.axis.bottom.domain=[0,maxCount*1.1]
+        const bottom=this.graph.parameters.axis.bottom
+        //A log VALUE axis with a linear COUNT axis hides the whole point of the
+        //frame: the noise floor puts a couple of thousand points in one bar while
+        //the peaks hold one or two, which is a few pixels on a linear count scale.
+        //On a log histogram the count axis goes log too, so a bar of 1 is still
+        //visible next to a bar of 2000.
+        if(this.parameters.logY){
+            bottom.scale="log"
+            //0 has no place on a log axis. The floor sits BELOW 1 on purpose: a
+            //peak bar that holds a single point would otherwise be drawn at the
+            //origin with zero length, i.e. invisible. At 0.5 it spans a tenth of
+            //the axis, so a one-point peak is still a visible mark.
+            bottom.domain=[0.5,maxCount*1.2]
+        }else{
+            bottom.scale="linear"
+            bottom.domain=[0,maxCount*1.1]
+        }
         this.graph.parameters.axis.left.domain=this.trimValueDomain()
     }
     //Value axis domain derived from the real histogram. It starts at the
@@ -1179,14 +1204,21 @@ class TrimmerNode extends NodeWithAccordion{
             this.parameters.highBound=domain[1]
             this.applyGuess()
         }
-        const x0=xScale(0)
+        //xScale(0) is -Infinity on a log count axis, so the bar origin is the
+        //DOMAIN floor: 0 when linear, 1 when log (a bar of 0 is not drawable, it
+        //is simply not drawn)
+        const bottomDomain=this.graph.parameters.axis.bottom.domain
+        const x0=xScale(Number.isFinite(bottomDomain[0])?bottomDomain[0]:0)
         //horizontal bars: X = count, Y = the bin value
-        const thickness=this.currentBins().length>1
-            ?Math.abs(yScale(this.currentBins()[1].value)-yScale(this.currentBins()[0].value))*0.6
+        const bins=this.currentBins()
+        const thickness=bins.length>1
+            ?Math.abs(yScale(bins[1].value)-yScale(bins[0].value))*0.6
             :4
-        for(const bin of this.currentBins()){
+        for(const bin of bins){
+            //on a log count axis an empty bin has nowhere to go
+            if(bin.count<=0&&this.parameters.logY) continue
             const y=yScale(bin.value)
-            const x1=xScale(bin.count)
+            const x1=xScale(Math.max(bin.count,Number.isFinite(bottomDomain[0])?bottomDomain[0]:0))
             if(!Number.isFinite(y)||!Number.isFinite(x1)) continue
             layer.append("rect")
                 .attr("class","trim-bar")
