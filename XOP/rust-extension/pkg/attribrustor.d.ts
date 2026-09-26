@@ -20,6 +20,34 @@ export function persistent_homology_0d_waves(core: Float64Array, stride: number,
 */
 export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, slope: number): PersistenceClassification;
 /**
+* Trims a wave. `method` is one of "passthrough", "madResidual",
+* "intensityThreshold"; an unknown name falls back to passthrough rather than
+* returning nothing, so a stale front end still resolves its flow.
+* `low_bound`/`high_bound` are the user cursors: a non-finite one means "the
+* method decides", and the two are intersected, never overridden.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {string} method
+* @param {number} low_bound
+* @param {number} high_bound
+* @param {number} k
+* @param {number} window
+* @param {number} threshold
+* @returns {TrimResult}
+*/
+export function trim_wave(core: Float64Array, stride: number, method: string, low_bound: number, high_bound: number, k: number, window: number, threshold: number): TrimResult;
+/**
+* Histogram of the wave values, in the same "binned value / count" shape the
+* trimmer frame already draws. `bins` is clamped to at least one bar, and a
+* flat wave (min == max) still yields `bins` bars around that single value
+* instead of a division by zero.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} bins
+* @returns {TrimHistogram}
+*/
+export function trim_histogram(core: Float64Array, stride: number, bins: number): TrimHistogram;
+/**
 * @param {number} a
 * @param {number} b
 * @returns {number}
@@ -113,6 +141,57 @@ export class PersistenceClassification {
 */
   readonly kept_points_y: Float64Array;
 }
+/**
+* One histogram bar: the graph needs centres and counts, nothing else.
+*/
+export class TrimHistogram {
+  free(): void;
+/**
+*/
+  readonly centres: Float64Array;
+/**
+*/
+  readonly counts: Float64Array;
+/**
+*/
+  readonly max: number;
+/**
+*/
+  readonly min: number;
+}
+/**
+* A trimmed wave plus everything the shell needs to redraw its frame.
+*/
+export class TrimResult {
+  free(): void;
+/**
+*/
+  readonly high_bound: number;
+/**
+*/
+  readonly kept_count: number;
+/**
+*/
+  readonly kept_indices: Float64Array;
+/**
+*/
+  readonly low_bound: number;
+/**
+*/
+  readonly points_x: Float64Array;
+/**
+*/
+  readonly points_y: Float64Array;
+/**
+*/
+  readonly sigma: number;
+/**
+*/
+  readonly threshold: number;
+/**
+*/
+  readonly total_count: number;
+}
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -135,6 +214,23 @@ export interface InitOutput {
   readonly persistenceclassification_kept_points_y: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_births: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_deaths: (a: number, b: number) => void;
+  readonly __wbg_trimresult_free: (a: number) => void;
+  readonly trimresult_points_x: (a: number, b: number) => void;
+  readonly trimresult_points_y: (a: number, b: number) => void;
+  readonly trimresult_kept_indices: (a: number, b: number) => void;
+  readonly trimresult_kept_count: (a: number) => number;
+  readonly trimresult_total_count: (a: number) => number;
+  readonly trimresult_sigma: (a: number) => number;
+  readonly trimresult_threshold: (a: number) => number;
+  readonly __wbg_trimhistogram_free: (a: number) => void;
+  readonly trimhistogram_centres: (a: number, b: number) => void;
+  readonly trimhistogram_counts: (a: number, b: number) => void;
+  readonly trimhistogram_min: (a: number) => number;
+  readonly trimhistogram_max: (a: number) => number;
+  readonly trim_wave: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
+  readonly trim_histogram: (a: number, b: number, c: number, d: number) => number;
+  readonly trimresult_low_bound: (a: number) => number;
+  readonly trimresult_high_bound: (a: number) => number;
   readonly compute: (a: number, b: number) => number;
   readonly add: (a: number, b: number) => number;
   readonly arrust: (a: number, b: number, c: number) => void;

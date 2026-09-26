@@ -168,6 +168,48 @@ export function classify_persistence_0d(births, deaths, points_x, points_y, slop
 }
 
 /**
+* Trims a wave. `method` is one of "passthrough", "madResidual",
+* "intensityThreshold"; an unknown name falls back to passthrough rather than
+* returning nothing, so a stale front end still resolves its flow.
+* `low_bound`/`high_bound` are the user cursors: a non-finite one means "the
+* method decides", and the two are intersected, never overridden.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {string} method
+* @param {number} low_bound
+* @param {number} high_bound
+* @param {number} k
+* @param {number} window
+* @param {number} threshold
+* @returns {TrimResult}
+*/
+export function trim_wave(core, stride, method, low_bound, high_bound, k, window, threshold) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.trim_wave(ptr0, len0, stride, ptr1, len1, low_bound, high_bound, k, window, threshold);
+    return TrimResult.__wrap(ret);
+}
+
+/**
+* Histogram of the wave values, in the same "binned value / count" shape the
+* trimmer frame already draws. `bins` is clamped to at least one bar, and a
+* flat wave (min == max) still yields `bins` bars around that single value
+* instead of a division by zero.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} bins
+* @returns {TrimHistogram}
+*/
+export function trim_histogram(core, stride, bins) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.trim_histogram(ptr0, len0, stride, bins);
+    return TrimHistogram.__wrap(ret);
+}
+
+/**
 * @param {number} a
 * @param {number} b
 * @returns {number}
@@ -535,6 +577,200 @@ export class PersistenceClassification {
     get kept_count() {
         const ret = wasm.persistenceclassification_kept_count(this.__wbg_ptr);
         return ret >>> 0;
+    }
+}
+
+const TrimHistogramFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_trimhistogram_free(ptr >>> 0));
+/**
+* One histogram bar: the graph needs centres and counts, nothing else.
+*/
+export class TrimHistogram {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(TrimHistogram.prototype);
+        obj.__wbg_ptr = ptr;
+        TrimHistogramFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        TrimHistogramFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_trimhistogram_free(ptr);
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get centres() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.trimhistogram_centres(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get counts() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.trimhistogram_counts(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {number}
+    */
+    get min() {
+        const ret = wasm.trimhistogram_min(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get max() {
+        const ret = wasm.trimhistogram_max(this.__wbg_ptr);
+        return ret;
+    }
+}
+
+const TrimResultFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_trimresult_free(ptr >>> 0));
+/**
+* A trimmed wave plus everything the shell needs to redraw its frame.
+*/
+export class TrimResult {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(TrimResult.prototype);
+        obj.__wbg_ptr = ptr;
+        TrimResultFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        TrimResultFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_trimresult_free(ptr);
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get points_x() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.trimresult_points_x(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get points_y() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.trimresult_points_y(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get kept_indices() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.trimresult_kept_indices(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {number}
+    */
+    get kept_count() {
+        const ret = wasm.trimresult_kept_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+    * @returns {number}
+    */
+    get total_count() {
+        const ret = wasm.trimresult_total_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+    * @returns {number}
+    */
+    get low_bound() {
+        const ret = wasm.trimhistogram_min(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get high_bound() {
+        const ret = wasm.trimhistogram_max(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get sigma() {
+        const ret = wasm.trimresult_sigma(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get threshold() {
+        const ret = wasm.trimresult_threshold(this.__wbg_ptr);
+        return ret;
     }
 }
 

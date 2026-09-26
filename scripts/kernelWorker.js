@@ -75,11 +75,152 @@ const kernels={
             result=classifyPersistence0DJS(births,deaths,pointsX,pointsY,slope)
         }
         return result
+    },
+    async trimWave({core,params}){
+        const method=params?.method??"passthrough"
+        const stride=params?.stride??1
+        //a null/undefined bound means "the method decides": NaN is what crosses
+        //the wasm boundary for that, and the kernel reads it back as such
+        const low=Number.isFinite(params?.lowBound)?params.lowBound:NaN
+        const high=Number.isFinite(params?.highBound)?params.highBound:NaN
+        const k=params?.k??5
+        const window=params?.window??9
+        const threshold=params?.threshold??0.1
+        let result
+        try{
+            await ensureWasm()
+            if(typeof rust.trim_wave!=="function"){
+                throw new Error("rust trim_wave is missing (stale pkg build?)")
+            }
+            const trimmed=rust.trim_wave(core,stride,method,low,high,k,window,threshold)
+            //wasm-bindgen exposes the #[wasm_bindgen(getter)] fields as plain
+            //properties here, exactly like PersistenceAnalysis.births
+            result={
+                pointsX:toFloat64(trimmed.points_x),
+                pointsY:toFloat64(trimmed.points_y),
+                keptIndices:toFloat64(trimmed.kept_indices),
+                keptCount:trimmed.kept_count,
+                totalCount:trimmed.total_count,
+                lowBound:trimmed.low_bound,
+                sigma:trimmed.sigma
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust trim unavailable, JS fallback:",err)
+            result=trimWaveJS(core,stride,method,low,high,k,window,threshold)
+        }
+        return result
+    },
+    async trimHistogram({core,params}){
+        const stride=params?.stride??1
+        const bins=Math.max(1,params?.bins??64)
+        let result
+        try{
+            await ensureWasm()
+            if(typeof rust.trim_histogram!=="function"){
+                throw new Error("rust trim_histogram is missing (stale pkg build?)")
+            }
+            const histogram=rust.trim_histogram(core,stride,bins)
+            result={
+                centres:toFloat64(histogram.centres),
+                counts:toFloat64(histogram.counts),
+                min:histogram.min,
+                max:histogram.max
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust histogram unavailable, JS fallback:",err)
+            result=trimHistogramJS(core,stride,bins)
+        }
+        return result
     }
 }
 
 function toFloat64(value){
     return value instanceof Float64Array?value:new Float64Array(value)
+}
+
+//Same semantics as trim.rs trim_wave, so a stale or failed wasm build still
+//resolves the flow instead of breaking it.
+function trimWaveJS(core,stride,method,lowBound,highBound,k,window,threshold){
+    const n=Math.floor(core.length/stride)
+    const y=stride===2?core.subarray(n):core
+    const kSafe=Number.isFinite(k)?k:5
+    const windowSafe=Number.isFinite(window)&&window>=3?Math.round(window):9
+    const thresholdSafe=Number.isFinite(threshold)?threshold:0.1
+    const sigma=method==="madResidual"?residualSigmaJS(y,windowSafe):0
+    //relative test: baseline + k*sigma, mirroring baseline_level in trim.rs
+    const methodLow=method==="madResidual"?baselineLevelJS(y)+sigma*kSafe
+        :(method==="intensityThreshold"?thresholdSafe:-Infinity)
+    //a FINITE cursor is authoritative: the method only seeds an absent one, it
+    //is not a floor. max() here would make the guessed threshold impossible to
+    //drag past, which is the whole point of the cursors
+    const low=Number.isFinite(lowBound)?lowBound:methodLow
+    const xs=[],ys=[],indices=[]
+    for(let i=0;i<n;i++){
+        const value=y[i]
+        if(Number.isNaN(value)) continue
+        if(value<low||(Number.isFinite(highBound)&&value>highBound)) continue
+        xs.push(stride===2?core[i]:i)
+        ys.push(value)
+        indices.push(i)
+    }
+    return {
+        pointsX:Float64Array.from(xs),
+        pointsY:Float64Array.from(ys),
+        keptIndices:Float64Array.from(indices),
+        keptCount:xs.length,
+        totalCount:n,
+        lowBound:low,
+        sigma
+    }
+}
+function residualSigmaJS(y,window){
+    const n=y.length
+    if(!n) return 0
+    const half=Math.floor(window/2)
+    const deviations=new Float64Array(n)
+    for(let i=0;i<n;i++){
+        let sum=0
+        const start=Math.max(0,i-half),end=Math.min(n,i+half+1)
+        for(let k=start;k<end;k++) sum+=y[k]
+        deviations[i]=Math.abs(y[i]-sum/(end-start))
+    }
+    const sorted=Array.from(deviations).sort((a,b)=>a-b)
+    const median=sorted.length%2===1?sorted[(sorted.length-1)/2]:0.5*(sorted[sorted.length/2-1]+sorted[sorted.length/2])
+    return 1.4826*median
+}
+//Median of the values: the robust "where the signal sits" estimate, matching
+//baseline_level in trim.rs.
+function baselineLevelJS(y){
+    const values=Array.from(y).filter(v=>!Number.isNaN(v)).sort((a,b)=>a-b)
+    if(!values.length) return 0
+    return values.length%2===1
+        ?values[(values.length-1)/2]
+        :0.5*(values[values.length/2-1]+values[values.length/2])
+}
+function trimHistogramJS(core,stride,bins){
+    const n=Math.floor(core.length/stride)
+    const y=stride===2?core.subarray(n):core
+    if(!n) return {centres:new Float64Array(0),counts:new Float64Array(0),min:0,max:0}
+    let min=Infinity,max=-Infinity
+    for(let i=0;i<n;i++){
+        const v=y[i]
+        if(Number.isNaN(v)) continue
+        if(v<min) min=v
+        if(v>max) max=v
+    }
+    if(!Number.isFinite(min)||!Number.isFinite(max)){min=0;max=0}
+    const width=(max-min)/bins
+    const counts=new Float64Array(bins)
+    for(let i=0;i<n;i++){
+        const v=y[i]
+        if(Number.isNaN(v)) continue
+        const index=width>0?Math.min(bins-1,Math.max(0,Math.floor((v-min)/width))):0
+        counts[index]+=1
+    }
+    const step=width>0?width:1
+    const centres=new Float64Array(bins)
+    for(let i=0;i<bins;i++) centres[i]=min+(i+0.5)*step
+    return {centres,counts,min,max}
 }
 
 function analysePersistence0DJS(core,stride=1,mode="sublevel"){

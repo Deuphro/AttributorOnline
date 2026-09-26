@@ -170,7 +170,102 @@ function runKernelLocally(kernel,payload){
     if(kernel==="classifyPersistence0D"){
         return runPersistenceClassificationLocal(payload)
     }
+    if(kernel==="trimWave"){
+        return runTrimWaveLocal(payload)
+    }
+    if(kernel==="trimHistogram"){
+        return runTrimHistogramLocal(payload)
+    }
     throw new Error(`unknown kernel "${kernel}"`)
+}
+
+//Same semantics as trim.rs trim_wave, mirrored here so the flow still resolves
+//on a browser with no Worker at all.
+function runTrimWaveLocal({core,params={}}){
+    const stride=params.stride??1
+    const n=Math.floor(core.length/stride)
+    const y=stride===2?core.subarray(n):core
+    const method=params.method??"passthrough"
+    const k=params.k??5
+    const window=(Number.isFinite(params.window)&&params.window>=3)?Math.round(params.window):9
+    const threshold=params.threshold??0.1
+    const lowCursor=Number.isFinite(params.lowBound)?params.lowBound:NaN
+    const highCursor=Number.isFinite(params.highBound)?params.highBound:NaN
+    const sigma=method==="madResidual"?localResidualSigma(y,window):0
+    //relative test: baseline + k*sigma, mirroring baseline_level in trim.rs
+    const methodLow=method==="madResidual"?localBaselineLevel(y)+sigma*k:(method==="intensityThreshold"?threshold:-Infinity)
+    //a FINITE cursor is authoritative: the method only seeds an absent one, it
+    //is not a floor. max() here would make the guessed threshold impossible to
+    //drag past, which is the whole point of the cursors
+    const low=Number.isFinite(lowCursor)?lowCursor:methodLow
+    const xs=[],ys=[],indices=[]
+    for(let i=0;i<n;i++){
+        const value=y[i]
+        if(Number.isNaN(value)) continue
+        if(value<low||(Number.isFinite(highCursor)&&value>highCursor)) continue
+        xs.push(stride===2?core[i]:i)
+        ys.push(value)
+        indices.push(i)
+    }
+    return {
+        pointsX:Float64Array.from(xs),
+        pointsY:Float64Array.from(ys),
+        keptIndices:Float64Array.from(indices),
+        keptCount:xs.length,
+        totalCount:n,
+        lowBound:low,
+        sigma
+    }
+}
+function localResidualSigma(y,window){
+    const n=y.length
+    if(!n) return 0
+    const half=Math.floor(window/2)
+    const deviations=new Float64Array(n)
+    for(let i=0;i<n;i++){
+        let sum=0
+        const start=Math.max(0,i-half),end=Math.min(n,i+half+1)
+        for(let k=start;k<end;k++) sum+=y[k]
+        deviations[i]=Math.abs(y[i]-sum/(end-start))
+    }
+    const sorted=Array.from(deviations).sort((a,b)=>a-b)
+    const median=sorted.length%2===1?sorted[(sorted.length-1)/2]:0.5*(sorted[sorted.length/2-1]+sorted[sorted.length/2])
+    return 1.4826*median
+}
+//Median of the values: the robust "where the signal sits" estimate, matching
+//baseline_level in trim.rs.
+function localBaselineLevel(y){
+    const values=Array.from(y).filter(v=>!Number.isNaN(v)).sort((a,b)=>a-b)
+    if(!values.length) return 0
+    return values.length%2===1
+        ?values[(values.length-1)/2]
+        :0.5*(values[values.length/2-1]+values[values.length/2])
+}
+function runTrimHistogramLocal({core,params={}}){
+    const stride=params.stride??1
+    const bins=Math.max(1,params.bins??64)
+    const n=Math.floor(core.length/stride)
+    const y=stride===2?core.subarray(n):core
+    if(!n) return {centres:new Float64Array(0),counts:new Float64Array(0),min:0,max:0}
+    let min=Infinity,max=-Infinity
+    for(let i=0;i<n;i++){
+        const v=y[i]
+        if(Number.isNaN(v)) continue
+        if(v<min) min=v
+        if(v>max) max=v
+    }
+    if(!Number.isFinite(min)||!Number.isFinite(max)){min=0;max=0}
+    const width=(max-min)/bins
+    const counts=new Float64Array(bins)
+    for(let i=0;i<n;i++){
+        const v=y[i]
+        if(Number.isNaN(v)) continue
+        counts[width>0?Math.min(bins-1,Math.max(0,Math.floor((v-min)/width))):0]+=1
+    }
+    const step=width>0?width:1
+    const centres=new Float64Array(bins)
+    for(let i=0;i<bins;i++) centres[i]=min+(i+0.5)*step
+    return {centres,counts,min,max}
 }
 
 function runPersistenceAnalysisLocal({core,params={}}){

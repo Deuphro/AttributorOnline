@@ -1,10 +1,12 @@
 #![allow(unused)]
 use wasm_bindgen::prelude::*;
 mod persistence;
+mod trim;
 pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,
     PersistenceClassification,
 };
+pub use trim::{trim_histogram, trim_wave, TrimHistogram, TrimResult};
 
 #[wasm_bindgen]
 pub fn compute(a: i32,b: i32) -> i32{
