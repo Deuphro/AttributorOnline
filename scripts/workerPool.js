@@ -174,8 +174,11 @@ function runKernelLocally(kernel,payload){
     if(kernel==="classifyPersistence0D"){
         return runPersistenceClassificationLocal(payload)
     }
-    if(kernel==="trimWave"){
-        return runTrimWaveLocal(payload)
+    if(kernel==="trimGuess"){
+        return runTrimGuessLocal(payload)
+    }
+    if(kernel==="trimApply"){
+        return runTrimApplyLocal(payload)
     }
     if(kernel==="trimHistogram"){
         return runTrimHistogramLocal(payload)
@@ -183,9 +186,9 @@ function runKernelLocally(kernel,payload){
     throw new Error(`unknown kernel "${kernel}"`)
 }
 
-//Same semantics as trim.rs trim_wave, mirrored here so the flow still resolves
-//on a browser with no Worker at all.
-function runTrimWaveLocal({core,params={}}){
+//Same semantics as trim.rs trim_guess / trim_apply, mirrored here so the flow
+//still resolves on a browser with no Worker at all.
+function runTrimGuessLocal({core,params={}}){
     const stride=params.stride??1
     const n=Math.floor(core.length/stride)
     const y=stride===2?core.subarray(n):core
@@ -193,20 +196,27 @@ function runTrimWaveLocal({core,params={}}){
     const k=params.k??5
     const window=(Number.isFinite(params.window)&&params.window>=3)?Math.round(params.window):9
     const threshold=params.threshold??0.1
-    const lowCursor=Number.isFinite(params.lowBound)?params.lowBound:NaN
-    const highCursor=Number.isFinite(params.highBound)?params.highBound:NaN
-    const sigma=method==="madResidual"?localResidualSigma(y,window):0
-    //relative test: baseline + k*sigma, mirroring baseline_level in trim.rs
-    const methodLow=method==="madResidual"?localBaselineLevel(y)+sigma*k:(method==="intensityThreshold"?threshold:-Infinity)
-    //a FINITE cursor is authoritative: the method only seeds an absent one, it
-    //is not a floor. max() here would make the guessed threshold impossible to
-    //drag past, which is the whole point of the cursors
-    const low=Number.isFinite(lowCursor)?lowCursor:methodLow
+    if(method==="madResidual"){
+        //relative: baseline + k*sigma, never the absolute k*sigma
+        return localBaselineLevel(y)+localResidualSigma(y,window)*k
+    }
+    if(method==="intensityThreshold") return threshold
+    //passthrough, and any unknown name: nothing is cut
+    return -Infinity
+}
+function runTrimApplyLocal({core,params={}}){
+    const stride=params.stride??1
+    const n=Math.floor(core.length/stride)
+    const y=stride===2?core.subarray(n):core
+    //a non-finite bound means "no cut on that side"
+    const low=Number.isFinite(params.lowBound)?params.lowBound:-Infinity
+    const high=Number.isFinite(params.highBound)?params.highBound:Infinity
     const xs=[],ys=[],indices=[]
     for(let i=0;i<n;i++){
         const value=y[i]
+        //a NaN compares false against every bound: filter it explicitly
         if(Number.isNaN(value)) continue
-        if(value<low||(Number.isFinite(highCursor)&&value>highCursor)) continue
+        if(value<low||(Number.isFinite(high)&&value>high)) continue
         xs.push(stride===2?core[i]:i)
         ys.push(value)
         indices.push(i)
@@ -218,7 +228,7 @@ function runTrimWaveLocal({core,params={}}){
         keptCount:xs.length,
         totalCount:n,
         lowBound:low,
-        sigma
+        highBound:high
     }
 }
 function localResidualSigma(y,window){

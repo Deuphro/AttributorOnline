@@ -6,7 +6,7 @@ pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,
     PersistenceClassification,
 };
-pub use trim::{trim_histogram, trim_wave, TrimHistogram, TrimResult};
+pub use trim::{trim_apply, trim_guess, trim_histogram, TrimHistogram, TrimResult};
 
 #[wasm_bindgen]
 pub fn compute(a: i32,b: i32) -> i32{

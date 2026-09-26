@@ -79,23 +79,38 @@ const kernels={
         }
         return result
     },
-    async trimWave({core,params}){
+    async trimGuess({core,params}){
         const method=params?.method??"passthrough"
         const stride=params?.stride??1
-        //a null/undefined bound means "the method decides": NaN is what crosses
-        //the wasm boundary for that, and the kernel reads it back as such
-        const low=Number.isFinite(params?.lowBound)?params.lowBound:NaN
-        const high=Number.isFinite(params?.highBound)?params.highBound:NaN
         const k=params?.k??5
         const window=params?.window??9
         const threshold=params?.threshold??0.1
+        //returns ONE number, so the rust path allocates and clones nothing: the
+        //shell only needs the threshold, and the old design built the whole
+        //trimmed point set just to read it back
+        try{
+            await ensureWasm()
+            if(typeof rust.trim_guess!=="function"){
+                throw new Error("rust trim_guess is missing (stale pkg build?)")
+            }
+            return rust.trim_guess(core,stride,method,k,window,threshold)
+        }catch(err){
+            console.warn("[kernelWorker] rust guess unavailable, JS fallback:",err)
+            return trimGuessJS(core,stride,method,k,window,threshold)
+        }
+    },
+    async trimApply({core,params}){
+        const stride=params?.stride??1
+        //a non-finite bound means "no cut on that side"
+        const low=Number.isFinite(params?.lowBound)?params.lowBound:-Infinity
+        const high=Number.isFinite(params?.highBound)?params.highBound:Infinity
         let result
         try{
             await ensureWasm()
-            if(typeof rust.trim_wave!=="function"){
-                throw new Error("rust trim_wave is missing (stale pkg build?)")
+            if(typeof rust.trim_apply!=="function"){
+                throw new Error("rust trim_apply is missing (stale pkg build?)")
             }
-            const trimmed=rust.trim_wave(core,stride,method,low,high,k,window,threshold)
+            const trimmed=rust.trim_apply(core,stride,low,high)
             //wasm-bindgen exposes the #[wasm_bindgen(getter)] fields as plain
             //properties here, exactly like PersistenceAnalysis.births
             result={
@@ -105,11 +120,11 @@ const kernels={
                 keptCount:trimmed.kept_count,
                 totalCount:trimmed.total_count,
                 lowBound:trimmed.low_bound,
-                sigma:trimmed.sigma
+                highBound:trimmed.high_bound
             }
         }catch(err){
             console.warn("[kernelWorker] rust trim unavailable, JS fallback:",err)
-            result=trimWaveJS(core,stride,method,low,high,k,window,threshold)
+            result=trimApplyJS(core,stride,low,high)
         }
         return result
     },
@@ -143,27 +158,32 @@ function toFloat64(value){
     return value instanceof Float64Array?value:new Float64Array(value)
 }
 
-//Same semantics as trim.rs trim_wave, so a stale or failed wasm build still
+//Same semantics as trim.rs trim_guess, so a stale or failed wasm build still
 //resolves the flow instead of breaking it.
-function trimWaveJS(core,stride,method,lowBound,highBound,k,window,threshold){
+function trimGuessJS(core,stride,method,k,window,threshold){
     const n=Math.floor(core.length/stride)
     const y=stride===2?core.subarray(n):core
     const kSafe=Number.isFinite(k)?k:5
     const windowSafe=Number.isFinite(window)&&window>=3?Math.round(window):9
     const thresholdSafe=Number.isFinite(threshold)?threshold:0.1
-    const sigma=method==="madResidual"?residualSigmaJS(y,windowSafe):0
-    //relative test: baseline + k*sigma, mirroring baseline_level in trim.rs
-    const methodLow=method==="madResidual"?baselineLevelJS(y)+sigma*kSafe
-        :(method==="intensityThreshold"?thresholdSafe:-Infinity)
-    //a FINITE cursor is authoritative: the method only seeds an absent one, it
-    //is not a floor. max() here would make the guessed threshold impossible to
-    //drag past, which is the whole point of the cursors
-    const low=Number.isFinite(lowBound)?lowBound:methodLow
+    if(method==="madResidual"){
+        //relative: baseline + k*sigma, never the absolute k*sigma
+        return baselineLevelJS(y)+residualSigmaJS(y,windowSafe)*kSafe
+    }
+    if(method==="intensityThreshold") return thresholdSafe
+    //passthrough, and any unknown name: nothing is cut
+    return -Infinity
+}
+//Same semantics as trim.rs trim_apply: a pure two-bounds cut, no method.
+function trimApplyJS(core,stride,lowBound,highBound){
+    const n=Math.floor(core.length/stride)
+    const y=stride===2?core.subarray(n):core
     const xs=[],ys=[],indices=[]
     for(let i=0;i<n;i++){
         const value=y[i]
+        //a NaN compares false against every bound: filter it explicitly
         if(Number.isNaN(value)) continue
-        if(value<low||(Number.isFinite(highBound)&&value>highBound)) continue
+        if(value<lowBound||(Number.isFinite(highBound)&&value>highBound)) continue
         xs.push(stride===2?core[i]:i)
         ys.push(value)
         indices.push(i)
@@ -174,8 +194,8 @@ function trimWaveJS(core,stride,method,lowBound,highBound,k,window,threshold){
         keptIndices:Float64Array.from(indices),
         keptCount:xs.length,
         totalCount:n,
-        lowBound:low,
-        sigma
+        lowBound,
+        highBound
     }
 }
 function residualSigmaJS(y,window){

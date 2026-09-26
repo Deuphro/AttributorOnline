@@ -20,22 +20,36 @@ export function persistent_homology_0d_waves(core: Float64Array, stride: number,
 */
 export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, slope: number): PersistenceClassification;
 /**
-* Trims a wave. `method` is one of "passthrough", "madResidual",
-* "intensityThreshold"; an unknown name falls back to passthrough rather than
-* returning nothing, so a stale front end still resolves its flow.
-* `low_bound`/`high_bound` are the user cursors: a non-finite one means "the
-* method decides", and the two are intersected, never overridden.
+* Where the SELECTED method wants the low cursor to sit, as a single number.
+*
+* Deliberately returns one f64 and allocates nothing: the shell only needs the
+* threshold, and the previous design had it call the full trim and throw away
+* every kept point but that number - three vectors built, three clones out of
+* wasm, megabytes through postMessage, all discarded.
+*
+* An unknown method name falls back to passthrough (an infinite low bound),
+* so a stale front end still resolves its flow.
 * @param {Float64Array} core
 * @param {number} stride
 * @param {string} method
-* @param {number} low_bound
-* @param {number} high_bound
 * @param {number} k
 * @param {number} window
 * @param {number} threshold
+* @returns {number}
+*/
+export function trim_guess(core: Float64Array, stride: number, method: string, k: number, window: number, threshold: number): number;
+/**
+* Applies the two bounds and returns the surviving points. This is a pure
+* primitive: it knows NOTHING about methods, parameters or guesses. Where the
+* bounds come from is the shell's business (trim_guess, or the user dragging a
+* cursor), which is what keeps the two roles from getting confused.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} low_bound
+* @param {number} high_bound
 * @returns {TrimResult}
 */
-export function trim_wave(core: Float64Array, stride: number, method: string, low_bound: number, high_bound: number, k: number, window: number, threshold: number): TrimResult;
+export function trim_apply(core: Float64Array, stride: number, low_bound: number, high_bound: number): TrimResult;
 /**
 * Histogram of the wave values, in the same "binned value / count" shape the
 * trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
@@ -173,7 +187,9 @@ export class TrimHistogram {
   readonly min: number;
 }
 /**
-* A trimmed wave plus everything the shell needs to redraw its frame.
+* A trimmed wave. Deliberately minimal: the bounds are echoed for the shell,
+* but nothing method-related lives here, because trim_apply is a pure
+* two-bounds primitive.
 */
 export class TrimResult {
   free(): void;
@@ -195,12 +211,6 @@ export class TrimResult {
 /**
 */
   readonly points_y: Float64Array;
-/**
-*/
-  readonly sigma: number;
-/**
-*/
-  readonly threshold: number;
 /**
 */
   readonly total_count: number;
@@ -231,20 +241,19 @@ export interface InitOutput {
   readonly trimresult_points_x: (a: number, b: number) => void;
   readonly trimresult_points_y: (a: number, b: number) => void;
   readonly trimresult_kept_indices: (a: number, b: number) => void;
-  readonly trimresult_kept_count: (a: number) => number;
   readonly trimresult_total_count: (a: number) => number;
-  readonly trimresult_sigma: (a: number) => number;
-  readonly trimresult_threshold: (a: number) => number;
   readonly __wbg_trimhistogram_free: (a: number) => void;
   readonly trimhistogram_centres: (a: number, b: number) => void;
   readonly trimhistogram_counts: (a: number, b: number) => void;
   readonly trimhistogram_min: (a: number) => number;
   readonly trimhistogram_max: (a: number) => number;
   readonly trimhistogram_dropped: (a: number) => number;
-  readonly trim_wave: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
+  readonly trim_guess: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+  readonly trim_apply: (a: number, b: number, c: number, d: number, e: number) => number;
   readonly trim_histogram: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
   readonly trimresult_low_bound: (a: number) => number;
   readonly trimresult_high_bound: (a: number) => number;
+  readonly trimresult_kept_count: (a: number) => number;
   readonly compute: (a: number, b: number) => number;
   readonly add: (a: number, b: number) => number;
   readonly arrust: (a: number, b: number, c: number) => void;

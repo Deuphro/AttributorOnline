@@ -16,7 +16,9 @@ const LOG_BINS_PER_DECADE: f64 = 6.0;
 //Below this the frame would be unreadable, whatever the span says.
 const MIN_LOG_BINS: usize = 8;
 
-/// A trimmed wave plus everything the shell needs to redraw its frame.
+/// A trimmed wave. Deliberately minimal: the bounds are echoed for the shell,
+/// but nothing method-related lives here, because trim_apply is a pure
+/// two-bounds primitive.
 #[wasm_bindgen]
 pub struct TrimResult {
     points_x: Vec<f64>,
@@ -26,8 +28,6 @@ pub struct TrimResult {
     total_count: usize,
     low_bound: f64,
     high_bound: f64,
-    sigma: f64,
-    threshold: f64,
 }
 
 #[wasm_bindgen]
@@ -39,8 +39,6 @@ impl TrimResult {
     #[wasm_bindgen(getter)] pub fn total_count(&self) -> usize { self.total_count }
     #[wasm_bindgen(getter)] pub fn low_bound(&self) -> f64 { self.low_bound }
     #[wasm_bindgen(getter)] pub fn high_bound(&self) -> f64 { self.high_bound }
-    #[wasm_bindgen(getter)] pub fn sigma(&self) -> f64 { self.sigma }
-    #[wasm_bindgen(getter)] pub fn threshold(&self) -> f64 { self.threshold }
 }
 
 /// One histogram bar: the graph needs centres and counts, nothing else.
@@ -139,25 +137,17 @@ impl Default for TrimParams {
     }
 }
 
-/// The guess the UI asks for when the method is selected or the Guess button
-/// is pressed: the low cursor lands on the method threshold. The high bound
-/// comes back NaN, meaning "no opinion": the shell then keeps the user cursor.
-///
-/// madResidual is a RELATIVE test: sigma measures the noise around a level, so
-/// the threshold must be `baseline + k*sigma`. Using k*sigma alone would be an
-/// absolute cut at 0, and on a spectrum whose baseline sits at 100 it would
-/// either cut nothing (k small) or wipe the whole signal (k large). The
-/// baseline is the MEDIAN, not the mean: a handful of intense peaks must not
-/// drag the level up and hide the noise they sit on.
-pub fn guess_bounds(y: &[f64], method: &str, params: &TrimParams) -> (f64, f64) {
+/// The guess, on the raw values. Kept as a named function because the tests
+/// state the rule in these terms: madResidual is a RELATIVE test, so the
+/// threshold is `baseline + k*sigma`, never the absolute `k*sigma`. Using the
+/// latter would cut at 0 and either trim nothing or wipe the signal, depending
+/// on the baseline. The baseline is the MEDIAN so that a few intense peaks
+/// cannot drag the level up and hide the noise they sit on.
+pub fn guess_bounds(y: &[f64], method: &str, params: &TrimParams) -> f64 {
     match method {
-        "madResidual" => {
-            let sigma = residual_sigma(y, params.window);
-            (baseline_level(y) + sigma * params.k, f64::NAN)
-        }
-        "intensityThreshold" => (params.threshold, f64::NAN),
-        // passthrough trims nothing: an infinite low bound keeps every point
-        _ => (f64::NEG_INFINITY, f64::INFINITY),
+        "madResidual" => baseline_level(y) + residual_sigma(y, params.window) * params.k,
+        "intensityThreshold" => params.threshold,
+        _ => f64::NEG_INFINITY,
     }
 }
 
@@ -170,44 +160,30 @@ fn baseline_level(y: &[f64]) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     median(&values)
 }
-/// Trims a wave. `method` is one of "passthrough", "madResidual",
-/// "intensityThreshold"; an unknown name falls back to passthrough rather than
-/// returning nothing, so a stale front end still resolves its flow.
-/// `low_bound`/`high_bound` are the user cursors: a non-finite one means "the
-/// method decides", and the two are intersected, never overridden.
+/// Where the SELECTED method wants the low cursor to sit, as a single number.
+///
+/// Deliberately returns one f64 and allocates nothing: the shell only needs the
+/// threshold, and the previous design had it call the full trim and throw away
+/// every kept point but that number - three vectors built, three clones out of
+/// wasm, megabytes through postMessage, all discarded.
+///
+/// An unknown method name falls back to passthrough (an infinite low bound),
+/// so a stale front end still resolves its flow.
 #[wasm_bindgen]
-pub fn trim_wave(
-    core: &[f64],
-    stride: usize,
-    method: &str,
-    low_bound: f64,
-    high_bound: f64,
-    k: f64,
-    window: f64,
-    threshold: f64,
-) -> TrimResult {
+pub fn trim_guess(core: &[f64], stride: usize, method: &str, k: f64, window: f64, threshold: f64) -> f64 {
+    let (_x, y) = split(core, stride);
+    guess_bounds(y, method, &normalise_params(k, window, threshold))
+}
+
+/// Applies the two bounds and returns the surviving points. This is a pure
+/// primitive: it knows NOTHING about methods, parameters or guesses. Where the
+/// bounds come from is the shell's business (trim_guess, or the user dragging a
+/// cursor), which is what keeps the two roles from getting confused.
+#[wasm_bindgen]
+pub fn trim_apply(core: &[f64], stride: usize, low_bound: f64, high_bound: f64) -> TrimResult {
     let (x, y) = split(core, stride);
-    let params = TrimParams {
-        k: if k.is_finite() { k } else { 5.0 },
-        window: if window.is_finite() && window >= MIN_MAD_WINDOW as f64 {
-            window.round() as usize
-        } else {
-            9
-        },
-        threshold: if threshold.is_finite() { threshold } else { 0.1 },
-    };
-    let method = match method {
-        "madResidual" | "intensityThreshold" | "passthrough" => method,
-        _ => "passthrough",
-    };
-    let sigma = if method == "madResidual" { residual_sigma(y, params.window) } else { 0.0 };
-    let method_low = guess_bounds(y, method, &params).0;
-    // A FINITE cursor is authoritative: it is the value the user placed, and it
-    // is what defines the trim. The method only SEEDS an absent cursor (NaN), it
-    // is not a permanent floor. Taking max(cursor, method) would make it
-    // impossible to drag a bound below the guessed threshold, which is exactly
-    // the move the frame exists to allow.
-    let low = if low_bound.is_finite() { low_bound } else { method_low };
+    // A non-finite bound means "no cut on that side".
+    let low = low_bound;
     let high = high_bound;
 
     let mut points_x = Vec::new();
@@ -237,8 +213,21 @@ pub fn trim_wave(
         total_count,
         low_bound: low,
         high_bound: high,
-        sigma,
-        threshold: low,
+    }
+}
+
+/// Clamps the incoming knobs into the range each estimator can survive: a
+/// window below MIN_MAD_WINDOW collapses the residual to zero, and a
+/// non-finite k or threshold would poison the threshold itself.
+fn normalise_params(k: f64, window: f64, threshold: f64) -> TrimParams {
+    TrimParams {
+        k: if k.is_finite() { k } else { 5.0 },
+        window: if window.is_finite() && window >= MIN_MAD_WINDOW as f64 {
+            window.round() as usize
+        } else {
+            9
+        },
+        threshold: if threshold.is_finite() { threshold } else { 0.1 },
     }
 }
 /// Histogram of the wave values, in the same "binned value / count" shape the
@@ -375,132 +364,131 @@ mod tests {
         core
     }
 
+    // ---- trim_apply: a pure two-bounds primitive, no method knowledge ----
+
     #[test]
-    fn passthrough_keeps_everything() {
+    fn apply_keeps_only_what_lies_between_the_bounds() {
         let core = core_xy(&[0.0, 1.0, 2.0], &[1.0, 2.0, 3.0]);
-        let out = trim_wave(&core, 2, "passthrough", f64::NAN, f64::NAN, 5.0, 9.0, 0.1);
-        assert_eq!(out.kept_count(), 3);
+        let out = trim_apply(&core, 2, 1.5, 2.5);
+        assert_eq!(out.kept_count(), 1);
         assert_eq!(out.total_count(), 3);
+        assert_eq!(out.points_x, vec![1.0]);
+        assert_eq!(out.points_y, vec![2.0]);
     }
 
     #[test]
-    fn unknown_method_falls_back_to_passthrough() {
-        let core = core_xy(&[0.0, 1.0], &[4.0, 5.0]);
-        let out = trim_wave(&core, 2, "nope", f64::NAN, f64::NAN, 5.0, 9.0, 0.1);
+    fn apply_takes_no_arguments_about_methods_at_all() {
+        // signature-level proof that the trim and the guess cannot be confused:
+        // there is no method, no k, no window, no threshold in here
+        let out = trim_apply(&[1.0, 2.0, 3.0], 1, 2.0, f64::NAN);
         assert_eq!(out.kept_count(), 2);
     }
 
     #[test]
-    fn intensity_threshold_drops_the_low_tail() {
-        let y = [0.05, 0.2, 0.4, 0.9];
-        let out = trim_wave(&y, 1, "intensityThreshold", f64::NAN, f64::NAN, 5.0, 9.0, 0.1);
-        assert_eq!(out.total_count(), 4);
-        assert_eq!(out.kept_count(), 3);
-        // dropped points are reported by index, so the shell can highlight them
-        assert_eq!(out.kept_indices(), vec![1.0, 2.0, 3.0]);
-        assert!((out.threshold() - 0.1).abs() < 1e-12);
-    }
-
-    #[test]
-    fn a_user_cursor_clips_the_method_threshold() {
-        let y = [0.05, 0.2, 0.4, 0.9];
-        let out = trim_wave(&y, 1, "intensityThreshold", 0.3, 0.5, 5.0, 9.0, 0.1);
-        // 0.3 is stricter than the 0.1 method threshold, and 0.5 caps the top
-        assert_eq!(out.kept_count(), 1);
-        assert!((out.low_bound() - 0.3).abs() < 1e-12);
-    }
-
-    #[test]
-    fn a_user_cursor_wins_over_the_method_threshold() {
-        // The method threshold (0.1) is only a SEED. Once the user has placed a
-        // cursor at -1, that cursor defines the trim: taking max(cursor, method)
-        // here would make it impossible to drag below the guessed threshold.
-        let y = [0.05, 0.2, 0.4, 0.9];
-        let out = trim_wave(&y, 1, "intensityThreshold", -1.0, f64::NAN, 5.0, 9.0, 0.1);
-        assert_eq!(out.kept_count(), 4);
-        assert!((out.low_bound - (-1.0)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn an_absent_cursor_takes_the_method_threshold() {
-        // NaN cursor = "the method decides", which is what the Guess button sends
-        let y = [0.05, 0.2, 0.4, 0.9];
-        let out = trim_wave(&y, 1, "intensityThreshold", f64::NAN, f64::NAN, 5.0, 9.0, 0.1);
-        assert_eq!(out.kept_count(), 3);
-        assert!((out.low_bound - 0.1).abs() < 1e-12);
-    }
-
-    #[test]
-    fn a_high_cursor_above_the_maximum_keeps_everything() {
+    fn a_non_finite_bound_means_no_cut_on_that_side() {
         let y = [1.0, 2.0, 3.0];
-        let out = trim_wave(&y, 1, "passthrough", f64::NAN, 1e9, 5.0, 9.0, 0.1);
-        assert_eq!(out.kept_count(), 3);
+        let low = trim_apply(&y, 1, f64::NEG_INFINITY, f64::NAN);
+        assert_eq!(low.kept_count(), 3, "an infinite low bound keeps everything");
+        let high = trim_apply(&y, 1, 2.0, f64::INFINITY);
+        assert_eq!(high.kept_count(), 2, "an infinite high bound caps nothing");
     }
 
     #[test]
-    fn mad_residual_trims_a_quiet_wave_but_not_a_spiky_one() {
-        // flat noise around 1: baseline + 5 sigma is ABOVE the whole wave, so
-        // the method correctly drops all of it
-        let quiet = [1.0, 1.02, 0.99, 1.01, 1.0, 0.98, 1.03, 1.0, 0.99];
-        let out = trim_wave(&quiet, 1, "madResidual", f64::NAN, f64::NAN, 5.0, 3.0, 0.1);
-        assert!(out.sigma() > 0.0);
+    fn a_user_cursor_can_go_below_the_method_guess() {
+        // the regression this split was made for: with the old combined call a
+        // method floor made it impossible to drag BELOW the guessed threshold
+        let y = [0.05, 0.2, 0.4, 0.9];
+        let guess = trim_guess(&y, 1, "intensityThreshold", 5.0, 9.0, 0.4);
+        assert_eq!(trim_apply(&y, 1, guess, f64::NAN).kept_count(), 2);
+        // dragging to 0.1 cuts LESS than the 0.4 guess, because the cursor - not
+        // the method - defines the trim now
+        assert_eq!(trim_apply(&y, 1, 0.1, f64::NAN).kept_count(), 3);
+        // and a cursor below the smallest value keeps everything
+        assert_eq!(trim_apply(&y, 1, -1.0, f64::NAN).kept_count(), 4);
+    }
+
+    #[test]
+    fn apply_reports_the_bounds_it_used() {
+        let out = trim_apply(&[1.0, 2.0], 1, 1.5, 2.5);
+        assert!((out.low_bound - 1.5).abs() < 1e-12);
+        assert!((out.high_bound - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn apply_preserves_the_x_column_and_the_indices() {
+        let core = core_xy(&[10.0, 20.0, 30.0], &[1.0, 6.0, 9.0]);
+        let out = trim_apply(&core, 2, 5.0, f64::NAN);
+        assert_eq!(out.points_x, vec![20.0, 30.0]);
+        assert_eq!(out.points_y, vec![6.0, 9.0]);
+        assert_eq!(out.kept_indices, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn apply_reports_the_index_when_there_is_no_x_column() {
+        let out = trim_apply(&[1.0, 2.0], 1, f64::NEG_INFINITY, f64::NAN);
+        assert_eq!(out.points_x, vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn apply_never_keeps_a_nan() {
+        // a NaN compares false against every bound, so it has to be filtered
+        let out = trim_apply(&[1.0, f64::NAN, 2.0], 1, f64::NEG_INFINITY, f64::NAN);
+        assert_eq!(out.kept_count(), 2);
+        assert_eq!(out.total_count(), 3);
+    }
+
+    #[test]
+    fn apply_of_an_empty_wave_is_empty() {
+        let out = trim_apply(&[], 1, f64::NEG_INFINITY, f64::NAN);
         assert_eq!(out.kept_count(), 0);
+        assert_eq!(out.total_count(), 0);
+    }
 
-        // a monotone ramp has a flat residual plateau, so its sigma is tiny and
-        // the threshold lands on its own median: the low half goes, the top
-        // half carries the signal and MUST survive
-        let ramp = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-        let out = trim_wave(&ramp, 1, "madResidual", f64::NAN, f64::NAN, 5.0, 3.0, 0.1);
-        assert!(out.kept_count() > 0);
-        assert!(out.kept_count() < ramp.len());
-        //the survivors are the TOP of the ramp, in order
-        let last = out.points_y[out.kept_count - 1];
-        assert!((last - 8.0).abs() < 1e-12);
+    // ---- trim_guess: where the SELECTED method wants the cursor ----
 
-        // and a signal rising well above its own noise keeps its top half only
-        let signal = [1.0, 1.01, 0.99, 1.0, 1.02, 0.98, 1.0, 5.0, 9.0, 12.0];
-        let out = trim_wave(&signal, 1, "madResidual", f64::NAN, f64::NAN, 5.0, 3.0, 0.1);
-        assert!(out.kept_count() > 0);
-        assert!(out.kept_count() < signal.len());
+    #[test]
+    fn guess_of_passthrough_is_infinite_so_nothing_is_cut() {
+        let y = [1.0, 2.0, 3.0];
+        assert_eq!(trim_guess(&y, 1, "passthrough", 5.0, 9.0, 0.1), f64::NEG_INFINITY);
     }
 
     #[test]
-    fn mad_sigma_is_robust_against_a_single_spike() {
-        let clean = [1.0, 1.01, 0.99, 1.0, 1.02, 0.98, 1.0, 1.01, 0.99];
-        let spiky = [1000.0, 1.01, 0.99, 1.0, 1.02, 0.98, 1.0, 1.01, 0.99];
-        let a = residual_sigma(&clean, 3);
-        let b = residual_sigma(&spiky, 3);
-        // a median ignores the spike: sigma barely moves
-        assert!((b - a).abs() <= 0.5 * a + 1e-12);
+    fn guess_of_an_unknown_method_falls_back_to_passthrough() {
+        // a stale front end must still resolve its flow, not return nothing
+        let y = [1.0, 2.0, 3.0];
+        assert_eq!(trim_guess(&y, 1, "nope", 5.0, 9.0, 0.1), f64::NEG_INFINITY);
     }
 
     #[test]
-    fn mad_guess_is_baseline_plus_k_times_sigma() {
+    fn guess_of_intensity_threshold_is_the_threshold_itself() {
+        let y = [0.05, 0.2, 0.4, 0.9];
+        assert!((trim_guess(&y, 1, "intensityThreshold", 5.0, 9.0, 0.25) - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn guess_of_mad_is_baseline_plus_k_times_sigma() {
+        // the RELATIVE rule: never the absolute k*sigma
         let y = [1.0, 1.02, 0.99, 1.01, 1.0, 0.98, 1.03, 1.0, 0.99];
         let params = TrimParams { k: 5.0, window: 3, threshold: 0.1 };
-        let (low, high) = guess_bounds(&y, "madResidual", &params);
         let expected = baseline_level(&y) + 5.0 * residual_sigma(&y, 3);
-        assert!((low - expected).abs() < 1e-12);
-        assert!(high.is_nan());
+        let got = trim_guess(&y, 1, "madResidual", 5.0, 3.0, 0.1);
+        assert!((got - expected).abs() < 1e-12);
+        assert!((got - guess_bounds(&y, "madResidual", &params)).abs() < 1e-12);
     }
 
     #[test]
-    fn mad_guess_follows_a_raised_baseline() {
-        //the same noise, sitting on a level of 1000: the threshold must move
-        //with it, an absolute k*sigma would keep the entire signal
+    fn guess_follows_a_raised_baseline() {
+        // the same noise sitting on a level of 1000: the threshold must move with
+        // it, an absolute k*sigma would either keep everything or wipe the signal
         let flat = [1000.0, 1000.02, 999.99, 1000.01, 1000.0, 999.98, 1000.03, 1000.0, 999.99];
-        let params = TrimParams { k: 5.0, window: 3, threshold: 0.1 };
-        let (low, _high) = guess_bounds(&flat, "madResidual", &params);
+        let low = trim_guess(&flat, 1, "madResidual", 5.0, 3.0, 0.1);
         assert!(low > 1000.0, "the threshold must sit ABOVE the baseline");
-        let out = trim_wave(&flat, 1, "madResidual", f64::NAN, f64::NAN, 5.0, 3.0, 0.1);
-        //only the points above baseline + 5 sigma survive, and on flat noise
-        //that is a strict subset: the method still does something
-        assert!(out.kept_count() < flat.len());
+        assert!(trim_apply(&flat, 1, low, f64::NAN).kept_count() < flat.len());
     }
 
     #[test]
-    fn baseline_ignores_a_few_peaks() {
-        //a median is unmoved by a minority of huge values, a mean would jump
+    fn guess_ignores_a_few_peaks() {
+        // a median baseline is unmoved by a minority of huge values
         let y = [10.0, 10.0, 10.0, 10.0, 10.0, 1000.0, 2000.0, 3000.0];
         assert!((baseline_level(&y) - 10.0).abs() < 1e-12);
     }
@@ -512,10 +500,54 @@ mod tests {
     }
 
     #[test]
+    fn a_window_below_the_minimum_does_not_collapse_the_residual() {
+        // window 1 would make the residual identically zero and every k*sigma
+        // threshold collapse onto the baseline, so it is clamped up
+        let y = [1.0, 1.02, 0.99, 1.01, 1.0, 0.98, 1.03, 1.0, 0.99];
+        let clamped = trim_guess(&y, 1, "madResidual", 5.0, 1.0, 0.1);
+        let at_min = trim_guess(&y, 1, "madResidual", 5.0, 3.0, 0.1);
+        assert!((clamped - at_min).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_non_finite_k_falls_back_to_five() {
+        let y = [1.0, 1.02, 0.99, 1.01, 1.0, 0.98, 1.03, 1.0, 0.99];
+        let nan_k = trim_guess(&y, 1, "madResidual", f64::NAN, 9.0, 0.1);
+        let five = trim_guess(&y, 1, "madResidual", 5.0, 9.0, 0.1);
+        assert!((nan_k - five).abs() < 1e-12);
+    }
+
+    // ---- the noise estimators ----
+
+    #[test]
     fn residual_of_a_constant_wave_is_zero() {
         for r in moving_average_residual(&[2.0; 10], 5) {
             assert!(r.abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn mad_sigma_is_robust_against_a_single_spike() {
+        let clean = [1.0, 1.01, 0.99, 1.0, 1.02, 0.98, 1.0, 1.01, 0.99];
+        let spiky = [1000.0, 1.01, 0.99, 1.0, 1.02, 0.98, 1.0, 1.01, 0.99];
+        let a = residual_sigma(&clean, 3);
+        let b = residual_sigma(&spiky, 3);
+        assert!((b - a).abs() <= 0.5 * a + 1e-12);
+    }
+
+    #[test]
+    fn mad_guess_cuts_a_quiet_wave_entirely_but_keeps_a_signal() {
+        // flat noise around 1: baseline + 5 sigma is ABOVE the whole wave
+        let quiet = [1.0, 1.02, 0.99, 1.01, 1.0, 0.98, 1.03, 1.0, 0.99];
+        let low = trim_guess(&quiet, 1, "madResidual", 5.0, 3.0, 0.1);
+        assert_eq!(trim_apply(&quiet, 1, low, f64::NAN).kept_count(), 0);
+
+        // a signal rising well above its own noise keeps its top
+        let signal = [1.0, 1.01, 0.99, 1.0, 1.02, 0.98, 1.0, 5.0, 9.0, 12.0];
+        let low = trim_guess(&signal, 1, "madResidual", 5.0, 3.0, 0.1);
+        let out = trim_apply(&signal, 1, low, f64::NAN);
+        assert!(out.kept_count() > 0);
+        assert!(out.kept_count() < signal.len());
     }
 
     #[test]
@@ -524,45 +556,17 @@ mod tests {
         assert!((median(&[1.0, 2.0, 3.0, 4.0]) - 2.5).abs() < 1e-12);
     }
 
-    #[test]
-    fn nans_are_never_kept() {
-        let out = trim_wave(&[1.0, f64::NAN, 2.0], 1, "passthrough", f64::NAN, f64::NAN, 5.0, 9.0, 0.1);
-        assert_eq!(out.kept_count(), 2);
-        assert_eq!(out.total_count(), 3);
-    }
+    // ---- trim_histogram ----
 
     #[test]
-    fn xy_output_carries_the_original_x() {
-        let core = core_xy(&[10.0, 20.0, 30.0], &[1.0, 6.0, 9.0]);
-        let out = trim_wave(&core, 2, "intensityThreshold", f64::NAN, f64::NAN, 5.0, 9.0, 5.0);
-        assert_eq!(out.points_x(), vec![20.0, 30.0]);
-        assert_eq!(out.points_y(), vec![6.0, 9.0]);
-    }
-
-    #[test]
-    fn stride_one_reports_the_index_as_x() {
-        let out = trim_wave(&[1.0, 2.0], 1, "passthrough", f64::NAN, f64::NAN, 5.0, 9.0, 0.1);
-        assert_eq!(out.points_x(), vec![0.0, 1.0]);
-    }
-
-    #[test]
-    fn an_empty_wave_resolves_empty() {
-        let out = trim_wave(&[], 1, "passthrough", f64::NAN, f64::NAN, 5.0, 9.0, 0.1);
-        assert_eq!(out.kept_count(), 0);
-        assert_eq!(out.total_count(), 0);
-    }
-
-    #[test]
-    fn histogram_counts_sum_to_the_wave_length() {
+    fn linear_histogram_counts_sum_to_the_wave_length() {
         let hist = trim_histogram(&[0.0, 0.1, 0.2, 0.3, 0.4, 0.5], 1, 3, "linear");
         assert_eq!(hist.centres().len(), 3);
         let total: f64 = hist.counts().iter().sum();
         assert!((total - 6.0).abs() < 1e-12);
-        // 0..0.5 over 3 bars of 1/6: the bins catch 0, 0.1 / 0.2, 0.3 / 0.4, 0.5,
-        // and the maximum is clamped INTO the top bar rather than dropped
-        assert!((hist.counts()[0] - 2.0).abs() < 1e-12);
-        assert!((hist.counts()[1] - 2.0).abs() < 1e-12);
-        assert!((hist.counts()[2] - 2.0).abs() < 1e-12);
+        for c in hist.counts() {
+            assert!((c - 2.0).abs() < 1e-12);
+        }
     }
 
     #[test]
@@ -587,10 +591,6 @@ mod tests {
 
     #[test]
     fn log_bins_are_evenly_spaced_in_decades() {
-        // 6 decades, 6 bars per decade: 36 bars. The values are spread over the
-        // decades, so they must land in MANY different bars - that is what
-        // distinguishes a log histogram from a linear one, where they would all
-        // pile into the first bar.
         let y = [1.0, 5.0, 1e1, 5e1, 1e2, 5e2, 1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6];
         let hist = trim_histogram(&y, 1, 60, "log");
         assert_eq!(hist.centres().len(), 36);
@@ -599,7 +599,6 @@ mod tests {
         // the 13 values occupy 13 distinct bars: one per value, no collision
         let occupied = hist.counts().iter().filter(|c| **c > 0.0).count();
         assert_eq!(occupied, 13);
-        // and every bar centre sits a sixth of a decade from the next
         let logs: Vec<f64> = hist.centres().iter().map(|c| c.log10()).collect();
         let gap = logs[1] - logs[0];
         for i in 1..logs.len() - 1 {
@@ -608,42 +607,28 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_fewer_bars_than_the_floor_does_not_panic() {
-        // a wasm panic kills the whole worker, not just the call: asking for
-        // fewer bars than MIN_LOG_BINS must clamp, not explode
-        for asked in 1..=4 {
-            let hist = trim_histogram(&[1.0, 1e6], 1, asked, "log");
-            assert_eq!(hist.centres().len(), asked, "the caller's ceiling must win");
-        }
-    }
-
-    #[test]
     fn the_log_bar_count_follows_the_span_not_the_request() {
-        // 6 decades at 6 bars per decade = 36 bars, NOT the 60 that were asked
-        // for: a fixed count over a narrow spectrum is what makes the frame look
-        // empty
         let wide = [1e0, 1e6];
-        let hist = trim_histogram(&wide, 1, 60, "log");
-        assert_eq!(hist.centres().len(), 36);
-        // and the request stays an upper bound
-        let capped = trim_histogram(&wide, 1, 10, "log");
-        assert_eq!(capped.centres().len(), 10);
+        assert_eq!(trim_histogram(&wide, 1, 60, "log").centres().len(), 36);
+        assert_eq!(trim_histogram(&wide, 1, 10, "log").centres().len(), 10);
     }
 
     #[test]
     fn a_narrow_spectrum_still_gets_a_readable_number_of_bars() {
-        // 100..200 is barely a third of a decade: the density rule would ask for
-        // 2 bars, which is unreadable, so the floor applies
-        let narrow = [100.0, 200.0];
-        let hist = trim_histogram(&narrow, 1, 60, "log");
-        assert_eq!(hist.centres().len(), MIN_LOG_BINS);
+        assert_eq!(trim_histogram(&[100.0, 200.0], 1, 60, "log").centres().len(), MIN_LOG_BINS);
+    }
+
+    #[test]
+    fn asking_for_fewer_bars_than_the_floor_does_not_panic() {
+        // a wasm panic kills the whole worker, not just the call
+        for asked in 1..=4 {
+            let hist = trim_histogram(&[1.0, 1e6], 1, asked, "log");
+            assert_eq!(hist.centres().len(), asked);
+        }
     }
 
     #[test]
     fn log_bin_centres_are_geometric() {
-        // 1..1e4 is 4 decades, over 4 bins: one decade per bin, so the centres sit
-        // half a decade inside each slot, i.e. 10^0.5, 10^1.5, 10^2.5, 10^3.5.
-        // The arithmetic middle of a bin would land in the wrong slot entirely.
         let hist = trim_histogram(&[1.0, 1e4], 1, 4, "log");
         let expected = [0.5f64, 1.5, 2.5, 3.5].map(|e| 10f64.powf(e));
         for (got, want) in hist.centres().iter().zip(expected.iter()) {
@@ -653,20 +638,15 @@ mod tests {
 
     #[test]
     fn log_centres_are_not_the_arithmetic_midpoint() {
-        // guard against the obvious wrong implementation: a 1..1e4 bin must not
-        // be centred at (1+1e4)/2, which on a log axis renders near the top
         let hist = trim_histogram(&[1.0, 1e4], 1, 1, "log");
         let naive = 0.5 * (1.0 + 1e4);
         let centre = hist.centres()[0];
         assert!((centre / naive - 1.0).abs() > 0.9);
-        // the geometric centre of 1..1e4 is 100
         assert!((centre / 100.0 - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn log_histogram_drops_non_positive_values() {
-        // zero and negatives have no log10: they are excluded, and `dropped`
-        // says so instead of the counts silently failing to add up
         let hist = trim_histogram(&[1.0, 0.0, -5.0, f64::NAN, 1e3], 1, 4, "log");
         let total: f64 = hist.counts().iter().sum();
         assert!((total - 2.0).abs() < 1e-12);
@@ -674,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn log_histogram_of_a_flat_positive_wave_is_one_bin() {
+    fn log_histogram_of_a_flat_positive_wave_keeps_everything() {
         let hist = trim_histogram(&[7.0; 5], 1, 4, "log");
         let total: f64 = hist.counts().iter().sum();
         assert!((total - 5.0).abs() < 1e-12);
@@ -690,7 +670,6 @@ mod tests {
 
     #[test]
     fn linear_scale_keeps_zero_and_negatives() {
-        // the opposite contract: a linear histogram must NOT discard anything
         let hist = trim_histogram(&[-1.0, 0.0, 1.0], 1, 4, "linear");
         let total: f64 = hist.counts().iter().sum();
         assert!((total - 3.0).abs() < 1e-12);

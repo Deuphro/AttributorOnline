@@ -774,10 +774,13 @@ const TRIM_METHODS={
     },
     intensityThreshold:{
         label:"Intensity threshold",
-        hint:"Drops every point below the threshold, which the cursor shows and you can drag.",
-        //No input either: the threshold is exactly the low cursor, so a box
-        //would only duplicate what is already on screen and draggable.
-        fields:[]
+        hint:"Drops every point below the threshold, which the cursor shows and you can drag. Type a value here to seed that cursor when the method is picked or Guess is pressed.",
+        //The field seeds the cursor; the cursor remains what actually trims, so a
+        //number typed here is a starting point and nothing more.
+        fields:[
+            {key:"threshold",value:0.1,min:0,step:"any",
+                title:"Intensity under which every point is dropped"}
+        ]
     }
 }
 
@@ -1047,24 +1050,26 @@ class TrimmerNode extends NodeWithAccordion{
             return
         }
         try{
-            const result=await computePool.run("trimWave",{
+            //trim_guess returns ONE number: where the method wants the cursor.
+            //The old code asked the FULL trim for it and discarded every kept
+            //point, which cost three vectors built and cloned out of wasm on
+            //every single change of k.
+            const guess=await computePool.run("trimGuess",{
                 core:inputWave.core,
                 params:{
                     method:this.parameters.method,
                     stride:inputWave.degree===2&&inputWave.dims[1]===2?2:1,
-                    lowBound:NaN,
-                    highBound:NaN,
                     k:this.methodParams().k,
                     window:this.methodParams().window,
                     threshold:this.effectiveThreshold()
                 }
             })
-            //The kernel threshold is used AS IS: it is allowed to sit below the
-            // data range (that is a legitimate "keep everything" setting) or
-            // above it. Clamping it into the frame used to push a threshold of
-            //0.1 up onto the data minimum, which silently disabled the trim.
-            //Only a non-finite answer is replaced, by the frame bottom.
-            this.parameters.lowBound=Number.isFinite(result.lowBound)?result.lowBound:domain[0]
+            //The threshold is used AS IS: it may sit below the data range (a
+            //legitimate "keep everything" setting) or above it. Clamping it into
+            //the frame used to push a threshold of 0.1 up onto the data
+            //minimum, which silently disabled the whole trim. Only a
+            //non-finite answer - passthrough returns -Infinity - is replaced.
+            this.parameters.lowBound=Number.isFinite(guess)?guess:domain[0]
             this.parameters.highBound=domain[1]
         }catch(err){
             console.warn("[TrimmerNode] guess failed, resetting the cursors to the frame:",err)
@@ -1088,16 +1093,14 @@ class TrimmerNode extends NodeWithAccordion{
         const ticket=++this.trimRun
         const methodParams=this.methodParams()
         try{
-            const result=await computePool.run("trimWave",{
+            //trim_apply knows nothing about methods: the two cursors, and
+            //nothing else, define the cut
+            const result=await computePool.run("trimApply",{
                 core:inputWave.core,
                 params:{
-                    method:this.parameters.method,
                     stride:inputWave.degree===2&&inputWave.dims[1]===2?2:1,
                     lowBound:this.parameters.lowBound,
-                    highBound:this.parameters.highBound,
-                    k:this.methodParams().k,
-                    window:methodParams.window,
-                    threshold:this.effectiveThreshold()
+                    highBound:this.parameters.highBound
                 }
             })
             if(ticket!==this.trimRun) return
@@ -1468,11 +1471,16 @@ class TrimmerNode extends NodeWithAccordion{
         this.setTrimHover(bestDistance<=Math.max(half,4)?best:null)
     }
     async startResolve(){
-        const links=this.destination?.linkList?.filter(link=>link.inputNode===this)??[]
-        if(links.length>1){
+        //Only the INPUT is constrained to a single link. The previous check
+        //counted the links whose inputNode is this one, which - as childrenMap()
+        //shows - are its CONSUMERS: wiring the trimmed wave to a second node
+        //made the trimmer refuse to resolve, even though fan-out on the output
+        //is none of its business.
+        const inputLinks=(this.destination?.linkList??[]).filter(link=>link.outputNode===this)
+        if(inputLinks.length>1||inputLinks.some(link=>link.inputAnchor.id!=="0")){
             this.status="error"
             this.outputs[0]=[]
-            console.error("[TrimmerNode] exactly one link is required")
+            console.error("[TrimmerNode] exactly one link on input 0 is required")
             return
         }
         const input=this.inputs[0]
@@ -1532,24 +1540,16 @@ class TrimmerNode extends NodeWithAccordion{
             if(!Number.isFinite(this.parameters.lowBound)||!Number.isFinite(this.parameters.highBound)){
                 await this.seedBoundsFromKernel()
             }
-            const result=await computePool.run("trimWave",{
+            //then cut, with the cursors alone
+            const result=await computePool.run("trimApply",{
                 core:inputWave.core,
                 params:{
-                    method:this.parameters.method,
                     stride,
                     lowBound:this.parameters.lowBound,
-                    highBound:this.parameters.highBound,
-                    k:this.methodParams().k,
-                    window:methodParams.window,
-                    threshold:this.effectiveThreshold()
+                    highBound:this.parameters.highBound
                 }
             })
             this.trimResult=result
-            //a threshold method owns the low bound: the kernel can move it, and
-            //the cursor must follow or the next drag would fight the method
-            if(Number.isFinite(result.lowBound)&&result.lowBound!==this.parameters.lowBound){
-                this.parameters.lowBound=result.lowBound
-            }
             this.outputs[0]=result.keptCount
                 ?[Wave.fromCoordinates(result.pointsX,result.pointsY,{
                     title:`${this.title} (trimmed)`,

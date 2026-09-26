@@ -168,27 +168,47 @@ export function classify_persistence_0d(births, deaths, points_x, points_y, slop
 }
 
 /**
-* Trims a wave. `method` is one of "passthrough", "madResidual",
-* "intensityThreshold"; an unknown name falls back to passthrough rather than
-* returning nothing, so a stale front end still resolves its flow.
-* `low_bound`/`high_bound` are the user cursors: a non-finite one means "the
-* method decides", and the two are intersected, never overridden.
+* Where the SELECTED method wants the low cursor to sit, as a single number.
+*
+* Deliberately returns one f64 and allocates nothing: the shell only needs the
+* threshold, and the previous design had it call the full trim and throw away
+* every kept point but that number - three vectors built, three clones out of
+* wasm, megabytes through postMessage, all discarded.
+*
+* An unknown method name falls back to passthrough (an infinite low bound),
+* so a stale front end still resolves its flow.
 * @param {Float64Array} core
 * @param {number} stride
 * @param {string} method
-* @param {number} low_bound
-* @param {number} high_bound
 * @param {number} k
 * @param {number} window
 * @param {number} threshold
-* @returns {TrimResult}
+* @returns {number}
 */
-export function trim_wave(core, stride, method, low_bound, high_bound, k, window, threshold) {
+export function trim_guess(core, stride, method, k, window, threshold) {
     const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.trim_wave(ptr0, len0, stride, ptr1, len1, low_bound, high_bound, k, window, threshold);
+    const ret = wasm.trim_guess(ptr0, len0, stride, ptr1, len1, k, window, threshold);
+    return ret;
+}
+
+/**
+* Applies the two bounds and returns the surviving points. This is a pure
+* primitive: it knows NOTHING about methods, parameters or guesses. Where the
+* bounds come from is the shell's business (trim_guess, or the user dragging a
+* cursor), which is what keeps the two roles from getting confused.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} low_bound
+* @param {number} high_bound
+* @returns {TrimResult}
+*/
+export function trim_apply(core, stride, low_bound, high_bound) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.trim_apply(ptr0, len0, stride, low_bound, high_bound);
     return TrimResult.__wrap(ret);
 }
 
@@ -678,7 +698,9 @@ const TrimResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_trimresult_free(ptr >>> 0));
 /**
-* A trimmed wave plus everything the shell needs to redraw its frame.
+* A trimmed wave. Deliberately minimal: the bounds are echoed for the shell,
+* but nothing method-related lives here, because trim_apply is a pure
+* two-bounds primitive.
 */
 export class TrimResult {
 
@@ -753,7 +775,7 @@ export class TrimResult {
     * @returns {number}
     */
     get kept_count() {
-        const ret = wasm.trimresult_kept_count(this.__wbg_ptr);
+        const ret = wasm.trimhistogram_dropped(this.__wbg_ptr);
         return ret >>> 0;
     }
     /**
@@ -775,20 +797,6 @@ export class TrimResult {
     */
     get high_bound() {
         const ret = wasm.trimhistogram_max(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-    * @returns {number}
-    */
-    get sigma() {
-        const ret = wasm.trimresult_sigma(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-    * @returns {number}
-    */
-    get threshold() {
-        const ret = wasm.trimresult_threshold(this.__wbg_ptr);
         return ret;
     }
 }
