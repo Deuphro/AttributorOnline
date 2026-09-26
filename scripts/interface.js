@@ -358,7 +358,7 @@ class Node{
         for(let input of this.inputs){
             console.log('pour cet input :',input)
             for(let entry of input.entries()){
-                console.log('il y a cette entrÃƒÂ©e :',entry)
+                console.log('il y a cette entrée :',entry)
                 for(let values of entry[1]){
                     console.log('qui contient ces valeurs :',values)
                     if(!Array.isArray(values)){
@@ -370,7 +370,7 @@ class Node{
                         values=convert
                     }
                     for(let value of values){
-                        console.log('et pour cette valeur ',value,' on incrÃƒÂ©mente et la valeur et le tableau')
+                        console.log('et pour cette valeur ',value,' on incrémente et la valeur et le tableau')
                         protoOutput.push(value+1)
                     }
                 }
@@ -638,7 +638,7 @@ class DelimitedTextNode extends NodeWithAccordion{
     }
 }
 
-/* classifier: a line through the origin, death = slope Ãƒâ€” birth. Superlevel
+/* classifier: a line through the origin, death = slope × birth. Superlevel
    pairs live strictly below the diagonal (death < birth), so the slope is
    clamped into [MIN, MAX], with MAX just below 1. */
 const CLASSIFIER_MIN_SLOPE=1e-12
@@ -651,7 +651,7 @@ function clampClassifierSlope(value){
 function formatSlope(value){
     return String(Number(Number(value).toPrecision(6)))
 }
-//slope of a line that keeps every pair with a positive birth (birth Ã¢â€°Â¤ 0
+//slope of a line that keeps every pair with a positive birth (birth ≤ 0
 //pairs can never sit under a line through the origin)
 function keepAllSlope(pairs){
     let slope=CLASSIFIER_MIN_SLOPE
@@ -698,8 +698,10 @@ function clipSegmentToRect(x0,y0,x1,y1,width,height){
 
 /* -----------------------------------------------------------------
    Trimmer method registry. Methods are DATA, not code branches: the node
-   asks the registry for the list, for the fields to render, and for a
-   guess, so adding one later touches nothing in the shell.
+   asks the registry for the list, for the fields to render, and for the
+   hint, so adding one later touches nothing in the shell. Where the method
+   places the cursors is the KERNEL's job (trim.rs), not the shell's: a
+   ratio invented here would silently override it.
    ---------------------------------------------------------------- */
 //3 significant digits for a cursor position. toPrecision already switches to
 //scientific notation once the exponent reaches the precision, so 100000
@@ -710,27 +712,72 @@ const formatCursorValue=(value)=>{
     return numeric===0?"0":numeric.toPrecision(3)
 }
 
+//A two-state scale switch whose TWO labels are always visible and the active one
+//is simply coloured. The previous version rewrote the button text instead, which
+//made the control jump and left the user guessing what the other state was
+//called. Trimmer and PersistentHomology0D share the shape, not the labels.
+function scaleToggle({get,set,leftLabel,rightLabel,title}){
+    //one contiguous control, not two floating buttons: the border and the radius
+    //live on the wrapper so the two halves read as a single object
+    const wrap=CE("span",{
+        title,
+        style:{
+            display:"inline-flex",
+            border:"1px solid rgba(255,255,255,0.18)",
+            borderRadius:"4px",
+            overflow:"hidden"
+        }
+    },[])
+    const paint=()=>{
+        const on=get()
+        for(const [button,isOn] of [[left,!on],[right,on]]){
+            //the active side carries the accent, the other recedes
+            button.style.color=isOn?"#c9e02b":"rgba(255,255,255,0.45)"
+            button.style.background=isOn?"rgba(201,224,43,0.14)":"transparent"
+        }
+    }
+    const make=(label,value)=>{
+        const button=CE("button",{
+            type:"button",
+            style:{cursor:"pointer",padding:"2px 7px",borderRadius:"0",border:"none",font:"inherit"}
+        },[label])
+        button.addEventListener("click",()=>{
+            set(value)
+            paint()
+        })
+        return button
+    }
+    const left=make(leftLabel,false)
+    const right=make(rightLabel,true)
+    wrap.append(left,right)
+    paint()
+    wrap.paint=paint
+    return wrap
+}
+
 const TRIM_METHODS={
     passthrough:{
         label:"No trim (pass-through)",
         hint:"The spectrum passes through untouched.",
-        fields:[],
-        guess:()=>0
+        fields:[]
     },
     madResidual:{
-        label:"kÃ‚Â·MAD on moving-average residual",
-        hint:"Noise estimated on the residual of a moving average. Guess only, for now.",
-        fields:[{key:"k",value:5,min:1,step:1},{key:"window",value:9,min:3,step:2}],
-        guess:()=>0.25
+        label:"k·MAD on moving-average residual",
+        hint:"Cuts below the baseline plus k times the noise. k is the rejection multiplier (5 keeps ~99.3% of a Gaussian; 1.96 would be 95%), and the window is the width of the moving average the noise is measured on.",
+        //k and window are part of the PUBLISHED method, so they stay editable.
+        //k is a multiplier, not a threshold: it means nothing without the sigma
+        //it multiplies, which the kernel estimates from the data.
+        fields:[
+            {key:"k",value:5,min:1,step:0.1,title:"Rejection multiplier on the noise"},
+            {key:"window",value:9,min:3,step:2,title:"Width of the moving average the noise is measured on"}
+        ]
     },
     intensityThreshold:{
         label:"Intensity threshold",
-        hint:"Drops every point below the threshold.",
-        //the threshold is data, not a constant: 0.1 is meaningless on a spectrum
-        //whose intensities run to thousands. The field is editable, and the
-        //kernel reports the threshold it actually used.
-        fields:[{key:"threshold",value:0,min:0,step:"any"}],
-        guess:()=>0.1
+        hint:"Drops every point below the threshold, which the cursor shows and you can drag.",
+        //No input either: the threshold is exactly the low cursor, so a box
+        //would only duplicate what is already on screen and draggable.
+        fields:[]
     }
 }
 
@@ -761,9 +808,6 @@ class TrimmerNode extends NodeWithAccordion{
         //monotonic ticket: only the newest kernel run may publish its result
         this.trimRun=0
         this.lastInputWave=null
-        //deterministic placeholder, generated ONCE: re-rolling per draw
-        //would make the frame flicker and the drag impossible to judge
-        this.placeholderBins=TrimmerNode.makePlaceholderBins(10,100000,900)
         this.dragDebounceTimer=null
         //separate timer for the trim itself: the children debounce guards the
         //subtree re-resolve, this one guards the postMessage copy of the core
@@ -772,24 +816,6 @@ class TrimmerNode extends NodeWithAccordion{
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D)</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: trimmed Wave</title>'
-    }
-    //10 bins over [0,maxValue], each with a plausible count. Counts must be
-    //realistic: a 0/1 range produced 1px bars and looked like "nothing drawn".
-    static makePlaceholderBins(count,maxValue,maxCount){
-        const bins=[]
-        //fixed LCG: identical numbers on every reload and every machine
-        let seed=0x2f6e2b1
-        const random=()=>{
-            seed=(seed*1664525+1013904223)>>>0
-            return seed/0xffffffff
-        }
-        for(let i=0;i<count;i++){
-            bins.push({
-                value:(maxValue/count)*(i+0.5),
-                count:Math.round(0.15*maxCount+random()*0.85*maxCount)
-            })
-        }
-        return bins
     }
     registered(e){
         if(e.detail.msg.caster!==this||this.accordion){
@@ -880,7 +906,12 @@ class TrimmerNode extends NodeWithAccordion{
         content.replaceChildren()
         stylize(content,{
             display:"grid",
-            "grid-template-rows":"auto minmax(0, 1fr)",
+            //THREE rows for THREE children: the control bar, the method
+            //parameters, and the graph. Declaring only two left the 1fr on the
+            //parameter row, and the graph fell into an implicit auto row where
+            //its own height:100% overflowed the panel - that is what made the
+            //inputs appear to spill over the graph.
+            "grid-template-rows":"auto auto minmax(0, 1fr)",
             minHeight:"0",
             height:"100%",
             overflow:"hidden",
@@ -906,20 +937,30 @@ class TrimmerNode extends NodeWithAccordion{
             methodSelect.append(new Option(method.label,key))
         }
         methodSelect.value=this.parameters.method
+        //The method hint lives in the tooltip: as visible text it was long
+        //enough to squeeze the select itself into a few characters.
+        const applyHint=()=>{
+            methodSelect.title=this.currentMethod().hint??""
+        }
+        applyHint()
         methodSelect.addEventListener("change",()=>{
             this.parameters.method=methodSelect.value
+            applyHint()
             //the new method exposes its own knobs: rebuild the row before the
             //guess, so the fields shown are the ones that were actually used
             this.renderMethodFields()
             this.guessFromKernel()
         })
-        const hintLabel=CE("span",{style:{opacity:"0.75"}},[""])
-        this.methodHintLabel=hintLabel
         const guessBtn=CE("button",{type:"button",title:"Use the guess provided by the selected method"},["Guess"])
         guessBtn.addEventListener("click",()=>{this.guessFromKernel()})
-        const logToggle=CE("input",{type:"checkbox",title:"Logarithmic value axis"},[])
-        logToggle.checked=this.parameters.logY
-        logToggle.addEventListener("change",()=>this.setLogY(logToggle.checked))
+        //one control, two always-visible labels, the active one coloured
+        const logBtn=scaleToggle({
+            get:()=>this.parameters.logY,
+            set:(value)=>this.setLogY(value),
+            leftLabel:"Lin",
+            rightLabel:"Log",
+            title:"Value axis scale"
+        })
         //kept/total readout: without it there is no way to tell "trimmed 12000
         //of 50000" from "did nothing", which is exactly the ambiguity the cursors
         //alone cannot resolve
@@ -928,19 +969,22 @@ class TrimmerNode extends NodeWithAccordion{
             style:{opacity:"0.8",whiteSpace:"nowrap",justifySelf:"end"}
         },["0/0"])
         this.keptLabel=keptLabel
-        controls.append(methodSelect,hintLabel,guessBtn,logToggle,keptLabel)
+        controls.append(methodSelect,guessBtn,logBtn,keptLabel)
         content.append(controls)
-        //One row per declared field of the SELECTED method. The registry is the
-        //single source of truth for which knobs a method exposes, so adding a
-        //method later needs no change here.
+        //Flex, not grid: auto-fit with a max-content track can grow PAST the
+        //panel width, which wrapped k and window onto two lines. Flex keeps them
+        //on one line and lets the row shrink instead.
         this.fieldsRow=CE("div",{
             style:{
-                display:"grid",
-                gridTemplateColumns:"repeat(auto-fit,minmax(96px,1fr))",
+                display:"flex",
+                //nowrap, not wrap: the two knobs must share ONE line, right under
+                //the control bar, and the boxes are narrow enough for that
+                flexWrap:"nowrap",
                 alignItems:"center",
-                gap:"4px",
+                gap:"8px",
                 fontSize:"0.85em",
-                padding:"2px 4px"
+                padding:"2px 4px",
+                overflow:"hidden"
             }
         },[])
         this.fieldsRow.style.display="none"
@@ -998,7 +1042,8 @@ class TrimmerNode extends NodeWithAccordion{
         const domain=this.trimValueDomain()
         if(!domain.every(Number.isFinite)) return
         if(!inputWave){
-            this.applyGuess()
+            this.resetBoundsToFrame()
+            this.refreshTrimmerUI()
             return
         }
         try{
@@ -1022,8 +1067,8 @@ class TrimmerNode extends NodeWithAccordion{
             this.parameters.lowBound=Number.isFinite(result.lowBound)?result.lowBound:domain[0]
             this.parameters.highBound=domain[1]
         }catch(err){
-            console.warn("[TrimmerNode] guess failed, falling back to ratio:",err)
-            this.applyGuess()
+            console.warn("[TrimmerNode] guess failed, resetting the cursors to the frame:",err)
+            this.resetBoundsToFrame()
         }
         this.refreshTrimmerUI()
     }
@@ -1050,7 +1095,7 @@ class TrimmerNode extends NodeWithAccordion{
                     stride:inputWave.degree===2&&inputWave.dims[1]===2?2:1,
                     lowBound:this.parameters.lowBound,
                     highBound:this.parameters.highBound,
-                    k:methodParams.k,
+                    k:this.methodParams().k,
                     window:methodParams.window,
                     threshold:this.effectiveThreshold()
                 }
@@ -1080,7 +1125,7 @@ class TrimmerNode extends NodeWithAccordion{
     //the first paint runs on the placeholder and the second on real data.
     pinTrimDomains(){
         if(!this.graph) return
-        const bins=this.currentBins()
+        const bins=this.bins
         const maxCount=Math.max(...bins.map(bin=>bin.count),1)
         const bottom=this.graph.parameters.axis.bottom
         //A log VALUE axis with a linear COUNT axis hides the whole point of the
@@ -1119,7 +1164,9 @@ class TrimmerNode extends NodeWithAccordion{
         if(!row) return
         row.replaceChildren()
         const fields=this.currentMethod().fields??[]
-        row.style.display=fields.length?"":"none"
+        //"flex", never "": an empty string REMOVES the inline display, and the row
+        //falls back to block, where two flex labels stack vertically
+        row.style.display=fields.length?"flex":"none"
         const params=this.methodParams()
         for(const field of fields){
             const id=`trim-${this.parameters.method}-${field.key}`
@@ -1129,7 +1176,17 @@ class TrimmerNode extends NodeWithAccordion{
                 step:field.step??"any",
                 min:field.min,
                 title:field.title??field.key,
-                style:{width:"100%",padding:"1px 4px",fontSize:"0.85em"}
+                //a compact box: the native spinners cost ~16px each and forced
+                //k and window onto two lines. The node already hides them on
+                //the cursor fields, so this stays consistent within the widget.
+                style:{
+                    width:"56px",
+                    boxSizing:"border-box",
+                    padding:"1px 4px",
+                    fontSize:"0.85em",
+                    "-moz-appearance":"textfield",
+                    appearance:"textfield"
+                }
             },[])
             //shows the EFFECTIVE value: with no user input the field displays the
             //data-driven quantile, so the box is never a misleading 0
@@ -1147,7 +1204,10 @@ class TrimmerNode extends NodeWithAccordion{
             })
             const label=CE("label",{
                 for:id,
-                style:{display:"grid",gap:"2px",fontSize:"0.85em"}
+                //Label and box side by side, like the control bar. flex:none
+                //stops the label being squeezed into a wrap, and the box has a
+                //fixed width so the pair stays compact on one line.
+                style:{display:"flex",alignItems:"center",gap:"4px",flex:"none",whiteSpace:"nowrap"}
             },[field.key])
             label.append(input)
             row.append(label)
@@ -1155,26 +1215,19 @@ class TrimmerNode extends NodeWithAccordion{
     }
     //Real bins, filled by the trimHistogram kernel. The placeholder stays as the
     //first paint so the frame is readable before any data arrives.
-    currentBins(){
-        return this.bins?.length?this.bins:this.placeholderBins
-    }
-    //Places the cursors from the method guess. The ratio is a fallback for the
-    //no-data case: once a wave is loaded the kernel owns the low bound and
-    //startResolve adopts result.lowBound, so this only sets the high bound and
-    //a provisional low one on the very first paint.
-    applyGuess(){
-        const ratio=this.currentMethod().guess(this.methodParams())
+    //them without the kernel: before any wave is connected there is nothing for
+    //the kernel to look at, and "keep everything" is the honest default. It used
+    //to apply a per-method ratio here, which silently overrode the kernel's own
+    //threshold - duplicated in drawTrimmerOverlay, and the source of a bug where
+    //a hand-placed cursor was dragged back to an arbitrary fraction of the frame.
+    resetBoundsToFrame(){
         const domain=this.trimValueDomain()
-        if(!domain.every(Number.isFinite)) return
+        if(!domain.every(Number.isFinite)) return false
+        this.parameters.lowBound=domain[0]
         this.parameters.highBound=domain[1]
-        this.parameters.lowBound=domain[0]+(domain[1]-domain[0])*ratio
+        return true
     }
     refreshTrimmerUI(){
-        //the hint belongs to the selected method: it is the only place the user
-        //learns what k and window mean before touching them
-        if(this.methodHintLabel){
-            this.methodHintLabel.textContent=this.currentMethod().hint??""
-        }
         //the live kept/total count: the cursors alone cannot tell a real trim
         //from a no-op, this number does
         if(this.keptLabel&&this.trimResult){
@@ -1193,16 +1246,11 @@ class TrimmerNode extends NodeWithAccordion{
         let layer=anchor.select(".trim-layer")
         if(layer.empty()) layer=anchor.append("g").attr("class","trim-layer")
         layer.selectAll("*").remove()
-        //First paint, no data yet: the placeholder frame seeds the cursors from
-        //the axis domain. With data, startResolve has already placed them from
-        //the kernel, and this block must stay out of the way: applyGuess() uses
-        //the coarse method RATIO, which would silently drag a hand-placed cursor
-        //back to an arbitrary fraction of the frame.
+        //First paint, no data yet: seed the cursors once. With a wave connected,
+        //startResolve has already placed them from the kernel, and this block
+        //stays out of the way - it must never move a hand-placed cursor.
         if(!Number.isFinite(this.parameters.highBound)){
-            const domain=this.trimValueDomain()
-            if(!domain.every(Number.isFinite)) return
-            this.parameters.highBound=domain[1]
-            this.applyGuess()
+            this.resetBoundsToFrame()
         }
         //xScale(0) is -Infinity on a log count axis, so the bar origin is the
         //DOMAIN floor: 0 when linear, 1 when log (a bar of 0 is not drawable, it
@@ -1210,7 +1258,7 @@ class TrimmerNode extends NodeWithAccordion{
         const bottomDomain=this.graph.parameters.axis.bottom.domain
         const x0=xScale(Number.isFinite(bottomDomain[0])?bottomDomain[0]:0)
         //horizontal bars: X = count, Y = the bin value
-        const bins=this.currentBins()
+        const bins=this.bins
         const thickness=bins.length>1
             ?Math.abs(yScale(bins[1].value)-yScale(bins[0].value))*0.6
             :4
@@ -1239,7 +1287,7 @@ class TrimmerNode extends NodeWithAccordion{
             const group=layer.append("g")
                 .attr("class",`trim-cursor trim-cursor-${key}`)
                 .style("cursor","ns-resize")
-            group.append("title").text(key==="lowBound"?"Lower bound Ã¢â‚¬â€ drag to move":"Upper bound Ã¢â‚¬â€ drag to move")
+            group.append("title").text(key==="lowBound"?"Lower bound — drag to move":"Upper bound — drag to move")
             group.append("line")
                 .attr("x1",0).attr("x2",zone.width).attr("y1",y).attr("y2",y)
                 .attr("stroke",color).attr("stroke-width",2)
@@ -1409,13 +1457,13 @@ class TrimmerNode extends NodeWithAccordion{
         const {yScale}=graph.plotScales()
         let best=null
         let bestDistance=Infinity
-        this.currentBins().forEach((bin,index)=>{
+        this.bins.forEach((bin,index)=>{
             const distance=Math.abs(yScale(bin.value)-py)
             if(distance<bestDistance){bestDistance=distance;best=index}
         })
         //half a bin, not a fixed pixel count: the snap follows the zoom level
-        const half=this.currentBins().length>1
-            ?Math.abs(yScale(this.currentBins()[1].value)-yScale(this.currentBins()[0].value))/2
+        const half=this.bins.length>1
+            ?Math.abs(yScale(this.bins[1].value)-yScale(this.bins[0].value))/2
             :4
         this.setTrimHover(bestDistance<=Math.max(half,4)?best:null)
     }
@@ -1491,7 +1539,7 @@ class TrimmerNode extends NodeWithAccordion{
                     stride,
                     lowBound:this.parameters.lowBound,
                     highBound:this.parameters.highBound,
-                    k:methodParams.k,
+                    k:this.methodParams().k,
                     window:methodParams.window,
                     threshold:this.effectiveThreshold()
                 }
@@ -1532,7 +1580,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             position
         )
         this.status="floating"
-        //classifier: a line through the origin, death = slope Ãƒâ€” birth; null
+        //classifier: a line through the origin, death = slope × birth; null
         //until the first data (then fitted to keep every pair) or a click
         this.parameters.slope=null
         this.parameters.slopeAnchorBirth=null // where the marker sits on the line
@@ -1604,7 +1652,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             step: "any",
             value: Number.isFinite(this.parameters.slope) ? formatSlope(this.parameters.slope) : "",
             placeholder: "auto",
-            title: "Classifier slope (< 1): pairs under death = slope Ãƒâ€” birth are kept",
+            title: "Classifier slope (< 1): pairs under death = slope × birth are kept",
             style: { width: "100%", padding: "2px" }
         }, [])
         this.slopeInput.addEventListener("change", () => {
@@ -1626,26 +1674,32 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
         })
 
-        this.logLogBtn = CE("button", {
-            type: "button",
-            title: "Toggle logarithmic axes (log-log)",
-            style: { cursor: "pointer", padding: "2px 6px" }
-        }, [this.parameters.logLogAxes ? "LogÃ¢â‚¬â€œlog" : "Linear"])
-        this.logLogBtn.addEventListener("click", () => {
-            this.parameters.logLogAxes = !this.parameters.logLogAxes
-            const scale = this.parameters.logLogAxes ? "log" : "linear"
-            this.graph.parameters.axis.bottom.scale = scale
-            this.graph.parameters.axis.left.scale = scale
-            this.graph.parameters.axis.bottom.autoDomain = true
-            this.graph.parameters.axis.left.autoDomain = true
-            this.logLogBtn.textContent = this.parameters.logLogAxes ? "Log" : "Linear"
+        //the SAME one-button scale switch as the trimmer, so both nodes read the
+        //same way. It also fixes a drift the inline version had: it started on
+        //"Log-log" but wrote "Log" after the first click.
+        this.setLogLogAxes=(on)=>{
+            this.parameters.logLogAxes=on
+            const scale=on?"log":"linear"
+            this.graph.parameters.axis.bottom.scale=scale
+            this.graph.parameters.axis.left.scale=scale
+            this.graph.parameters.axis.bottom.autoDomain=true
+            this.graph.parameters.axis.left.autoDomain=true
             this.graph.drawGraph()
+        }
+        this.logLogBtn=scaleToggle({
+            get:()=>this.parameters.logLogAxes,
+            set:(on)=>this.setLogLogAxes(on),
+            //"Lin / Log" like the trimmer: "Log-log" made this control twice as
+            //wide. The tooltip says WHICH axes, the label stays the scale name.
+            leftLabel:"Lin",
+            rightLabel:"Log",
+            title:"Scale of BOTH axes"
         })
 
         //no unit in the text: it costs width on the narrowest element of the
         //bar, the ratio is self-explanatory and the tooltip spells it out
         this.countLabel = CE("span", {
-            title: "Pairs kept / total pairs Ã¢â‚¬â€ persistence intervals kept under the classifier line",
+            title: "Pairs kept / total pairs — persistence intervals kept under the classifier line",
             style: { opacity: "0.8", whiteSpace: "nowrap", justifySelf: "end" }
         }, ["0/0"])
 
@@ -1701,7 +1755,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         return null
     }
 
-    //slope of the line through the origin and the centroid of the pairs Ã¢â‚¬â€
+    //slope of the line through the origin and the centroid of the pairs —
     //a neutral split of the cloud (the old guess placed a threshold at mean(Y))
     guessSlope(){
         const births=this.persistenceBirths
@@ -1824,7 +1878,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         }
     }
 
-    //the classifier: a dashed line through the origin (death = slope Ãƒâ€” birth)
+    //the classifier: a dashed line through the origin (death = slope × birth)
     //clipped to the graph zone, plus the marker point that fixes the slope
     //(see handleClassifierClick)
     updateClassifierSVG(){
@@ -1837,7 +1891,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             group = anchor.append("g")
                 .attr("class", "classifier-group")
             group.append("title")
-                .text("Classifier Ã¢â‚¬â€ click on the graph to place it: every pair under the line is kept")
+                .text("Classifier — click on the graph to place it: every pair under the line is kept")
             group.append("line")
                 .attr("class", "classifier-line")
                 .attr("stroke", "#e74c3c")
@@ -1861,9 +1915,9 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         const zone = this.graph.graphzone
         const { xScale, yScale } = this.graph.plotScales()
 
-        //the line death = slope Ãƒâ€” birth sampled across the whole visible
+        //the line death = slope × birth sampled across the whole visible
         //x-range, so the segment always spans the graph zone and the clip
-        //only trims its ends (a birth 1Ã¢â€ â€™10 sample used to cut it at 10)
+        //only trims its ends (a birth 1→10 sample used to cut it at 10)
         let b0 = xScale.invert(0)
         let b1 = xScale.invert(zone.width)
         if(this.graph.parameters.axis.left.scale === "log"){
@@ -1904,7 +1958,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
     }
 
     //a plain click places the classifier: the line passes through the origin
-    //and the clicked point, so its slope is death/birth Ã¢â‚¬â€ clamped above 1
+    //and the clicked point, so its slope is death/birth — clamped above 1
     //since every pair lives strictly above the diagonal death = birth
     handleClassifierClick(event){
         if(!this.graph) return
@@ -2260,7 +2314,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             const eye=document.createElement("button")
             eye.type="button"
             eye.title=trace.options.hidden?"Show trace":"Hide trace"
-            eye.textContent=trace.options.hidden?"Ã°Å¸Å¡Â«":"Ã°Å¸â€˜Â"
+            eye.textContent=trace.options.hidden?"🚫":"👁"
             eye.style.width="1.8em"
             eye.addEventListener("click",(event)=>{
                 event.stopPropagation()
@@ -3511,8 +3565,8 @@ class Channel{
     }
 }
 
-//mouse zoom: the domain expansion per wheel notch is exp(deltaY Ãƒâ€” this);
-//0.002 Ã¢â€°Ë† Ã‚Â±20% for a classic 100px notch, smooth for trackpad deltas
+//mouse zoom: the domain expansion per wheel notch is exp(deltaY × this);
+//0.002 ≈ ±20% for a classic 100px notch, smooth for trackpad deltas
 const WHEEL_ZOOM_SENSITIVITY=0.002
 //quiet period after the last wheel event before the gesture is committed
 //to the history as a single undoable command
@@ -3870,14 +3924,14 @@ class Plot2D{
         }
     }
     /* -----------------------------------------------------------------
-       Mouse zoom Ã¢â‚¬â€ the wheel rescales both domains around the data point
+       Mouse zoom — the wheel rescales both domains around the data point
        under the cursor, computed in the space of each axis scale (identity
        for a linear axis, log10 for a logarithmic one) so the anchored
        point never moves on screen. Zooming out stops at the auto-fit
        bounds a double-click restores. autoDomain is switched off: drawGraph
        then keeps the manual domains, the SVG overlay, the WebGL camera
        (refreshCamera reads these very scales) and the widgets drawn on top
-       (the classifier line Ã¢â‚¬Â¦) all follow through the regular redraw path.
+       (the classifier line …) all follow through the regular redraw path.
       ----------------------------------------------------------------- */
     handleWheelZoom(event){
         //a plot can opt out of the wheel zoom (the trimmer frame is a fixed
@@ -3889,7 +3943,7 @@ class Plot2D{
         event.preventDefault()
         const zone=this.graphzone
         if(!(zone.width>0&&zone.height>0)) return
-        //deltaMode: 0 pixels, 1 lines (Ãƒâ€”16), 2 pages (Ãƒâ€”plot height)
+        //deltaMode: 0 pixels, 1 lines (×16), 2 pages (×plot height)
         const unit=event.deltaMode===1?16:event.deltaMode===2?zone.height:1
         const factor=Math.exp(event.deltaY*unit*WHEEL_ZOOM_SENSITIVITY)
         if(!Number.isFinite(factor)||factor<=0) return
@@ -4088,7 +4142,7 @@ class Plot2D{
     //translates one axis domain by a pixel shift (the content follows the
     //cursor), through the very scale drawGraph renders with: a log axis
     //then translates in log space and stays strictly positive. The window
-    //is clamped inside the fit bounds Ã¢â‚¬â€ it can slide within them but never
+    //is clamped inside the fit bounds — it can slide within them but never
     //past them (a window wider than them snaps onto them, the same stale
     //view rule as the wheel zoom-out)
     panAxisDomain(key,scale,shift){
@@ -4387,7 +4441,7 @@ class Plot2D{
     }
 
     /* -----------------------------------------------------------------
-       Axis dragging Ã¢â‚¬â€ grab an axis and it MOVES: only its position (the
+       Axis dragging — grab an axis and it MOVES: only its position (the
        SVG translate) changes, the data domain is left untouched, so the
        plot itself never shifts. A horizontal axis follows the vertical
        pointer, a vertical one the horizontal pointer. The pointer is NOT
@@ -4453,9 +4507,9 @@ class Plot2D{
     }
     /* -----------------------------------------------------------------
        Tick readability. Two independent causes of unreadable axes:
-        Ã¢â‚¬Â¢ too many ticks for the room available Ã¢â€ â€™ the count is derived from
+        • too many ticks for the room available → the count is derived from
           the ACTUAL pixel length of the axis (~1 tick per 80px);
-        Ã¢â‚¬Â¢ labels too wide (12,345,678.9) Ã¢â€ â€™ SI shorthand, and a scientific
+        • labels too wide (12,345,678.9) → SI shorthand, and a scientific
           form on log axes where the span is huge.
        Both are applied to the four axis orientations.
        ---------------------------------------------------------------- */
@@ -4554,7 +4608,7 @@ class Plot2D{
 }
 
 /* =====================================================================
-    Plot2DWebGL Ã¢â‚¬â€ the "sandwich" plot
+    Plot2DWebGL — the "sandwich" plot
     ---------------------------------------------------------------------
     Same layout math, same D3/SVG axis pipeline, same ResizeObserver /
     MutationObserver lifecycle as Plot2D; only the trace rendering is
@@ -4618,7 +4672,7 @@ class Plot2DWebGL extends Plot2D{
     }
 
     /* -----------------------------------------------------------------
-       Setup phase Ã¢â‚¬â€ bootstrap the Three.js subsystem ONCE
+       Setup phase — bootstrap the Three.js subsystem ONCE
       ----------------------------------------------------------------- */
     ensureTraceCanvas(){
         const renderOptions=this.glRenderOptions??GL_RENDER_DEFAULTS
@@ -4671,7 +4725,7 @@ class Plot2DWebGL extends Plot2D{
     }
 
     /* -----------------------------------------------------------------
-       CPU side of the data path: traces Ã¢â€ â€™ one descriptor per trace.
+       CPU side of the data path: traces → one descriptor per trace.
        Nothing here is per point, so the cost does not depend on the
        number of samples.
       ----------------------------------------------------------------- */
@@ -4756,10 +4810,10 @@ class Plot2DWebGL extends Plot2D{
 
        Guarantees, in this order (all inside drawGraph, hence AFTER
        dataBounds/autoDomain/plotScales have settled):
-         Ã¢â‚¬Â¢ the axis transforms (log) and the reference origin are known;
-         Ã¢â‚¬Â¢ the buffers are refilled as soon as the data, the styling, the
+         • the axis transforms (log) and the reference origin are known;
+         • the buffers are refilled as soon as the data, the styling, the
            scales OR the identity of the underlying array changed;
-         Ã¢â‚¬Â¢ a one frame watch re-checks the sources so a producer that
+         • a one frame watch re-checks the sources so a producer that
            swaps wave.core right after the draw cannot leave a stale
            partial cloud on screen.
       ----------------------------------------------------------------- */
@@ -4976,7 +5030,7 @@ class Plot2DWebGL extends Plot2D{
         }
         /* per trace routing: massive clouds go to the GPU, the traces that must
            stay interactive (DOM events, hit-testing, per point widgets) stay in
-           the SVG layer Ã¢â‚¬â€ options.layer = "gl" (default) | "svg" */
+           the SVG layer — options.layer = "gl" (default) | "svg" */
         const all=this.resolveRenderTraces()
         const glTraces=[]
         const svgTraces=[]
@@ -5002,7 +5056,7 @@ class Plot2DWebGL extends Plot2D{
     /* -----------------------------------------------------------------
        Instantaneous resize, driven by the App ResizeObserver pipeline.
        No data loop, no reallocation: setSize, one projection matrix
-       update, one render Ã¢â‚¬â€ the GPU does the rest.
+       update, one render — the GPU does the rest.
       ----------------------------------------------------------------- */
     handleResize(){
         this.resizeTraceLayer()
@@ -5468,9 +5522,9 @@ class Dialog{
             },
             listen:{
                 selected(e){
-                    console.log(e.detail.emitter.title+" a reÃƒÂ§u le focus")
+                    console.log(e.detail.emitter.title+" a reçu le focus")
                 },
-                killed(e){console.log("quelqu'un s'est fait tuÃƒÂ© !\n","il s'appelait ",e.detail.emitter.events.registrationId)},
+                killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationId)},
                 importDelimitedText(e){console.log(e)}
             }
         }
@@ -5482,7 +5536,7 @@ class Dialog{
         this.DOMelt.folder=CE('div',{className:"accordion handler folder",pilot:this,handleClick:(e)=>e.target.pilot.toggleFolded()},[]);
         this.DOMelt.folder.setAttribute("role","button");
         this.DOMelt.folder.setAttribute("aria-expanded","true");
-        this.DOMelt.folder.setAttribute("aria-label","Replier la fenÃƒÂªtre");
+        this.DOMelt.folder.setAttribute("aria-label","Replier la fenêtre");
         this.DOMelt.label=CE('div',{className:"label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggleMaximized(e)},[title.toString()]);
         this.DOMelt.label.handleMouseDown=(e)=>e.target.pilot.drag(e);
         this.DOMelt.label.handleClick=(e)=>this.focus(e)
@@ -5566,7 +5620,7 @@ class Dialog{
     setFolderFoldedState(folded){
         this.DOMelt.folder.style.backgroundColor=folded?"transparent":"rgba(172,255,47,0.18)"
         this.DOMelt.folder.setAttribute("aria-expanded",folded?"false":"true")
-        this.DOMelt.folder.setAttribute("aria-label",folded?"DÃƒÂ©plier la fenÃƒÂªtre":"Replier la fenÃƒÂªtre")
+        this.DOMelt.folder.setAttribute("aria-label",folded?"Déplier la fenêtre":"Replier la fenêtre")
     }
     fold(){
         if(this.folded) return
@@ -5638,7 +5692,7 @@ class Dialog{
             windowStyle.minWidth="0"
             windowStyle.minHeight="0"
             windowStyle.resize="none"
-            this.DOMelt.folder.setAttribute("aria-label","Restaurer la fenÃƒÂªtre")
+            this.DOMelt.folder.setAttribute("aria-label","Restaurer la fenêtre")
         }else{
             this.maximized=false
             this.DOMelt.window.classList.remove("maximized")
@@ -6691,8 +6745,8 @@ class PetitGazParfait {
                 const dvy = b.vy - a.vy;
                 const impact = dvx * nx + dvy * ny;
 
-                if (impact < 0) { // ÃƒÂ©viter de "recoller" les particules dÃƒÂ©jÃƒÂ  en fuite
-                    const impulse = 2 * impact / 2; // masses ÃƒÂ©gales
+                if (impact < 0) { // éviter de "recoller" les particules déjà en fuite
+                    const impulse = 2 * impact / 2; // masses égales
                     a.vx += impulse * nx;
                     a.vy += impulse * ny;
                     b.vx -= impulse * nx;
@@ -6702,7 +6756,7 @@ class PetitGazParfait {
         }
 
         const animate = () => {
-            // Mise ÃƒÂ  jour des positions
+            // Mise à jour des positions
             for (let b of balls) {
                 b.x += b.vx;
                 b.y += b.vy;
@@ -6719,7 +6773,7 @@ class PetitGazParfait {
                 }
             }
 
-            // Mise ÃƒÂ  jour de l'affichage
+            // Mise à jour de l'affichage
             circles
                 .attr("cx", d => d.x)
                 .attr("cy", d => d.y);
@@ -6765,7 +6819,7 @@ class PetitGazFusion {
         }));
 
         const update = () => {
-            // Mise ÃƒÂ  jour des positions
+            // Mise à jour des positions
             for (let b of balls) {
                 b.x += b.vx;
                 b.y += b.vy;
@@ -6807,7 +6861,7 @@ class PetitGazFusion {
                             vx: newVx,
                             vy: newVy,
                             mass: totalMass,
-                            r: this.r * Math.sqrt(totalMass) // rayon Ã¢Ë†Â Ã¢Ë†Å¡masse
+                            r: this.r * Math.sqrt(totalMass) // rayon ∝ √masse
                         });
 
                         merged.add(i);
@@ -6823,7 +6877,7 @@ class PetitGazFusion {
 
             balls = survivors;
 
-            // Mise ÃƒÂ  jour SVG
+            // Mise à jour SVG
             let sel = svg.selectAll("circle").data(balls);
 
             sel.enter()
