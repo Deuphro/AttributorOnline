@@ -9,6 +9,13 @@ const MAD_TO_SIGMA: f64 = 1.4826;
 // onto 0 and keep the whole wave. Odd window, at least three points.
 pub const MIN_MAD_WINDOW: usize = 3;
 
+//Log-histogram bar density. Six bars per decade is dense enough to show the
+//shape of a distribution and coarse enough that consecutive bars are not single
+//points. The total bar count is then derived from the span of the data.
+const LOG_BINS_PER_DECADE: f64 = 6.0;
+//Below this the frame would be unreadable, whatever the span says.
+const MIN_LOG_BINS: usize = 8;
+
 /// A trimmed wave plus everything the shell needs to redraw its frame.
 #[wasm_bindgen]
 pub struct TrimResult {
@@ -43,6 +50,9 @@ pub struct TrimHistogram {
     counts: Vec<f64>,
     min: f64,
     max: f64,
+    //values that could not be placed on the chosen scale (non-positive in log
+    //mode): the bar counts then add up to total - dropped, not to total
+    dropped: usize,
 }
 
 #[wasm_bindgen]
@@ -51,6 +61,7 @@ impl TrimHistogram {
     #[wasm_bindgen(getter)] pub fn counts(&self) -> Vec<f64> { self.counts.clone() }
     #[wasm_bindgen(getter)] pub fn min(&self) -> f64 { self.min }
     #[wasm_bindgen(getter)] pub fn max(&self) -> f64 { self.max }
+    #[wasm_bindgen(getter)] pub fn dropped(&self) -> usize { self.dropped }
 }
 
 /// Splits a canonical core into its x and y halves. `stride` is the core
@@ -231,15 +242,42 @@ pub fn trim_wave(
     }
 }
 /// Histogram of the wave values, in the same "binned value / count" shape the
-/// trimmer frame already draws. `bins` is clamped to at least one bar, and a
-/// flat wave (min == max) still yields `bins` bars around that single value
-/// instead of a division by zero.
+/// trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
+/// "log" (evenly spaced DECADES, i.e. log10 of the value).
+///
+/// A linear histogram of a spectrum spanning five orders of magnitude is
+/// useless: every bar piles into the first one and the rest is empty. Binning
+/// evenly in log10 gives one bar per decade fraction, which is what makes the
+/// distribution readable.
+///
+/// In log mode the bar CENTRES are geometric means, so that a log-scaled value
+/// axis spaces the bars evenly on screen. Non-positive values have no log10 and
+/// are left out of the log histogram; `dropped` reports how many, so the shell
+/// can say so instead of silently showing a distribution that does not add up.
 #[wasm_bindgen]
-pub fn trim_histogram(core: &[f64], stride: usize, bins: usize) -> TrimHistogram {
+pub fn trim_histogram(core: &[f64], stride: usize, bins: usize, scale: &str) -> TrimHistogram {
     let (_x, y) = split(core, stride);
     let bins = bins.max(1);
     if y.is_empty() {
-        return TrimHistogram { centres: Vec::new(), counts: Vec::new(), min: 0.0, max: 0.0 };
+        return TrimHistogram { centres: Vec::new(), counts: Vec::new(), min: 0.0, max: 0.0, dropped: 0 };
+    }
+    if scale == "log" {
+        //A log histogram spread over a fixed bar COUNT is usually useless: 60
+        //bars over 2 decades is a third of a decade per bar, and a real spectrum
+        //(a tight noise floor plus a few peaks) lands in a handful of them, so
+        //the frame comes out mostly EMPTY. What reads well is a fixed density
+        //per decade instead, so the bar count follows the span of the data.
+        let span = log10_span(y);
+        let wanted = if span > 0.0 {
+            (span * LOG_BINS_PER_DECADE).round() as usize
+        } else {
+            0
+        };
+        // min/max rather than clamp: clamp(low, high) PANICS when low > high, and
+        // the caller is free to ask for fewer bars than MIN_LOG_BINS. A panic
+        // inside wasm kills the whole worker, not just this call.
+        let effective = bins.min(wanted.max(MIN_LOG_BINS));
+        return log_histogram(y, effective.max(1));
     }
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
@@ -266,7 +304,65 @@ pub fn trim_histogram(core: &[f64], stride: usize, bins: usize) -> TrimHistogram
     }
     let step = if width > 0.0 { width } else { 1.0 };
     let centres = (0..bins).map(|i| min + (i as f64 + 0.5) * step).collect();
-    TrimHistogram { centres, counts, min, max }
+    TrimHistogram { centres, counts, min, max, dropped: 0 }
+}
+
+/// Span in decades of the strictly positive values, 0.0 when there is none.
+fn log10_span(y: &[f64]) -> f64 {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &value in y {
+        if value.is_nan() || value <= 0.0 {
+            continue;
+        }
+        let lg = value.log10();
+        if lg < lo { lo = lg; }
+        if lg > hi { hi = lg; }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return 0.0;
+    }
+    hi - lo
+}
+
+/// Evenly spaced bins in log10(value). Falls back to a single bin when the data
+/// has no spread in log space, rather than dividing by zero.
+fn log_histogram(y: &[f64], bins: usize) -> TrimHistogram {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    let mut dropped = 0usize;
+    for &value in y {
+        if value.is_nan() || value <= 0.0 {
+            //no log10: zero, negatives and NaN cannot be placed on a log axis
+            dropped += 1;
+            continue;
+        }
+        let lg = value.log10();
+        if lg < lo { lo = lg; }
+        if lg > hi { hi = lg; }
+    }
+    if !lo.is_finite() || !hi.is_finite() {
+        return TrimHistogram { centres: Vec::new(), counts: Vec::new(), min: 0.0, max: 0.0, dropped };
+    }
+    let width = (hi - lo) / bins as f64;
+    let mut counts = vec![0.0; bins];
+    for &value in y {
+        if value.is_nan() || value <= 0.0 { continue; }
+        let index = if width > 0.0 {
+            (((value.log10() - lo) / width) as isize).clamp(0, bins as isize - 1) as usize
+        } else {
+            0
+        };
+        counts[index] += 1.0;
+    }
+    let step = if width > 0.0 { width } else { 1.0 };
+    //geometric centre of the decade interval, NOT its arithmetic middle: the
+    //value axis is log-scaled, so only the geometric mean lands where the bar
+    //appears at the centre of its slot
+    let centres = (0..bins)
+        .map(|i| 10f64.powf(lo + (i as f64 + 0.5) * step))
+        .collect();
+    TrimHistogram { centres, counts, min: 10f64.powf(lo), max: 10f64.powf(hi), dropped }
 }
 
 #[cfg(test)]
@@ -458,7 +554,7 @@ mod tests {
 
     #[test]
     fn histogram_counts_sum_to_the_wave_length() {
-        let hist = trim_histogram(&[0.0, 0.1, 0.2, 0.3, 0.4, 0.5], 1, 3);
+        let hist = trim_histogram(&[0.0, 0.1, 0.2, 0.3, 0.4, 0.5], 1, 3, "linear");
         assert_eq!(hist.centres().len(), 3);
         let total: f64 = hist.counts().iter().sum();
         assert!((total - 6.0).abs() < 1e-12);
@@ -471,7 +567,7 @@ mod tests {
 
     #[test]
     fn histogram_survives_a_flat_wave() {
-        let hist = trim_histogram(&[7.0; 5], 1, 4);
+        let hist = trim_histogram(&[7.0; 5], 1, 4, "linear");
         assert_eq!(hist.centres().len(), 4);
         let total: f64 = hist.counts().iter().sum();
         assert!((total - 5.0).abs() < 1e-12);
@@ -480,12 +576,124 @@ mod tests {
 
     #[test]
     fn histogram_of_an_empty_wave_is_empty() {
-        assert!(trim_histogram(&[], 1, 10).centres().is_empty());
+        assert!(trim_histogram(&[], 1, 10, "linear").centres().is_empty());
     }
 
     #[test]
     fn a_single_bin_never_drops_a_point() {
-        let hist = trim_histogram(&[1.0, 2.0, 3.0, 4.0], 1, 1);
+        let hist = trim_histogram(&[1.0, 2.0, 3.0, 4.0], 1, 1, "linear");
         assert!((hist.counts()[0] - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn log_bins_are_evenly_spaced_in_decades() {
+        // 6 decades, 6 bars per decade: 36 bars. The values are spread over the
+        // decades, so they must land in MANY different bars - that is what
+        // distinguishes a log histogram from a linear one, where they would all
+        // pile into the first bar.
+        let y = [1.0, 5.0, 1e1, 5e1, 1e2, 5e2, 1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6];
+        let hist = trim_histogram(&y, 1, 60, "log");
+        assert_eq!(hist.centres().len(), 36);
+        let total: f64 = hist.counts().iter().sum();
+        assert!((total - 13.0).abs() < 1e-12);
+        // the 13 values occupy 13 distinct bars: one per value, no collision
+        let occupied = hist.counts().iter().filter(|c| **c > 0.0).count();
+        assert_eq!(occupied, 13);
+        // and every bar centre sits a sixth of a decade from the next
+        let logs: Vec<f64> = hist.centres().iter().map(|c| c.log10()).collect();
+        let gap = logs[1] - logs[0];
+        for i in 1..logs.len() - 1 {
+            assert!(((logs[i + 1] - logs[i]) - gap).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn asking_for_fewer_bars_than_the_floor_does_not_panic() {
+        // a wasm panic kills the whole worker, not just the call: asking for
+        // fewer bars than MIN_LOG_BINS must clamp, not explode
+        for asked in 1..=4 {
+            let hist = trim_histogram(&[1.0, 1e6], 1, asked, "log");
+            assert_eq!(hist.centres().len(), asked, "the caller's ceiling must win");
+        }
+    }
+
+    #[test]
+    fn the_log_bar_count_follows_the_span_not_the_request() {
+        // 6 decades at 6 bars per decade = 36 bars, NOT the 60 that were asked
+        // for: a fixed count over a narrow spectrum is what makes the frame look
+        // empty
+        let wide = [1e0, 1e6];
+        let hist = trim_histogram(&wide, 1, 60, "log");
+        assert_eq!(hist.centres().len(), 36);
+        // and the request stays an upper bound
+        let capped = trim_histogram(&wide, 1, 10, "log");
+        assert_eq!(capped.centres().len(), 10);
+    }
+
+    #[test]
+    fn a_narrow_spectrum_still_gets_a_readable_number_of_bars() {
+        // 100..200 is barely a third of a decade: the density rule would ask for
+        // 2 bars, which is unreadable, so the floor applies
+        let narrow = [100.0, 200.0];
+        let hist = trim_histogram(&narrow, 1, 60, "log");
+        assert_eq!(hist.centres().len(), MIN_LOG_BINS);
+    }
+
+    #[test]
+    fn log_bin_centres_are_geometric() {
+        // 1..1e4 is 4 decades, over 4 bins: one decade per bin, so the centres sit
+        // half a decade inside each slot, i.e. 10^0.5, 10^1.5, 10^2.5, 10^3.5.
+        // The arithmetic middle of a bin would land in the wrong slot entirely.
+        let hist = trim_histogram(&[1.0, 1e4], 1, 4, "log");
+        let expected = [0.5f64, 1.5, 2.5, 3.5].map(|e| 10f64.powf(e));
+        for (got, want) in hist.centres().iter().zip(expected.iter()) {
+            assert!((got / want - 1.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn log_centres_are_not_the_arithmetic_midpoint() {
+        // guard against the obvious wrong implementation: a 1..1e4 bin must not
+        // be centred at (1+1e4)/2, which on a log axis renders near the top
+        let hist = trim_histogram(&[1.0, 1e4], 1, 1, "log");
+        let naive = 0.5 * (1.0 + 1e4);
+        let centre = hist.centres()[0];
+        assert!((centre / naive - 1.0).abs() > 0.9);
+        // the geometric centre of 1..1e4 is 100
+        assert!((centre / 100.0 - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn log_histogram_drops_non_positive_values() {
+        // zero and negatives have no log10: they are excluded, and `dropped`
+        // says so instead of the counts silently failing to add up
+        let hist = trim_histogram(&[1.0, 0.0, -5.0, f64::NAN, 1e3], 1, 4, "log");
+        let total: f64 = hist.counts().iter().sum();
+        assert!((total - 2.0).abs() < 1e-12);
+        assert_eq!(hist.dropped(), 3);
+    }
+
+    #[test]
+    fn log_histogram_of_a_flat_positive_wave_is_one_bin() {
+        let hist = trim_histogram(&[7.0; 5], 1, 4, "log");
+        let total: f64 = hist.counts().iter().sum();
+        assert!((total - 5.0).abs() < 1e-12);
+        assert_eq!(hist.dropped(), 0);
+    }
+
+    #[test]
+    fn log_histogram_with_no_positive_value_is_empty() {
+        let hist = trim_histogram(&[0.0, -1.0, -2.0], 1, 4, "log");
+        assert!(hist.centres().is_empty());
+        assert_eq!(hist.dropped(), 3);
+    }
+
+    #[test]
+    fn linear_scale_keeps_zero_and_negatives() {
+        // the opposite contract: a linear histogram must NOT discard anything
+        let hist = trim_histogram(&[-1.0, 0.0, 1.0], 1, 4, "linear");
+        let total: f64 = hist.counts().iter().sum();
+        assert!((total - 3.0).abs() < 1e-12);
+        assert_eq!(hist.dropped(), 0);
     }
 }

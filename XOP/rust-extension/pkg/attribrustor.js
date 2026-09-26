@@ -194,18 +194,30 @@ export function trim_wave(core, stride, method, low_bound, high_bound, k, window
 
 /**
 * Histogram of the wave values, in the same "binned value / count" shape the
-* trimmer frame already draws. `bins` is clamped to at least one bar, and a
-* flat wave (min == max) still yields `bins` bars around that single value
-* instead of a division by zero.
+* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
+* "log" (evenly spaced DECADES, i.e. log10 of the value).
+*
+* A linear histogram of a spectrum spanning five orders of magnitude is
+* useless: every bar piles into the first one and the rest is empty. Binning
+* evenly in log10 gives one bar per decade fraction, which is what makes the
+* distribution readable.
+*
+* In log mode the bar CENTRES are geometric means, so that a log-scaled value
+* axis spaces the bars evenly on screen. Non-positive values have no log10 and
+* are left out of the log histogram; `dropped` reports how many, so the shell
+* can say so instead of silently showing a distribution that does not add up.
 * @param {Float64Array} core
 * @param {number} stride
 * @param {number} bins
+* @param {string} scale
 * @returns {TrimHistogram}
 */
-export function trim_histogram(core, stride, bins) {
+export function trim_histogram(core, stride, bins, scale) {
     const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.trim_histogram(ptr0, len0, stride, bins);
+    const ptr1 = passStringToWasm0(scale, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.trim_histogram(ptr0, len0, stride, bins, ptr1, len1);
     return TrimHistogram.__wrap(ret);
 }
 
@@ -652,6 +664,13 @@ export class TrimHistogram {
     get max() {
         const ret = wasm.trimhistogram_max(this.__wbg_ptr);
         return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get dropped() {
+        const ret = wasm.trimhistogram_dropped(this.__wbg_ptr);
+        return ret >>> 0;
     }
 }
 

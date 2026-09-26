@@ -38,15 +38,25 @@ export function classify_persistence_0d(births: Float64Array, deaths: Float64Arr
 export function trim_wave(core: Float64Array, stride: number, method: string, low_bound: number, high_bound: number, k: number, window: number, threshold: number): TrimResult;
 /**
 * Histogram of the wave values, in the same "binned value / count" shape the
-* trimmer frame already draws. `bins` is clamped to at least one bar, and a
-* flat wave (min == max) still yields `bins` bars around that single value
-* instead of a division by zero.
+* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
+* "log" (evenly spaced DECADES, i.e. log10 of the value).
+*
+* A linear histogram of a spectrum spanning five orders of magnitude is
+* useless: every bar piles into the first one and the rest is empty. Binning
+* evenly in log10 gives one bar per decade fraction, which is what makes the
+* distribution readable.
+*
+* In log mode the bar CENTRES are geometric means, so that a log-scaled value
+* axis spaces the bars evenly on screen. Non-positive values have no log10 and
+* are left out of the log histogram; `dropped` reports how many, so the shell
+* can say so instead of silently showing a distribution that does not add up.
 * @param {Float64Array} core
 * @param {number} stride
 * @param {number} bins
+* @param {string} scale
 * @returns {TrimHistogram}
 */
-export function trim_histogram(core: Float64Array, stride: number, bins: number): TrimHistogram;
+export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
 /**
 * @param {number} a
 * @param {number} b
@@ -154,6 +164,9 @@ export class TrimHistogram {
   readonly counts: Float64Array;
 /**
 */
+  readonly dropped: number;
+/**
+*/
   readonly max: number;
 /**
 */
@@ -227,8 +240,9 @@ export interface InitOutput {
   readonly trimhistogram_counts: (a: number, b: number) => void;
   readonly trimhistogram_min: (a: number) => number;
   readonly trimhistogram_max: (a: number) => number;
+  readonly trimhistogram_dropped: (a: number) => number;
   readonly trim_wave: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
-  readonly trim_histogram: (a: number, b: number, c: number, d: number) => number;
+  readonly trim_histogram: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
   readonly trimresult_low_bound: (a: number) => number;
   readonly trimresult_high_bound: (a: number) => number;
   readonly compute: (a: number, b: number) => number;

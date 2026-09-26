@@ -748,7 +748,9 @@ class TrimmerNode extends NodeWithAccordion{
         this.parameters.highBound=null
         //log Y toggle: the frame is a histogram, and the low tail is exactly
         //where a trim threshold lives, so it is where linear wastes the space
-        this.parameters.logY=false
+        //log Y on by default: a mass spectrum spans orders of magnitude, and a
+        //linear value axis crushes the entire low tail into the bottom pixel
+        this.parameters.logY=true
         //the linear value span, kept aside so the log toggle can restore it
         this.linearValueDomain=[0,100000]
         this.dragDebounceTimer=null
@@ -762,6 +764,10 @@ class TrimmerNode extends NodeWithAccordion{
         //deterministic placeholder, generated ONCE: re-rolling per draw
         //would make the frame flicker and the drag impossible to judge
         this.placeholderBins=TrimmerNode.makePlaceholderBins(10,100000,900)
+        this.dragDebounceTimer=null
+        //separate timer for the trim itself: the children debounce guards the
+        //subtree re-resolve, this one guards the postMessage copy of the core
+        this.trimDebounceTimer=null
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D)</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
@@ -840,24 +846,17 @@ class TrimmerNode extends NodeWithAccordion{
         return Number.isFinite(set)?set:this.quantileThreshold(0.05)
     }
 
-    //Value axis domain for the CURRENT scale mode. A log scale has no zero:
-    //Plot2D.stickBaseline already deals with that by dropping to half the
-    //smallest positive datum, but here the datum is BINNED, so the honest
-    //proxy is half a bin width. That is precisely the room the first bin
-    //leaves below its own centre, and it keeps the floor strictly positive,
-    //which log(0) = -Infinity would not.
+    //Value axis domain for the CURRENT scale mode. On a log axis the histogram
+    //already reports the smallest and the LARGEST POSITIVE value (log10 of 0 is
+    //undefined), so there is no "half a bin width" fudge left to invent: the
+    //honest floor is the data minimum. The padding is multiplicative, a tenth
+    //of a decade each side, because an additive margin would vanish next to a
+    //spectrum spanning thousands.
     trimValueDomain(){
-        const linear=this.linearValueDomain
-        if(!this.parameters.logY) return [...linear]
-        //the real bins, not the placeholder: a floor derived from a 10-bar
-        //placeholder would sit an order of magnitude above a 60-bar real one
-        //and squash the whole low tail out of the frame
-        const bins=this.currentBins()
-        const halfBinWidth=bins.length>1
-            ?Math.abs(bins[1].value-bins[0].value)/2
-            :linear[1]/100
-        //never above half the span: a single bin would give a negative floor
-        return [Math.max(Math.min(halfBinWidth,linear[1]/2),Number.MIN_VALUE),linear[1]]
+        const [low,high]=this.linearValueDomain
+        if(!this.parameters.logY) return [low,high]
+        const pad=Math.pow(10,0.1)
+        return [Math.max(low/pad,Number.MIN_VALUE),high*pad]
     }
     setLogY(on){
         if(this.parameters.logY===on) return
@@ -869,6 +868,10 @@ class TrimmerNode extends NodeWithAccordion{
             this.graph.parameters.axis.left.domain=this.trimValueDomain()
         }
         this.refreshTrimmerUI()
+        //the BINS themselves change with the scale, not only their position: a
+        //full resolve re-histograms in the new spacing and re-seeds an absent
+        //cursor, which the scale change may have invalidated
+        if(this.lastInputWave) this.startResolve()
     }
     setupTrimmerUI(){
         if(!this.accordion) return
@@ -1238,11 +1241,23 @@ class TrimmerNode extends NodeWithAccordion{
         }
         if(this.parameters[key]===value) return
         this.parameters[key]=value
-        //redraw instantly (the cursor must track the pointer), re-trim off the
-        //critical path. startResolve repins the domain, which a drag must not
-        //do, hence the trim-only variant.
+        //redraw instantly, so the cursor tracks the pointer, but DEBOUNCE the
+        //kernel. A drag fires ~60 pointermove per second and each call copies
+        //the whole core to the worker (megabytes on a real spectrum): running
+        //the trim synchronously per event is what makes dragging feel heavy, not
+        //the trim itself, which is linear and takes ~1ms in wasm.
         this.refreshTrimmerUI()
-        this.applyTrimBounds()
+        this.scheduleTrim()
+    }
+    //Coalesces the trims of a drag into a single kernel run, then wakes the
+    //children once. Same debounce idea as scheduleResolveChildren, but it guards
+    //the expensive part: the postMessage copy.
+    scheduleTrim(){
+        if(this.trimDebounceTimer) clearTimeout(this.trimDebounceTimer)
+        this.trimDebounceTimer=setTimeout(()=>{
+            this.trimDebounceTimer=null
+            this.applyTrimBounds()
+        },90)
     }
     //Debounced downstream resolve. A drag fires dozens of pointermove events,
     //and each one would otherwise queue a kernel run plus a whole subtree
@@ -1336,6 +1351,13 @@ class TrimmerNode extends NodeWithAccordion{
         const onUp=()=>{
             window.removeEventListener("pointermove",onMove)
             window.removeEventListener("pointerup",onUp)
+            //the last position must not wait for the debounce: the drag is over,
+            //so publish the final trim now instead of ~90ms later
+            if(this.trimDebounceTimer){
+                clearTimeout(this.trimDebounceTimer)
+                this.trimDebounceTimer=null
+                this.applyTrimBounds()
+            }
             this.recordTrimBounds(before,this.trimBoundsSnapshot(),"Trimmer bounds")
         }
         window.addEventListener("pointermove",onMove)
@@ -1404,8 +1426,19 @@ class TrimmerNode extends NodeWithAccordion{
             //already-cut one
             const histogram=await computePool.run("trimHistogram",{
                 core:inputWave.core,
-                params:{stride,bins:TrimmerNode.HISTOGRAM_BINS}
+                //the binning follows the AXIS scale: on a log axis the bars must
+                //be evenly spaced in decades, otherwise every point piles into
+                //the first bar and the distribution is unreadable
+                params:{
+                    stride,
+                    //an upper bound: in log mode the kernel derives the real bar
+                    //count from the span of the data (bars per decade), because a
+                    //fixed count over a 2-decade spectrum comes out mostly empty
+                    bins:TrimmerNode.HISTOGRAM_BINS,
+                    scale:this.parameters.logY?"log":"linear"
+                }
             })
+            this.histogramDropped=histogram.dropped??0
             //Array.from first: Float64Array.prototype.map returns a Float64Array,
             //not an array of objects, so mapping the typed array straight through
             //would silently produce a buffer of NaN instead of the bin objects

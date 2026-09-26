@@ -3,6 +3,9 @@
 import init,* as rust from "../XOP/rust-extension/pkg/attribrustor.js"
 
 let wasmReady=null
+//Log-histogram bar density, kept in step with LOG_BINS_PER_DECADE in trim.rs
+const LOG_BINS_PER_DECADE=6
+const MIN_LOG_BINS=8
 function ensureWasm(){
     if(!wasmReady){
         wasmReady=init()
@@ -113,22 +116,24 @@ const kernels={
     async trimHistogram({core,params}){
         const stride=params?.stride??1
         const bins=Math.max(1,params?.bins??64)
+        const scale=params?.scale==="log"?"log":"linear"
         let result
         try{
             await ensureWasm()
             if(typeof rust.trim_histogram!=="function"){
                 throw new Error("rust trim_histogram is missing (stale pkg build?)")
             }
-            const histogram=rust.trim_histogram(core,stride,bins)
+            const histogram=rust.trim_histogram(core,stride,bins,scale)
             result={
                 centres:toFloat64(histogram.centres),
                 counts:toFloat64(histogram.counts),
                 min:histogram.min,
-                max:histogram.max
+                max:histogram.max,
+                dropped:histogram.dropped
             }
         }catch(err){
             console.warn("[kernelWorker] rust histogram unavailable, JS fallback:",err)
-            result=trimHistogramJS(core,stride,bins)
+            result=trimHistogramJS(core,stride,bins,scale)
         }
         return result
     }
@@ -197,10 +202,11 @@ function baselineLevelJS(y){
         ?values[(values.length-1)/2]
         :0.5*(values[values.length/2-1]+values[values.length/2])
 }
-function trimHistogramJS(core,stride,bins){
+function trimHistogramJS(core,stride,bins,scale="linear"){
     const n=Math.floor(core.length/stride)
     const y=stride===2?core.subarray(n):core
-    if(!n) return {centres:new Float64Array(0),counts:new Float64Array(0),min:0,max:0}
+    if(!n) return {centres:new Float64Array(0),counts:new Float64Array(0),min:0,max:0,dropped:0}
+    if(scale==="log") return logHistogramJS(y,bins)
     let min=Infinity,max=-Infinity
     for(let i=0;i<n;i++){
         const v=y[i]
@@ -220,7 +226,41 @@ function trimHistogramJS(core,stride,bins){
     const step=width>0?width:1
     const centres=new Float64Array(bins)
     for(let i=0;i<bins;i++) centres[i]=min+(i+0.5)*step
-    return {centres,counts,min,max}
+    return {centres,counts,min,max,dropped:0}
+}
+//Evenly spaced bins in log10(value), mirroring log_histogram in trim.rs: the
+//centres are GEOMETRIC means, because the value axis is log-scaled and only a
+//geometric mean lands at the centre of its slot.
+function logHistogramJS(y,bins){
+    let lo=Infinity,hi=-Infinity,dropped=0
+    for(let i=0;i<y.length;i++){
+        const v=y[i]
+        //zero, negatives and NaN have no log10: they cannot sit on a log axis
+        if(Number.isNaN(v)||v<=0){dropped++;continue}
+        const lg=Math.log10(v)
+        if(lg<lo) lo=lg
+        if(lg>hi) hi=lg
+    }
+    if(!Number.isFinite(lo)||!Number.isFinite(hi)){
+        return {centres:new Float64Array(0),counts:new Float64Array(0),min:0,max:0,dropped}
+    }
+    //bar count from the span, not a fixed one: see LOG_BINS_PER_DECADE in trim.rs
+    const wanted=Math.round((hi-lo)*LOG_BINS_PER_DECADE)
+    const effective=Math.min(bins,Math.max(MIN_LOG_BINS,wanted))
+    const width=(hi-lo)/effective
+    const counts=new Float64Array(effective)
+    for(let i=0;i<y.length;i++){
+        const v=y[i]
+        if(Number.isNaN(v)||v<=0) continue
+        const index=width>0
+            ?Math.min(effective-1,Math.max(0,Math.floor((Math.log10(v)-lo)/width)))
+            :0
+        counts[index]+=1
+    }
+    const step=width>0?width:1
+    const centres=new Float64Array(effective)
+    for(let i=0;i<effective;i++) centres[i]=Math.pow(10,lo+(i+0.5)*step)
+    return {centres,counts,min:Math.pow(10,lo),max:Math.pow(10,hi),dropped}
 }
 
 function analysePersistence0DJS(core,stride=1,mode="sublevel"){
