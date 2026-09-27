@@ -417,6 +417,246 @@ index(i, 1)          // Y of point i</pre>
    → keptPointsX, keptPointsY, keptCount
    → output wave [X…, Y…]</pre>
 
+        <h4>Trimmer <span class="badge">intensity</span></h4>
+        <p>
+            Removes the points of an input wave whose intensity falls outside a pair of bounds, and
+            emits the surviving points as a new wave. The two bounds are the node's own state: they are
+            drawn in the frame and dragged directly, and the output always reflects them.
+        </p>
+        <p>
+            The <em>method</em> does one thing only — it decides <strong>where the lower bound is
+            initially placed</strong>. Once a bound is finite it is authoritative: the trim uses it, and
+            the method never acts as a floor over it. This separation is deliberate and is the reason the
+            guess and the cut are two distinct kernels.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>1 input</strong> — a single 1D or 2D wave.<br>
+                    <span class="badge req">required</span>
+                    exactly one link on input <code>0</code><br>
+                    <span class="badge">unrestricted</span>
+                    the output may feed any number of consumers
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — the points lying between the two bounds, as a
+                    non-interleaved 2D wave <code>[X…, Y…]</code>. Empty when no point survives.
+                </td>
+            </tr>
+            <tr>
+                <td>Input layout</td>
+                <td>
+                    1D: <code>[y0, y1, ...]</code> &nbsp;·&nbsp;
+                    2D: <code>[x0, x1, ..., y0, y1, ...]</code>.<br>
+                    The histogram is always taken on the <strong>Y block</strong> — for a 2D wave the
+                    intensities sit in the second half of the flat core.
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>method</code> — <code>passthrough</code> (default),
+                    <code>intensityThreshold</code> or <code>madResidual</code>.<br>
+                    <code>lowBound</code>, <code>highBound</code> — the two cursors, in <em>intensity</em>
+                    units. <code>null</code> means “not seeded yet”.<br>
+                    <code>k</code> — rejection multiplier, default <code>5</code>.<br>
+                    <code>window</code> — width of the moving average, default <code>9</code> samples,
+                    minimum <code>3</code>.<br>
+                    <code>threshold</code> — used by <code>intensityThreshold</code> only.<br>
+                    <code>logY</code> — logarithmic display of the frame (default on).
+                </td>
+            </tr>
+        </table>
+        <h4>Methods</h4>
+        <p>
+            All three share the same contract: they return <strong>the value the lower cursor should be
+            seeded at</strong>, or an infinite bound meaning “no opinion”. The cut itself does not know
+            which method produced the bound.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:190px">Method</th>
+                <th>Behaviour</th>
+            </tr>
+            <tr>
+                <td><code>passthrough</code></td>
+                <td>
+                    Cuts nothing. Returns an infinite low bound, which the shell maps onto the frame
+                    bottom, so the whole wave comes through.
+                </td>
+            </tr>
+            <tr>
+                <td><code>intensityThreshold</code></td>
+                <td>
+                    The simplest method: the threshold <em>is</em> the cursor. An explicit
+                    <code>threshold</code> seeds it; otherwise the node places it under the 5 % lowest
+                    points, read off the histogram it has already computed.
+                </td>
+            </tr>
+            <tr>
+                <td><code>madResidual</code></td>
+                <td>
+                    Estimates the noise from the data and places the cursor above it. See below.
+                </td>
+            </tr>
+        </table>
+
+        <h4>Algorithm — k·MAD on the moving-average residual</h4>
+        <p>
+            The method is a <strong>relative</strong> rejection test on the intensity axis. It proceeds in
+            three steps, all in Rust.
+        </p>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li>
+                <strong>Moving-average residual.</strong> A centred moving average of width
+                <code>window</code> slides along the Y block and, for each point, the difference between
+                its value and the mean of its neighbourhood is recorded. A real peak deviates strongly,
+                background noise barely at all. The two ends have no full window and borrow the nearest
+                partial average — padding with zeros would invent a step at each border and a false noise
+                floor. Prefix sums keep this O(n) whatever the width.
+            </li>
+            <li>
+                <strong>Robust noise estimate.</strong> The median of the <em>absolute</em> residuals is
+                taken and multiplied by <code>1.4826</code>, the conversion factor from a median absolute
+                deviation to a standard deviation for a normal distribution. The median, rather than the
+                mean, is what makes this robust: a few intense peaks cannot inflate the estimate the way
+                they inflate a variance. <code>window</code> below 3 is clamped up, since a window of 1
+                would make the residual identically zero.
+            </li>
+            <li>
+                <strong>Threshold.</strong> The cursor is placed at
+                <code>baseline + k × σ</code>, where the baseline is the <strong>median</strong> of the
+                intensities. The <code>+</code> baseline is essential, not cosmetic: σ measures a spread
+                <em>around</em> a level, so an absolute <code>k × σ</code> cut would sit at 0 and would
+                either remove nothing or erase the whole signal, depending on the scale of the data. A
+                median baseline, in turn, cannot be dragged upward by a minority of large peaks, so the
+                peaks do not raise the very threshold meant to isolate them.
+            </li>
+        </ol>
+        <p>
+            The <code>window</code> is counted in <strong>samples</strong>, not in physical units: it
+            covers a shorter span of the acquisition on a dense spectrum than on a sparse one. It is
+            reproducible for a given dataset, but not comparable across acquisitions with different
+            sampling.
+        </p>
+        <p>
+            <code>k</code> is the <strong>rejection multiplier</strong> — the analogue of the multiplier
+            used in any Gaussian rejection test. It means nothing on its own: it is not a threshold, only
+            a factor applied to σ, and it is only meaningful because the cursor it seeds remains
+            draggable afterwards. For reference, a Gaussian test keeps about 95 % of a normal population
+            at <code>1.96σ</code> and about 99.3 % at <code>2.58σ</code>; the default
+            <code>k = 5</code> is deliberately far more conservative, which suits spectra whose signal is
+            sparse.
+        </p>
+        <h4>Histogram</h4>
+        <p>
+            The frame displays the distribution of the input intensities, computed on the Y block before
+            any trimming: the cursors are placed on the input distribution, not on the already-cut one.
+        </p>
+        <ul>
+            <li>
+                <strong>Log scale.</strong> Bins are evenly spaced in <code>log10(value)</code>, one bar
+                per fraction of a decade, and bar <em>centres</em> are <strong>geometric</strong> means —
+                an arithmetic midpoint would sit at the wrong place on a logarithmic value axis. A linear
+                histogram of a spectrum spanning five orders of magnitude is useless: every bar piles into
+                the first one.
+            </li>
+            <li>
+                <strong>Bar count follows the span</strong>, at 6 bars per decade, with a floor of 8 and
+                the requested count as a ceiling. A fixed number of log bins would either waste the frame
+                on a narrow spectrum or collapse a wide one into a handful of occupied bars.
+            </li>
+            <li>
+                <strong>Non-positive values</strong> have no logarithm and are left out of the log
+                histogram; the kernel reports how many, so the shell never displays a distribution that
+                silently does not add up.
+            </li>
+            <li>
+                The count axis is logarithmic as well. A spectrum with a 1959-point noise floor and 1-point
+                peaks renders the peaks as sub-pixel slivers otherwise.
+            </li>
+        </ul>
+
+        <h4>Interactive behaviour</h4>
+        <ul>
+            <li>
+                The frame shows the histogram plus the two cursors, each carrying a numeric field on its
+                own line. Dragging a cursor, typing a value, changing <code>k</code>, changing
+                <code>window</code> or changing the method all re-run the cut, republish the output and
+                re-resolve the children.
+            </li>
+            <li>
+                <strong>Both bounds are authoritative.</strong> A finite cursor is exactly what defines
+                the trim, so the lower cursor can be dragged <em>below</em> a guessed threshold and the
+                upper one can cut from above. The method only seeds a bound that is absent.
+            </li>
+            <li>
+                <strong>User adjustments persist.</strong> A re-resolve with unchanged parameters must not
+                move a hand-placed cursor; only an unset bound is seeded. Changing <code>k</code> or
+                <code>window</code> does move the cursor, because that is a deliberate request to see
+                where the method puts the threshold. Every bound change is undoable.
+            </li>
+            <li>
+                Dragging fires dozens of events per second: the cursor follows the pointer immediately and
+                the kernel runs once, on a short debounce, so a drag costs a single cut instead of one per
+                frame. A ticket counter discards results from superseded runs.
+            </li>
+            <li>
+                A live <code>kept / total</code> counter distinguishes a real trim from a no-op, which the
+                cursors alone cannot show.
+            </li>
+        </ul>
+
+        <h4>Error conditions</h4>
+        <ul>
+            <li>
+                <span class="badge req">error</span>
+                more than one link connected to input <code>0</code>, or a link targeting a removed input.
+                Fan-out on the output is allowed and is not an error.
+            </li>
+            <li>
+                <span class="badge warn">floating</span>
+                no wave connected yet, or the connected value carries no usable wave.
+            </li>
+            <li>
+                <span class="badge warn">fallback</span>
+                WebAssembly or workers unavailable: an equivalent JavaScript implementation is used.
+            </li>
+        </ul>
+
+        <h4>Session behaviour</h4>
+        <p>
+            The method, the two bounds, the method parameters and the display scale are serialised with
+            the session and restored on reload, so a hand-adjusted trim is never silently recomputed.
+        </p>
+
+        <h4>Data flow</h4>
+        <pre>input wave core
+   → kernel: trim_histogram(core, stride, bins, scale)
+   → centres, counts, dropped          (frame, no cut)
+   → kernel: trim_guess(core, stride, method, k, window, threshold)
+   → one f64: where the lower cursor goes
+   → kernel: trim_apply(core, stride, lowBound, highBound)
+   → pointsX, pointsY, keptIndices, keptCount, totalCount
+   → output wave [X…, Y…]</pre>
+        <p>
+            The guess returns a single number and allocates nothing: it is the only threshold the shell
+            needs, so the kernel does not build and copy a trimmed point set just to read it back. The
+            cut, <code>trim_apply</code>, takes the two bounds and knows nothing about methods,
+            parameters or guesses — which is what keeps the two roles from being confused. A NaN intensity
+            is never kept, since it would poison the output.
+        </p>
+
 
     </div>
 

@@ -784,6 +784,16 @@ const TRIM_METHODS={
     }
 }
 
+//Cursor palette, taken from the node chrome rather than invented: lime is the
+//app accent, and the two bounds must not collide with the bar gradient, which is
+//itself green. Cyan reads as "cut" and magenta as "ceiling" on a dark ground.
+const TRIM_LOW_COLOR="#00d4ff"
+const TRIM_HIGH_COLOR="#ff5fd0"
+const CURSOR_COLORS=[["lowBound",TRIM_LOW_COLOR],["highBound",TRIM_HIGH_COLOR]]
+//Labels and lines are deliberately heavier than the rest of the node: the cursor
+//IS the control, and on a busy histogram a 1px line disappears into the bars
+const TRIM_CURSOR_STROKE=2.5
+const TRIM_CURSOR_FIELD_FONT="0.95em"
 class TrimmerNode extends NodeWithAccordion{
     //60 bars is enough to read a distribution at panel size, and keeps the
     //kernel payload small: 60 f64 is nothing next to the wave itself.
@@ -1027,7 +1037,9 @@ class TrimmerNode extends NodeWithAccordion{
         this.graph.container.addEventListener("pointerdown",(event)=>this.handleTrimPointerDown(event))
         this.graph.container.addEventListener("pointermove",(event)=>this.handleTrimHover(event))
         this.graph.container.addEventListener("pointerleave",()=>this.setTrimHover(null))
-        this.drawTrimmerOverlay()
+        //no drawTrimmerOverlay() here: drawGraph below already calls it through
+        //the hook above, and painting twice on setup only makes the first bars
+        //flash before the second pass
         this.graph.drawGraph()
     }
     //Seeds the two cursors from the METHOD THRESHOLD, without trimming: this is
@@ -1246,9 +1258,15 @@ class TrimmerNode extends NodeWithAccordion{
         if(!(zone.width>0&&zone.height>0)) return
         const {xScale,yScale}=graph.plotScales()
         const anchor=graph.graphSVG.select(".anchor")
-        let layer=anchor.select(".trim-layer")
-        if(layer.empty()) layer=anchor.append("g").attr("class","trim-layer")
-        layer.selectAll("*").remove()
+        //Bars and cursors are separate groups. The bars are UPDATED in place by a
+        //data join: removing and re-appending them on every paint makes the whole
+        //set blink whenever the data or the scale changes, which a gradient makes
+        //obvious. The cursors are cheap and carry inputs, so they are rebuilt.
+        let barLayer=anchor.select(".trim-bars")
+        if(barLayer.empty()) barLayer=anchor.append("g").attr("class","trim-bars")
+        let cursorLayer=anchor.select(".trim-cursors")
+        if(cursorLayer.empty()) cursorLayer=anchor.append("g").attr("class","trim-cursors")
+        cursorLayer.selectAll("*").remove()
         //First paint, no data yet: seed the cursors once. With a wave connected,
         //startResolve has already placed them from the kernel, and this block
         //stays out of the way - it must never move a hand-placed cursor.
@@ -1265,35 +1283,86 @@ class TrimmerNode extends NodeWithAccordion{
         const thickness=bins.length>1
             ?Math.abs(yScale(bins[1].value)-yScale(bins[0].value))*0.6
             :4
-        for(const bin of bins){
-            //on a log count axis an empty bin has nowhere to go
-            if(bin.count<=0&&this.parameters.logY) continue
-            const y=yScale(bin.value)
-            const x1=xScale(Math.max(bin.count,Number.isFinite(bottomDomain[0])?bottomDomain[0]:0))
-            if(!Number.isFinite(y)||!Number.isFinite(x1)) continue
-            layer.append("rect")
-                .attr("class","trim-bar")
-                .attr("x",Math.min(x0,x1))
-                .attr("y",y-thickness/2)
-                .attr("width",Math.max(1,Math.abs(x1-x0)))
-                .attr("height",Math.max(2,thickness))
-                .attr("fill","#4a90d9")
-                .style("pointer-events","none")
+        //One shared gradient in USER space, not per-bar: an objectBoundingBox
+        //gradient would restart on every rectangle, so a short bar would come
+        //out fully bright while a long one showed the whole ramp. In user space
+        //the ramp is anchored to the plot, and every bar reads the same way -
+        //faint where it leaves the axis, bright green at its tip.
+        //An id per SVG, taken from the element itself: Node carries no id of its
+        //own, and a shared gradient id would make the first trimmer win for both.
+        //d3's append() on an EMPTY selection creates nothing, so a <defs> that
+        //does not exist yet must be appended first. Without this the gradient is
+        //never created and fill="url(#...)" dangles: SVG then refuses to paint
+        //the rect at all, which reads as "no bars".
+        let defs=anchor.select("defs")
+        if(defs.empty()) defs=anchor.append("defs")
+        const gradId=`trim-bar-gradient-${graph.graphSVG.attr("id")}`
+        //Bar fill: full green at the tip, fully TRANSPARENT at the axis.
+        //
+        //objectBoundingBox, not userSpaceOnUse: the ramp must run across EACH
+        //bar's own width. In user space it spans the whole plot, so every bar
+        //shows only the slice it happens to cover - a short one comes out a flat
+        //mid-green, and the colour stops meaning anything.
+        //
+        //Transparent rather than black at the axis: opaque black paints over the
+        //background instead of letting it show through.
+        let grad=defs.select(`#${gradId}`)
+        if(grad.empty()){
+            grad=defs.append("linearGradient")
+                .attr("id",gradId)
+                .attr("x1","0%").attr("x2","100%").attr("y1","0%").attr("y2","0%")
+            //transparent over the first 80% of EACH bar, green only in the last
+            //20%. objectBoundingBox units, so the ramp follows every bar's own
+            //width instead of spanning the plot - in user space a short bar would
+            //only show the slice it happens to cover, as a flat mid-green
+            grad.append("stop").attr("offset","0%").attr("stop-color","#00ff41").attr("stop-opacity",0)
+            grad.append("stop").attr("offset","80%").attr("stop-color","#00ff41").attr("stop-opacity",0.5)
+            grad.append("stop").attr("offset","100%").attr("stop-color","#00ff41").attr("stop-opacity",1)
         }
-        for(const [key,color] of [["lowBound","#e67e22"],["highBound","#2ecc71"]]){
+        //Data join keyed on the bin INDEX: the rects are reused and only their
+        //geometry is rewritten, so a repaint never destroys the painted set. The
+        //exit selection is what removes bins that the new histogram no longer has.
+        const floor=Number.isFinite(bottomDomain[0])?bottomDomain[0]:0
+        const drawable=bins.map((bin,index)=>{
+            //on a log count axis an empty bin has nowhere to go
+            if(bin.count<=0&&this.parameters.logY) return null
+            const y=yScale(bin.value)
+            const x1=xScale(Math.max(bin.count,floor))
+            if(!Number.isFinite(y)||!Number.isFinite(x1)) return null
+            return {index,bin,y,x1}
+        }).filter(Boolean)
+        barLayer.selectAll("rect.trim-bar")
+            .data(drawable,d=>d.index)
+            .join(
+                enter=>enter.append("rect")
+                    .attr("class","trim-bar")
+                    .attr("fill",`url(#${gradId})`)
+                    //no stroke: on a bar that fades to transparent the outline stays
+                    //opaque, so empty bins would show up as a grid of thin
+                    //rectangles and the fade would read as a boxed cell
+                    .attr("stroke","none")
+                    .style("pointer-events","none"),
+                update=>update,
+                exit=>exit.remove()
+            )
+            .attr("x",d=>Math.min(x0,d.x1))
+            .attr("y",d=>d.y-thickness/2)
+            .attr("width",d=>Math.max(1,Math.abs(d.x1-x0)))
+            .attr("height",Math.max(2,thickness))
+        for(const [key,color] of CURSOR_COLORS){
             const value=this.parameters[key]
             if(!Number.isFinite(value)) continue
             //a value bound is a HORIZONTAL line: X is the count axis and Y the
             //value axis, so the bound cuts the bars at their own value
             const y=yScale(value)
             if(!Number.isFinite(y)) continue
-            const group=layer.append("g")
+            const group=cursorLayer.append("g")
                 .attr("class",`trim-cursor trim-cursor-${key}`)
                 .style("cursor","ns-resize")
             group.append("title").text(key==="lowBound"?"Lower bound — drag to move":"Upper bound — drag to move")
             group.append("line")
                 .attr("x1",0).attr("x2",zone.width).attr("y1",y).attr("y2",y)
-                .attr("stroke",color).attr("stroke-width",2)
+                .attr("stroke",color).attr("stroke-width",TRIM_CURSOR_STROKE)
             //the field rides its own line: the control sits where it applies
             const field=document.createElement("input")
             field.type="number"
@@ -1302,15 +1371,21 @@ class TrimmerNode extends NodeWithAccordion{
             //wider than 5.5em: values reach 100000 and carry decimals, and the
             //native spin buttons are pure noise here (you never nudge a
             //threshold by one, you drag the cursor or type it)
-            field.style.cssText="width:88px;box-sizing:border-box;padding:1px 4px;font-size:0.8em;-moz-appearance:textfield;appearance:textfield"
+            field.style.cssText=`width:100px;box-sizing:border-box;padding:3px 6px;font-size:${TRIM_CURSOR_FIELD_FONT};font-weight:600;-moz-appearance:textfield;appearance:textfield;background:rgba(12,16,22,.82);color:${color};border:1px solid ${color};border-radius:4px`
             field.addEventListener("change",()=>{
                 const parsed=parseFloat(field.value)
                 if(!Number.isFinite(parsed)){field.value=String(value);return}
                 this.setTrimBound(key,parsed)
             })
+            //The box must be LARGER than the input it hosts. A foreignObject clips
+            //its content, so an input wider or taller than the frame is simply
+            //cut off - which is what a 92x20 frame around a 96px field at 0.95em
+            //produced. Both numbers derive from the field, so they cannot drift.
+            const fieldWidth=104
+            const fieldHeight=26
             group.append("foreignObject")
-                .attr("x",zone.width*0.5-46).attr("y",y-10)
-                .attr("width",92).attr("height",20)
+                .attr("x",zone.width*0.5-fieldWidth/2).attr("y",y-fieldHeight/2)
+                .attr("width",fieldWidth).attr("height",fieldHeight)
                 .append(()=>field)
         }
     }
@@ -1446,11 +1521,11 @@ class TrimmerNode extends NodeWithAccordion{
         window.addEventListener("pointermove",onMove)
         window.addEventListener("pointerup",onUp)
     }
+    //Hover highlighting is parked, not deleted: the bin-snapping logic below is
+    //the right place to hang a proper readout, and the pointer handlers are
+    //still wired. Re-enable by giving setTrimHover a body.
     setTrimHover(index){
-        const layer=this.graph?.graphSVG?.select(".trim-layer")
-        if(!layer||layer.empty()) return
-        layer.selectAll(".trim-bar")
-            .attr("fill",(binIndex)=>binIndex===index?"#f1c40f":"#4a90d9")
+        void index
     }
     handleTrimHover(event){
         const graph=this.graph
@@ -3582,6 +3657,10 @@ const PAN_DBLCLICK_GUARD=350
 const AXIS_POSITION_LIMIT=3
 
 class Plot2D{
+    //every plot gets a unique SVG id: references such as url(#gradient) are
+    //resolved document-wide, so two plots sharing one id would make the first
+    //definition win for both
+    static instanceCounter=0
     constructor(data,title,origin,destination){
         this.title=title
         this.data=data
@@ -4327,6 +4406,9 @@ class Plot2D{
                     .attr("width",this.container.clientWidth)
                     .attr("height",this.container.clientHeight)
                     .attr("class","main")
+                    //a real id: SVG references (gradients, clip paths) are
+                    //document-wide, so two plots must not answer to the same one
+                    .attr("id",`plot2d-${++Plot2D.instanceCounter}`)
             this.graphSVG.append("g")
                     .attr("transform",`translate(${this.parameters.margins.left},${this.parameters.margins.top})`)
                     .attr('class',"anchor")
