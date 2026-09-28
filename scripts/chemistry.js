@@ -351,7 +351,7 @@ class Formula{
         if(trailing) terms.unshift(trailing>0?`+${trailing}`:`${trailing}`)
         if(terms.length===0) return new Formula({composition,ionisation:[],rule})
         //chaque crochet est un terme; les charges s'additionnent
-        const ionisation=terms.map(t=>Formula.parseIonisation(t,table).ionisation)
+        const ionisation=terms.map(t=>Formula.parseIonisation(t,table,rule).ionisation)
         /* Les coefficients sont DÉJÀ signés dans la Map: parseComposition a lu
            "H-1" comme un coefficient -1. Il n'y a donc plus de "remove" à
            décider ici — c'est la composition qui dit quoi faire, et elle le
@@ -404,6 +404,23 @@ class Formula{
        C'est ce qui sépare une charge d'un coefficient: dans "-2H" le 2 est
        suivi de H, donc c'est un coefficient; dans "-2" il ne l'est pas, donc
        c'est la charge. Sans cette question, les deux se ressemblent. */
+    /* Y a-t-il un ÉLÉMENT juste AVANT cette position du fragment ?
+
+       C'est le symétrique de hasElementAfter, et c'est lui qui distingue
+       "C6H12O6-2" (une charge) de "H2O-1" (le -1 est le coefficient du O).
+       Dans les deux cas le nombre est nu et suivi d'aucune lettre, donc seul
+       ce qu'il y a avant permet de trancher. */
+    /* Y a-t-il un ÉLÉMENT juste avant cette position, en ignorant les signes
+       et les chiffres qui pourraient être entre lui et nous ?
+
+       C'est ce qui décide si un "-" collé à un symbole est un COEFFICIENT ou
+       une charge. Sur "H-1", le slice finit par "1", il faut donc reculer
+       par-dessus le nombre et le trait d'union pour trouver le H. */
+    static elementBefore(raw,from){
+        const before=raw.slice(0,from).replace(/[+-]?\d*$/,"")
+        return /[A-Za-z][A-Za-z]?$/.exec(before)?.[0]??null
+    }
+
     static hasElementAfter(raw,from){
         return /[A-Za-z]/.test(raw.slice(from))
     }
@@ -473,6 +490,9 @@ class Formula{
             let sign=1
             //un signe ÉCRIT change la lecture du nombre qui le suit
             let signed=false
+            //où se trouvait ce signe: c'est là qu'il faut regarder pour savoir
+            //s'il touche un élément
+            let signAt=-1
             while(i<raw.length){
                 //un signe en attente, juste avant le terme qu'il qualifie
                 if(raw[i]==="+"||raw[i]==="-"){
@@ -489,27 +509,54 @@ class Formula{
                     }
                     sign=raw[i]==="-"?-1:1
                     signed=true
+                    signAt=i
                     i++
                     continue
                 }
-                /* Un nombre NU entre deux signes, ou après un signe qui ne
-                   qualifie rien: c'est la MAGNITUDE de la charge. "-2" veut
-                   dire charge -2, et non un coefficient de 2 — il n'y a aucun
-                   élément derrière. On l'accumule à part, et il ne sera lu
-                   comme coefficient que s'il est suivi d'un élément. */
+                /* Un nombre nu après un signe. Deux lectures, et c'est le SIGNE
+                   qui tranche — parce qu'il n'est pas symétrique, c'est
+                   chimique: le "+" d'un compte s'omet, le "-" ne s'omet pas.
+
+                     H-1     le - touche H  → 1 H en moins
+                     H2-1    le 2 est déjà le compte de H, le - est nu → charge
+                     -1      le signe est seul → charge -1
+
+                   Donc un "-" collé à un symbole prend TOUJOURS le nombre qui
+                   le suit, et un "+" ne le prend jamais. */
                 if(/[0-9]/.test(raw[i])){
                     const digits=/^\d+/.exec(raw.slice(i))
-                    if(signed&&!Formula.hasElementAfter(raw,i+digits[0].length)){
-                        /* Le nombre nu est la MAGNITUDE, pas un coefficient:
-                           le terme reste sans élément, donc le signe qui le
-                           précédait ne peut pas le qualifier — il ne fait que
-                           dire le sens. "-2" est donc une charge -2, et non
-                           deux atomes de signe négatif. */
+                    const afterDigits=i+digits[0].length
+                    /* On regarde AVANT LE SIGNE, pas avant le nombre: le trait
+                       d'union est entre les deux, et c'est lui qui décide. */
+                    const symbol=Formula.elementBefore(raw,signAt)
+                    /* Un "-" collé à un symbole est un COEFFICIENT: le nombre
+                       qui le suit est le compte de ce symbole, et le symbole a
+                       DÉJÀ été compté par la segmentation. Il ne faut donc pas
+                       l'ajouter une seconde fois — seulement corriger le compte
+                       de ce qu'on a déjà mis.
+
+                       "H-1": le H a été ajouté avec +1, on le ramène à -1. */
+                    if(signed&&symbol&&sign===-1){
+                        const el=table.find(symbol)
+                        if(!el) throw new Error(`unknown element "${symbol}" in "${raw}"`)
+                        /* on corrige ce qui a DÉJÀ été compté, A par A. La Map est
+                           Map<Element, Map<A,count>>, donc deux niveaux. */
+                        const byA=composition.get(el)??new Map()
+                        for(const [,counts] of Formula.parseComposition(symbol,table,rule))
+                            for(const [A,n] of counts)
+                                byA.set(A,(byA.get(A)??0)-n*Number(digits[0]))
+                        composition.set(el,byA)
+                        signed=false
+                        sign=1
+                        i=afterDigits
+                        continue
+                    }
+                    if(signed&&!Formula.hasElementAfter(raw,afterDigits)){
                         trailingSign+=sign
                         trailingMagnitude=Number(digits[0])
                         signed=false
                         sign=1
-                        i+=digits[0].length
+                        i=afterDigits
                         continue
                     }
                 }
@@ -605,26 +652,55 @@ class Formula{
             massNumber:null,name:"",atomCount:s.length,
             charge:repeated[1]==="+"?s.length:-s.length,
         }
-        /* Un terme se lit comme le core, avec UNE différence: un signe NU en
-           fin de terme est la CHARGE, même si des atomes le précèdent.
+        /* Les PARENTHÈSES d'abord, avant toute autre lecture. "(2H)+2" est un
+           GROUPE — un deutérium, le 2 est son A — suivi d'une charge. Sans ce
+           test, le "+2" serait pris pour un second terme et le groupe serait
+           lu deux fois. Un groupe se distingue parce qu'il est fermé: rien
+           après ne lui appartient. */
+        if(s.includes("(")){
+            const close=Formula.matchParen(s,0)
+            const head=s.slice(0,close+1)
+            const rest=s.slice(close+1).trim()
+            const charge=Formula.readChargeOnly(rest,text)
+            return {massNumber:null,name:head,atomCount:1,isComposition:true,charge}
+        }
+        /* Un signe en FIN de terme, c'est la CHARGE — sauf si un nombre lui
+           est déjà affecté par un symbole. Un nombre se rattache au symbole
+           qu'il SUIT, et un signe qui n'a plus rien à qualifier est une
+           charge. Il n'y a donc qu'une seule règle, valable partout:
 
-             [H+]     un H ajouté, puis charge +1   ← le + ne qualifie rien
-             [H-1]    un H retiré                     ← le -1 est un compte
-             [2H+1]   un deutérium, puis charge +1
+             C6H12O6-1    le -1 est nu après O6      → charge -1
+             [H-1]        le -1 est collé au H      → 1 H en moins
+             [H+1]        le + collé au H, le 1 nu → +1 H, puis charge +1
+             [H-1+]       -1 collé, le + nu ensuite → 1 H en moins, charge +1
+             [H2-1]       le 2 est le compte de H   → 2 H, puis charge -1
 
-           C'est la même règle que dans le core, où "C6H12O6 H2-" se lit
-           C6H14O6 charge -1. La différence ne porte donc sur rien. */
-        const trailing=/([+-])\s*$/.exec(s)
+           Pour retirer un groupe entier, il faut des parenthèses: "[-(H2O)]". */
+        const trailing=/([+-])\s*(\d*)\s*$/.exec(s)
         if(trailing){
             const head=s.slice(0,trailing.index).trim()
-            if(!head) return {
-                massNumber:null,name:"",atomCount:1,
-                charge:trailing[1]==="+"?1:-1,
+            /* Un nombre APRÈS le signe n'est la magnitude que si le signe ne
+               touche pas un symbole. "H-1" a un H juste avant: le -1 est son
+               compte, et le crochet n'a pas de charge. "H2-1" a un compte
+               DÉJÀ pris, donc le signe final reste nu et c'est la charge.
+
+               C'est ce booléen qui fait toute la différence entre "un H
+               retiré" et "un ion chargé", et il ne dépend ni du core ni du
+               crochet. */
+            const signTouchesSymbol=Formula.elementBefore(s,trailing.index)!=null
+            /* ...et si un NOMBRE précède déjà ce signe, ce nombre est le
+               compte du symbole, et le signe reste nu: "H2-1" est 2 H puis
+               une charge -1, alors que "H-1" est un compte de -1. */
+            const countAlreadyTaken=/\d$/.test(head)
+            const magnitude=Number(trailing[2]||"1")
+            if(magnitude===0) throw new Error(`"${text}" has a charge of zero`)
+            if(signTouchesSymbol&&trailing[1]==="-"&&!countAlreadyTaken){
+                //le -1 est un compte du symbole: on rend tout à la grammaire
+                return {massNumber:null,name:s,atomCount:1,charge:0,isComposition:true}
             }
-            return {
-                massNumber:null,name:head,atomCount:1,isComposition:true,
-                charge:trailing[1]==="+"?1:-1,
-            }
+            const charge=trailing[1]==="+"?magnitude:-magnitude
+            if(!head) return {massNumber:null,name:"",atomCount:1,charge}
+            return {massNumber:null,name:head,atomCount:1,isComposition:true,charge}
         }
         /* Un nombre SEUL, avec ou sans signe, est une CHARGE: "[2]", "[+2]",
            "[-2]". Il n'y a aucun élément derrière, donc le signe ne qualifie
@@ -640,8 +716,22 @@ class Formula{
             }
         }
         /* Sinon il n'y a que des ATOMES, signes compris: "[H-1]" est un H
-           retiré, "[CH4O-1]" du méthanol retiré. La charge est 0. */
+           retiré, "[CH4O-1]" du méthanol retiré, "[+2H]" deux H ajoutés. Un
+           nombre APRÈS le symbole est toujours un compte — et il est négatif
+           s'il est signé. C'est donc parseComposition qui le lit, et elle le
+           fait déjà correctement. */
         return {massNumber:null,name:s,atomCount:1,charge:0,isComposition:true}
+    }
+
+    /* La charge d'un terme, et rien d'autre. "2" → 2, "+2" → 2, "-2" → -2,
+       "" → 0. Un terme sans rien derrière un groupe n'est pas neutre par
+       hasard: c'est qu'aucun signe n'a été écrit. */
+    static readChargeOnly(text,original){
+        const m=/^([+-])\s*(\d*)$/.exec(text.trim())
+        if(!m) return 0
+        const magnitude=Number(m[2]||"1")
+        if(magnitude===0) throw new Error(`"${original}" has a charge of zero`)
+        return m[1]==="+"?magnitude:-magnitude
     }
 
     /* Résout un descripteur en terme d'ionisation, sans table.
@@ -663,17 +753,17 @@ class Formula{
             index:-1,group:null,count:atomCount,charge,
             name:`${charge>0?"+":"-"}${Math.abs(charge)}`,
         }
-        /* Des atomes: on délègue à parseComposition, sans rien d'autre. C'est
-           le même chemin que le core, donc "H-2O-1" se lit exactement comme
-           dans "C6H12O6-H-2O-1" — une seule grammaire, une seule fonction. */
+        /* Des atomes: on délègue à parseComposition, sans rien d'autre. C'est le
+           MÊME chemin que le core — c'est tout l'intérêt, un adduit n'est pas
+           une autre grammaire, c'est la même appliquée à un groupe. */
         const group=Formula.parseComposition(name,table,rule)
         return {index:-1,group,count:1,charge,name}
     }
 
     //"[2H+]", "[H-]", "[Na+]", "[2+]", "[3-]", "[]" -> {ionisation, count, known}
-    static parseIonisation(text,table){
+    static parseIonisation(text,table,rule="mostProbable"){
         const desc=Formula.readIonisation(text)
-        const ionisation=Formula.resolveIonisation(desc,table)
+        const ionisation=Formula.resolveIonisation(desc,table,rule)
         return {ionisation,count:ionisation.count,known:ionisation.known}
     }
 
@@ -1429,6 +1519,54 @@ test("++ et +2 sont la même charge",()=>{
         if(keys.some(k=>k!==keys[0]))
             throw new Error(`${a} / ${b} / ${c} -> ${keys.join(" | ")}`)
     }
+})
+const MESURE=[
+    //vos quatre cas
+    "C6H12O6[H-1]","C6H12O6[H+1]","C6H12O6[H-1+]","C6H12O6[H2-1]",
+    //+ omis après un symbole: un compte, jamais une charge
+    "C6H12O6[H1]","C6H12O6[H2]","C6H12O6[H-1-]","C6H12O6[H-1-1]",
+    "C6H12O6[H-2+2]","C6H12O6[-H+1]","C6H12O6[H1+1]","C6H12O6[2H]",
+]
+for(const t of ["C6H12O6[H-1]","C6H12O6[H+1]","C6H12O6[H-1+]","C6H12O6[H2-1]",
+               "C6H12O6[H-1-]","C6H12O6[-H+1]","C6H12O6-1","C6H12O6-2",
+               "C6H12O6[2H]","C6H12O6[(2H)+2]","C6H12O6[+2H+2]","C6H12O6[-(H2O)]"]){
+    const f=Formula.parse(t,TABLE)
+    const c=[...f.composition].map(([el,byA])=>
+        `${el.symbol}{${[...byA].map(([A,n])=>`${A}:${n}`).join(",")}}`).join(" ")
+    console.log(`  ${t.padEnd(20)} ${c.padEnd(30)} charge=${f.charge}`)
+}
+test("les quatre écritures que vous avez dictées",()=>{
+    /* La règle qui les gouverne toutes: un NOMBRE prend le signe de ce qui le
+       précède, et le signe qui reste NU est la charge. Le + n'est jamais un
+       compte après un symbole — il est omis — donc un + final est toujours
+       une charge; un - collé est un compte, et il faut un autre signe pour
+       écrire la charge. */
+    const cases=[
+        //texte           C6  H    charge
+        ["C6H12O6[H-1]",   6, 11,  0],   // -1 est le compte de H
+        ["C6H12O6[H+1]",   6, 13, +1],   // le +1 restant est la charge
+        ["C6H12O6[H-1+]",  6, 11, +1],   // compte -1, puis charge +
+        ["C6H12O6[H2-1]",  6, 14, -1],   // 2 H, puis charge -
+    ]
+    for(const [text,c,hyd,hcharge] of cases){
+        const f=Formula.parse(text,TABLE)
+        if(f.counts.get(TABLE.find("C"))!==c) throw new Error(`${text} -> C`)
+        if(f.counts.get(TABLE.find("H"))!==hyd)
+            throw new Error(`${text} -> H is ${f.counts.get(TABLE.find("H"))}, expected ${hyd}`)
+        if(f.charge!==hcharge) throw new Error(`${text} -> charge ${f.charge}, expected ${hcharge}`)
+        /* et la FORMULE elle-même, pas seulement la charge: c'est là que
+           j'ai écrit un "-" pour un "+" sans que rien ne le dise. */
+        const protons=f.counts.get(TABLE.find("H"))-(f.composition.get(TABLE.find("H"))?.get(2)??0)*0
+        if(protons<0) throw new Error(`${text} -> impossible hydrogen count`)
+    }
+})
+test("un CORE garde sa charge: c'est ce qui distingue les deux contextes",()=>{
+    /* Le contre-test. "C6H12O6 -1" reste une charge -1, alors que dans
+       "[H2O-1]" le -1 est un coefficient. C'est le core qui a des
+       électrons à donner; un adduit, non. */
+    const charge=Formula.parse("C6H12O6-1",TABLE)
+    if(charge.charge!==-1) throw new Error(`charge ${charge.charge}, expected -1`)
+    if(charge.counts.get(TABLE.find("H"))!==12) throw new Error("H should be 12")
 })
 test("il n'y a plus de e+ ni e-: une charge seule EST un électron",()=>{
     /* On ne PERD rien en supprimant ces deux entrées: "[+]" était déjà l'anion
