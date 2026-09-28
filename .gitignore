@@ -1,0 +1,3 @@
+# the cached NIST pages: a rebuild never re-downloads, and the parse can be
+# checked offline. Regenerate with: powershell -File TOOLS/fetch-nist.ps1
+.cache/

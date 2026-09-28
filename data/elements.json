@@ -1,0 +1,3740 @@
+{
+ "schema": 1,
+ "generatedBy": "TOOLS/build-elements.mjs",
+ "source": {
+  "name": "NIST Atomic Weights and Isotopic Compositions",
+  "url": "https://physics.nist.gov/cgi-bin/Compositions/",
+  "note": "NIST compiles the IUPAC/CIAAW recommended values."
+ },
+ "electronMass": {
+  "value": 0.000548579909065,
+  "uncertainty": 6.5e-13,
+  "unit": "u",
+  "source": "CODATA 2018"
+ },
+ "valenceSource": "hand-set conventions, NOT from the source above",
+ "elements": [
+  {
+   "Z": 1,
+   "symbol": "H",
+   "name": "Hydrogen",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 1.00782503223,
+   "averageMass": 1.0079407540557772,
+   "isotopes": [
+    {
+     "A": 1,
+     "mass": 1.00782503223,
+     "massUncertainty": 9e-11,
+     "abundance": 0.999885,
+     "abundanceUncertainty": 7e-8
+    },
+    {
+     "A": 2,
+     "mass": 2.01410177812,
+     "massUncertainty": 1.2e-10,
+     "abundance": 0.000115,
+     "abundanceUncertainty": 7e-8
+    }
+   ]
+  },
+  {
+   "Z": 2,
+   "symbol": "He",
+   "name": "Helium",
+   "valences": null,
+   "monoisotopicMass": 3.0160293201,
+   "averageMass": 4.002601932120929,
+   "isotopes": [
+    {
+     "A": 3,
+     "mass": 3.0160293201,
+     "massUncertainty": 2.5e-9,
+     "abundance": 0.00000134,
+     "abundanceUncertainty": 3e-11
+    },
+    {
+     "A": 4,
+     "mass": 4.00260325413,
+     "massUncertainty": 6e-11,
+     "abundance": 0.99999866,
+     "abundanceUncertainty": 3e-11
+    }
+   ]
+  },
+  {
+   "Z": 3,
+   "symbol": "Li",
+   "name": "Lithium",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 6.0151228874,
+   "averageMass": 6.94003660291572,
+   "isotopes": [
+    {
+     "A": 6,
+     "mass": 6.0151228874,
+     "massUncertainty": 1.6e-9,
+     "abundance": 0.0759,
+     "abundanceUncertainty": 0.00004
+    },
+    {
+     "A": 7,
+     "mass": 7.0160034366,
+     "massUncertainty": 4.5e-9,
+     "abundance": 0.9241,
+     "abundanceUncertainty": 0.00004
+    }
+   ]
+  },
+  {
+   "Z": 4,
+   "symbol": "Be",
+   "name": "Beryllium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 9.012183065,
+   "averageMass": 9.012183065,
+   "isotopes": [
+    {
+     "A": 9,
+     "mass": 9.012183065,
+     "massUncertainty": 8.2e-8,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 5,
+   "symbol": "B",
+   "name": "Boron",
+   "valences": {
+    "default": 3,
+    "all": [
+     3
+    ]
+   },
+   "monoisotopicMass": 10.01293695,
+   "averageMass": 10.811028046410001,
+   "isotopes": [
+    {
+     "A": 10,
+     "mass": 10.01293695,
+     "massUncertainty": 4.1e-7,
+     "abundance": 0.199,
+     "abundanceUncertainty": 0.0007
+    },
+    {
+     "A": 11,
+     "mass": 11.00930536,
+     "massUncertainty": 4.5000000000000003e-7,
+     "abundance": 0.801,
+     "abundanceUncertainty": 0.0007
+    }
+   ]
+  },
+  {
+   "Z": 6,
+   "symbol": "C",
+   "name": "Carbon",
+   "valences": {
+    "default": 4,
+    "all": [
+     4
+    ]
+   },
+   "monoisotopicMass": 12,
+   "averageMass": 12.010735896735248,
+   "isotopes": [
+    {
+     "A": 12,
+     "mass": 12,
+     "massUncertainty": 0,
+     "abundance": 0.9893,
+     "abundanceUncertainty": 0.00008
+    },
+    {
+     "A": 13,
+     "mass": 13.00335483507,
+     "massUncertainty": 2.2999999999999998e-10,
+     "abundance": 0.0107,
+     "abundanceUncertainty": 0.00008
+    }
+   ]
+  },
+  {
+   "Z": 7,
+   "symbol": "N",
+   "name": "Nitrogen",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     5
+    ]
+   },
+   "monoisotopicMass": 14.00307400443,
+   "averageMass": 14.006703211445798,
+   "isotopes": [
+    {
+     "A": 14,
+     "mass": 14.00307400443,
+     "massUncertainty": 1.9999999999999998e-10,
+     "abundance": 0.99636,
+     "abundanceUncertainty": 2e-7
+    },
+    {
+     "A": 15,
+     "mass": 15.00010889888,
+     "massUncertainty": 6.4e-10,
+     "abundance": 0.00364,
+     "abundanceUncertainty": 2e-7
+    }
+   ]
+  },
+  {
+   "Z": 8,
+   "symbol": "O",
+   "name": "Oxygen",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 15.99491461957,
+   "averageMass": 15.999404924318277,
+   "isotopes": [
+    {
+     "A": 16,
+     "mass": 15.99491461957,
+     "massUncertainty": 1.6999999999999998e-10,
+     "abundance": 0.99757,
+     "abundanceUncertainty": 1.6e-7
+    },
+    {
+     "A": 17,
+     "mass": 16.9991317565,
+     "massUncertainty": 6.9e-10,
+     "abundance": 0.00038,
+     "abundanceUncertainty": 1e-7
+    },
+    {
+     "A": 18,
+     "mass": 17.99915961286,
+     "massUncertainty": 7.6e-10,
+     "abundance": 0.00205,
+     "abundanceUncertainty": 1.4e-7
+    }
+   ]
+  },
+  {
+   "Z": 9,
+   "symbol": "F",
+   "name": "Fluorine",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 18.99840316273,
+   "averageMass": 18.99840316273,
+   "isotopes": [
+    {
+     "A": 19,
+     "mass": 18.99840316273,
+     "massUncertainty": 9.199999999999999e-10,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 10,
+   "symbol": "Ne",
+   "name": "Neon",
+   "valences": null,
+   "monoisotopicMass": 19.9924401762,
+   "averageMass": 20.18004638052026,
+   "isotopes": [
+    {
+     "A": 20,
+     "mass": 19.9924401762,
+     "massUncertainty": 1.7000000000000001e-9,
+     "abundance": 0.9048,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 21,
+     "mass": 20.993846685,
+     "massUncertainty": 4.1e-8,
+     "abundance": 0.0027,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 22,
+     "mass": 21.991385114,
+     "massUncertainty": 1.8000000000000002e-8,
+     "abundance": 0.0925,
+     "abundanceUncertainty": 0.00003
+    }
+   ]
+  },
+  {
+   "Z": 11,
+   "symbol": "Na",
+   "name": "Sodium",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 22.989769282,
+   "averageMass": 22.989769282,
+   "isotopes": [
+    {
+     "A": 23,
+     "mass": 22.989769282,
+     "massUncertainty": 1.9e-9,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 12,
+   "symbol": "Mg",
+   "name": "Magnesium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 23.985041697,
+   "averageMass": 24.3050516198371,
+   "isotopes": [
+    {
+     "A": 24,
+     "mass": 23.985041697,
+     "massUncertainty": 1.4000000000000001e-8,
+     "abundance": 0.7899,
+     "abundanceUncertainty": 0.00004
+    },
+    {
+     "A": 25,
+     "mass": 24.985836976,
+     "massUncertainty": 5.0000000000000004e-8,
+     "abundance": 0.1,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 26,
+     "mass": 25.982592968,
+     "massUncertainty": 3.1e-8,
+     "abundance": 0.1101,
+     "abundanceUncertainty": 0.00003
+    }
+   ]
+  },
+  {
+   "Z": 13,
+   "symbol": "Al",
+   "name": "Aluminium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3
+    ]
+   },
+   "monoisotopicMass": 26.98153853,
+   "averageMass": 26.98153853,
+   "isotopes": [
+    {
+     "A": 27,
+     "mass": 26.98153853,
+     "massUncertainty": 1.1e-7,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 14,
+   "symbol": "Si",
+   "name": "Silicon",
+   "valences": {
+    "default": 4,
+    "all": [
+     4
+    ]
+   },
+   "monoisotopicMass": 27.97692653465,
+   "averageMass": 28.08549870570596,
+   "isotopes": [
+    {
+     "A": 28,
+     "mass": 27.97692653465,
+     "massUncertainty": 4.4e-10,
+     "abundance": 0.92223,
+     "abundanceUncertainty": 1.9e-7
+    },
+    {
+     "A": 29,
+     "mass": 28.9764946649,
+     "massUncertainty": 5.2e-10,
+     "abundance": 0.04685,
+     "abundanceUncertainty": 8e-7
+    },
+    {
+     "A": 30,
+     "mass": 29.973770136,
+     "massUncertainty": 2.3e-8,
+     "abundance": 0.03092,
+     "abundanceUncertainty": 1.1e-7
+    }
+   ]
+  },
+  {
+   "Z": 15,
+   "symbol": "P",
+   "name": "Phosphorus",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     5
+    ]
+   },
+   "monoisotopicMass": 30.97376199842,
+   "averageMass": 30.97376199842,
+   "isotopes": [
+    {
+     "A": 31,
+     "mass": 30.97376199842,
+     "massUncertainty": 7e-10,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 16,
+   "symbol": "S",
+   "name": "Sulfur",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     4,
+     6
+    ]
+   },
+   "monoisotopicMass": 31.9720711744,
+   "averageMass": 32.06478740612707,
+   "isotopes": [
+    {
+     "A": 32,
+     "mass": 31.9720711744,
+     "massUncertainty": 1.4000000000000001e-9,
+     "abundance": 0.9499,
+     "abundanceUncertainty": 0.000026
+    },
+    {
+     "A": 33,
+     "mass": 32.9714589098,
+     "massUncertainty": 1.5e-9,
+     "abundance": 0.0075,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 34,
+     "mass": 33.967867004,
+     "massUncertainty": 4.7000000000000004e-8,
+     "abundance": 0.0425,
+     "abundanceUncertainty": 0.000024
+    },
+    {
+     "A": 36,
+     "mass": 35.96708071,
+     "massUncertainty": 2e-7,
+     "abundance": 0.0001,
+     "abundanceUncertainty": 0.00001
+    }
+   ]
+  },
+  {
+   "Z": 17,
+   "symbol": "Cl",
+   "name": "Chlorine",
+   "valences": {
+    "default": 1,
+    "all": [
+     1,
+     3,
+     5,
+     7
+    ]
+   },
+   "monoisotopicMass": 34.968852682,
+   "averageMass": 35.452937582608,
+   "isotopes": [
+    {
+     "A": 35,
+     "mass": 34.968852682,
+     "massUncertainty": 3.7e-8,
+     "abundance": 0.7576,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 37,
+     "mass": 36.965902602,
+     "massUncertainty": 5.5e-8,
+     "abundance": 0.2424,
+     "abundanceUncertainty": 0.00001
+    }
+   ]
+  },
+  {
+   "Z": 18,
+   "symbol": "Ar",
+   "name": "Argon",
+   "valences": null,
+   "monoisotopicMass": 35.967545105,
+   "averageMass": 39.947798563582005,
+   "isotopes": [
+    {
+     "A": 36,
+     "mass": 35.967545105,
+     "massUncertainty": 2.8000000000000003e-8,
+     "abundance": 0.003336,
+     "abundanceUncertainty": 2.1e-8
+    },
+    {
+     "A": 38,
+     "mass": 37.96273211,
+     "massUncertainty": 2.1e-7,
+     "abundance": 0.000629,
+     "abundanceUncertainty": 7e-8
+    },
+    {
+     "A": 40,
+     "mass": 39.9623831237,
+     "massUncertainty": 2.4e-9,
+     "abundance": 0.996035,
+     "abundanceUncertainty": 2.5e-8
+    }
+   ]
+  },
+  {
+   "Z": 19,
+   "symbol": "K",
+   "name": "Potassium",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 38.9637064864,
+   "averageMass": 39.098300910086,
+   "isotopes": [
+    {
+     "A": 39,
+     "mass": 38.9637064864,
+     "massUncertainty": 4.9e-9,
+     "abundance": 0.932581,
+     "abundanceUncertainty": 4.4e-8
+    },
+    {
+     "A": 40,
+     "mass": 39.963998166,
+     "massUncertainty": 6.000000000000001e-8,
+     "abundance": 0.000117,
+     "abundanceUncertainty": 1e-8
+    },
+    {
+     "A": 41,
+     "mass": 40.9618252579,
+     "massUncertainty": 4.1e-9,
+     "abundance": 0.067302,
+     "abundanceUncertainty": 4.4e-8
+    }
+   ]
+  },
+  {
+   "Z": 20,
+   "symbol": "Ca",
+   "name": "Calcium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 39.962590863,
+   "averageMass": 40.078022511017735,
+   "isotopes": [
+    {
+     "A": 40,
+     "mass": 39.962590863,
+     "massUncertainty": 2.2000000000000002e-8,
+     "abundance": 0.96941,
+     "abundanceUncertainty": 1.56e-7
+    },
+    {
+     "A": 42,
+     "mass": 41.95861783,
+     "massUncertainty": 1.6e-7,
+     "abundance": 0.00647,
+     "abundanceUncertainty": 2.3e-7
+    },
+    {
+     "A": 43,
+     "mass": 42.95876644,
+     "massUncertainty": 2.4000000000000003e-7,
+     "abundance": 0.00135,
+     "abundanceUncertainty": 1e-7
+    },
+    {
+     "A": 44,
+     "mass": 43.95548156,
+     "massUncertainty": 3.5e-7,
+     "abundance": 0.02086,
+     "abundanceUncertainty": 1.1e-7
+    },
+    {
+     "A": 46,
+     "mass": 45.953689,
+     "massUncertainty": 0.0000024,
+     "abundance": 0.00004,
+     "abundanceUncertainty": 3e-7
+    },
+    {
+     "A": 48,
+     "mass": 47.95252276,
+     "massUncertainty": 1.3e-7,
+     "abundance": 0.00187,
+     "abundanceUncertainty": 2.1e-7
+    }
+   ]
+  },
+  {
+   "Z": 21,
+   "symbol": "Sc",
+   "name": "Scandium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3
+    ]
+   },
+   "monoisotopicMass": 44.95590828,
+   "averageMass": 44.95590828,
+   "isotopes": [
+    {
+     "A": 45,
+     "mass": 44.95590828,
+     "massUncertainty": 7.7e-7,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 22,
+   "symbol": "Ti",
+   "name": "Titanium",
+   "valences": {
+    "default": 4,
+    "all": [
+     4
+    ]
+   },
+   "monoisotopicMass": 45.95262772,
+   "averageMass": 47.866744962722,
+   "isotopes": [
+    {
+     "A": 46,
+     "mass": 45.95262772,
+     "massUncertainty": 3.5e-7,
+     "abundance": 0.0825,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 47,
+     "mass": 46.95175879,
+     "massUncertainty": 3.8e-7,
+     "abundance": 0.0744,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 48,
+     "mass": 47.94794198,
+     "massUncertainty": 3.8e-7,
+     "abundance": 0.7372,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 49,
+     "mass": 48.94786568,
+     "massUncertainty": 3.9e-7,
+     "abundance": 0.0541,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 50,
+     "mass": 49.94478689,
+     "massUncertainty": 3.9e-7,
+     "abundance": 0.0518,
+     "abundanceUncertainty": 0.00002
+    }
+   ]
+  },
+  {
+   "Z": 23,
+   "symbol": "V",
+   "name": "Vanadium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     5
+    ]
+   },
+   "monoisotopicMass": 49.94715601,
+   "averageMass": 50.941465037425004,
+   "isotopes": [
+    {
+     "A": 50,
+     "mass": 49.94715601,
+     "massUncertainty": 9.5e-7,
+     "abundance": 0.0025,
+     "abundanceUncertainty": 4e-7
+    },
+    {
+     "A": 51,
+     "mass": 50.94395704,
+     "massUncertainty": 9.4e-7,
+     "abundance": 0.9975,
+     "abundanceUncertainty": 4e-7
+    }
+   ]
+  },
+  {
+   "Z": 24,
+   "symbol": "Cr",
+   "name": "Chromium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     6
+    ]
+   },
+   "monoisotopicMass": 49.94604183,
+   "averageMass": 51.9961317554337,
+   "isotopes": [
+    {
+     "A": 50,
+     "mass": 49.94604183,
+     "massUncertainty": 9.4e-7,
+     "abundance": 0.04345,
+     "abundanceUncertainty": 1.3e-7
+    },
+    {
+     "A": 52,
+     "mass": 51.94050623,
+     "massUncertainty": 6.3e-7,
+     "abundance": 0.83789,
+     "abundanceUncertainty": 1.8e-7
+    },
+    {
+     "A": 53,
+     "mass": 52.94064815,
+     "massUncertainty": 6.2e-7,
+     "abundance": 0.09501,
+     "abundanceUncertainty": 1.7e-7
+    },
+    {
+     "A": 54,
+     "mass": 53.93887916,
+     "massUncertainty": 6.1e-7,
+     "abundance": 0.02365,
+     "abundanceUncertainty": 7e-7
+    }
+   ]
+  },
+  {
+   "Z": 25,
+   "symbol": "Mn",
+   "name": "Manganese",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     4,
+     7
+    ]
+   },
+   "monoisotopicMass": 54.93804391,
+   "averageMass": 54.93804391,
+   "isotopes": [
+    {
+     "A": 55,
+     "mass": 54.93804391,
+     "massUncertainty": 4.800000000000001e-7,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 26,
+   "symbol": "Fe",
+   "name": "Iron",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     3
+    ]
+   },
+   "monoisotopicMass": 53.93960899,
+   "averageMass": 55.845144433865904,
+   "isotopes": [
+    {
+     "A": 54,
+     "mass": 53.93960899,
+     "massUncertainty": 5.3e-7,
+     "abundance": 0.05845,
+     "abundanceUncertainty": 3.5e-7
+    },
+    {
+     "A": 56,
+     "mass": 55.93493633,
+     "massUncertainty": 4.9e-7,
+     "abundance": 0.91754,
+     "abundanceUncertainty": 3.6e-7
+    },
+    {
+     "A": 57,
+     "mass": 56.93539284,
+     "massUncertainty": 4.9e-7,
+     "abundance": 0.02119,
+     "abundanceUncertainty": 1e-7
+    },
+    {
+     "A": 58,
+     "mass": 57.93327443,
+     "massUncertainty": 5.3e-7,
+     "abundance": 0.00282,
+     "abundanceUncertainty": 4e-7
+    }
+   ]
+  },
+  {
+   "Z": 27,
+   "symbol": "Co",
+   "name": "Cobalt",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     3
+    ]
+   },
+   "monoisotopicMass": 58.93319429,
+   "averageMass": 58.93319429,
+   "isotopes": [
+    {
+     "A": 59,
+     "mass": 58.93319429,
+     "massUncertainty": 5.6e-7,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 28,
+   "symbol": "Ni",
+   "name": "Nickel",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 57.93534241,
+   "averageMass": 58.69334710994765,
+   "isotopes": [
+    {
+     "A": 58,
+     "mass": 57.93534241,
+     "massUncertainty": 5.2e-7,
+     "abundance": 0.68077,
+     "abundanceUncertainty": 1.9e-7
+    },
+    {
+     "A": 60,
+     "mass": 59.93078588,
+     "massUncertainty": 5.2e-7,
+     "abundance": 0.26223,
+     "abundanceUncertainty": 1.5e-7
+    },
+    {
+     "A": 61,
+     "mass": 60.93105557,
+     "massUncertainty": 5.2e-7,
+     "abundance": 0.011399,
+     "abundanceUncertainty": 1.3e-8
+    },
+    {
+     "A": 62,
+     "mass": 61.92834537,
+     "massUncertainty": 5.5e-7,
+     "abundance": 0.036346,
+     "abundanceUncertainty": 4e-8
+    },
+    {
+     "A": 64,
+     "mass": 63.92796682,
+     "massUncertainty": 5.800000000000001e-7,
+     "abundance": 0.009255,
+     "abundanceUncertainty": 1.9e-8
+    }
+   ]
+  },
+  {
+   "Z": 29,
+   "symbol": "Cu",
+   "name": "Copper",
+   "valences": {
+    "default": 1,
+    "all": [
+     1,
+     2
+    ]
+   },
+   "monoisotopicMass": 62.92959772,
+   "averageMass": 63.54603994583,
+   "isotopes": [
+    {
+     "A": 63,
+     "mass": 62.92959772,
+     "massUncertainty": 5.6e-7,
+     "abundance": 0.6915,
+     "abundanceUncertainty": 0.000015
+    },
+    {
+     "A": 65,
+     "mass": 64.9277897,
+     "massUncertainty": 7.1e-7,
+     "abundance": 0.3085,
+     "abundanceUncertainty": 0.000015
+    }
+   ]
+  },
+  {
+   "Z": 30,
+   "symbol": "Zn",
+   "name": "Zinc",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 63.92914201,
+   "averageMass": 65.37778252952499,
+   "isotopes": [
+    {
+     "A": 64,
+     "mass": 63.92914201,
+     "massUncertainty": 7.1e-7,
+     "abundance": 0.4917,
+     "abundanceUncertainty": 0.000075
+    },
+    {
+     "A": 66,
+     "mass": 65.92603381,
+     "massUncertainty": 9.4e-7,
+     "abundance": 0.2773,
+     "abundanceUncertainty": 0.000098
+    },
+    {
+     "A": 67,
+     "mass": 66.92712775,
+     "massUncertainty": 9.600000000000001e-7,
+     "abundance": 0.0404,
+     "abundanceUncertainty": 0.000016
+    },
+    {
+     "A": 68,
+     "mass": 67.92484455,
+     "massUncertainty": 9.8e-7,
+     "abundance": 0.1845,
+     "abundanceUncertainty": 0.000063
+    },
+    {
+     "A": 70,
+     "mass": 69.9253192,
+     "massUncertainty": 0.0000021,
+     "abundance": 0.0061,
+     "abundanceUncertainty": 0.00001
+    }
+   ]
+  },
+  {
+   "Z": 31,
+   "symbol": "Ga",
+   "name": "Gallium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3
+    ]
+   },
+   "monoisotopicMass": 68.9255735,
+   "averageMass": 69.7230660725936,
+   "isotopes": [
+    {
+     "A": 69,
+     "mass": 68.9255735,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.60108,
+     "abundanceUncertainty": 9e-7
+    },
+    {
+     "A": 71,
+     "mass": 70.92470258,
+     "massUncertainty": 8.7e-7,
+     "abundance": 0.39892,
+     "abundanceUncertainty": 9e-7
+    }
+   ]
+  },
+  {
+   "Z": 32,
+   "symbol": "Ge",
+   "name": "Germanium",
+   "valences": {
+    "default": 4,
+    "all": [
+     4
+    ]
+   },
+   "monoisotopicMass": 69.92424875,
+   "averageMass": 72.6275501646868,
+   "isotopes": [
+    {
+     "A": 70,
+     "mass": 69.92424875,
+     "massUncertainty": 9.000000000000001e-7,
+     "abundance": 0.2057,
+     "abundanceUncertainty": 0.000027
+    },
+    {
+     "A": 72,
+     "mass": 71.922075826,
+     "massUncertainty": 8.100000000000001e-8,
+     "abundance": 0.2745,
+     "abundanceUncertainty": 0.000032
+    },
+    {
+     "A": 73,
+     "mass": 72.923458956,
+     "massUncertainty": 6.1e-8,
+     "abundance": 0.0775,
+     "abundanceUncertainty": 0.000012
+    },
+    {
+     "A": 74,
+     "mass": 73.921177761,
+     "massUncertainty": 1.3e-8,
+     "abundance": 0.365,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 76,
+     "mass": 75.921402726,
+     "massUncertainty": 1.9e-8,
+     "abundance": 0.0773,
+     "abundanceUncertainty": 0.000012
+    }
+   ]
+  },
+  {
+   "Z": 33,
+   "symbol": "As",
+   "name": "Arsenic",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     5
+    ]
+   },
+   "monoisotopicMass": 74.92159457,
+   "averageMass": 74.92159457,
+   "isotopes": [
+    {
+     "A": 75,
+     "mass": 74.92159457,
+     "massUncertainty": 9.5e-7,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 34,
+   "symbol": "Se",
+   "name": "Selenium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     4,
+     6
+    ]
+   },
+   "monoisotopicMass": 73.922475934,
+   "averageMass": 78.95938855701361,
+   "isotopes": [
+    {
+     "A": 74,
+     "mass": 73.922475934,
+     "massUncertainty": 1.5000000000000002e-8,
+     "abundance": 0.0089,
+     "abundanceUncertainty": 0.00004
+    },
+    {
+     "A": 76,
+     "mass": 75.919213704,
+     "massUncertainty": 1.7e-8,
+     "abundance": 0.0937,
+     "abundanceUncertainty": 0.000029
+    },
+    {
+     "A": 77,
+     "mass": 76.919914154,
+     "massUncertainty": 6.7e-8,
+     "abundance": 0.0763,
+     "abundanceUncertainty": 0.000016
+    },
+    {
+     "A": 78,
+     "mass": 77.91730928,
+     "massUncertainty": 2e-7,
+     "abundance": 0.2377,
+     "abundanceUncertainty": 0.000028
+    },
+    {
+     "A": 80,
+     "mass": 79.9165218,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.4961,
+     "abundanceUncertainty": 0.000041
+    },
+    {
+     "A": 82,
+     "mass": 81.9166995,
+     "massUncertainty": 0.0000015,
+     "abundance": 0.0873,
+     "abundanceUncertainty": 0.000022
+    }
+   ]
+  },
+  {
+   "Z": 35,
+   "symbol": "Br",
+   "name": "Bromine",
+   "valences": {
+    "default": 1,
+    "all": [
+     1,
+     3,
+     5,
+     7
+    ]
+   },
+   "monoisotopicMass": 78.9183376,
+   "averageMass": 79.90352778050999,
+   "isotopes": [
+    {
+     "A": 79,
+     "mass": 78.9183376,
+     "massUncertainty": 0.0000014,
+     "abundance": 0.5069,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 81,
+     "mass": 80.9162897,
+     "massUncertainty": 0.0000014,
+     "abundance": 0.4931,
+     "abundanceUncertainty": 0.00007
+    }
+   ]
+  },
+  {
+   "Z": 36,
+   "symbol": "Kr",
+   "name": "Krypton",
+   "valences": null,
+   "monoisotopicMass": 77.92036494,
+   "averageMass": 83.7979999953261,
+   "isotopes": [
+    {
+     "A": 78,
+     "mass": 77.92036494,
+     "massUncertainty": 7.6e-7,
+     "abundance": 0.00355,
+     "abundanceUncertainty": 3e-7
+    },
+    {
+     "A": 80,
+     "mass": 79.91637808,
+     "massUncertainty": 7.5e-7,
+     "abundance": 0.02286,
+     "abundanceUncertainty": 1e-7
+    },
+    {
+     "A": 82,
+     "mass": 81.91348273,
+     "massUncertainty": 9.4e-7,
+     "abundance": 0.11593,
+     "abundanceUncertainty": 3.1e-7
+    },
+    {
+     "A": 83,
+     "mass": 82.91412716,
+     "massUncertainty": 3.2e-7,
+     "abundance": 0.115,
+     "abundanceUncertainty": 1.9e-7
+    },
+    {
+     "A": 84,
+     "mass": 83.9114977282,
+     "massUncertainty": 4.4000000000000005e-9,
+     "abundance": 0.56987,
+     "abundanceUncertainty": 1.5e-7
+    },
+    {
+     "A": 86,
+     "mass": 85.9106106269,
+     "massUncertainty": 4.1e-9,
+     "abundance": 0.17279,
+     "abundanceUncertainty": 4.1e-7
+    }
+   ]
+  },
+  {
+   "Z": 37,
+   "symbol": "Rb",
+   "name": "Rubidium",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 84.9117897379,
+   "averageMass": 85.46766359561973,
+   "isotopes": [
+    {
+     "A": 85,
+     "mass": 84.9117897379,
+     "massUncertainty": 5.4e-9,
+     "abundance": 0.7217,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 87,
+     "mass": 86.909180531,
+     "massUncertainty": 6e-9,
+     "abundance": 0.2783,
+     "abundanceUncertainty": 0.00002
+    }
+   ]
+  },
+  {
+   "Z": 38,
+   "symbol": "Sr",
+   "name": "Strontium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 83.9134191,
+   "averageMass": 87.61664446962,
+   "isotopes": [
+    {
+     "A": 84,
+     "mass": 83.9134191,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.0056,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 86,
+     "mass": 85.9092606,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.0986,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 87,
+     "mass": 86.9088775,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.07,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 88,
+     "mass": 87.9056125,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.8258,
+     "abundanceUncertainty": 0.00001
+    }
+   ]
+  },
+  {
+   "Z": 39,
+   "symbol": "Y",
+   "name": "Yttrium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3
+    ]
+   },
+   "monoisotopicMass": 88.9058403,
+   "averageMass": 88.9058403,
+   "isotopes": [
+    {
+     "A": 89,
+     "mass": 88.9058403,
+     "massUncertainty": 0.0000024,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 40,
+   "symbol": "Zr",
+   "name": "Zirconium",
+   "valences": {
+    "default": 4,
+    "all": [
+     4
+    ]
+   },
+   "monoisotopicMass": 89.9046977,
+   "averageMass": 91.22364159706,
+   "isotopes": [
+    {
+     "A": 90,
+     "mass": 89.9046977,
+     "massUncertainty": 0.000002,
+     "abundance": 0.5145,
+     "abundanceUncertainty": 0.00004
+    },
+    {
+     "A": 91,
+     "mass": 90.9056396,
+     "massUncertainty": 0.000002,
+     "abundance": 0.1122,
+     "abundanceUncertainty": 0.00005
+    },
+    {
+     "A": 92,
+     "mass": 91.9050347,
+     "massUncertainty": 0.000002,
+     "abundance": 0.1715,
+     "abundanceUncertainty": 0.00008
+    },
+    {
+     "A": 94,
+     "mass": 93.9063108,
+     "massUncertainty": 0.000002,
+     "abundance": 0.1738,
+     "abundanceUncertainty": 0.000028
+    },
+    {
+     "A": 96,
+     "mass": 95.9082714,
+     "massUncertainty": 0.0000021,
+     "abundance": 0.028,
+     "abundanceUncertainty": 0.00009
+    }
+   ]
+  },
+  {
+   "Z": 41,
+   "symbol": "Nb",
+   "name": "Niobium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     5
+    ]
+   },
+   "monoisotopicMass": 92.906373,
+   "averageMass": 92.906373,
+   "isotopes": [
+    {
+     "A": 93,
+     "mass": 92.906373,
+     "massUncertainty": 0.000002,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 42,
+   "symbol": "Mo",
+   "name": "Molybdenum",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     4,
+     6
+    ]
+   },
+   "monoisotopicMass": 91.90680796,
+   "averageMass": 95.95978854118802,
+   "isotopes": [
+    {
+     "A": 92,
+     "mass": 91.90680796,
+     "massUncertainty": 8.4e-7,
+     "abundance": 0.1453,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 94,
+     "mass": 93.9050849,
+     "massUncertainty": 4.800000000000001e-7,
+     "abundance": 0.0915,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 95,
+     "mass": 94.90583877,
+     "massUncertainty": 4.7e-7,
+     "abundance": 0.1584,
+     "abundanceUncertainty": 0.000011
+    },
+    {
+     "A": 96,
+     "mass": 95.90467612,
+     "massUncertainty": 4.7e-7,
+     "abundance": 0.1667,
+     "abundanceUncertainty": 0.000015
+    },
+    {
+     "A": 97,
+     "mass": 96.90601812,
+     "massUncertainty": 4.9e-7,
+     "abundance": 0.096,
+     "abundanceUncertainty": 0.000014
+    },
+    {
+     "A": 98,
+     "mass": 97.90540482,
+     "massUncertainty": 4.9e-7,
+     "abundance": 0.2439,
+     "abundanceUncertainty": 0.000037
+    },
+    {
+     "A": 100,
+     "mass": 99.9074718,
+     "massUncertainty": 0.0000011,
+     "abundance": 0.0982,
+     "abundanceUncertainty": 0.000031
+    }
+   ]
+  },
+  {
+   "Z": 43,
+   "symbol": "Tc",
+   "name": "Technetium",
+   "valences": {
+    "default": 4,
+    "all": [
+     4,
+     7
+    ]
+   },
+   "monoisotopicMass": 96.9063667,
+   "averageMass": 96.9063667,
+   "isotopes": [
+    {
+     "A": 97,
+     "mass": 96.9063667,
+     "massUncertainty": 0.000004,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 44,
+   "symbol": "Ru",
+   "name": "Ruthenium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     4
+    ]
+   },
+   "monoisotopicMass": 95.90759025,
+   "averageMass": 101.06494013916,
+   "isotopes": [
+    {
+     "A": 96,
+     "mass": 95.90759025,
+     "massUncertainty": 4.9e-7,
+     "abundance": 0.0554,
+     "abundanceUncertainty": 0.000014
+    },
+    {
+     "A": 98,
+     "mass": 97.9052868,
+     "massUncertainty": 0.0000069,
+     "abundance": 0.0187,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 99,
+     "mass": 98.9059341,
+     "massUncertainty": 0.0000011,
+     "abundance": 0.1276,
+     "abundanceUncertainty": 0.000014
+    },
+    {
+     "A": 100,
+     "mass": 99.9042143,
+     "massUncertainty": 0.0000011,
+     "abundance": 0.126,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 101,
+     "mass": 100.9055769,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.1706,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 102,
+     "mass": 101.9043441,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.3155,
+     "abundanceUncertainty": 0.000014
+    },
+    {
+     "A": 104,
+     "mass": 103.9054275,
+     "massUncertainty": 0.0000028,
+     "abundance": 0.1862,
+     "abundanceUncertainty": 0.000027
+    }
+   ]
+  },
+  {
+   "Z": 45,
+   "symbol": "Rh",
+   "name": "Rhodium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3
+    ]
+   },
+   "monoisotopicMass": 102.905498,
+   "averageMass": 102.905498,
+   "isotopes": [
+    {
+     "A": 103,
+     "mass": 102.905498,
+     "massUncertainty": 0.0000025999999999999997,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 46,
+   "symbol": "Pd",
+   "name": "Palladium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     4
+    ]
+   },
+   "monoisotopicMass": 101.9056022,
+   "averageMass": 106.41532750734,
+   "isotopes": [
+    {
+     "A": 102,
+     "mass": 101.9056022,
+     "massUncertainty": 0.0000028,
+     "abundance": 0.0102,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 104,
+     "mass": 103.9040305,
+     "massUncertainty": 0.0000014,
+     "abundance": 0.1114,
+     "abundanceUncertainty": 0.00008
+    },
+    {
+     "A": 105,
+     "mass": 104.9050796,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.2233,
+     "abundanceUncertainty": 0.00008
+    },
+    {
+     "A": 106,
+     "mass": 105.9034804,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.2733,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 108,
+     "mass": 107.9038916,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.2646,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 110,
+     "mass": 109.9051722,
+     "massUncertainty": 7.5e-7,
+     "abundance": 0.1172,
+     "abundanceUncertainty": 0.00009
+    }
+   ]
+  },
+  {
+   "Z": 47,
+   "symbol": "Ag",
+   "name": "Silver",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 106.9050916,
+   "averageMass": 107.868149634557,
+   "isotopes": [
+    {
+     "A": 107,
+     "mass": 106.9050916,
+     "massUncertainty": 0.0000025999999999999997,
+     "abundance": 0.51839,
+     "abundanceUncertainty": 8e-7
+    },
+    {
+     "A": 109,
+     "mass": 108.9047553,
+     "massUncertainty": 0.0000014,
+     "abundance": 0.48161,
+     "abundanceUncertainty": 8e-7
+    }
+   ]
+  },
+  {
+   "Z": 48,
+   "symbol": "Cd",
+   "name": "Cadmium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 105.9064599,
+   "averageMass": 112.41155781826801,
+   "isotopes": [
+    {
+     "A": 106,
+     "mass": 105.9064599,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.0125,
+     "abundanceUncertainty": 0.00006
+    },
+    {
+     "A": 108,
+     "mass": 107.9041834,
+     "massUncertainty": 0.0000012,
+     "abundance": 0.0089,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 110,
+     "mass": 109.90300661,
+     "massUncertainty": 6.1e-7,
+     "abundance": 0.1249,
+     "abundanceUncertainty": 0.000018
+    },
+    {
+     "A": 111,
+     "mass": 110.90418287,
+     "massUncertainty": 6.1e-7,
+     "abundance": 0.128,
+     "abundanceUncertainty": 0.000012
+    },
+    {
+     "A": 112,
+     "mass": 111.90276287,
+     "massUncertainty": 6e-7,
+     "abundance": 0.2413,
+     "abundanceUncertainty": 0.000021
+    },
+    {
+     "A": 113,
+     "mass": 112.90440813,
+     "massUncertainty": 4.5000000000000003e-7,
+     "abundance": 0.1222,
+     "abundanceUncertainty": 0.000012
+    },
+    {
+     "A": 114,
+     "mass": 113.90336509,
+     "massUncertainty": 4.3e-7,
+     "abundance": 0.2873,
+     "abundanceUncertainty": 0.000042
+    },
+    {
+     "A": 116,
+     "mass": 115.90476315,
+     "massUncertainty": 1.7000000000000001e-7,
+     "abundance": 0.0749,
+     "abundanceUncertainty": 0.000018
+    }
+   ]
+  },
+  {
+   "Z": 49,
+   "symbol": "In",
+   "name": "Indium",
+   "valences": {
+    "default": 3,
+    "all": [
+     3
+    ]
+   },
+   "monoisotopicMass": 112.90406184,
+   "averageMass": 114.81808662944559,
+   "isotopes": [
+    {
+     "A": 113,
+     "mass": 112.90406184,
+     "massUncertainty": 9.1e-7,
+     "abundance": 0.0429,
+     "abundanceUncertainty": 0.00005
+    },
+    {
+     "A": 115,
+     "mass": 114.903878776,
+     "massUncertainty": 1.2000000000000002e-8,
+     "abundance": 0.9571,
+     "abundanceUncertainty": 0.00005
+    }
+   ]
+  },
+  {
+   "Z": 50,
+   "symbol": "Sn",
+   "name": "Tin",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     4
+    ]
+   },
+   "monoisotopicMass": 111.90482387,
+   "averageMass": 118.7101125930106,
+   "isotopes": [
+    {
+     "A": 112,
+     "mass": 111.90482387,
+     "massUncertainty": 6.1e-7,
+     "abundance": 0.0097,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 114,
+     "mass": 113.9027827,
+     "massUncertainty": 0.000001,
+     "abundance": 0.0066,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 115,
+     "mass": 114.903344699,
+     "massUncertainty": 1.6e-8,
+     "abundance": 0.0034,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 116,
+     "mass": 115.9017428,
+     "massUncertainty": 1e-7,
+     "abundance": 0.1454,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 117,
+     "mass": 116.90295398,
+     "massUncertainty": 5.2e-7,
+     "abundance": 0.0768,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 118,
+     "mass": 117.90160657,
+     "massUncertainty": 5.4e-7,
+     "abundance": 0.2422,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 119,
+     "mass": 118.90331117,
+     "massUncertainty": 7.8e-7,
+     "abundance": 0.0859,
+     "abundanceUncertainty": 0.00004
+    },
+    {
+     "A": 120,
+     "mass": 119.90220163,
+     "massUncertainty": 9.7e-7,
+     "abundance": 0.3258,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 122,
+     "mass": 121.9034438,
+     "massUncertainty": 0.0000025999999999999997,
+     "abundance": 0.0463,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 124,
+     "mass": 123.9052766,
+     "massUncertainty": 0.0000011,
+     "abundance": 0.0579,
+     "abundanceUncertainty": 0.00005
+    }
+   ]
+  },
+  {
+   "Z": 51,
+   "symbol": "Sb",
+   "name": "Antimony",
+   "valences": {
+    "default": 3,
+    "all": [
+     3,
+     5
+    ]
+   },
+   "monoisotopicMass": 120.903812,
+   "averageMass": 121.75978367348,
+   "isotopes": [
+    {
+     "A": 121,
+     "mass": 120.903812,
+     "massUncertainty": 0.000003,
+     "abundance": 0.5721,
+     "abundanceUncertainty": 0.00005
+    },
+    {
+     "A": 123,
+     "mass": 122.9042132,
+     "massUncertainty": 0.0000023,
+     "abundance": 0.4279,
+     "abundanceUncertainty": 0.00005
+    }
+   ]
+  },
+  {
+   "Z": 52,
+   "symbol": "Te",
+   "name": "Tellurium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2,
+     4,
+     6
+    ]
+   },
+   "monoisotopicMass": 119.9040593,
+   "averageMass": 127.6031264846604,
+   "isotopes": [
+    {
+     "A": 120,
+     "mass": 119.9040593,
+     "massUncertainty": 0.0000032999999999999997,
+     "abundance": 0.0009,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 122,
+     "mass": 121.9030435,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.0255,
+     "abundanceUncertainty": 0.000012
+    },
+    {
+     "A": 123,
+     "mass": 122.9042698,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.0089,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 124,
+     "mass": 123.9028171,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.0474,
+     "abundanceUncertainty": 0.000014
+    },
+    {
+     "A": 125,
+     "mass": 124.9044299,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.0707,
+     "abundanceUncertainty": 0.000015
+    },
+    {
+     "A": 126,
+     "mass": 125.9033109,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.1884,
+     "abundanceUncertainty": 0.000025
+    },
+    {
+     "A": 128,
+     "mass": 127.90446128,
+     "massUncertainty": 9.3e-7,
+     "abundance": 0.3174,
+     "abundanceUncertainty": 0.00008
+    },
+    {
+     "A": 130,
+     "mass": 129.906222748,
+     "massUncertainty": 1.2000000000000002e-8,
+     "abundance": 0.3408,
+     "abundanceUncertainty": 0.000062
+    }
+   ]
+  },
+  {
+   "Z": 53,
+   "symbol": "I",
+   "name": "Iodine",
+   "valences": {
+    "default": 1,
+    "all": [
+     1,
+     3,
+     5,
+     7
+    ]
+   },
+   "monoisotopicMass": 126.9044719,
+   "averageMass": 126.9044719,
+   "isotopes": [
+    {
+     "A": 127,
+     "mass": 126.9044719,
+     "massUncertainty": 0.0000039,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 54,
+   "symbol": "Xe",
+   "name": "Xenon",
+   "valences": null,
+   "monoisotopicMass": 123.905892,
+   "averageMass": 131.29276144779053,
+   "isotopes": [
+    {
+     "A": 124,
+     "mass": 123.905892,
+     "massUncertainty": 0.0000019,
+     "abundance": 0.000952,
+     "abundanceUncertainty": 3e-8
+    },
+    {
+     "A": 126,
+     "mass": 125.9042983,
+     "massUncertainty": 0.0000038,
+     "abundance": 0.00089,
+     "abundanceUncertainty": 2e-8
+    },
+    {
+     "A": 128,
+     "mass": 127.903531,
+     "massUncertainty": 0.0000011,
+     "abundance": 0.019102,
+     "abundanceUncertainty": 8e-8
+    },
+    {
+     "A": 129,
+     "mass": 128.9047808611,
+     "massUncertainty": 6e-9,
+     "abundance": 0.264006,
+     "abundanceUncertainty": 8.2e-8
+    },
+    {
+     "A": 130,
+     "mass": 129.903509349,
+     "massUncertainty": 1e-8,
+     "abundance": 0.04071,
+     "abundanceUncertainty": 1.3e-8
+    },
+    {
+     "A": 131,
+     "mass": 130.90508406,
+     "massUncertainty": 2.4000000000000003e-7,
+     "abundance": 0.212324,
+     "abundanceUncertainty": 3e-8
+    },
+    {
+     "A": 132,
+     "mass": 131.9041550856,
+     "massUncertainty": 5.6000000000000005e-9,
+     "abundance": 0.269086,
+     "abundanceUncertainty": 3.3e-8
+    },
+    {
+     "A": 134,
+     "mass": 133.90539466,
+     "massUncertainty": 9.000000000000001e-7,
+     "abundance": 0.104357,
+     "abundanceUncertainty": 2.1e-8
+    },
+    {
+     "A": 136,
+     "mass": 135.907214484,
+     "massUncertainty": 1.1000000000000001e-8,
+     "abundance": 0.088573,
+     "abundanceUncertainty": 4.4e-8
+    }
+   ]
+  },
+  {
+   "Z": 55,
+   "symbol": "Cs",
+   "name": "Caesium",
+   "valences": {
+    "default": 1,
+    "all": [
+     1
+    ]
+   },
+   "monoisotopicMass": 132.905451961,
+   "averageMass": 132.905451961,
+   "isotopes": [
+    {
+     "A": 133,
+     "mass": 132.905451961,
+     "massUncertainty": 8e-9,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 56,
+   "symbol": "Ba",
+   "name": "Barium",
+   "valences": {
+    "default": 2,
+    "all": [
+     2
+    ]
+   },
+   "monoisotopicMass": 129.9063207,
+   "averageMass": 137.3268916286322,
+   "isotopes": [
+    {
+     "A": 130,
+     "mass": 129.9063207,
+     "massUncertainty": 0.0000028,
+     "abundance": 0.00106,
+     "abundanceUncertainty": 1e-7
+    },
+    {
+     "A": 132,
+     "mass": 131.9050611,
+     "massUncertainty": 0.0000011,
+     "abundance": 0.00101,
+     "abundanceUncertainty": 1e-7
+    },
+    {
+     "A": 134,
+     "mass": 133.90450818,
+     "massUncertainty": 3e-7,
+     "abundance": 0.02417,
+     "abundanceUncertainty": 1.8e-7
+    },
+    {
+     "A": 135,
+     "mass": 134.90568838,
+     "massUncertainty": 2.9000000000000003e-7,
+     "abundance": 0.06592,
+     "abundanceUncertainty": 1.2e-7
+    },
+    {
+     "A": 136,
+     "mass": 135.90457573,
+     "massUncertainty": 2.9000000000000003e-7,
+     "abundance": 0.07854,
+     "abundanceUncertainty": 2.4e-7
+    },
+    {
+     "A": 137,
+     "mass": 136.90582714,
+     "massUncertainty": 3e-7,
+     "abundance": 0.11232,
+     "abundanceUncertainty": 2.4e-7
+    },
+    {
+     "A": 138,
+     "mass": 137.905247,
+     "massUncertainty": 3.1e-7,
+     "abundance": 0.71698,
+     "abundanceUncertainty": 4.2e-7
+    }
+   ]
+  },
+  {
+   "Z": 57,
+   "symbol": "La",
+   "name": "Lanthanum",
+   "valences": null,
+   "monoisotopicMass": 137.9071149,
+   "averageMass": 138.90546887371266,
+   "isotopes": [
+    {
+     "A": 138,
+     "mass": 137.9071149,
+     "massUncertainty": 0.0000036999999999999997,
+     "abundance": 0.0008881,
+     "abundanceUncertainty": 7.1e-9
+    },
+    {
+     "A": 139,
+     "mass": 138.9063563,
+     "massUncertainty": 0.0000024,
+     "abundance": 0.9991119,
+     "abundanceUncertainty": 7.1e-9
+    }
+   ]
+  },
+  {
+   "Z": 58,
+   "symbol": "Ce",
+   "name": "Cerium",
+   "valences": null,
+   "monoisotopicMass": 135.90712921,
+   "averageMass": 140.1157307378545,
+   "isotopes": [
+    {
+     "A": 136,
+     "mass": 135.90712921,
+     "massUncertainty": 4.1e-7,
+     "abundance": 0.00185,
+     "abundanceUncertainty": 2e-7
+    },
+    {
+     "A": 138,
+     "mass": 137.905991,
+     "massUncertainty": 0.000011,
+     "abundance": 0.00251,
+     "abundanceUncertainty": 2e-7
+    },
+    {
+     "A": 140,
+     "mass": 139.9054431,
+     "massUncertainty": 0.0000023,
+     "abundance": 0.8845,
+     "abundanceUncertainty": 5.1e-7
+    },
+    {
+     "A": 142,
+     "mass": 141.9092504,
+     "massUncertainty": 0.0000028999999999999998,
+     "abundance": 0.11114,
+     "abundanceUncertainty": 5.1e-7
+    }
+   ]
+  },
+  {
+   "Z": 59,
+   "symbol": "Pr",
+   "name": "Praseodymium",
+   "valences": null,
+   "monoisotopicMass": 140.9076576,
+   "averageMass": 140.9076576,
+   "isotopes": [
+    {
+     "A": 141,
+     "mass": 140.9076576,
+     "massUncertainty": 0.0000023,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 60,
+   "symbol": "Nd",
+   "name": "Neodymium",
+   "valences": null,
+   "monoisotopicMass": 141.907729,
+   "averageMass": 144.24159603182702,
+   "isotopes": [
+    {
+     "A": 142,
+     "mass": 141.907729,
+     "massUncertainty": 0.000002,
+     "abundance": 0.27152,
+     "abundanceUncertainty": 4e-7
+    },
+    {
+     "A": 143,
+     "mass": 142.90982,
+     "massUncertainty": 0.000002,
+     "abundance": 0.12174,
+     "abundanceUncertainty": 2.6e-7
+    },
+    {
+     "A": 144,
+     "mass": 143.910093,
+     "massUncertainty": 0.000002,
+     "abundance": 0.23798,
+     "abundanceUncertainty": 1.9e-7
+    },
+    {
+     "A": 145,
+     "mass": 144.9125793,
+     "massUncertainty": 0.000002,
+     "abundance": 0.08293,
+     "abundanceUncertainty": 1.2e-7
+    },
+    {
+     "A": 146,
+     "mass": 145.9131226,
+     "massUncertainty": 0.000002,
+     "abundance": 0.17189,
+     "abundanceUncertainty": 3.2e-7
+    },
+    {
+     "A": 148,
+     "mass": 147.9168993,
+     "massUncertainty": 0.0000025999999999999997,
+     "abundance": 0.05756,
+     "abundanceUncertainty": 2.1e-7
+    },
+    {
+     "A": 150,
+     "mass": 149.9209022,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.05638,
+     "abundanceUncertainty": 2.8e-7
+    }
+   ]
+  },
+  {
+   "Z": 61,
+   "symbol": "Pm",
+   "name": "Promethium",
+   "valences": null,
+   "monoisotopicMass": 144.9127559,
+   "averageMass": 144.9127559,
+   "isotopes": [
+    {
+     "A": 145,
+     "mass": 144.9127559,
+     "massUncertainty": 0.0000032999999999999997,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 62,
+   "symbol": "Sm",
+   "name": "Samarium",
+   "valences": null,
+   "monoisotopicMass": 143.9120065,
+   "averageMass": 150.36635571193,
+   "isotopes": [
+    {
+     "A": 144,
+     "mass": 143.9120065,
+     "massUncertainty": 0.0000021,
+     "abundance": 0.0307,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 147,
+     "mass": 146.9149044,
+     "massUncertainty": 0.0000019,
+     "abundance": 0.1499,
+     "abundanceUncertainty": 0.000018
+    },
+    {
+     "A": 148,
+     "mass": 147.9148292,
+     "massUncertainty": 0.0000019,
+     "abundance": 0.1124,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 149,
+     "mass": 148.9171921,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.1382,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 150,
+     "mass": 149.9172829,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.0738,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 152,
+     "mass": 151.9197397,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.2675,
+     "abundanceUncertainty": 0.000016
+    },
+    {
+     "A": 154,
+     "mass": 153.9222169,
+     "massUncertainty": 0.000002,
+     "abundance": 0.2275,
+     "abundanceUncertainty": 0.000029
+    }
+   ]
+  },
+  {
+   "Z": 63,
+   "symbol": "Eu",
+   "name": "Europium",
+   "valences": null,
+   "monoisotopicMass": 150.9198578,
+   "averageMass": 151.96437812637998,
+   "isotopes": [
+    {
+     "A": 151,
+     "mass": 150.9198578,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.4781,
+     "abundanceUncertainty": 0.00006
+    },
+    {
+     "A": 153,
+     "mass": 152.921238,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.5219,
+     "abundanceUncertainty": 0.00006
+    }
+   ]
+  },
+  {
+   "Z": 64,
+   "symbol": "Gd",
+   "name": "Gadolinium",
+   "valences": null,
+   "monoisotopicMass": 151.9197995,
+   "averageMass": 157.25213064687998,
+   "isotopes": [
+    {
+     "A": 152,
+     "mass": 151.9197995,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.002,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 154,
+     "mass": 153.9208741,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.0218,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 155,
+     "mass": 154.9226305,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.148,
+     "abundanceUncertainty": 0.000012
+    },
+    {
+     "A": 156,
+     "mass": 155.9221312,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.2047,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 157,
+     "mass": 156.9239686,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.1565,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 158,
+     "mass": 157.9241123,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.2484,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 160,
+     "mass": 159.9270624,
+     "massUncertainty": 0.0000018,
+     "abundance": 0.2186,
+     "abundanceUncertainty": 0.000019
+    }
+   ]
+  },
+  {
+   "Z": 65,
+   "symbol": "Tb",
+   "name": "Terbium",
+   "valences": null,
+   "monoisotopicMass": 158.9253547,
+   "averageMass": 158.9253547,
+   "isotopes": [
+    {
+     "A": 159,
+     "mass": 158.9253547,
+     "massUncertainty": 0.0000019,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 66,
+   "symbol": "Dy",
+   "name": "Dysprosium",
+   "valences": null,
+   "monoisotopicMass": 155.9242847,
+   "averageMass": 162.499472819424,
+   "isotopes": [
+    {
+     "A": 156,
+     "mass": 155.9242847,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.00056,
+     "abundanceUncertainty": 3e-7
+    },
+    {
+     "A": 158,
+     "mass": 157.9244159,
+     "massUncertainty": 0.0000031,
+     "abundance": 0.00095,
+     "abundanceUncertainty": 3e-7
+    },
+    {
+     "A": 160,
+     "mass": 159.9252046,
+     "massUncertainty": 0.000002,
+     "abundance": 0.02329,
+     "abundanceUncertainty": 1.8e-7
+    },
+    {
+     "A": 161,
+     "mass": 160.9269405,
+     "massUncertainty": 0.000002,
+     "abundance": 0.18889,
+     "abundanceUncertainty": 4.2e-7
+    },
+    {
+     "A": 162,
+     "mass": 161.9268056,
+     "massUncertainty": 0.000002,
+     "abundance": 0.25475,
+     "abundanceUncertainty": 3.6e-7
+    },
+    {
+     "A": 163,
+     "mass": 162.9287383,
+     "massUncertainty": 0.000002,
+     "abundance": 0.24896,
+     "abundanceUncertainty": 4.2e-7
+    },
+    {
+     "A": 164,
+     "mass": 163.9291819,
+     "massUncertainty": 0.000002,
+     "abundance": 0.2826,
+     "abundanceUncertainty": 5.4e-7
+    }
+   ]
+  },
+  {
+   "Z": 67,
+   "symbol": "Ho",
+   "name": "Holmium",
+   "valences": null,
+   "monoisotopicMass": 164.9303288,
+   "averageMass": 164.9303288,
+   "isotopes": [
+    {
+     "A": 165,
+     "mass": 164.9303288,
+     "massUncertainty": 0.0000021,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 68,
+   "symbol": "Er",
+   "name": "Erbium",
+   "valences": null,
+   "monoisotopicMass": 161.9287884,
+   "averageMass": 167.259082649669,
+   "isotopes": [
+    {
+     "A": 162,
+     "mass": 161.9287884,
+     "massUncertainty": 0.000002,
+     "abundance": 0.00139,
+     "abundanceUncertainty": 5e-7
+    },
+    {
+     "A": 164,
+     "mass": 163.9292088,
+     "massUncertainty": 0.000002,
+     "abundance": 0.01601,
+     "abundanceUncertainty": 3e-7
+    },
+    {
+     "A": 166,
+     "mass": 165.9302995,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.33503,
+     "abundanceUncertainty": 3.6e-7
+    },
+    {
+     "A": 167,
+     "mass": 166.9320546,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.22869,
+     "abundanceUncertainty": 9e-7
+    },
+    {
+     "A": 168,
+     "mass": 167.9323767,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.26978,
+     "abundanceUncertainty": 1.8e-7
+    },
+    {
+     "A": 170,
+     "mass": 169.9354702,
+     "massUncertainty": 0.0000025999999999999997,
+     "abundance": 0.1491,
+     "abundanceUncertainty": 3.6e-7
+    }
+   ]
+  },
+  {
+   "Z": 69,
+   "symbol": "Tm",
+   "name": "Thulium",
+   "valences": null,
+   "monoisotopicMass": 168.9342179,
+   "averageMass": 168.9342179,
+   "isotopes": [
+    {
+     "A": 169,
+     "mass": 168.9342179,
+     "massUncertainty": 0.0000022,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 70,
+   "symbol": "Yb",
+   "name": "Ytterbium",
+   "valences": null,
+   "monoisotopicMass": 167.9338896,
+   "averageMass": 173.05415016631704,
+   "isotopes": [
+    {
+     "A": 168,
+     "mass": 167.9338896,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.00123,
+     "abundanceUncertainty": 3e-7
+    },
+    {
+     "A": 170,
+     "mass": 169.9347664,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.02982,
+     "abundanceUncertainty": 3.9e-7
+    },
+    {
+     "A": 171,
+     "mass": 170.9363302,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.1409,
+     "abundanceUncertainty": 0.000014
+    },
+    {
+     "A": 172,
+     "mass": 171.9363859,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.2168,
+     "abundanceUncertainty": 0.000013
+    },
+    {
+     "A": 173,
+     "mass": 172.9382151,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.16103,
+     "abundanceUncertainty": 6.3e-7
+    },
+    {
+     "A": 174,
+     "mass": 173.9388664,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.32026,
+     "abundanceUncertainty": 8e-7
+    },
+    {
+     "A": 176,
+     "mass": 175.9425764,
+     "massUncertainty": 0.0000024,
+     "abundance": 0.12996,
+     "abundanceUncertainty": 8.3e-7
+    }
+   ]
+  },
+  {
+   "Z": 71,
+   "symbol": "Lu",
+   "name": "Lutetium",
+   "valences": null,
+   "monoisotopicMass": 174.9407752,
+   "averageMass": 174.96681495785498,
+   "isotopes": [
+    {
+     "A": 175,
+     "mass": 174.9407752,
+     "massUncertainty": 0.000002,
+     "abundance": 0.97401,
+     "abundanceUncertainty": 1.3e-7
+    },
+    {
+     "A": 176,
+     "mass": 175.9426897,
+     "massUncertainty": 0.000002,
+     "abundance": 0.02599,
+     "abundanceUncertainty": 1.3e-7
+    }
+   ]
+  },
+  {
+   "Z": 72,
+   "symbol": "Hf",
+   "name": "Hafnium",
+   "valences": null,
+   "monoisotopicMass": 173.9400461,
+   "averageMass": 178.4849787234,
+   "isotopes": [
+    {
+     "A": 174,
+     "mass": 173.9400461,
+     "massUncertainty": 0.0000028,
+     "abundance": 0.0016,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 176,
+     "mass": 175.9414076,
+     "massUncertainty": 0.0000022,
+     "abundance": 0.0526,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 177,
+     "mass": 176.9432277,
+     "massUncertainty": 0.000002,
+     "abundance": 0.186,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 178,
+     "mass": 177.9437058,
+     "massUncertainty": 0.000002,
+     "abundance": 0.2728,
+     "abundanceUncertainty": 0.00007
+    },
+    {
+     "A": 179,
+     "mass": 178.9458232,
+     "massUncertainty": 0.000002,
+     "abundance": 0.1362,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 180,
+     "mass": 179.946557,
+     "massUncertainty": 0.000002,
+     "abundance": 0.3508,
+     "abundanceUncertainty": 0.000016
+    }
+   ]
+  },
+  {
+   "Z": 73,
+   "symbol": "Ta",
+   "name": "Tantalum",
+   "valences": null,
+   "monoisotopicMass": 179.9474648,
+   "averageMass": 180.9478756362269,
+   "isotopes": [
+    {
+     "A": 180,
+     "mass": 179.9474648,
+     "massUncertainty": 0.0000024,
+     "abundance": 0.0001201,
+     "abundanceUncertainty": 3.2e-9
+    },
+    {
+     "A": 181,
+     "mass": 180.9479958,
+     "massUncertainty": 0.000002,
+     "abundance": 0.9998799,
+     "abundanceUncertainty": 3.2e-9
+    }
+   ]
+  },
+  {
+   "Z": 74,
+   "symbol": "W",
+   "name": "Tungsten",
+   "valences": null,
+   "monoisotopicMass": 179.9467108,
+   "averageMass": 183.841777550513,
+   "isotopes": [
+    {
+     "A": 180,
+     "mass": 179.9467108,
+     "massUncertainty": 0.000002,
+     "abundance": 0.0012,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 182,
+     "mass": 181.94820394,
+     "massUncertainty": 9.1e-7,
+     "abundance": 0.265,
+     "abundanceUncertainty": 0.000016
+    },
+    {
+     "A": 183,
+     "mass": 182.95022275,
+     "massUncertainty": 9.000000000000001e-7,
+     "abundance": 0.1431,
+     "abundanceUncertainty": 0.00004
+    },
+    {
+     "A": 184,
+     "mass": 183.95093092,
+     "massUncertainty": 9.4e-7,
+     "abundance": 0.3064,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 186,
+     "mass": 185.9543628,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.2843,
+     "abundanceUncertainty": 0.000019
+    }
+   ]
+  },
+  {
+   "Z": 75,
+   "symbol": "Re",
+   "name": "Rhenium",
+   "valences": null,
+   "monoisotopicMass": 184.9529545,
+   "averageMass": 186.20670454560002,
+   "isotopes": [
+    {
+     "A": 185,
+     "mass": 184.9529545,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.374,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 187,
+     "mass": 186.9557501,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.626,
+     "abundanceUncertainty": 0.00002
+    }
+   ]
+  },
+  {
+   "Z": 76,
+   "symbol": "Os",
+   "name": "Osmium",
+   "valences": null,
+   "monoisotopicMass": 183.9524885,
+   "averageMass": 190.22485962823998,
+   "isotopes": [
+    {
+     "A": 184,
+     "mass": 183.9524885,
+     "massUncertainty": 0.0000014,
+     "abundance": 0.0002,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 186,
+     "mass": 185.953835,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.0159,
+     "abundanceUncertainty": 0.00003
+    },
+    {
+     "A": 187,
+     "mass": 186.9557474,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.0196,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 188,
+     "mass": 187.9558352,
+     "massUncertainty": 0.0000016,
+     "abundance": 0.1324,
+     "abundanceUncertainty": 0.00008
+    },
+    {
+     "A": 189,
+     "mass": 188.9581442,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.1615,
+     "abundanceUncertainty": 0.00005
+    },
+    {
+     "A": 190,
+     "mass": 189.9584437,
+     "massUncertainty": 0.0000016999999999999998,
+     "abundance": 0.2626,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 192,
+     "mass": 191.961477,
+     "massUncertainty": 0.0000028999999999999998,
+     "abundance": 0.4078,
+     "abundanceUncertainty": 0.000019
+    }
+   ]
+  },
+  {
+   "Z": 77,
+   "symbol": "Ir",
+   "name": "Iridium",
+   "valences": null,
+   "monoisotopicMass": 190.9605893,
+   "averageMass": 192.2160516521,
+   "isotopes": [
+    {
+     "A": 191,
+     "mass": 190.9605893,
+     "massUncertainty": 0.0000021,
+     "abundance": 0.373,
+     "abundanceUncertainty": 0.0002
+    },
+    {
+     "A": 193,
+     "mass": 192.9629216,
+     "massUncertainty": 0.0000021,
+     "abundance": 0.627,
+     "abundanceUncertainty": 0.0002
+    }
+   ]
+  },
+  {
+   "Z": 78,
+   "symbol": "Pt",
+   "name": "Platinum",
+   "valences": null,
+   "monoisotopicMass": 189.9599297,
+   "averageMass": 195.08445686493104,
+   "isotopes": [
+    {
+     "A": 190,
+     "mass": 189.9599297,
+     "massUncertainty": 0.0000063,
+     "abundance": 0.00012,
+     "abundanceUncertainty": 2e-7
+    },
+    {
+     "A": 192,
+     "mass": 191.9610387,
+     "massUncertainty": 0.0000032,
+     "abundance": 0.00782,
+     "abundanceUncertainty": 2.4e-7
+    },
+    {
+     "A": 194,
+     "mass": 193.9626809,
+     "massUncertainty": 0.000001,
+     "abundance": 0.3286,
+     "abundanceUncertainty": 0.00004
+    },
+    {
+     "A": 195,
+     "mass": 194.9647917,
+     "massUncertainty": 0.000001,
+     "abundance": 0.3378,
+     "abundanceUncertainty": 0.000024
+    },
+    {
+     "A": 196,
+     "mass": 195.96495209,
+     "massUncertainty": 9.9e-7,
+     "abundance": 0.2521,
+     "abundanceUncertainty": 0.000034
+    },
+    {
+     "A": 198,
+     "mass": 197.9678949,
+     "massUncertainty": 0.0000023,
+     "abundance": 0.07356,
+     "abundanceUncertainty": 1.3e-7
+    }
+   ]
+  },
+  {
+   "Z": 79,
+   "symbol": "Au",
+   "name": "Gold",
+   "valences": null,
+   "monoisotopicMass": 196.96656879,
+   "averageMass": 196.96656879,
+   "isotopes": [
+    {
+     "A": 197,
+     "mass": 196.96656879,
+     "massUncertainty": 7.1e-7,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 80,
+   "symbol": "Hg",
+   "name": "Mercury",
+   "valences": null,
+   "monoisotopicMass": 195.9658326,
+   "averageMass": 200.59916703455602,
+   "isotopes": [
+    {
+     "A": 196,
+     "mass": 195.9658326,
+     "massUncertainty": 0.0000032,
+     "abundance": 0.0015,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 198,
+     "mass": 197.9667686,
+     "massUncertainty": 5.2e-7,
+     "abundance": 0.0997,
+     "abundanceUncertainty": 0.00002
+    },
+    {
+     "A": 199,
+     "mass": 198.96828064,
+     "massUncertainty": 4.6e-7,
+     "abundance": 0.1687,
+     "abundanceUncertainty": 0.000022
+    },
+    {
+     "A": 200,
+     "mass": 199.96832659,
+     "massUncertainty": 4.7e-7,
+     "abundance": 0.231,
+     "abundanceUncertainty": 0.000019
+    },
+    {
+     "A": 201,
+     "mass": 200.97030284,
+     "massUncertainty": 6.900000000000001e-7,
+     "abundance": 0.1318,
+     "abundanceUncertainty": 0.00009
+    },
+    {
+     "A": 202,
+     "mass": 201.9706434,
+     "massUncertainty": 6.900000000000001e-7,
+     "abundance": 0.2986,
+     "abundanceUncertainty": 0.000026
+    },
+    {
+     "A": 204,
+     "mass": 203.97349398,
+     "massUncertainty": 5.3e-7,
+     "abundance": 0.0687,
+     "abundanceUncertainty": 0.000015
+    }
+   ]
+  },
+  {
+   "Z": 81,
+   "symbol": "Tl",
+   "name": "Thallium",
+   "valences": null,
+   "monoisotopicMass": 202.9723446,
+   "averageMass": 204.38341283936,
+   "isotopes": [
+    {
+     "A": 203,
+     "mass": 202.9723446,
+     "massUncertainty": 0.0000014,
+     "abundance": 0.2952,
+     "abundanceUncertainty": 0.00001
+    },
+    {
+     "A": 205,
+     "mass": 204.9744278,
+     "massUncertainty": 0.0000014,
+     "abundance": 0.7048,
+     "abundanceUncertainty": 0.00001
+    }
+   ]
+  },
+  {
+   "Z": 82,
+   "symbol": "Pb",
+   "name": "Lead",
+   "valences": null,
+   "monoisotopicMass": 203.973044,
+   "averageMass": 207.216908063,
+   "isotopes": [
+    {
+     "A": 204,
+     "mass": 203.973044,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.014,
+     "abundanceUncertainty": 0.0001
+    },
+    {
+     "A": 206,
+     "mass": 205.9744657,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.241,
+     "abundanceUncertainty": 0.0001
+    },
+    {
+     "A": 207,
+     "mass": 206.9758973,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.221,
+     "abundanceUncertainty": 0.0001
+    },
+    {
+     "A": 208,
+     "mass": 207.9766525,
+     "massUncertainty": 0.0000012999999999999998,
+     "abundance": 0.524,
+     "abundanceUncertainty": 0.0001
+    }
+   ]
+  },
+  {
+   "Z": 83,
+   "symbol": "Bi",
+   "name": "Bismuth",
+   "valences": null,
+   "monoisotopicMass": 208.9803991,
+   "averageMass": 208.9803991,
+   "isotopes": [
+    {
+     "A": 209,
+     "mass": 208.9803991,
+     "massUncertainty": 0.0000016,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 84,
+   "symbol": "Po",
+   "name": "Polonium",
+   "valences": null,
+   "monoisotopicMass": 208.9824308,
+   "averageMass": 208.9824308,
+   "isotopes": [
+    {
+     "A": 209,
+     "mass": 208.9824308,
+     "massUncertainty": 0.000002,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 85,
+   "symbol": "At",
+   "name": "Astatine",
+   "valences": null,
+   "monoisotopicMass": 209.9871479,
+   "averageMass": 209.9871479,
+   "isotopes": [
+    {
+     "A": 210,
+     "mass": 209.9871479,
+     "massUncertainty": 0.0000083,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 86,
+   "symbol": "Rn",
+   "name": "Radon",
+   "valences": null,
+   "monoisotopicMass": 210.9906011,
+   "averageMass": 210.9906011,
+   "isotopes": [
+    {
+     "A": 211,
+     "mass": 210.9906011,
+     "massUncertainty": 0.0000072999999999999996,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 87,
+   "symbol": "Fr",
+   "name": "Francium",
+   "valences": null,
+   "monoisotopicMass": 223.019736,
+   "averageMass": 223.019736,
+   "isotopes": [
+    {
+     "A": 223,
+     "mass": 223.019736,
+     "massUncertainty": 0.0000024999999999999998,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 88,
+   "symbol": "Ra",
+   "name": "Radium",
+   "valences": null,
+   "monoisotopicMass": 223.0185023,
+   "averageMass": 223.0185023,
+   "isotopes": [
+    {
+     "A": 223,
+     "mass": 223.0185023,
+     "massUncertainty": 0.0000027,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 89,
+   "symbol": "Ac",
+   "name": "Actinium",
+   "valences": null,
+   "monoisotopicMass": 227.0277523,
+   "averageMass": 227.0277523,
+   "isotopes": [
+    {
+     "A": 227,
+     "mass": 227.0277523,
+     "massUncertainty": 0.0000024999999999999998,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 90,
+   "symbol": "Th",
+   "name": "Thorium",
+   "valences": null,
+   "monoisotopicMass": 230.0331341,
+   "averageMass": 230.0331341,
+   "isotopes": [
+    {
+     "A": 230,
+     "mass": 230.0331341,
+     "massUncertainty": 0.0000019,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 91,
+   "symbol": "Pa",
+   "name": "Protactinium",
+   "valences": null,
+   "monoisotopicMass": 231.0358842,
+   "averageMass": 231.0358842,
+   "isotopes": [
+    {
+     "A": 231,
+     "mass": 231.0358842,
+     "massUncertainty": 0.0000024,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 92,
+   "symbol": "U",
+   "name": "Uranium",
+   "valences": null,
+   "monoisotopicMass": 234.0409523,
+   "averageMass": 238.0289104616574,
+   "isotopes": [
+    {
+     "A": 234,
+     "mass": 234.0409523,
+     "massUncertainty": 0.0000019,
+     "abundance": 0.000054,
+     "abundanceUncertainty": 5e-8
+    },
+    {
+     "A": 235,
+     "mass": 235.0439301,
+     "massUncertainty": 0.0000019,
+     "abundance": 0.007204,
+     "abundanceUncertainty": 6e-8
+    },
+    {
+     "A": 238,
+     "mass": 238.0507884,
+     "massUncertainty": 0.000002,
+     "abundance": 0.992742,
+     "abundanceUncertainty": 1e-8
+    }
+   ]
+  },
+  {
+   "Z": 93,
+   "symbol": "Np",
+   "name": "Neptunium",
+   "valences": null,
+   "monoisotopicMass": 236.04657,
+   "averageMass": 236.04657,
+   "isotopes": [
+    {
+     "A": 236,
+     "mass": 236.04657,
+     "massUncertainty": 0.000054,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 94,
+   "symbol": "Pu",
+   "name": "Plutonium",
+   "valences": null,
+   "monoisotopicMass": 238.0495601,
+   "averageMass": 238.0495601,
+   "isotopes": [
+    {
+     "A": 238,
+     "mass": 238.0495601,
+     "massUncertainty": 0.0000019,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 95,
+   "symbol": "Am",
+   "name": "Americium",
+   "valences": null,
+   "monoisotopicMass": 241.0568293,
+   "averageMass": 241.0568293,
+   "isotopes": [
+    {
+     "A": 241,
+     "mass": 241.0568293,
+     "massUncertainty": 0.0000019,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 96,
+   "symbol": "Cm",
+   "name": "Curium",
+   "valences": null,
+   "monoisotopicMass": 243.0613893,
+   "averageMass": 243.0613893,
+   "isotopes": [
+    {
+     "A": 243,
+     "mass": 243.0613893,
+     "massUncertainty": 0.0000022,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 97,
+   "symbol": "Bk",
+   "name": "Berkelium",
+   "valences": null,
+   "monoisotopicMass": 247.0703073,
+   "averageMass": 247.0703073,
+   "isotopes": [
+    {
+     "A": 247,
+     "mass": 247.0703073,
+     "massUncertainty": 0.000005899999999999999,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 98,
+   "symbol": "Cf",
+   "name": "Californium",
+   "valences": null,
+   "monoisotopicMass": 249.0748539,
+   "averageMass": 249.0748539,
+   "isotopes": [
+    {
+     "A": 249,
+     "mass": 249.0748539,
+     "massUncertainty": 0.0000023,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 99,
+   "symbol": "Es",
+   "name": "Einsteinium",
+   "valences": null,
+   "monoisotopicMass": 252.08298,
+   "averageMass": 252.08298,
+   "isotopes": [
+    {
+     "A": 252,
+     "mass": 252.08298,
+     "massUncertainty": 0.000054,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 100,
+   "symbol": "Fm",
+   "name": "Fermium",
+   "valences": null,
+   "monoisotopicMass": 257.0951061,
+   "averageMass": 257.0951061,
+   "isotopes": [
+    {
+     "A": 257,
+     "mass": 257.0951061,
+     "massUncertainty": 0.0000069,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 101,
+   "symbol": "Md",
+   "name": "Mendelevium",
+   "valences": null,
+   "monoisotopicMass": 258.0984315,
+   "averageMass": 258.0984315,
+   "isotopes": [
+    {
+     "A": 258,
+     "mass": 258.0984315,
+     "massUncertainty": 0.0000049999999999999996,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 102,
+   "symbol": "No",
+   "name": "Nobelium",
+   "valences": null,
+   "monoisotopicMass": 259.10103,
+   "averageMass": 259.10103,
+   "isotopes": [
+    {
+     "A": 259,
+     "mass": 259.10103,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 103,
+   "symbol": "Lr",
+   "name": "Lawrencium",
+   "valences": null,
+   "monoisotopicMass": 262.10961,
+   "averageMass": 262.10961,
+   "isotopes": [
+    {
+     "A": 262,
+     "mass": 262.10961,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 104,
+   "symbol": "Rf",
+   "name": "Rutherfordium",
+   "valences": null,
+   "monoisotopicMass": 267.12179,
+   "averageMass": 267.12179,
+   "isotopes": [
+    {
+     "A": 267,
+     "mass": 267.12179,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 105,
+   "symbol": "Db",
+   "name": "Dubnium",
+   "valences": null,
+   "monoisotopicMass": 268.12567,
+   "averageMass": 268.12567,
+   "isotopes": [
+    {
+     "A": 268,
+     "mass": 268.12567,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 106,
+   "symbol": "Sg",
+   "name": "Seaborgium",
+   "valences": null,
+   "monoisotopicMass": 271.13393,
+   "averageMass": 271.13393,
+   "isotopes": [
+    {
+     "A": 271,
+     "mass": 271.13393,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 107,
+   "symbol": "Bh",
+   "name": "Bohrium",
+   "valences": null,
+   "monoisotopicMass": 272.13826,
+   "averageMass": 272.13826,
+   "isotopes": [
+    {
+     "A": 272,
+     "mass": 272.13826,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 108,
+   "symbol": "Hs",
+   "name": "Hassium",
+   "valences": null,
+   "monoisotopicMass": 270.13429,
+   "averageMass": 270.13429,
+   "isotopes": [
+    {
+     "A": 270,
+     "mass": 270.13429,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 109,
+   "symbol": "Mt",
+   "name": "Meitnerium",
+   "valences": null,
+   "monoisotopicMass": 276.15159,
+   "averageMass": 276.15159,
+   "isotopes": [
+    {
+     "A": 276,
+     "mass": 276.15159,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 110,
+   "symbol": "Ds",
+   "name": "Darmstadtium",
+   "valences": null,
+   "monoisotopicMass": 281.16451,
+   "averageMass": 281.16451,
+   "isotopes": [
+    {
+     "A": 281,
+     "mass": 281.16451,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 111,
+   "symbol": "Rg",
+   "name": "Roentgenium",
+   "valences": null,
+   "monoisotopicMass": 280.16514,
+   "averageMass": 280.16514,
+   "isotopes": [
+    {
+     "A": 280,
+     "mass": 280.16514,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 112,
+   "symbol": "Cn",
+   "name": "Copernicium",
+   "valences": null,
+   "monoisotopicMass": 285.17712,
+   "averageMass": 285.17712,
+   "isotopes": [
+    {
+     "A": 285,
+     "mass": 285.17712,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 113,
+   "symbol": "Nh",
+   "name": "Nihonium",
+   "valences": null,
+   "monoisotopicMass": 284.17873,
+   "averageMass": 284.17873,
+   "isotopes": [
+    {
+     "A": 284,
+     "mass": 284.17873,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 114,
+   "symbol": "Fl",
+   "name": "Flerovium",
+   "valences": null,
+   "monoisotopicMass": 289.19042,
+   "averageMass": 289.19042,
+   "isotopes": [
+    {
+     "A": 289,
+     "mass": 289.19042,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 115,
+   "symbol": "Mc",
+   "name": "Moscovium",
+   "valences": null,
+   "monoisotopicMass": 288.19274,
+   "averageMass": 288.19274,
+   "isotopes": [
+    {
+     "A": 288,
+     "mass": 288.19274,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 116,
+   "symbol": "Lv",
+   "name": "Livermorium",
+   "valences": null,
+   "monoisotopicMass": 293.20449,
+   "averageMass": 293.20449,
+   "isotopes": [
+    {
+     "A": 293,
+     "mass": 293.20449,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 117,
+   "symbol": "Ts",
+   "name": "Tennessine",
+   "valences": null,
+   "monoisotopicMass": 292.20746,
+   "averageMass": 292.20746,
+   "isotopes": [
+    {
+     "A": 292,
+     "mass": 292.20746,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  },
+  {
+   "Z": 118,
+   "symbol": "Og",
+   "name": "Oganesson",
+   "valences": null,
+   "monoisotopicMass": 294.21392,
+   "averageMass": 294.21392,
+   "isotopes": [
+    {
+     "A": 294,
+     "mass": 294.21392,
+     "massUncertainty": null,
+     "abundance": null,
+     "abundanceUncertainty": null
+    }
+   ]
+  }
+ ]
+}
