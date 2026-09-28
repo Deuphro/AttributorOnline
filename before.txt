@@ -1,0 +1,24 @@
+  FAIL [H-] retire un H et prend un +®lectron
+  FAIL mz est la masse divis+®e par la charge, sans rien d'autre
+  FAIL H- et [-] ont la m+¬me charge mais pas la m+¬me masse
+  FAIL les crochets s'empilent et les charges s'additionnent
+  FAIL un adduit inconnu est accept+® comme +®tiquette
+  FAIL un terme enregistr+® +á la vol+®e devient un vrai terme
+  FAIL un terme enregistr+® fonctionne avec un multiplicateur
+  FAIL un adduit enregistr+® peut +¬tre perdu, pas seulement ajout+®
+  FAIL des adduits inconnus s'empilent sans qu'on ait +á les conna+«tre
+  FAIL Fe2O3[2+]: la cl+® dit tout, l'affichage abr+¿ge
+  FAIL [2+] est deux +®lectrons perdus, et rien d'autre
+  FAIL [2+] et [2e+] sont la M+èME formule
+  FAIL [3-] est trois +®lectrons gagn+®s
+  FAIL chaque forme se lit comme elle s'+®crit
+  FAIL [2+] et [2e+] sont le m+¬me ion
+  FAIL une +®tiquette libre n'ajoute rien
+  FAIL un terme compos+® vient du registre, jamais d'un d+®coupage
+  FAIL un signe NU, o+¦ qu'il soit, est la charge de l'ion
+  FAIL ++ et +2 sont la m+¬me charge
+  FAIL les quatre +®critures que vous avez dict+®es
+  FAIL un terme est soit un nombre seul (charge), soit des atomes
+  FAIL un groupe compos+® est une VRAIE formule, pas un nom
+  FAIL les crochets et le ; dizem la m+¬me chose
+59 passed, 23 failed
