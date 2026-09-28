@@ -1520,21 +1520,6 @@ test("++ et +2 sont la même charge",()=>{
             throw new Error(`${a} / ${b} / ${c} -> ${keys.join(" | ")}`)
     }
 })
-const MESURE=[
-    //vos quatre cas
-    "C6H12O6[H-1]","C6H12O6[H+1]","C6H12O6[H-1+]","C6H12O6[H2-1]",
-    //+ omis après un symbole: un compte, jamais une charge
-    "C6H12O6[H1]","C6H12O6[H2]","C6H12O6[H-1-]","C6H12O6[H-1-1]",
-    "C6H12O6[H-2+2]","C6H12O6[-H+1]","C6H12O6[H1+1]","C6H12O6[2H]",
-]
-for(const t of ["C6H12O6[H-1]","C6H12O6[H+1]","C6H12O6[H-1+]","C6H12O6[H2-1]",
-               "C6H12O6[H-1-]","C6H12O6[-H+1]","C6H12O6-1","C6H12O6-2",
-               "C6H12O6[2H]","C6H12O6[(2H)+2]","C6H12O6[+2H+2]","C6H12O6[-(H2O)]"]){
-    const f=Formula.parse(t,TABLE)
-    const c=[...f.composition].map(([el,byA])=>
-        `${el.symbol}{${[...byA].map(([A,n])=>`${A}:${n}`).join(",")}}`).join(" ")
-    console.log(`  ${t.padEnd(20)} ${c.padEnd(30)} charge=${f.charge}`)
-}
 test("les quatre écritures que vous avez dictées",()=>{
     /* La règle qui les gouverne toutes: un NOMBRE prend le signe de ce qui le
        précède, et le signe qui reste NU est la charge. Le + n'est jamais un
