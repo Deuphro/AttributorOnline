@@ -146,14 +146,22 @@ class Element{
      C6H12O6                 neutre
      C6H12O6 [H+]             protoné       — on AJOUTE un H
      C6H12O6 [H-]             déprotoné     — on RETIRE un H
-     C6H12O6 [2H+]            deux protons — et NON du deutérium
+     C6H12O6 [2H+]            deutérium     — et NON deux protons
      C6H12O6 [Na+]            sodié
-     C6H12O6 [e-]             anion radicalaire — électron GAGNÉ
+     C6H12O6 [-]              anion radicalaire — électron GAGNÉ
      12C6 1H12 16O6 [H+]      monoisotopique
 
-   Deux conventions seulement, et elles ne se recouvrent pas:
-     chiffres AVANT le symbole  -> nombre de masse  (12C, 13C)
-     chiffres APRÈS le symbole  -> nombre d'atomes  (C6)
+   Deux conventions, et elles ne se recouvrent pas:
+     chiffres AVANT le symbole  -> nombre de masse  (12C, 2H)
+     chiffres APRÈS le symbole  -> nombre d’atomes  (C6, H2)
+   
+   Et UN SIGNE, qui se lit selon ce qu’il a devant lui:
+     suivi d’un élément  -> coefficient   -2H = deux H en moins
+     suivi de rien        -> CHARGE        -2  = charge -2
+   
+   C’est cette dernière règle qui referme tout: «C6H12O6 H2-» se lit
+   C6H14O6 charge -1, «C6H12O6-2» se lit C6H12O6 charge -2, et «C6H12O6-2H»
+   se lit C6H10O6 neutre. Aucune écriture n’a deux lectures possibles.
    ------------------------------------------------------------------------- */
 
 /* Les adduits, avec un INDEX, parce qu'un chemin de provenance les désigne par
@@ -163,10 +171,11 @@ class Element{
    est alors une simple étiquette. Rien n'est refusé — le moteur sait lire, il ne
    décide pas.
 
-   ATTENTION au sens de "e-". Le signe est celui de l'électron, pas celui de
-   l'ion: "e-" est l'électron que la molécule a GAGNÉ, donc charge -1. Se tromper
-   ici produirait l'anion radicalaire à la place du cation, avec la bonne masse
-   et la mauvaise charge — le pire genre de bug. */
+   NOTE: il n'y a plus d'entrée "e+" ni "e-". Un électron n'est pas un atome,
+   et la grammaire sait déjà l'exprimer seul: "[+]" est un électron PERDU,
+   "[-]" un électron GAGNÉ. Les garder ici n'aurait servi qu'à leur donner un
+   nom, et un terme sans atome n'a pas besoin de nom: c'est une charge.
+   Un ion radical se reconnaît par la parité de valence, pas par une étiquette. */
 const IONISATIONS=[
     {index:0,name:"",     group:null,charge: 0,meaning:"le neutre lui-même"},
     {index:1,name:"H+",   group:"H",  charge:+1,meaning:"protonation"},
@@ -174,8 +183,6 @@ const IONISATIONS=[
     {index:3,name:"K+",   group:"K",  charge:+1,meaning:"adduit potassium"},
     {index:4,name:"NH4+", group:"NH4",charge:+1,meaning:"adduit ammonium"},
     {index:5,name:"H-",   group:"H",  charge:-1,meaning:"déprotonation"},
-    {index:6,name:"e-",   group:null,charge:-1,meaning:"électron gagné, anion radicalaire"},
-    {index:9,name:"e+",   group:null,charge:+1,meaning:"électron perdu, cation radicalaire"},
     {index:7,name:"Cl-",  group:"Cl", charge:-1,meaning:"adduit chlorure"},
     {index:8,name:"OH-",  group:"OH", charge:-1,meaning:"perte hydroxyle"},
 ]
@@ -195,7 +202,7 @@ class Formula{
            Le descripteur a déjà mis la magnitude DANS la charge: "[2+]" est un
            terme de charge 2, et son count vaut 2 parce qu'il y a deux
            électrons, pas parce qu'il y aurait deux fois la charge. Multiplier
-           ici donnerait 4, et "[2+][e-]" ne s'annulerait jamais. */
+           ici donnerait 4, et "[2+][-]" ne s'annulerait jamais. */
         this.charge=charge??ionisation.reduce((n,t)=>n+t.charge,0)
         //la règle se souvient, parce que l'affichage s'en sert: on omet le
         //nombre de masse de l'isotope que CETTE règle aurait choisi
@@ -263,19 +270,22 @@ class Formula{
     /* La partie ionisation, telle qu'on l'écrit: collée, sans espace.
 
        Un terme dont le nom est canonique s'écrit avec son multiplicateur:
-       "e+" devient "[+]", "e-" devient "[-]", et "e+" avec count=2 devient
+       un terme sans atome s'écrit par sa seule charge, et rien d'autre:
        "[2+]". C'est la forme que les chimistes écrivent, donc celle qu'on
        affiche — le "e" du préfixe n'a aucune valeur lisible. */
     get brackets(){
         return this.ionisation.map(t=>{
-            //la charge est réécrite telle qu'elle a été LUE: "[2H+2]" doit
-            //rester "[2H+2]", pas se replier sur le nom canonique "[2H+]"
+            //la charge est réécrite telle qu'elle a été LUE
             const sign=t.charge>0?"+":"-"
             const n=Math.abs(t.charge)
-            if(t.group===null)
-                return `[${(t.count??1)>1||n>1?n:""}${sign}]`
-            const head=t.massNumber!=null?`${t.massNumber}${t.group}`:t.group
-            return `[${head}${(t.count??1)>1?t.count:""}${sign}${n>1?n:""}]`
+            //une charge seule: aucun atome, on écrit juste la magnitude
+            if(!t.group) return `[${n>1?n:""}${sign}]`
+            /* Le groupe est une Map DÉJÀ PARSÉE: on la réécrit avec la même
+               fonction que le core, sinon la clé afficherait "[object Map]".
+               C'est aussi ce qui garantit que deux écritures d'un même groupe
+               donnent la même clé. */
+            const head=Formula.compositionToString(t.group,this.rule)
+            return `[${head}${sign}${n>1?n:""}]`
         }).join("")
     }
 
@@ -288,15 +298,38 @@ class Formula{
     /* "C6H12O6 [H+]" -> une Formula. L'entrée unique, celle qu'on tape.
 
        Les crochets S'EMPILENT et s'additionnent, parce que les ions le font:
-         C6H12O6 [H-][e-]    déprotoné PUIS réduit, charge -2
-         C6H12O6 [2H+][e-]   doublement protoné PUIS réduit, charge +1 */
+         C6H12O6 [H-][-]      déprotoné PUIS réduit, charge -2
+         C6H12O6 [2H+][-]    doublement protoné PUIS réduit, charge  0 */
     static parse(text,table,rule="mostProbable"){
         const s=String(text).trim()
-        //Les crochets s'empilent, et les ";" aussi: ce sont deux délimiteurs
-        //pour la MÊME chose. "[H+][e-]" et ";H+;e-" sont le même ion.
-        //Chaque ";" ouvre un terme, exactement comme chaque crochet.
-        const brackets=[...s.matchAll(/\[([^\]]*)\]/g)]
-        const afterSemicolon=s.split(";").slice(1)
+        /* Un signe NU n'appartient à aucun terme: c'est la charge de l'ion.
+           On le coupe donc AVANT d'appeler parseComposition, sinon il serait
+           pris pour un coefficient sans atome et la charge disparaîtrait.
+           C'est ce qui fait que "C6H12O6 H2-" se lit C6H14O6 charge -1.
+
+           Il faut toutefois que le signe soit vraiment NU. Dans ";H+" le "+"
+           n'a rien derrière lui non plus, mais le H qui le précède est un
+           terme d'ionisation: le couper donnerait deux moitiés illisibles.
+           On exige donc qu'il n'y ait NI ";" ni crochet dans la saisie — la
+           charge nue est alors en fin de chaîne, seul endroit où elle est
+           certaine. */
+        const chargeFromCore=!s.includes(";")&&!s.includes("[")
+            ?/([+-]+\s*\d*)\s*$/.exec(s)
+            :null
+        let core=s
+        let orphan=0
+        if(chargeFromCore){
+            core=s.slice(0,chargeFromCore.index).trim()
+            /* On compte les signes RÉPÉTÉS: "C6H12O6++" est une charge +2, et
+               non deux charges +1 distinctes — sinon "++" ne voudrait pas dire
+               la même chose que "[+][+]", et la règle qu'on vient de fixer
+               serait fausse. Une magnitude écrite l'emporte: "-2" vaut -2. */
+            const signs=chargeFromCore[1].match(/[+-]/g).length
+            const magnitude=Number(/(\d+)\s*$/.exec(chargeFromCore[1])?.[1]||signs)
+            orphan=(chargeFromCore[1].startsWith("+")?1:-1)*magnitude
+        }
+        const brackets=[...core.matchAll(/\[([^\]]*)\]/g)]
+        const afterSemicolon=core.split(";").slice(1)
         /* Mélanger les deux délimiteurs dans une même saisie rendrait l'ordre
            ambigu: "C6H12O6[H+];e-" pourrait se lire dans les deux sens. On le
            refuse donc, plutôt que de choisir un ordre arbitraire et muet. */
@@ -306,15 +339,25 @@ class Formula{
             ?brackets.map(([,inner])=>inner)
             :afterSemicolon).map(t=>t.trim()).filter(t=>t!=="")
         //tout ce qui n'est pas un terme d'ionisation est la composition
-        const body=(brackets.length?s.replace(/\[[^\]]*\]/g," "):s.split(";")[0]).trim()
+        const body=(brackets.length?core.replace(/\[[^\]]*\]/g," "):core.split(";")[0]).trim()
         if(!body) throw new Error(`no composition in "${text}"`)
         const composition=Formula.parseComposition(body,table,rule)
+        /* Le signe nu devient un terme d'ionisation à part entière: il doit
+           apparaître dans la clé et s'additionner aux autres charges,
+           exactement comme un [2+]. Le signe est indispensable, car "1" seul
+           n'est pas une charge. */
+        const trailing=orphan||composition.trailingSign||0
+        if(composition.trailingSign) delete composition.trailingSign
+        if(trailing) terms.unshift(trailing>0?`+${trailing}`:`${trailing}`)
         if(terms.length===0) return new Formula({composition,ionisation:[],rule})
         //chaque crochet est un terme; les charges s'additionnent
         const ionisation=terms.map(t=>Formula.parseIonisation(t,table).ionisation)
-        //les termes ont LEUR PROPRE isotope, dans l'ordre où ils sont écrits
-        for(let {group,charge,count=1,massNumber=null} of ionisation){
-            if(group) Formula.applyGroup(composition,group,count,charge<0,table,rule,massNumber)
+        /* Les coefficients sont DÉJÀ signés dans la Map: parseComposition a lu
+           "H-1" comme un coefficient -1. Il n'y a donc plus de "remove" à
+           décider ici — c'est la composition qui dit quoi faire, et elle le
+           dit une fois pour toutes. */
+        for(const {group} of ionisation){
+            if(group) Formula.applyGroup(composition,group,1,false,table,rule)
         }
         return new Formula({composition,ionisation,rule})
     }
@@ -342,18 +385,71 @@ class Formula{
        première lettre est une majuscule. On tolère "c6h13o6" et "fe2o3" par
        confort de frappe, mais "co2" reste C + O2, jamais du cobalt. C'est le
        prix de la minuscule, et il est juste: le cobalt s'écrit "Co". */
+    /* L'index de la parenthèse qui ferme celle qui s'ouvre à "from".
+
+       On compte la profondeur plutôt que de chercher le premier ")": sans ça,
+       "(H2O)-1" s'arrêterait au premier crochet fermé, et une formule
+       imbriquée comme "((CH3)2N)H" serait coupée en deux. */
+    static matchParen(raw,from){
+        let depth=0
+        for(let i=from;i<raw.length;i++){
+            if(raw[i]==="(") depth++
+            else if(raw[i]===")"){ depth--; if(depth===0) return i }
+        }
+        throw new Error(`unbalanced "(" in "${raw}"`)
+    }
+
+    /* Y a-t-il un ÉLÉMENT après cette position du fragment ?
+
+       C'est ce qui sépare une charge d'un coefficient: dans "-2H" le 2 est
+       suivi de H, donc c'est un coefficient; dans "-2" il ne l'est pas, donc
+       c'est la charge. Sans cette question, les deux se ressemblent. */
+    static hasElementAfter(raw,from){
+        return /[A-Za-z]/.test(raw.slice(from))
+    }
+
     static parseComposition(text,table,rule="mostProbable"){
         const composition=new Map()
-        //un atome, son A (s'il est écrit) et son nombre d'exemplaires
-        const add=(el,massNumber,count)=>{
-            const n=Number(count||"1")
-            const A=massNumber?Number(massNumber):el.pickA(rule)
-            if(massNumber&&!el.isotope(A))
+        /* Un atome, son A et son nombre d'exemplaires.
+
+           L'A et le coefficient ne peuvent pas être déterminés qu'ensemble, et
+           c'est le SIGNE ÉCRIT qui tranche:
+
+             2H    A écrit       → deutérium
+             -2H   coefficient   → deux hydrogènes EN MOINS
+             H2    compte        → deux protium
+             -H2   coefficient   → deux protium en moins
+             +H2   coefficient   → DEUX hydrogènes, pas un
+
+           Ce dernier cas est celui qui se trompeait: le nombre écrit APRÈS le
+           symbole est toujours un compte, et il multiplie le coefficient sans
+           le remplacer. "+H2" est donc +1 × 2, et non +2 ou +1. */
+        const add=(el,massNumber,count,sign=1,signed=false)=>{
+            const A=signed?(el.pickA(rule)):(massNumber?Number(massNumber):el.pickA(rule))
+            /* Le coefficient n'est un nombre que s'il est écrit AVANT le
+               symbole. "-2H" en a un (2), mais "-H2" n'en a pas: son 2 est
+               un compte, et le coefficient reste -1. C'est ce qui distingue
+               -2H de -H2, et c'est le seul endroit où les deux nombres du
+               même terme peuvent coexister. */
+            const before=signed&&massNumber?Number(massNumber):1
+            const after=count!==null&&count!==undefined&&count!==""?Number(count):1
+            const n=sign*before*after
+            if(!signed&&massNumber&&!el.isotope(A))
                 throw new Error(`${el.symbol} has no isotope ${A}`)
             if(!composition.has(el)) composition.set(el,new Map())
             const byA=composition.get(el)
             byA.set(A,(byA.get(A)??0)+n)
         }
+        /* On découpe sur les espaces et les points, et on NE découpe JAMAIS sur
+           un signe: "-2" est un coefficient attaché à l'élément qui suit, donc
+           couper là-dessous le séparerait de ce qu'il qualifie. */
+        /* Un signe SANS élément derrière est une CHARGE, jamais un coefficient.
+           "C6H12O6 H2-" est C6H14O6 chargé -1: le H2 est ajouté, et le - qui
+           ne qualifie rien devient la charge de l'ion. C'est le seul endroit
+           où une charge naît de la COMPOSITION, et il faut le dire à parse(),
+           qui seul sait qu'un ion existe. */
+        let trailingSign=0
+        let trailingMagnitude=1
         for(const raw of String(text).trim().split(/[\s.]+/).filter(Boolean)){
             /* Segmentation caractère par caractère. À chaque place, on regarde si
                les DEUX lettres sont chacune un élément à elles seules:
@@ -370,7 +466,79 @@ class Formula{
             const two=/(\d*)([A-Za-z][A-Za-z])(\d*)/y
             const one=/(\d*)([A-Za-z])(\d*)/y
             let i=0
+            /* Le signe est lu UNE fois par terme, et s'applique au terme qui
+               suit — à lui seul. "H-2O-1" se lit H×1 puis O×(-1); le signe ne
+               déborde JAMAIS sur ce qui précède, sinon "C6H12O6-H2" et
+               "C6H12O6-2H" ne signifieraient pas la même chose. */
+            let sign=1
+            //un signe ÉCRIT change la lecture du nombre qui le suit
+            let signed=false
             while(i<raw.length){
+                //un signe en attente, juste avant le terme qu'il qualifie
+                if(raw[i]==="+"||raw[i]==="-"){
+                    /* Deux signes d'affilée n'ont pas d'élément entre eux: ils
+                       ne peuvent donc pas qualifier un terme, et s'ajoutent
+                       comme une charge. C'est "++" = +2, l'équivalent de "[+][+]"
+                       sans les crochets. */
+                    if(signed&&!Formula.hasElementAfter(raw,i+1)){
+                        trailingSign+=sign
+                        signed=false
+                        sign=1
+                        i++
+                        continue
+                    }
+                    sign=raw[i]==="-"?-1:1
+                    signed=true
+                    i++
+                    continue
+                }
+                /* Un nombre NU entre deux signes, ou après un signe qui ne
+                   qualifie rien: c'est la MAGNITUDE de la charge. "-2" veut
+                   dire charge -2, et non un coefficient de 2 — il n'y a aucun
+                   élément derrière. On l'accumule à part, et il ne sera lu
+                   comme coefficient que s'il est suivi d'un élément. */
+                if(/[0-9]/.test(raw[i])){
+                    const digits=/^\d+/.exec(raw.slice(i))
+                    if(signed&&!Formula.hasElementAfter(raw,i+digits[0].length)){
+                        /* Le nombre nu est la MAGNITUDE, pas un coefficient:
+                           le terme reste sans élément, donc le signe qui le
+                           précédait ne peut pas le qualifier — il ne fait que
+                           dire le sens. "-2" est donc une charge -2, et non
+                           deux atomes de signe négatif. */
+                        trailingSign+=sign
+                        trailingMagnitude=Number(digits[0])
+                        signed=false
+                        sign=1
+                        i+=digits[0].length
+                        continue
+                    }
+                }
+                /* Les PARENTHÈSES. C'est ce qui permet à un adduit d'être un
+                   vrai groupe: "(H2O)-1" est l'eau multipliée par -1, et non
+                   une suite d'éléments. Sans elles, "-H2O" serait H×-1 puis
+                   O×1, ce qui n'est pas la même chose du tout. */
+                if(raw[i]==="("){
+                    const close=Formula.matchParen(raw,i)
+                    const inner=Formula.parseComposition(raw.slice(i+1,close),table,rule)
+                    /* Le coefficient vient APRÈS la parenthèse fermée, parce
+                       que c'est lui qui la multiplie: "(H2O)-1". Un coefficient
+                       placé devant est toléré aussi, par confort de frappe. */
+                    let j=close+1
+                    let factor=1
+                    if(raw[j]==="-"||raw[j]==="+"){ factor=raw[j]==="-"?-1:1; j++ }
+                    const digits=/^\d+/.exec(raw.slice(j))
+                    if(digits){ factor*=Number(digits[0]); j+=digits[0].length }
+                    for(const [el,byA] of inner)
+                        for(const [A,n] of byA){
+                            if(!composition.has(el)) composition.set(el,new Map())
+                            const byOther=composition.get(el)
+                            byOther.set(A,(byOther.get(A)??0)+sign*factor*n)
+                        }
+                    sign=1
+                    i=j
+                    continue
+                }
+                if(raw[i]===")") throw new Error(`unbalanced ")" in "${raw}"`)
                 two.lastIndex=i
                 const p=two.exec(raw)
                 if(p){
@@ -379,177 +547,127 @@ class Formula{
                        majuscules) ne trouve rien et se scinde en C + O. C'est
                        toute la convention Hill, en une comparaison. */
                     const exact=table.bySymbol.get(p[2])
-                    if(exact){ add(exact,p[1],p[3]); i+=p[0].length; continue }
+                    if(exact){ add(exact,p[1],p[3],sign,signed); sign=1; signed=false; i+=p[0].length; continue }
                     //sinon: si les DEUX lettres sont des éléments, ce sont deux
                     //atomes. C est un élément et O aussi, donc "CO" est C + O.
                     const a=table.find(p[2][0])
                     const b=table.find(p[2][1])
                     if(a&&b){
-                        add(a,p[1],null)
+                        add(a,p[1],null,sign,signed)
                         one.lastIndex=i+1
                         const second=one.exec(raw)
-                        add(b,null,second?.[3])
+                        add(b,null,second?.[3],sign,signed)
+                        sign=1
+                        signed=false
                         i+=p[0].length
                         continue
                     }
                     //l'une des deux n'existe pas: le couple ne peut être qu'un symbole
                     const pair=table.find(p[2])
-                    if(pair){ add(pair,p[1],p[3]); i+=p[0].length; continue }
+                    if(pair){ add(pair,p[1],p[3],sign,signed); sign=1; signed=false; i+=p[0].length; continue }
                 }
                 one.lastIndex=i
                 const m=one.exec(raw)
                 if(!m){ i++; continue }
                 const el=table.find(m[2])
                 if(!el) throw new Error(`unknown element "${m[2]}" in "${raw}"`)
-                add(el,m[1],m[3])
+                add(el,m[1],m[3],sign,signed)
+                sign=1
+                signed=false
                 i+=m[0].length
             }
+            //un signe resté sans terme derrière: c'est une charge
+            if(signed) trailingSign+=sign
         }
+        //la composition porte les atomes; le signe nu est la charge de l'ion,
+        //et il est rendu pour que parse() puisse l'appliquer
+        if(trailingSign) composition.trailingSign=trailingSign*trailingMagnitude
         return composition
     }
 
-    /* DÉCOMPOSE un terme d'ionisation en trois champs, sans rien décider.
+    /* DÉCOMPOSE un terme d'ionisation, sans rien décider.
 
-       Une seule règle, celle de la composition: le nombre AVANT le symbole
-       est une MASSE, le nombre APRÈS est un COMPTE, et le signe porte la
-       charge. On la lit donc dans l'ordre où elle s'écrit.
+       Un terme est l'une de deux choses, et jamais les deux:
 
-           [2H+]    massNumber 2   H + 1 proton   → deutérium
-           [H2+]    massNumber -   H x2           → deux protium
-           [H+2]    massNumber -   H + 2          → un H, charge 2
-           [2H+2]   massNumber 2   H + 2          → deutérium, charge 2
-           [23Na+]  massNumber 23  Na + 1         → sodium 23
-           [2+]     massNumber -   (rien) + 2     → deux électrons perdus
+         - une CHARGE      [+] [2+] [--] ++   → la composition est intacte
+         - une COMPOSITION [H] [2H] [H-2O]    → des atomes, avec leurs signes
 
-       "2H" ne peut pas vouloir dire "deux H" : dans une COMPOSITION il
-       signifie déjà le deutérium, et il doit vouloir dire la même chose ici.
-       Deux protons s'écrivent [H+][H+], qui est plus clair de toute façon.
-
-       Le descripteur ne RESOUT rien: il décrit. C'est ce qui permet à
-       resolve() de tenter le registre avant l'isotope avant l'étiquette. */
+       La charge est un NOMBRE SEUL. Dès qu'un élément le suit, le signe devient
+       un COEFFICIENT, et c'est ce qui rend la grammaire sans recouvrement:
+       "-2" est une charge -2, alors que "-2H" sont deux hydrogènes en moins.
+       C'est la même règle que dans le core, appliquée au même endroit. */
     static readIonisation(text){
         const s=String(text).trim().replace(/^\[|\]$/g,"").trim()
-        //la charge est TOUJOURS à la fin, signe puis chiffres
-        const signed=/([+-])\s*(\d*)\s*$/.exec(s)
-        if(!signed) throw new Error(`cannot read "${text}" as an ionisation`)
-        const sign=signed[1]
-        const charge=Number(signed[2]||"1")
-        if(charge===0) throw new Error(`"${text}" has a charge of zero`)
-        const head=s.slice(0,signed.index).trim()
-        //"[+]", "[2+]", "[3-]": rien avant le signe, ou un nombre nu. Ce sont
-        //des ÉLECTRONS — le nombre est la charge ET le nombre d'électrons.
-        if(!head||/^\d+$/.test(head)){
-            const n=head?Number(head):charge
-            return {massNumber:null,name:"",atomCount:n,charge:sign==="+"?n:-n}
+        /* Des SIGNES RÉPÉTÉS sont une charge répétée: "++" est +2, "---" est
+           -3. C'est la même idée que "[+][+]", écrite plus court. */
+        const repeated=/^([+-])\1*$/.exec(s)
+        if(repeated) return {
+            massNumber:null,name:"",atomCount:s.length,
+            charge:repeated[1]==="+"?s.length:-s.length,
         }
-        //"[2e+]": le "e" collé au nombre. C'est la forme LONGUE de "[2+]" — le
-        //même ion, écrit avec la lettre. Le nombre est donc le nombre
-        //d'électrons, pas un isotope, et il ne reste qu'un "e" à ignorer.
-        const withE=/^(\d+)[Ee]$/.exec(head)
-        if(withE){
-            const n=Number(withE[1])
-            return {massNumber:null,name:"",atomCount:n,charge:sign==="+"?n:-n}
-        }
-        //"23Na": le nombre de masse précède le symbole, "H2": le compte le suit
-        const m=/^(\d*)([A-Za-z][A-Za-z0-9]*)(\d*)$/.exec(head)
-        if(!m) throw new Error(`cannot read "${text}" as an ionisation`)
-        const [,mass,name,count]=m
-        return {
-            massNumber:mass?Number(mass):null,
-            name,
-            atomCount:count?Number(count):1,
-            charge:sign==="+"?charge:-charge,
-        }
-    }
+        /* Un terme se lit comme le core, avec UNE différence: un signe NU en
+           fin de terme est la CHARGE, même si des atomes le précèdent.
 
-    /* Résout un descripteur en terme d'ionisation, en trois temps.
+             [H+]     un H ajouté, puis charge +1   ← le + ne qualifie rien
+             [H-1]    un H retiré                     ← le -1 est un compte
+             [2H+1]   un deutérium, puis charge +1
 
-       L'ordre n'est pas un détail: la LISTE est la seule source qui sait ce
-       qu'un terme composé contient. "MeOH+" et "H2O-" ne se découpent pas
-       caractère par caractère — H2O- donnerait H(2 atomes) puis O, ce qui
-       est faux. Donc on la consulte TOUJOURS en premier, et la composition
-       qu'elle décrit n'est jamais devinée.
-
-       Ensuite seulement vient l'isotope, qui n'a de sens que pour un atome
-       simple. Enfin l'étiquette libre, qui n'ajoute rien à la composition:
-       c'est le filet de sécurité, pas une interprétation. */
-    static resolveIonisation(desc,table){
-        const {massNumber,name,atomCount,charge}=desc
-        //la casse est indifférente ICI AUSSI: "[h+]" doit être "[H+]", sinon les
-        //deux écritures du même ion ne se rejoignent jamais
-        const cap=name?name[0].toUpperCase()+name.slice(1):""
-        /* Le REGISTRE d'abord, toujours.
-
-           Un nombre peut précéder un terme enregistré — "[2MeOH+]" est deux
-           méthanol. C'est le seul endroit qui sait ce que contient un terme
-           composé, donc on le tente même quand un nombre est écrit: on ne peut
-           savoir que "2MeOH" n'est pas un isotope qu'après avoir vu que "MeOH"
-           n'est pas un élément. Un A n'est retenu que si le reste est un
-           symbole, jamais un nom composé.
-
-           Le GROUPE vient du registre, la CHARGE du descripteur: "[H+2]" est
-           l'adduit de "[H+]" avec une charge de 2, et se fier à la liste
-           ramènerait cette charge à 1. */
-        const known=IONISATION_BY_NAME.get(`${cap}${charge>0?"+":"-"}`)
-            ||IONISATION_BY_NAME.get(`${name}${charge>0?"+":"-"}`)
-        /* Un terme ENREGISTRÉ prime sur l'élément de même symbole. Sans cela
-           "[e-]" serait lu comme l'einsteinium, parce que E existe dans la
-           table: or le registre dit que "e-" est un électron, et c'est lui
-           qui a raison — c'est le seul endroit qui sache ce qu'un terme
-           COMPOSE. "E" reste l'einsteinium quand il est absent du registre. */
-        const isRegisteredElectron=known&&known.group===null
-        if(known&&(massNumber===null||isRegisteredElectron||!table.find(cap))){
-            /* Un nombre devant un terme ENREGISTRÉ est un multiplicateur, pas
-               une masse: "[2MeOH+]" est deux méthanol. Chaque copie apporte sa
-               propre charge, donc la charge suit le multiplicateur — deux
-               protons font bien +2.
-
-               Un nombre devant un ÉLÉMENT reste un isotope, et c'est
-               l'inverse: "[2H+]" est du deutérium, et deux deutériums
-               porteraient +2, donc la charge reste 1. "[H2+]" est la forme
-               qui veut dire deux atomes, et sa charge reste +1 aussi. */
-            const times=massNumber===null?1:massNumber
-            return {...known,count:atomCount*times,charge:charge*times,known:true}
-        }
-        //2) un atome simple, isotope facultatif: [2H+], [23Na+]
-        const el=table.find(cap)
-        if(el){
-            const A=massNumber??null
-            if(A!==null&&!el.isotope(A))
-                throw new Error(`${el.symbol} has no isotope ${A}`)
+           C'est la même règle que dans le core, où "C6H12O6 H2-" se lit
+           C6H14O6 charge -1. La différence ne porte donc sur rien. */
+        const trailing=/([+-])\s*$/.exec(s)
+        if(trailing){
+            const head=s.slice(0,trailing.index).trim()
+            if(!head) return {
+                massNumber:null,name:"",atomCount:1,
+                charge:trailing[1]==="+"?1:-1,
+            }
             return {
-                index:-1,group:cap,count:atomCount,charge,massNumber:A,
-                name:`${A??" "}${cap}${charge>0?"+":"-"}`,known:false,
+                massNumber:null,name:head,atomCount:1,isComposition:true,
+                charge:trailing[1]==="+"?1:-1,
             }
         }
-        //2b) le nom n'est pas un élément, mais il peut finir par un chiffre qui
-        //EST un compte: "[H2+]" n'est pas l'élément "H2", ce sont deux H. Le
-        //registre a déjà été tenté sans succès, donc ce chiffre est le nôtre.
-        const trailing=/^(.*?)([0-9]+)$/.exec(name)
-        if(trailing){
-            const sym=trailing[1][0].toUpperCase()+trailing[1].slice(1)
-            if(table.find(sym))
-                return {
-                    index:-1,group:sym,count:atomCount*Number(trailing[2]),charge,
-                    massNumber:null,name:`${sym}${charge>0?"+":"-"}`,known:false,
-                }
+        /* Un nombre SEUL, avec ou sans signe, est une CHARGE: "[2]", "[+2]",
+           "[-2]". Il n'y a aucun élément derrière, donc le signe ne qualifie
+           rien et ne peut être qu'une charge. C'est ce qui permet à "[H][+1]"
+           de dire deux choses en deux termes, plutôt qu'une seule. */
+        const alone=/^([+-]?)(\d*)$/.exec(s)
+        if(alone){
+            const magnitude=Number(alone[2]||"1")
+            if(magnitude===0) throw new Error(`"${text}" has a charge of zero`)
+            return {
+                massNumber:null,name:"",atomCount:magnitude,
+                charge:alone[1]==="-"?-magnitude:magnitude,
+            }
         }
-        //2b) le terme d'électrons, dont le group est null: il ne touche JAMAIS
-        //la composition. "[2e+]" est le PLIAGE long de "[2+]", et les deux
-        //doivent décrire le MÊME ion: on retire le "e" final, qui n'est pas
-        //un élément, et on retombe sur le registre.
-        const withoutE=/^(.*?)[Ee]$/.exec(name)
-        const isElectron=withoutE&&!table.find(withoutE[1])
-        if(cap==="E"||cap===""||isElectron){
-            const electrons=IONISATION_BY_NAME.get(`e${charge>0?"+":"-"}`)
-            if(electrons)
-                return {...electrons,count:atomCount,charge,known:true}
-        }
-        //3) étiquette libre: rien n'est ajouté, rien n'est retiré
-        return {
+        /* Sinon il n'y a que des ATOMES, signes compris: "[H-1]" est un H
+           retiré, "[CH4O-1]" du méthanol retiré. La charge est 0. */
+        return {massNumber:null,name:s,atomCount:1,charge:0,isComposition:true}
+    }
+
+    /* Résout un descripteur en terme d'ionisation, sans table.
+
+       Un terme porte soit une CHARGE, soit des ATOMES — jamais les deux, et
+       c'est la même grammaire que dans le core. Un groupe composé n'a pas
+       besoin d'être connu d'avance: "H-2O-1" et "-(H2O)" se lisent avec
+       parseComposition, celle du core.
+
+       C'est ce qui supprime le REGISTRE. Il existait pour dire qu'un terme
+       composé contenait autre chose que ce qu'on peut deviner — mais "MeOH+"
+       n'était qu'un nom, et "CH4O-1" dit exactement la même chose en
+       grammaire. Une table n'ajoute pas d'information: elle ajoute une
+       deuxième source de vérité, et c'est elle qui déviait. */
+    static resolveIonisation(desc,table,rule="mostProbable"){
+        const {name,atomCount,charge,isComposition}=desc
+        //une charge seule: aucun atome, et c'est tout
+        if(!isComposition) return {
             index:-1,group:null,count:atomCount,charge,
-            name:`${name}${charge>0?"+":"-"}`,known:false,
+            name:`${charge>0?"+":"-"}${Math.abs(charge)}`,
         }
+        /* Des atomes: on délègue à parseComposition, sans rien d'autre. C'est
+           le même chemin que le core, donc "H-2O-1" se lit exactement comme
+           dans "C6H12O6-H-2O-1" — une seule grammaire, une seule fonction. */
+        const group=Formula.parseComposition(name,table,rule)
+        return {index:-1,group,count:1,charge,name}
     }
 
     //"[2H+]", "[H-]", "[Na+]", "[2+]", "[3-]", "[]" -> {ionisation, count, known}
@@ -598,19 +716,22 @@ class Formula{
        écrit est, lui aussi, une hypothèse — [Na+] ne dit pas 23Na, il dit
        « du sodium ». */
     static applyGroup(composition,group,count,remove,table,rule="mostProbable",massNumber=null){
-        for(let [el,byA] of Formula.parseComposition(group,table,rule)){
-            //un A ÉCRIT sur l'adduit l'emporte: "[2H+]" ajoute du deutérium, et
-            //non le protium que la règle aurait choisi pour H
-            const [defaultA,n]=[...byA][0]
-            const A=massNumber??defaultA
-            if(massNumber!==null&&!el.isotope(A))
-                throw new Error(`${el.symbol} has no isotope ${A}`)
-            const times=(remove?-1:1)*count*n
-            if(!composition.has(el)) composition.set(el,new Map())
-            const target=composition.get(el)
-            target.set(A,(target.get(A)??0)+times)
-            if(target.get(A)===0) target.delete(A)
-            if(target.size===0) composition.delete(el)
+        /* Le groupe arrive DÉJÀ PARSÉ, en Map: resolveIonisation l'a lu avec
+           parseComposition, celle du core. Le reparsing ici serait une seconde
+           grammaire — et c'est exactement le registre qu'on a supprimé.
+
+           Chaque atome porte son propre A et son propre coefficient, qu'il
+           faut conserver tels quels: "[-(H2O)]" retire deux 1H et un 16O, et
+           non "deux fois le premier atome trouvé". */
+        for(const [el,byA] of group){
+            for(const [A,n] of byA){
+                const times=(remove?-1:1)*count*n
+                if(!composition.has(el)) composition.set(el,new Map())
+                const target=composition.get(el)
+                target.set(A,(target.get(A)??0)+times)
+                if(target.get(A)===0) target.delete(A)
+                if(target.size===0) composition.delete(el)
+            }
         }
         return composition
     }
@@ -815,7 +936,7 @@ test("un ion doublement chargé retire deux électrons",()=>{
     close(s.mz,s.mass/2,1e-9)
 })
 test("un anion AJOUTE des électrons",()=>{
-    const s=parse("C6H12O6 [e-]")
+    const s=parse("C6H12O6 [-]")
     close(s.mass,GLUCOSE+MASS_OF_E,1e-9)
 })
 test("mz est la masse divisée par la charge, sans rien d'autre",()=>{
@@ -876,46 +997,47 @@ test("la clé ne dépend que du contenu",()=>{
 
 
 console.log("l'ion radicalaire, des deux côtés")
-test("[e+] ne touche pas à la composition",()=>{
-    //un électron PERDU: la composition reste C6H12O6, seule la charge change
-    const s=parse("C6H12O6 [e+]")
+test("[+] ne touche pas à la composition: c'est un électron PERDU",()=>{
+    /* Il n'y a plus de "e+": une charge seule EST un électron. "[+]" et
+       "[e+]" disaient la même chose, et le second n'était qu'un nom. */
+    const s=parse("C6H12O6 [+]")
     if(s.composition.size!==3) throw new Error("composition changed")
     close(s.mz,GLUCOSE-MASS_OF_E,1e-9)
     if(s.charge!==1) throw new Error(`charge ${s.charge}`)
 })
-test("[e-] est l'anion radicalaire: électron GAGNÉ",()=>{
-    /* "e-" se lit électrons-MOINS, donc charge -1. C'est le seul moyen d'avoir
-       un radical sans toucher aux atomes. */
-    const s=parse("C6H12O6 [e-]")
+test("[-] est l'anion radicalaire: électron GAGNÉ",()=>{
+    /* "[e-]" se lisait "électrons-MOINS", donc charge -1. C'est le seul moyen
+       d'avoir un radical sans toucher aux atomes — et "[-]" le fait sans nom. */
+    const s=parse("C6H12O6 [-]")
     if(s.charge!==-1) throw new Error(`charge ${s.charge}, expected -1`)
     if(s.composition.size!==3) throw new Error("composition changed")
     close(s.mz,GLUCOSE+MASS_OF_E,1e-9)
 })
 test("cation et anion sont deux formules différentes",()=>{
-    const cation=parse("C6H12O6 [e+]")
-    const anion=parse("C6H12O6 [e-]")
+    const cation=parse("C6H12O6 [+]")
+    const anion=parse("C6H12O6 [-]")
     if(cation.charge!==1) throw new Error(`cation charge ${cation.charge}`)
     if(anion.charge!==-1) throw new Error(`anion charge ${anion.charge}`)
     if(cation.key===anion.key) throw new Error("cation and anion share a key")
 })
-test("H- et e- ont la même charge mais pas la même masse",()=>{
-    //la confusion à éviter: [H-] PERD un proton, [e-] GAGNE un électron
+test("H- et [-] ont la même charge mais pas la même masse",()=>{
+    //la confusion à éviter: [H-] PERD un proton, [-] GAGNE un électron
     const proton=parse("C6H12O6 [H-]")
-    const electron=parse("C6H12O6 [e-]")
+    const electron=parse("C6H12O6 [-]")
     if(proton.charge!==electron.charge) throw new Error("charges should match")
     close(electron.mass-proton.mass,PROTON,1e-9)
 })
 test("les crochets s'empilent et les charges s'additionnent",()=>{
-    const s=parse("C6H12O6 [H-][e-]")
+    const s=parse("C6H12O6 [H-][-]")
     if(s.charge!==-2) throw new Error(`charge ${s.charge}, expected -2`)
     if(s.ionisation.length!==2) throw new Error(`${s.ionisation.length} terms`)
     if(atoms(s,"H")!==11) throw new Error("the proton loss still happened")
 })
-test("[2H+][e-] donne un ion neutre, et non +1",()=>{
+test("[2H+][-] donne un ion neutre, et non +1",()=>{
     //deutérium +1, puis un électron gagné -1: ça s'annule. Ce que la
     //formulation testait avant était l'ACCUMULATION des deux charges, pas
     //leur somme — et c'est bien la somme qu'on vérifie ici
-    const s=parse("C6H12O6 [2H+][e-]")
+    const s=parse("C6H12O6 [2H+][-]")
     if(s.charge!==0) throw new Error(`charge ${s.charge}, expected 0`)
 })
 
@@ -956,7 +1078,7 @@ test("un adduit enregistré peut être perdu, pas seulement ajouté",()=>{
 })
 test("des adduits inconnus s'empilent sans qu'on ait à les connaître",()=>{
     //aucune combinatoire n'est refusée, même si elle n'a aucun sens
-    const s=parse("C6H12O6 [Na+][H-][e-][MeOH+]")
+    const s=parse("C6H12O6 [Na+][H-][-][MeOH+]")
     if(s.ionisation.length!==4) throw new Error(`${s.ionisation.length} terms, expected 4`)
     if(s.charge!==0) throw new Error(`charge ${s.charge}, expected 0`)
 })
@@ -964,9 +1086,9 @@ test("l'enregistrement ne touche pas aux adduits déjà connus",()=>{
     if(IONISATIONS[1].name!=="H+"||IONISATIONS[1].charge!==1)
         throw new Error("H+ was disturbed")
     if(IONISATION_BY_NAME.get("H+")!==IONISATIONS[1]) throw new Error("the map no longer points at the same object")
-    //et le signe de l'adduit est bien celui de l'ION
-    if(IONISATIONS[6].name!=="e-"||IONISATIONS[6].charge!==-1)
-        throw new Error("e- must be the negative charge")
+    //et le signe d'un adduit est bien celui de l'ION
+    if(IONISATIONS[5].name!=="H-"||IONISATIONS[5].charge!==-1)
+        throw new Error("H- must be the negative charge")
 })
 test("un adduit contradictoire est refusé à l'enregistrement",()=>{
     //seule contradiction tolérée: un nom qui contredit sa propre charge
@@ -1185,12 +1307,9 @@ test("[3-] est trois électrons gagnés",()=>{
     if(s.charge!==-3) throw new Error(`charge ${s.charge}, expected -3`)
     close(s.mass,Formula.parse("C6H12O6",TABLE).mass+3*MASS_OF_E,1e-12)
 })
-test("un [+] nu et un [e+] sont le même ion",()=>{
-    if(Formula.parse("C6H12O6[+]",TABLE).key!==Formula.parse("C6H12O6[e+]",TABLE).key)
-        throw new Error("[+] and [e+] must agree")
-    if(Formula.parse("C6H12O6[-]",TABLE).key!==Formula.parse("C6H12O6[e-]",TABLE).key)
-        throw new Error("[-] and [e-] must agree")
-})
+//L'équivalence "[+] ≡ [e+]" a disparu: "[e+]" n'est plus lu, parce qu'il
+//n'était qu'un nom pour une charge. Une charge seule EST un électron, et il
+//n'y a rien à comparer.
 
 
 
@@ -1261,6 +1380,143 @@ test("un terme composé vient du registre, jamais d'un découpage",()=>{
     if(f.counts.get(TABLE.find("O"))!==5) throw new Error("O is not 5")
     if(f.charge!==-1) throw new Error(`charge ${f.charge}, expected -1`)
 })
+test("un signe NU, où qu'il soit, est la charge de l'ion",()=>{
+    /* La règle tient en une phrase: un signe qualifie le terme qui suit, et
+       s'il n'y a rien derrière il ne qualifie rien — donc c'est une charge.
+       C'est ce qui rend "C6H12O6 H2-" lisible: deux hydrogènes ajoutés, et
+       un ion chargé -1. */
+    const cases=[
+        //texte            termes H      charge
+        ["C6H12O6-",       1, 12, -1],
+        ["C6H12O6+",       1, 12,  1],
+        ["C6H12O6-2",      1, 12, -2],
+        ["C6H12O6+2",      1, 12,  2],
+        ["C6H12O6 H2-",    1, 14, -1],
+        ["C6H12O6 H2+",    1, 14,  1],
+        /* -2H et -H2 retirent DEUX hydrogènes: dans le premier le 2 est le
+           coefficient, dans le second c'est le compte, et -1 × 2 fait le
+           même. C'est le seul endroit où les deux nombres se Valent, et c'est
+           normal — ils disent la même chose par deux chemins. */
+        ["C6H12O6-2H",     0, 10,  0],
+        ["C6H12O6-H2",     0, 10,  0],
+        ["C6H12O6+2H",     0, 14,  0],
+        ["C6H12O6+H2",     0, 14,  0],
+    ]
+    for(const [text,terms,hydrogen,charge] of cases){
+        const f=Formula.parse(text,TABLE)
+        if(f.counts.get(TABLE.find("H"))!==hydrogen)
+            throw new Error(`${text} -> H is ${f.counts.get(TABLE.find("H"))}, expected ${hydrogen}`)
+        if(f.charge!==charge) throw new Error(`${text} -> charge ${f.charge}, expected ${charge}`)
+        /* Un signe nu DONNE un terme d'ionisation: il doit figurer dans la
+           clé, sinon deux ions de charges différentes porteraient le même
+           nom — et c'est ce que la règle des trois écritures vérifie. */
+        if(f.ionisation.length!==terms)
+            throw new Error(`${text} -> ${f.ionisation.length} terms, expected ${terms}`)
+    }
+})
+test("++ et +2 sont la même charge",()=>{
+    /* Des signes RÉPÉTÉS valent la charge répétée: c'est la forme courte de
+       "[+][+]", et non deux charges distinctes. Les écritures doivent se
+       rejoindre sur la MÊME clé, sans quoi deux ions identiques en
+       porteraient deux noms. */
+    for(const [a,b,c] of [
+        ["C6H12O6[++]","C6H12O6[+2]","C6H12O6[2+]"],
+        ["C6H12O6[--]","C6H12O6[-2]","C6H12O6[2-]"],
+        ["C6H12O6[---]","C6H12O6[-3]","C6H12O6[3-]"],
+        ["C6H12O6++","C6H12O6+2",null],
+    ]){
+        const keys=[a,b,c].filter(Boolean).map(t=>Formula.parse(t,TABLE).key)
+        if(keys.some(k=>k!==keys[0]))
+            throw new Error(`${a} / ${b} / ${c} -> ${keys.join(" | ")}`)
+    }
+})
+test("il n'y a plus de e+ ni e-: une charge seule EST un électron",()=>{
+    /* On ne PERD rien en supprimant ces deux entrées: "[+]" était déjà l'anion
+       radicalaire, et il n'y avait rien derrière. Un terme sans atome n'a pas
+       besoin d'un nom, et un radical se reconnaît par la parité de valence,
+       pas par une étiquette. */
+    const cation=Formula.parse("C6H12O6[+]",TABLE)
+    const anion=Formula.parse("C6H12O6[-]",TABLE)
+    if(cation.charge!==1||anion.charge!==-1) throw new Error("charges")
+    if(cation.composition.size!==3||anion.composition.size!==3)
+        throw new Error("a bare charge must not touch the composition")
+    //et "e" n'est pas un élément: le former nom n'est plus lu du tout
+    for(const text of ["C6H12O6[e+]","C6H12O6[e-]"]){
+        let threw=false
+        try{ Formula.parse(text,TABLE) }catch{ threw=true }
+        if(!threw) throw new Error(`${text} should not be readable`)
+    }
+})
+test("un terme est soit un nombre seul (charge), soit des atomes",()=>{
+    /* LA règle, et elle est unique — pas d'exception entre crochets et ";":
+       un signe qualifie le terme qui suit, et s'il n'y a rien derrière il ne
+       qualifie rien, donc c'est une charge.
+
+         [2]      charge +2        aucune composition
+         [H]      1 H ajouté       charge 0
+         [H+1]    1 H ajouté       charge 0   (le + est un COEFFICIENT)
+         [H-1]    H retiré         charge 0
+         [H2]     2 H ajoutés      charge 0
+         [H][+1]  1 H, puis charge +1
+
+       C'est ce qui tue le registre: "[H+1]" ne dit plus "protonation", il dit
+       "un H ajouté, et rien d'autre". Le registre serait une deuxième façon
+       de dire la même chose, donc une deuxième source de vérité. */
+    const cases=[
+        //texte        H    charge
+        ["[2]",       12,  2],
+        ["[H]",       13,  0],
+        ["[H+1]",     13,  0],
+        ["[H-1]",     11,  0],
+        ["[H2]",      14,  0],
+        ["[H][+1]",   13,  1],
+        ["[-H]",      11,  0],
+        ["[2H]",      12,  0],
+    ]
+    for(const [term,h,charge] of cases){
+        const f=Formula.parse(`C6H12O6${term}`,TABLE)
+        if(f.counts.get(TABLE.find("H"))!==h)
+            throw new Error(`${term} -> H is ${f.counts.get(TABLE.find("H"))}, expected ${h}`)
+        if(f.charge!==charge) throw new Error(`${term} -> charge ${f.charge}, expected ${charge}`)
+    }
+})
+test("un groupe composé est une VRAIE formule, pas un nom",()=>{
+    /* "(H2O)-1" est l'eau × -1, et "H-2O-1" est H×1 puis O×(-1): deux
+       écritures de la même idée, lues par la MÊME fonction. C'est tout ce
+       qu'un adduit compose est — il n'a pas besoin d'être dans une table,
+       parce que la grammaire sait déjà le lire. */
+    const a=Formula.parse("C6H12O6[-H2O]",TABLE)
+    const b=Formula.parse("C6H12O6[-(H2O)]",TABLE)
+    if(a.key!==b.key) throw new Error(`"${a.key}" != "${b.key}"`)
+    if(a.counts.get(TABLE.find("H"))!==10) throw new Error("H is not 10")
+    if(a.counts.get(TABLE.find("O"))!==5) throw new Error("O is not 5")
+})
+test("plus de registre: [MeOH+] est du méthanol, en grammaire",()=>{
+    /* Sans table, "CH4O-1" se lit comme n'importe quelle composition. C'est la
+       preuve qu'on n'a perdu aucune information en supprimant IONISATIONS. */
+    const f=Formula.parse("C6H12O6[CH4O-1]",TABLE)
+    if(f.counts.get(TABLE.find("C"))!==7) throw new Error("C is not 7")
+    if(f.charge!==0) throw new Error(`charge ${f.charge}, expected 0`)
+})
+test("un isotope d'adduit s'écrit comme un isotope, et rien de plus",()=>{
+    const a=Formula.parse("C6H12O6[23Na]",TABLE)
+    if(!a.composition.get(TABLE.find("Na"))?.has(23)) throw new Error("no 23Na")
+    //et un A inexistant reste une faute, pas un silence
+    let threw=false
+    try{ Formula.parse("C6H12O6[99Na]",TABLE) }catch{ threw=true }
+    if(!threw) throw new Error("Na99 should not exist")
+})
+test("les crochets et le ; dizem la même chose",()=>{
+    for(const [a,b] of [
+        ["C6H12O6[H][+1]","C6H12O6;H;+1"],
+        ["C6H12O6[2+]","C6H12O6;+2"],
+        ["C6H12O6[-H]","C6H12O6;-H"],
+    ]){
+        const ka=Formula.parse(a,TABLE).key
+        const kb=Formula.parse(b,TABLE).key
+        if(ka!==kb) throw new Error(`${a} -> "${ka}" / ${b} -> "${kb}"`)
+    }
+})
 test("le 1 de la charge est facultatif, et les deux délimiteurs s'ignorent",()=>{
     /* "H+" et "H+1" sont la MÊME lecture: un signe nu vaut 1, comme un H seul
        dans une composition vaut un atome. Et le ";" ne change rien au fond,
@@ -1281,12 +1537,12 @@ test("un 2 après le signe n'est PAS facultatif: il change l'ion",()=>{
     if(a.key===b.key) throw new Error("a +1 and a +2 must differ")
 })
 test("le point-virgule est l'autre délimiteur, et il empile aussi",()=>{
-    //";H+;e-" est le même ion que "[H+][e-]"
-    const a=Formula.parse("C6H12O6;H+;e-",TABLE)
-    const b=Formula.parse("C6H12O6[H+][e-]",TABLE)
+    //";H+;-" est le même ion que "[H+][-]"
+    const a=Formula.parse("C6H12O6;H+;-",TABLE)
+    const b=Formula.parse("C6H12O6[H+][-]",TABLE)
     if(a.key!==b.key) throw new Error(`"${a.key}" != "${b.key}"`)
     if(a.charge!==0) throw new Error(`charge ${a.charge}, expected 0`)
-    //"[H+]" AJOUTE un proton, ";e-" ne touche à rien: 13 hydrogènes, dont un
+    //"[H+]" AJOUTE un proton, "[-]" ne touche à rien: 13 hydrogènes, dont un
     //électron de moins. C'est ce que la charge 0 dit du reste
     if(a.counts.get(TABLE.find("H"))!==13)
         throw new Error(`H is ${a.counts.get(TABLE.find("H"))}, expected 13`)
