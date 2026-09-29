@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+
+  <style>
+    /*
+        Palette adaptée depuis FRONTPAGE :
+        fond #1c2129 · accent #aef22e · texte #dfe6ee / #b9c4d0
+    */
+    * {
+      --bg: #1c2129;
+      --surface: rgba(255, 255, 255, 0.04);
+      --border: rgba(255, 255, 255, 0.3);
+      --border-strong: rgba(255, 255, 255, 0.4);
+      --accent: #aef22e;
+      --accent-soft: rgba(172, 255, 47, 0.35);
+      --accent-faint: rgba(172, 255, 47, 0.08);
+      --accent-border: rgba(172, 255, 47, 0.6);
+      --text: #dfe6ee;
+      --text-muted: #b9c4d0;
+      --text-dim: #8fa0b3;
+      --code-bg: #282f3d63;
+      --hover-bg: rgba(0, 0, 0, 0.55);
+      box-sizing: border-box;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+      font-family: monospace;
+      letter-spacing: -0.5px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 40px 15px;
+    }
+
+    button {
+      border: none;
+      border-radius: 5px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      width: auto;
+      margin: 1px;
+      padding: 8px 14px;
+      cursor: pointer;
+      font: inherit;
+      transition: all 150ms ease;
+    }
+    button:hover:not(:disabled) {
+      outline: 1px solid var(--accent);
+      color: var(--text);
+      background: var(--hover-bg);
+      box-shadow: 0px 0px 20px 1px var(--accent-soft);
+    }
+    button:disabled {
+      background-color: rgba(255, 255, 255, 0.15);
+      color: var(--text-dim);
+      cursor: not-allowed;
+    }
+
+    input, textarea {
+      background: var(--code-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 8px;
+      font: inherit;
+      width: 100%;
+      box-sizing: border-box;
+      transition: all 150ms ease;
+    }
+    input:focus, textarea:focus {
+      outline: 1px solid var(--accent);
+    }
+    input::placeholder {
+      color: var(--text-dim);
+    }
+
+    label {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--text-muted);
+      font-size: 0.9em;
+    }
+
+    h1 {
+      color: var(--accent);
+      font-weight: normal;
+      font-size: 1.8em;
+      margin: 0 0 10px 0;
+      letter-spacing: -1px;
+    }
+
+    h2 {
+      color: var(--text-muted);
+      font-weight: normal;
+      font-size: 1.1em;
+      margin: 20px 0 10px 0;
+    }
+
+    /* ---------------------------------------------------------- */
+
+    #login {
+      max-width: 500px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      padding: 30px;
+    }
+
+    #roomName {
+      margin-bottom: 10px;
+    }
+
+    #rooms {
+      margin-top: 20px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .room {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      margin: 6px 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      transition: all 150ms ease;
+    }
+    .room:hover {
+      outline: 1px solid var(--accent);
+      background: var(--hover-bg);
+      box-shadow: 0px 0px 20px 1px var(--accent-soft);
+    }
+
+    .room-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+    }
+
+    .room-name {
+      font-weight: 500;
+    }
+
+    .room-users {
+      color: var(--text-dim);
+      font-size: 0.85em;
+      background: var(--code-bg);
+      padding: 2px 8px;
+      border-radius: 3px;
+    }
+
+    .room button {
+      margin-left: 10px;
+      flex-shrink: 0;
+    }
+
+    /* ---------------------------------------------------------- */
+
+    #chat {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      gap: 15px;
+      width: 100%;
+      max-width: 1200px;
+      height: calc(100vh - 80px);
+      min-height: 600px;
+    }
+
+    #sidebar {
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      padding: 20px;
+      overflow: hidden;
+    }
+
+    #currentRoom {
+      display: block;
+      color: var(--accent);
+      font-size: 1.2em;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    #leaveRoom {
+      width: 100%;
+      margin-bottom: 20px;
+      justify-content: center;
+      background: rgba(194, 26, 26, 0.3);
+      border-color: rgba(194, 26, 26, 0.5);
+    }
+    #leaveRoom:hover {
+      background-color: rgba(194, 26, 26, 0.671);
+      border-color: var(--border-strong);
+      outline-color: #c81a1a;
+      box-shadow: 0px 0px 20px 1px rgba(194, 26, 26, 0.4);
+    }
+
+    #users {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    #users > strong {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.85em;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .user {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      margin: 4px 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      font-size: 0.9em;
+      transition: all 150ms ease;
+    }
+    .user::before {
+      content: "●";
+      color: var(--accent);
+      font-size: 0.7em;
+    }
+    .user.you::after {
+      content: "(vous)";
+      color: var(--text-dim);
+      font-size: 0.75em;
+      margin-left: auto;
+    }
+
+    /* ---------------------------------------------------------- */
+
+    main {
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      min-height: 0;
+      background: linear-gradient(135deg, #1f252fd7, #232b38d7, #1f252fd7);
+    }
+
+    .message {
+      margin: 8px 0;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      line-height: 1.5;
+      word-wrap: break-word;
+      animation: fadeIn 200ms ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.system {
+      color: var(--text-dim);
+      font-style: italic;
+      background: var(--accent-faint);
+      border-color: var(--accent-border);
+      text-align: center;
+      font-size: 0.85em;
+      padding: 6px 12px;
+    }
+
+    .message .user {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .message .text {
+      color: var(--text);
+    }
+
+    #form {
+      display: flex;
+      gap: 10px;
+      padding: 15px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    #text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    #form button {
+      flex-shrink: 0;
+      padding: 8px 20px;
+    }
+
+    /* ---------------------------------------------------------- */
+    /* Responsive */
+
+    @media (max-width: 768px) {
+      #chat {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+        height: auto;
+        min-height: calc(100vh - 80px);
+      }
+
+      #sidebar {
+        border-radius: 10px 10px 0 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      main {
+        border-radius: 0 0 10px 10px;
+      }
+
+      #currentRoom {
+        margin-bottom: 15px;
+        padding-bottom: 12px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      body {
+        padding: 20px 10px;
+      }
+
+      #login {
+        padding: 20px;
+      }
+
+      #sidebar, main {
+        border-radius: 0;
+      }
+    }
+
+    /* ---------------------------------------------------------- */
+    /* Hidden utility */
+
+    [hidden] {
+      display: none !important;
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- ============================================================= -->
+<!-- PAGE DE CONNEXION                                             -->
+<!-- ============================================================= -->
+
+<div id="login">
+
+  <h1>Chat</h1>
+
+  <label>
+    Votre pseudo
+    <input
+      id="name"
+      maxlength="30"
+      autocomplete="off"
+      placeholder="Alice"
+    >
+  </label>
+
+  <h2>Créer un salon</h2>
+
+  <input
+    id="roomName"
+    maxlength="30"
+    autocomplete="off"
+    placeholder="mon-salon"
+  >
+
+  <button id="createRoom">
+    Créer le salon
+  </button>
+
+  <h2>Salons disponibles</h2>
+
+  <div id="rooms">
+    Aucun salon pour le moment.
+  </div>
+
+</div>
+
+
+<!-- ============================================================= -->
+<!-- CHAT                                                          -->
+<!-- ============================================================= -->
+
+<div id="chat" hidden>
+
+  <aside id="sidebar">
+
+    <strong id="currentRoom"></strong>
+
+    <button id="leaveRoom">
+      Quitter le salon
+    </button>
+
+    <div id="users">
+    </div>
+
+  </aside>
+
+
+  <main>
+
+    <div id="messages">
+    </div>
+
+    <form id="form">
+
+      <input
+        id="text"
+        autocomplete="off"
+        maxlength="500"
+        placeholder="Votre message..."
+      >
+
+      <button type="submit">
+        Envoyer
+      </button>
+
+    </form>
+
+  </main>
+
+</div>
+
+
+<script>
+
+  const login = document.getElementById("login");
+  const chat = document.getElementById("chat");
+
+  const nameInput = document.getElementById("name");
+  const roomNameInput = document.getElementById("roomName");
+
+  const createRoomButton =
+    document.getElementById("createRoom");
+
+  const roomsElement =
+    document.getElementById("rooms");
+
+  const currentRoomElement =
+    document.getElementById("currentRoom");
+
+  const usersElement =
+    document.getElementById("users");
+
+  const messagesElement =
+    document.getElementById("messages");
+
+  const form =
+    document.getElementById("form");
+
+  const textInput =
+    document.getElementById("text");
+
+  const leaveRoomButton =
+    document.getElementById("leaveRoom");
+
+
+  let socket = null;
+  let currentRoom = null;
+  let reconnectAttempt = 0;
+  const MAX_RECONNECT_ATTEMPTS = 10;
+  const STORAGE_KEY = "chat_state";
+
+  // Persist name as user types (only when in a room)
+  nameInput.addEventListener("input", () => {
+    if (currentRoom) saveState();
+  });
+
+  // ---------------------------------------------------------------
+  // State persistence
+  // ---------------------------------------------------------------
+
+  function saveState() {
+    if (currentRoom && nameInput.value.trim()) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        name: nameInput.value.trim(),
+        room: currentRoom
+      }));
+    }
+  }
+
+  function clearState() {
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  function loadState() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      try {
+        const { name, room } = JSON.parse(raw);
+        nameInput.value = name;
+        return room;
+      } catch {}
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------
+  // Connexion WebSocket avec reconnexion exponentielle
+  // ---------------------------------------------------------------
+
+  function connect() {
+
+    if (socket &&
+        socket.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    const protocol =
+      location.protocol === "https:"
+        ? "wss:"
+        : "ws:";
+
+    socket = new WebSocket(
+      `${protocol}//${location.host}`
+    );
+
+
+    socket.addEventListener("open", () => {
+      reconnectAttempt = 0;
+      // Try to restore previous session
+      const room = loadState();
+      if (room && nameInput.value.trim()) {
+        socket.send(JSON.stringify({
+          type: "join_room",
+          room,
+          name: nameInput.value.trim()
+        }));
+      } else {
+        updateRoomList([]);
+      }
+    });
+
+
+    socket.addEventListener("message", (event) => {
+
+      let data;
+
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+
+      // -----------------------------------------------------------
+      // Liste des salons
+      // -----------------------------------------------------------
+
+      if (data.type === "rooms") {
+        updateRoomList(data.rooms);
+        return;
+      }
+
+
+      // -----------------------------------------------------------
+      // Salon créé
+      // -----------------------------------------------------------
+
+      if (data.type === "room_created") {
+
+        joinRoom(data.room);
+
+        return;
+      }
+
+
+      // -----------------------------------------------------------
+      // Entrée dans un salon
+      // -----------------------------------------------------------
+
+      if (data.type === "room_joined") {
+
+        currentRoom = data.room;
+
+        currentRoomElement.textContent =
+          "#" + currentRoom;
+
+        messagesElement.innerHTML = "";
+
+        for (const message of data.messages) {
+          addMessage(
+            `${message.user} : ${message.text}`
+          );
+        }
+
+        login.hidden = true;
+        chat.hidden = false;
+
+        textInput.focus();
+
+        // Save state for recovery on reconnect
+        saveState();
+
+        return;
+      }
+
+
+      // -----------------------------------------------------------
+      // Utilisateurs
+      // -----------------------------------------------------------
+
+      if (data.type === "users") {
+
+        usersElement.innerHTML =
+          "<strong>Connectés</strong>";
+
+        for (const user of data.users) {
+
+          const div =
+            document.createElement("div");
+
+          div.className = "user";
+          div.textContent = user;
+          if (user === nameInput.value.trim()) {
+            div.classList.add("you");
+          }
+
+          usersElement.appendChild(div);
+        }
+
+        return;
+      }
+
+
+      // -----------------------------------------------------------
+      // Message
+      // -----------------------------------------------------------
+
+      if (data.type === "message") {
+
+        const message = data.message;
+
+        addMessage(
+          `<span class="user">${escapeHtml(message.user)}</span> : <span class="text">${escapeHtml(message.text)}</span>`
+        );
+
+        return;
+      }
+
+
+      // -----------------------------------------------------------
+      // Message système
+      // -----------------------------------------------------------
+
+      if (data.type === "system") {
+
+        addMessage(
+          data.text,
+          "system"
+        );
+
+        return;
+      }
+
+
+      // -----------------------------------------------------------
+      // Erreur
+      // -----------------------------------------------------------
+
+      if (data.type === "error") {
+
+        alert(data.text);
+
+        return;
+      }
+
+    });
+
+
+    socket.addEventListener("close", () => {
+
+      socket = null;
+
+      // Attempt reconnection with exponential backoff
+      if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+        const delay = Math.min(1000 * 2 ** reconnectAttempt, 30000) + Math.random() * 1000;
+        reconnectAttempt++;
+        setTimeout(connect, delay);
+        addMessage(
+          `Connexion perdue. Reconnexion dans ${Math.round(delay/1000)}s... (tentative ${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})`,
+          "system"
+        );
+      } else {
+        currentRoom = null;
+        login.hidden = false;
+        chat.hidden = true;
+        usersElement.innerHTML = "";
+        addMessage(
+          "Échec de reconnexion après plusieurs tentatives. Rechargez la page.",
+          "system"
+        );
+      }
+    });
+  }
+
+
+  // ---------------------------------------------------------------
+  // Affichage des salons
+  // ---------------------------------------------------------------
+
+  function updateRoomList(rooms) {
+
+    roomsElement.innerHTML = "";
+
+    if (rooms.length === 0) {
+
+      roomsElement.textContent =
+        "Aucun salon pour le moment.";
+
+      return;
+    }
+
+
+    for (const room of rooms) {
+
+      const div =
+        document.createElement("div");
+
+      div.className = "room";
+
+      const label =
+        document.createElement("span");
+      label.className = "room-label";
+
+      const nameSpan =
+        document.createElement("span");
+      nameSpan.className = "room-name";
+      nameSpan.textContent = "#" + room.name;
+
+      const usersSpan =
+        document.createElement("span");
+      usersSpan.className = "room-users";
+      usersSpan.textContent = room.users + " utilisateur" + (room.users > 1 ? "s" : "");
+
+      label.appendChild(nameSpan);
+      label.appendChild(usersSpan);
+
+      const button =
+        document.createElement("button");
+
+      button.textContent = "Rejoindre";
+
+      button.addEventListener("click", () => {
+        joinRoom(room.id);
+      });
+
+      div.appendChild(label);
+      div.appendChild(button);
+
+      roomsElement.appendChild(div);
+    }
+  }
+
+
+  // ---------------------------------------------------------------
+  // Créer un salon
+  // ---------------------------------------------------------------
+
+  createRoomButton.addEventListener("click", () => {
+
+    const room =
+      roomNameInput.value.trim();
+
+    const name =
+      nameInput.value.trim();
+
+    if (!name) {
+      alert("Choisissez d'abord un pseudo.");
+      nameInput.focus();
+      return;
+    }
+
+    if (!room) {
+      roomNameInput.focus();
+      return;
+    }
+
+    connect();
+
+    const waitForConnection = () => {
+
+      if (socket &&
+          socket.readyState === WebSocket.OPEN) {
+
+        socket.send(JSON.stringify({
+          type: "create_room",
+          room
+        }));
+
+        return;
+      }
+
+      setTimeout(waitForConnection, 50);
+    };
+
+    waitForConnection();
+  });
+
+
+  // ---------------------------------------------------------------
+  // Rejoindre un salon
+  // ---------------------------------------------------------------
+
+  function joinRoom(room) {
+
+    const name =
+      nameInput.value.trim();
+
+    if (!name) {
+      alert("Choisissez d'abord un pseudo.");
+      return;
+    }
+
+    connect();
+
+    const waitForConnection = () => {
+
+      if (socket &&
+          socket.readyState === WebSocket.OPEN) {
+
+        socket.send(JSON.stringify({
+          type: "join_room",
+          room,
+          name
+        }));
+
+        return;
+      }
+
+      setTimeout(waitForConnection, 50);
+    };
+
+    waitForConnection();
+  }
+
+
+  // ---------------------------------------------------------------
+  // Ajouter un message
+  // ---------------------------------------------------------------
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function addMessage(html, className = "") {
+
+    const div =
+      document.createElement("div");
+
+    div.className =
+      "message " + className;
+
+    div.innerHTML = html;
+
+    messagesElement.appendChild(div);
+
+    messagesElement.scrollTop =
+      messagesElement.scrollHeight;
+  }
+
+
+  // ---------------------------------------------------------------
+  // Envoyer un message
+  // ---------------------------------------------------------------
+
+  form.addEventListener("submit", (event) => {
+
+    event.preventDefault();
+
+    if (!socket ||
+        socket.readyState !== WebSocket.OPEN ||
+        !currentRoom) {
+      return;
+    }
+
+    const text =
+      textInput.value.trim();
+
+    if (!text) {
+      return;
+    }
+
+    socket.send(JSON.stringify({
+      type: "message",
+      text
+    }));
+
+    textInput.value = "";
+    textInput.focus();
+  });
+
+
+  // ---------------------------------------------------------------
+  // Quitter le salon
+  // ---------------------------------------------------------------
+
+  leaveRoomButton.addEventListener("click", () => {
+
+    if (!socket) {
+      return;
+    }
+
+    // Le serveur attend du JSON.
+    socket.send(JSON.stringify({
+      type: "leave_room"
+    }));
+
+    currentRoom = null;
+    clearState();
+
+    chat.hidden = true;
+    login.hidden = false;
+
+    messagesElement.innerHTML = "";
+    usersElement.innerHTML = "";
+  });
+
+
+  // ---------------------------------------------------------------
+  // Initialisation
+  // ---------------------------------------------------------------
+
+  connect();
+
+</script>
+
+</body>
+</html>
