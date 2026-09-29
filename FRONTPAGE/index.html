@@ -221,6 +221,10 @@
             <p>A topological analysis module detects sub- and superlevel structures, returns their births and deaths, and filters the original points with a classifier line.</p>
         </div>
         <div class="card">
+            <h3>🧭 Formula-based Kendrick</h3>
+            <p>Type a chemical formula, and every linked spectrum is rescaled around that m/z and reported as a mass defect — homologous series collapse onto one another.</p>
+        </div>
+        <div class="card">
             <h3>📂 Flexible import</h3>
             <p>Load delimited text files with configurable separator and columns, or convert raw <code>.raw</code> files through the msConvert service.</p>
         </div>
@@ -657,6 +661,236 @@ index(i, 1)          // Y of point i</pre>
             is never kept, since it would poison the output.
         </p>
 
+
+        <h4>F-KMD <span class="badge">Kendrick</span> <span class="badge warn">defect axis</span></h4>
+        <p>
+            Rescales a spectrum around a reference <strong>m/z</strong> that you obtain by typing a
+            chemical formula, and reports the <strong>mass defect</strong> of every peak on that new
+            scale. The formula is the only parameter: it is read, converted to an m/z, and that single
+            number drives the whole transform.
+        </p>
+        <p>
+            The point of the operation is comparison. Peaks that differ from the reference by a whole
+            number of mass units land on the <em>same</em> rescaled value, so homologous series — a family
+            of compounds differing by CH<sub>2</sub>, for instance — collapse onto one another, and what
+            is left on the defect axis is the part that is chemically <em>not</em> explained by that
+            difference.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>1 input</strong> — one or more XY waves, read as
+                    <em>X = mass</em> and <em>Y = intensity</em>.<br>
+                    <span class="badge">several links</span>
+                    more than one link may target input <code>0</code>. Each input wave is treated
+                    independently and produces its own product; nothing is merged.
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — <em>one product wave per input wave</em>, as a
+                    non-interleaved 2D wave <code>[X…, Y…]</code>.<br>
+                    <strong>X</strong> is the rescaled mass, <strong>Y</strong> is the mass defect.
+                </td>
+            </tr>
+            <tr>
+                <td>Input layout</td>
+                <td>
+                    2D only: <code>[x0, x1, ..., y0, y1, ...]</code>, where <em>x</em> is a mass and
+                    <em>y</em> an intensity.<br>
+                    A wave that is not XY is refused and counted in the node readout, rather than
+                    silently dropped.
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>notation</code> — the formula, as typed. This is the only parameter; everything
+                    else in the output follows from it.
+                </td>
+            </tr>
+            <tr>
+                <td>Output metadata</td>
+                <td>
+                    Every product carries the formula it was built from and the m/z that was applied, so a
+                    wave can always be traced back to the reference that produced it:
+                    <code>"f-kmd": true</code>, <code>key</code> (the notation as typed) and
+                    <code>mz</code>.
+                </td>
+            </tr>
+        </table>
+
+        <h4>Writing the formula</h4>
+        <p>
+            The formula is written as a <strong>composition</strong>, optionally followed by an
+            <strong>ionisation</strong> in square brackets. The composition says which atoms are present;
+            the bracketed part says which ion is being measured, and it is what makes the m/z correct.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:190px">Written</th>
+                <th>Means — the m/z shown is the one the node actually applies</th>
+            </tr>
+            <tr>
+                <td><code>C6H12O6</code></td>
+                <td>The neutral molecule — m/z 180.063388</td>
+            </tr>
+            <tr>
+                <td><code>C6H12O6 [H+]</code></td>
+                <td>Protonated — m/z 181.070665</td>
+            </tr>
+            <tr>
+                <td><code>C6H12O6 [Na+]</code></td>
+                <td>Sodiated — m/z 203.052609</td>
+            </tr>
+            <tr>
+                <td><code>C6H12O6 [2H+]</code></td>
+                <td>
+                    Deuterated — m/z 182.076941. Written <code>[2H+]</code> and <em>not</em>
+                    <code>[H+H+]</code>: inside the brackets, the number before the symbol is a mass
+                    number, not a count.
+                </td>
+            </tr>
+            <tr>
+                <td><code>12C6 1H12 16O6 [H+]</code></td>
+                <td>
+                    Monoisotopic glucose — m/z 181.070665, the same as above. Writing the mass numbers
+                    pins the isotopes; leaving them out lets the engine choose the most probable one.
+                </td>
+            </tr>
+        </table>
+        <p>
+            Two conventions govern the digits, and they are not interchangeable: a number
+            <strong>before</strong> a symbol is a <em>mass number</em> (<code>12C</code>), a number
+            <strong>after</strong> it is an <em>atom count</em> (<code>C6</code>). A mass number that does
+            not exist — <code>[99Na+]</code> — is reported as a typo rather than quietly ignored, since a
+            formula that reads as something else is worse than one that is refused.
+        </p>
+
+        <h4>What the transform does</h4>
+        <p>
+            The reference m/z defines a scaling factor, <code>round(mz) / m/z</code>, which is computed
+            once and applied to every mass. The mass defect is then read on the <strong>rescaled</strong>
+            axis, not the original one — that ordering is the whole definition of the operation.
+        </p>
+        <pre>X' = X × round(mz) / m/z        rescaled mass
+Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
+        <p>
+            With <code>C6H12O6 [H+]</code> as the reference (m/z 181.070665, factor 0.999609738):
+        </p>
+        <table class="spec">
+            <tr>
+                <th>Original m/z</th>
+                <th>Rescaled X</th>
+                <th>Defect (Y)</th>
+            </tr>
+            <tr>
+                <td>100.0000</td>
+                <td>99.9610</td>
+                <td>−0.0390</td>
+            </tr>
+            <tr>
+                <td>200.0000</td>
+                <td>199.9219</td>
+                <td>−0.0781</td>
+            </tr>
+            <tr>
+                <td>300.0000</td>
+                <td>299.8829</td>
+                <td>−0.1171</td>
+            </tr>
+            <tr>
+                <td>453.2401</td>
+                <td>453.0632</td>
+                <td>+0.0632</td>
+            </tr>
+        </table>
+        <p>
+            An m/z that is already a whole number gives a factor of exactly 1: the masses pass through
+            unchanged, and the output <em>Y</em> is simply the plain mass defect.
+        </p>
+
+        <h4>Interactive behaviour</h4>
+        <ul>
+            <li>
+                The readout shows the formula as it is read — composition, charge and m/z — so a
+                misspelled symbol is caught while typing, before anything is computed.
+            </li>
+            <li>
+                Typing updates that readout only. <strong>Enter</strong> applies the formula: the
+                rescaling runs on every input wave, and the nodes downstream are refreshed. A commit
+                therefore does exactly one pass over your data, however many spectra are linked.
+            </li>
+            <li>
+                Several links may share the input anchor. They are processed one after another, each
+                producing its own product wave, so comparing the same reference across a batch is a
+                matter of linking several inputs.
+            </li>
+            <li>
+                A spectrum that fails is reported without stopping the others; a partial result is still
+                a result, and the node only turns red when nothing at all could be produced.
+            </li>
+        </ul>
+
+        <h4>Error conditions</h4>
+        <ul>
+            <li>
+                <span class="badge req">error</span>
+                the formula cannot be read — unknown element, or a mass number that does not exist. The
+                message is shown in the node and no product is published.
+            </li>
+            <li>
+                <span class="badge req">error</span>
+                the reference m/z cannot define a scale. In practice this means an m/z that is not a
+                positive number; nothing is published rather than a spectrum with the wrong axis.
+            </li>
+            <li>
+                <span class="badge warn">floating</span>
+                no formula read yet, or no input wave connected. The node needs something to work on
+                before it has anything to give.
+            </li>
+            <li>
+                <span class="badge warn">not XY</span>
+                an input that is not an XY wave is skipped, and the count is displayed so a short output
+                is never a mystery.
+            </li>
+        </ul>
+
+        <h4>Session behaviour</h4>
+        <p>
+            The formula is serialised with the session and restored on reload. The products are not: they
+            are recomputed from the formula and the input waves when the pipeline next runs, so a restored
+            session can never display products made from a different reference.
+        </p>
+
+        <h4>Reading the result</h4>
+        <p>
+            The output is a <strong>derived product</strong>: it exists on the mass axis alone, and it is
+            meant to be examined on its own. The mass defect is a property of the mass, not of the peak —
+            two peaks sharing a mass share their defect whatever their heights — so the wave you get out is
+            deliberately not the spectrum you put in, and its Y axis is the defect, on a completely
+            different scale from any intensity.
+        </p>
+        <ul>
+            <li>
+                <strong>Y is the defect, in <code>[−0.5, +0.5]</code>.</strong> A node that thresholds
+                <em>intensities</em> — the Trimmer, for instance — has nothing meaningful to cut here.
+                Threshold on the Trimmer <em>before</em> this node, where Y still holds intensities, and
+                use the output for what it is: a rescaled mass axis and its defects.
+            </li>
+            <li>
+                <strong>Intensities are not carried over.</strong> One input point gives one output point,
+                and that point carries the defect. The input wave is left untouched, so the intensities
+                remain available on it — and on every other branch that consumes it.
+            </li>
+        </ul>
 
     </div>
 
