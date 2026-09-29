@@ -128,6 +128,32 @@ const kernels={
         }
         return result
     },
+    /* F-KMD: Formula - Kendrick Mass Defect.
+
+       For now the kernel COPIES the input XY through, unchanged. It is named
+       "fkmd" on purpose: the Rust side will be fkmd.rs, beside persistence.rs
+       and trim.rs, and it will replace the JS fallback below without any caller
+       having to be renamed. The m/z is already passed in, so the contract is
+       fixed - only the arithmetic is missing.
+
+       The output is a FLAT XY array, [x0..xN, y0..yN], the same layout a 2D
+       Wave core uses, which is what the node rebuilds a Wave from. */
+    async fkmd({core,params}){
+        const pointCount=params?.pointCount??Math.floor((core?.length??0)/2)
+        let result
+        try{
+            await ensureWasm()
+            if(typeof rust.fkmd!=="function"){
+                throw new Error("rust fkmd is missing (stale pkg build?)")
+            }
+            const out=rust.fkmd(core,params?.mz??0,pointCount)
+            result={core:toFloat64(out?.core??out)}
+        }catch(err){
+            console.warn("[kernelWorker] rust fkmd unavailable, JS fallback:",err)
+            result={core:fkmdJS(core,params?.mz??0,pointCount)}
+        }
+        return result
+    },
     async trimHistogram({core,params}){
         const stride=params?.stride??1
         const bins=Math.max(1,params?.bins??64)
@@ -154,6 +180,19 @@ const kernels={
     }
 }
 
+//Same semantics as the future fkmd.rs, so a stale or failed wasm build still
+//resolves the flow. For now: a PASS-THROUGH copy of the input XY. The m/z is
+//accepted and ignored - it is the whole point of the kernel, and leaving it in
+//the signature now means the Rust version only has to fill in the arithmetic.
+function fkmdJS(core,mz,pointCount){
+    const n=Math.min(pointCount,Math.floor((core?.length??0)/2))
+    const out=new Float64Array(n*2)
+    for(let i=0;i<n;i++){
+        out[i]=core[i]          // X = mass
+        out[n+i]=core[n+i]      // Y = intensity
+    }
+    return out
+}
 function toFloat64(value){
     return value instanceof Float64Array?value:new Float64Array(value)
 }

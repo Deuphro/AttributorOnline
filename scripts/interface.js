@@ -1633,28 +1633,54 @@ class TrimmerNode extends NodeWithAccordion{
 }
 
 /* -----------------------------------------------------------------
-   Formula: une formule chimique saisie au clavier, une seule sortie.
-   La COQUILLE seulement pour l'instant — l'analyse de la notation
-   (core / ionisation / adduits) vit dans chemistry.js: ce noeud ne fait
-   qu'héberger son résultat. Tout le métier
-   passe par startResolve(), un seul point d'entrée à compléter.
+   F-KMD: Formula - Kendrick Mass Defect.
+
+   A formula is TYPED (the accordion, unchanged) and its m/z drives a
+   KENDRICK analysis of every input wave. It became an Operation, so it
+   now has one input and one output: the input waves go in, one product
+   wave per input comes out.
+
+   Several links may land on the SAME input anchor. They are processed
+   INDEPENDENTLY and one after another, each producing its own product:
+   the outputs of a node are a list, so a list is exactly what a list of
+   inputs deserves. Nothing is merged, because merging spectra of
+   different sizes and different F-KMD transforms would be a decision
+   nobody asked for.
+
+   The kernel is named "fkmd" already, and today it only copies the input
+   XY through (see kernelWorker.js). The Rust side will be fkmd.rs, beside
+   persistence.rs and trim.rs, and it will return a flat XY array. Nothing
+   here will have to be renamed when it lands.
    ---------------------------------------------------------------- */
-class FormulaNode extends NodeWithAccordion{
+class FKMDNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
-        //pas d'entrée: la formule est une SOURCE, elle se tape
-        super(title,[],[[]],origin,destinationFlow,position)
+        //one input (XY wave: X=mass, Y=intensity), one output
+        super(title,[[]],[[]],origin,destinationFlow,position)
         this.status="floating"
-        //la notation, telle que tapée: une seule chaîne, la grammaire de
-        //chemistry.js fait le reste ("C6H12O6 [H+]", "12C6 1H12 16O6 [2H+]"…)
-        this.parameters.notation="C6H12O6 [H+]"
-        //la formule ANALYSÉE, ou null tant que le métier n'est pas branché
+        //the notation, exactly as typed. The grammar is chemistry.js's
+        //("C6H12O6 [H+]", "12C6 1H12 16O6 [2H+]"...). The notation is parsed
+        //as soon as it is TYPED (live feedback), but the m/z it yields only
+        //reaches the kernel when the user commits with ENTER.
+        //"C": the smallest formula that still says something, and a real one. It
+        //gives the widget a reading on the first screen instead of a blank
+        //field, and it is easy to overwrite because it is a single character.
+        this.parameters.notation="C"
+        //the formula READ, or null. Note: it is no longer the output - the
+        //output is now a list of F-KMD product waves, one per input wave.
         this.formula=null
-        //erreur de lecture courante, affichée telle quelle
+        //the reading error, shown as-is
         this.parseError=null
-        //ticket monotone: seule la frappe la plus récente publie son résultat
+        //monotonic ticket: only the newest keystroke may publish its reading
         this.resolveRun=0
+        //a second ticket, for the kernel: a commit and a typing in between
+        //must not let a stale m/z reach the products
+        this.kernelRun=0
+        //the input waves, read at the last resolve
+        this.inputWaves=[]
+        const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
+        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity)</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
-        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: the chemical formula</title>'
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: one F-KMD product wave per input wave</title>'
     }
     registered(e){
         if(e.detail.msg.caster!==this||this.accordion){
@@ -1662,9 +1688,11 @@ class FormulaNode extends NodeWithAccordion{
         }
         super.registered(e)
         this.setupFormulaUI()
-        //the default notation is a real formula, and a node whose output is
-        //empty until the first keystroke would show a dead link in the graph
-        this.startResolve()
+        //read the default notation, but do NOT run the kernel: the node has no
+        //input yet, and a resolve that finds no wave would only publish an
+        //empty output. The formula is shown; the products come on the first
+        //commit, once something is linked.
+        this.readFormula()
     }
     setupFormulaUI(){
         if(!this.accordion) return
@@ -1703,26 +1731,23 @@ class FormulaNode extends NodeWithAccordion{
             padding:"4px 6px",
             borderRadius:"4px"
         })
-        //ENTER commits: the node already re-reads itself on every keystroke,
-        //but the DESCENDANTS are not re-resolved on each key - a subtree may be
-        //expensive, and re-running it for every letter would make typing
-        //unusable. ENTER says "this notation is the one", and only then are the
-        //children brought up to date. Strictly downstream: the rest of the flow,
-        //including the branches this node does not feed, is left alone.
+        //ENTER commits: it re-reads the formula, sends the m/z to the kernel
+        //for every input wave, and then brings the DESCENDANTS up to date.
+        //Two things stay out of its reach: the rest of the flow (the branches
+        //this node does not feed) and the parents (their outputs are already
+        //in memory, re-resolving them would redo work nobody asked for).
         this.notationInput.addEventListener("keydown",(e)=>{
             if(e.key==="Enter"){
                 e.preventDefault()
-                this.resolveChildren()
+                this.startResolve().then(()=>this.resolveChildren())
             }
         })
-        //EVERY keystroke resolves this node: a formula is short text whose
-        //reading is the whole point of the node, so making the user press a
-        //key to see whether "C6H12O6" is valid would be a tax on every symbol.
-        //The output is therefore always the last complete reading, never a
-        //half-typed one: "C6H12O" still yields the glucose composition.
+        //EVERY keystroke only READS the formula: the m/z is displayed as it is
+        //typed, so a wrong symbol is seen at once. The kernel is NOT run on
+        //each key - one commit may cost a dozen kernel runs on a dozen spectra.
         this.notationInput.addEventListener("input",()=>{
             this.parameters.notation=this.notationInput.value
-            this.startResolve()
+            this.readFormula()
         })
         content.append(this.notationInput)
         //the readout: composition, charge, m/z - or the reading error. Three
@@ -1753,44 +1778,59 @@ class FormulaNode extends NodeWithAccordion{
         await this.origin.tableReady
         return this.origin.table??null
     }
-    /* The one and only entry point of the business logic.
+    /* Reads the formula, then transforms every input wave with its m/z.
 
-       It runs on EVERY keystroke, and it awaits the table, so two resolves can
-       be in flight at once: typing "C6H1" then "2O6" quickly could settle them
-       out of order and leave the node showing the OLDER reading. resolveRun is
-       the monotonic ticket - only the newest run may publish. Same guard as
-       TrimmerNode.trimRun, and for the same reason. */
+       Split in two, because the two have different jobs and different guards:
+         - readFormula() runs on every keystroke and publishes this.formula. It
+           touches NOTHING else: live feedback on the notation is cheap.
+         - applyKernel() runs on commit, and is what publishes outputs[0].
+       A keystroke between a commit and the kernel returning must not publish
+       products computed from a formula the user has already changed - hence
+       kernelRun, checked after every await. */
     async startResolve(){
+        await this.readFormula()
+        await this.applyKernel()
+    }
+    /* Parses the notation and publishes the formula. NEVER throws: a typing
+       mistake is a result, not an exception, or resolveFlow would stop here.
+
+       It does NOT claim "resolved" on success. Reading "C" is not a result of
+       this node: the node's result is a list of F-KMD products, and it has none
+       until the kernel runs. Only applyKernel() may set "resolved", and only
+       after it has actually produced waves. A node that showed green the moment
+       a letter was typed would claim work it never did. */
+    async readFormula(){
         const run=++this.resolveRun
         const notation=this.parameters.notation
         const table=await this.table()
-        if(run!==this.resolveRun) return   // a newer keystroke already won
+        if(run!==this.resolveRun) return null   // a newer keystroke already won
         if(!table||!notation.trim()){
             this.formula=null
             this.parseError=null
-            this.outputs[0]=[]
             this.setStatus("floating")
             this.renderReadout()
-            return
+            return null
         }
         try{
-            const formula=Formula.parse(notation,table)
-            this.formula=formula
+            this.formula=Formula.parse(notation,table)
             this.parseError=null
-            //the Formula itself IS the output, published as-is: a formula is
-            //one thing, and wrapping it in a wave or a list of lists would only
-            //force the next node to unwrap it again
-            this.outputs[0]=[formula]
-            this.setStatus("resolved")
+            //"floating", not "resolved": a formula is READ, the node is not DONE
+            this.setStatus("floating")
         }catch(err){
-            //a typing mistake is a RESULT, not an exception: the node shows it
-            //and propagates nothing, or resolveFlow would stop on this node
             this.formula=null
-            this.outputs[0]=[]
             this.parseError=err.message
             this.setStatus("error")
         }
         this.renderReadout()
+        return this.formula
+    }
+    /* The m/z the kernel will use, or null when there is nothing to apply.
+
+       It is read from this.formula at CALL time, not re-derived from the
+       notation: the m/z is a RESULT of the parsing, and computing it twice
+       would give the kernel a second, divergent path to the same number. */
+    formulaMz(){
+        return this.formula?this.formula.mz:null
     }
     renderReadout(){
         if(!this.readout) return
@@ -1799,22 +1839,136 @@ class FormulaNode extends NodeWithAccordion{
             return
         }
         if(!this.formula){
-            //no parsed formula yet: either nothing typed, or the table is
-            //still loading. The origin says which, and a node that guesses
-            //would tell the user the table is missing while it downloads.
+            //no formula yet: either nothing typed, or the table is still
+            //loading. The origin says which, and a node that guessed would
+            //tell the user the table is missing while it downloads.
             this.readout.textContent=this.origin.tableError
                 ?`table périodique indisponible: ${this.origin.tableError}`
                 :""
             return
         }
         const f=this.formula
-        this.readout.textContent=[
+        const lines=[
             Formula.compositionToString(f.composition,f.rule),
             `charge ${f.charge>0?"+":""}${f.charge}`,
             `m/z ${f.mz.toFixed(6)}`
-        ].join("\n")
+        ]
+        //the kernel side: how many spectra went in, how many came out. Without
+        //it, a node with three products and three inputs is indistinguishable
+        //from one that silently dropped two.
+        if(this.skippedInputs){
+            lines.push(`${this.skippedInputs} entrée(s) ignorée(s): pas une wave XY`)
+        }
+        for(const err of this.kernelErrors??[]){
+            lines.push(`kernel: ${err}`)
+        }
+        this.readout.textContent=lines.join("\n")
     }
-    //un état unique pour le statut, pour ne pas oublier la diffusion
+    /* Every XY wave linked to the input anchor, in link order.
+
+       The input is what parentSynapse builds: Map<parent, Array<Array<Wave>>>,
+       one inner array per LINK, each holding that output slot's waves. Three
+       levels is not a design choice, it is the shape the synapse leaves, and
+       reading it wrongly would yield an output silently short by one level -
+       hence the explicit Array.isArray at each step.
+
+       Several links may land on the SAME anchor: the walk visits each of them,
+       so each contributes its own waves and, later, its own product. A 1D wave
+       is skipped and COUNTED rather than dropped: a node that silently forgot
+       two of three spectra would look exactly like one that worked. */
+    collectInputWaves(){
+        const input=this.inputs[0]
+        const waves=[]
+        let skipped=0
+        if(input instanceof Map){
+            for(const values of input.values()){
+                for(const parentOutputs of values){
+                    if(!Array.isArray(parentOutputs)) continue
+                    for(const wave of parentOutputs){
+                        if(!(wave instanceof Wave)) continue
+                        if(wave.degree!==2||wave.dims[1]!==2){
+                            skipped++
+                            continue
+                        }
+                        waves.push(wave)
+                    }
+                }
+            }
+        }
+        return {waves,skipped}
+    }
+    /* Sends each input wave to the kernel, one call at a time, and collects
+       the products.
+
+       SEQUENTIALLY, not Promise.all: the worker pool holds a few workers, and
+       a fan-out would queue every wave at once. A dozen spectra would each
+       pay a postMessage copy of a multi-megabyte core, and the UI would stall
+       on all of them instead of one at a time. Sequential keeps the memory
+       peak at a single core.
+
+       A wave the kernel fails on does not stop the others: it is recorded and
+       the resolve continues. One broken spectrum is one broken result, not a
+       dead node. */
+    async applyKernel(){
+        const mz=this.formulaMz()
+        const {waves,skipped}=this.collectInputWaves()
+        this.inputWaves=waves
+        this.skippedInputs=skipped
+        if(mz===null||!waves.length){
+            this.outputs[0]=[]
+            this.kernelErrors=[]
+            this.setStatus(mz===null?(this.parseError?"error":"floating"):"floating")
+            this.renderReadout()
+            return
+        }
+        const run=++this.kernelRun
+        const products=[]
+        const errors=[]
+        for(const wave of waves){
+            try{
+                //the core is structured-cloned, never transferred: the INPUT
+                //wave must keep its buffer, it belongs to the parent node and
+                //to every other link that reads it
+                const result=await computePool.run("fkmd",{
+                    core:wave.core,
+                    params:{
+                        mz,
+                        stride:2,
+                        pointCount:wave.dims[0]
+                    }
+                })
+                if(run!==this.kernelRun) return   // superseded: publish nothing
+                const core=result?.core
+                if(!(core instanceof Float64Array)||core.length%2){
+                    errors.push(`the kernel returned ${core?.length??"nothing"}, not a flat XY`)
+                    continue
+                }
+                const pointCount=core.length/2
+                //subarray, not slice: the core is ours (freshly returned by the
+                //worker) and copying it twice would halve what we just paid for
+                const x=core.subarray(0,pointCount)
+                const y=core.subarray(pointCount)
+                products.push(Wave.fromCoordinates(x,y,{
+                    title:`${this.title} (F-KMD)`,
+                    //the three things that say WHAT this wave is: the method,
+                    //the key, and the m/z the transform came from
+                    "f-kmd":true,
+                    key:this.parameters.notation,
+                    mz
+                },["x","y"]))
+            }catch(err){
+                if(run!==this.kernelRun) return
+                errors.push(err.message??String(err))
+            }
+        }
+        if(run!==this.kernelRun) return
+        this.kernelErrors=errors
+        this.outputs[0]=products
+        //"error" only if NOTHING came out: a partial success is a success, and
+        //a node painted red over three good products would be a lie
+        this.setStatus(errors.length&&!products.length?"error":"resolved")
+        this.renderReadout()
+    }
     setStatus(status){
         this.status=status
         dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,status))
@@ -1829,13 +1983,12 @@ class FormulaNode extends NodeWithAccordion{
             this.parameters.notation=state.notation
         }
         if(this.notationInput) this.notationInput.value=this.parameters.notation
-        //the Formula itself is NOT saved: it is derived from the notation and
-        //from the table, both of which may have changed since. It is re-parsed
-        //here, though, because a restored node that shows nothing until someone
-        //touches the field would come back looking broken. This is a READ, not
-        //a publication: it restores this node's own output, it does not
-        //resolve the children, which is the flow's business.
-        this.startResolve()
+        //the Formula is NOT saved, and neither are the products: both are derived
+        //from the notation, from the table and from the input waves, all of
+        //which may have changed since. The reading is restored so the widget is
+        //not blank; the products come on the first commit, because re-running
+        //the kernel here would resolve this node outside the flow's own order.
+        this.readFormula()
     }
 }
 
@@ -3055,8 +3208,8 @@ function createNodeForHistory(origin,flow,data){
         case "TrimmerNode":
             node=new TrimmerNode(data.title,origin,flow,position)
             break
-        case "FormulaNode":
-            node=new FormulaNode(data.title,origin,flow,position)
+        case "FKMDNode":
+            node=new FKMDNode(data.title,origin,flow,position)
             break
         default:
             node=new Node(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
@@ -3609,8 +3762,8 @@ class MainFlowMenu extends Menu{
                             node = new TrimmerNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
                             break
                         }
-                        case "formula": {
-                            node = new FormulaNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
+                        case "fkmd": {
+                            node = new FKMDNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
                             break
                         }
                         case "delimitedText":
@@ -6853,10 +7006,18 @@ class App{
                     SimpleXYPlotNode,
                     DelimitedTextNode,
                     Operation,
-                    PersistentHomology0DNode
+                    PersistentHomology0DNode,
+                    TrimmerNode,
+                    FKMDNode
                 }
                 const NodeType=constructors[data.type]??Node
-                if(NodeType===DelimitedTextNode||NodeType===Operation||NodeType===PersistentHomology0DNode){
+                //these build their own inputs and outputs (they are not restored
+                //field by field): they take (title, origin, flow, position)
+                const selfShaped=[
+                    DelimitedTextNode,Operation,PersistentHomology0DNode,
+                    TrimmerNode,FKMDNode
+                ]
+                if(selfShaped.includes(NodeType)){
                     return new NodeType(data.title,app,flow,data.position)
                 }
                 return new NodeType(
@@ -7239,4 +7400,4 @@ class PetitGazFusion {
 
 
 
-export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode, TrimmerNode, FormulaNode}
+export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode, TrimmerNode, FKMDNode}

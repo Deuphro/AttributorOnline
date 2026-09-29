@@ -71,6 +71,17 @@ class WorkerPool{
 //JS fallback used when workers are not available at all: same semantics as
 //the addScalar kernel of kernelWorker.js
 function runKernelLocally(kernel,payload){
+    if(kernel==="fkmd"){
+        const {core,params}=payload
+        const pointCount=params?.pointCount??Math.floor((core?.length??0)/2)
+        const n=Math.min(pointCount,Math.floor((core?.length??0)/2))
+        const result=new Float64Array(n*2)
+        for(let i=0;i<n;i++){
+            result[i]=core[i]           // X = mass
+            result[n+i]=core[n+i]       // Y = intensity
+        }
+        return {core:result}
+    }
     if(kernel==="addScalar"){
         const {core,params}=payload
         const scalar=params?.scalar??1
