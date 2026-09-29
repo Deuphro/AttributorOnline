@@ -217,8 +217,8 @@
             <p>Explore XY data in interactive WebGL plots designed to keep large datasets fluid while panning and zooming.</p>
         </div>
         <div class="card">
-            <h3>🔬 0D persistent homology</h3>
-            <p>A topological analysis module detects sub- and superlevel structures, returns their births and deaths, and filters the original points with a classifier line.</p>
+            <h3>🔬 Peak picking</h3>
+            <p>Two stages in one node: 0D persistent homology decides which points are peaks, then a statistical width filter removes the broad structures that are not real peaks.</p>
         </div>
         <div class="card">
             <h3>🧭 Formula-based Kendrick</h3>
@@ -304,12 +304,20 @@ index(i, 1)          // Y of point i</pre>
 
         <h3>Node reference</h3>
 
-        <h4>Persistent Homology <span class="badge">0D</span></h4>
+        <h4>Peak picking <span class="badge">H0</span> <span class="badge">width filter</span></h4>
         <p>
-            Computes 0D persistent homology (H<sub>0</sub>) on a single input wave, then filters the
-            original points with a classifier line through the origin. Births and deaths are computed in
-            Rust, the default slope is derived from the persistence pairs, and the filtering itself is also
-            performed in Rust.
+            Answers one question — <em>which of these points are peaks</em> — in two stages, both in Rust.
+            The first is 0D persistent homology: it detects sub- and superlevel structures, pairs each
+            with a birth and a death, and keeps the points that survive a classifier line. The second
+            measures the <strong>half-height width</strong> of each surviving peak on the original
+            profile and removes those that are out of the width population of the spectrum itself.
+        </p>
+        <p>
+            The two stages answer different questions, and are deliberately independent. Persistence asks
+            <em>is this a local maximum of the filtration?</em> The width filter asks <em>is this feature
+            at the resolution scale of the instrument?</em> A peak can be highly persistent and broad — an
+            intense island of background — or weakly persistent and narrow — an adduct sitting in the
+            noise. Neither criterion subsumes the other, which is why the node runs both.
         </p>
 
         <table class="spec">
@@ -328,9 +336,11 @@ index(i, 1)          // Y of point i</pre>
             <tr>
                 <td>Outputs</td>
                 <td>
-                    <strong>1 output</strong> — the original points kept by the classifier, as a
+                    <strong>1 output</strong> — the peaks that survive <em>both</em> stages, as a
                     non-interleaved 2D wave <code>[X…, Y…]</code>.<br>
-                    The birth/death pairs are internal: they feed the persistence diagram only.
+                    The birth/death pairs and the input indices are internal: they feed the persistence
+                    diagram and the width measurement, and never leave the node. There is no second slot
+                    — an output nothing consumes is a cable you would have to wire by hand.
                 </td>
             </tr>
             <tr>
@@ -347,12 +357,17 @@ index(i, 1)          // Y of point i</pre>
                     <code>superlevel</code>).<br>
                     <code>slope</code> — classifier slope, strictly below 1. <code>null</code> means
                     “not fitted yet”.<br>
+                    <code>z</code> — width rejection multiplier, in robust sigmas above the median
+                    width. Default <code>3</code> (the 3σ convention).<br>
+                    <code>zSource</code> — <code>convention</code>, <code>guess</code> or
+                    <code>manual</code>. It records <em>who</em> chose the <code>z</code>, and is the
+                    switch that drives the automatic reading described below.<br>
                     <code>logLogAxes</code> — logarithmic display of the persistence diagram.
                 </td>
             </tr>
         </table>
 
-        <h4>Algorithm</h4>
+        <h4>Stage 1 — 0D persistent homology</h4>
         <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
             <li>The kernel reads the Y block of the input core directly (no copy, no interleaving).</li>
             <li>
@@ -371,22 +386,147 @@ index(i, 1)          // Y of point i</pre>
             </li>
             <li>
                 The filter keeps every pair with <code>death &lt;= slope × birth</code>, and returns the
-                corresponding original points.
+                corresponding original points <em>with the index each one has in the input wave</em>.
+                That index is the only route back to the profile, and stage 2 needs it: a kept point is
+                otherwise nothing but a coordinate, with no way to find the samples on either side of it.
             </li>
         </ol>
+
+        <h4>Stage 2 — anti-radio, a width test on the raw profile</h4>
+        <p>
+            A Fourier-transform peak is narrow at the instrument's resolution scale; a broad structure —
+            background, an isotope shoulder, an extended chemical background — is not. The
+            <strong>half-height width</strong> is the classical criterion, and the prototype this node
+            descends from counted it in <em>samples</em>. Expressing it in ppm instead removes the
+            dependence on acquisition sampling, and comparing it to a <em>measured</em> reference instead
+            of a fixed one removes the dependence on the instrument.
+        </p>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li>
+                <strong>Self-limiting half-height scan.</strong> From the apex, the kernel walks outwards on
+                both sides while the profile stays above <code>height / 2</code>, and stops when it does
+                not. There is no analysis window and therefore no window parameter: the signal says where
+                the peak ends. The level is <em>relative to the peak's own height</em>, so a peak at 3 % of
+                the base peak is judged by its own shape and not by the base peak's.
+            </li>
+            <li>
+                <strong>Width in ppm.</strong> The measured span is divided by the peak's own m/z and
+                scaled by 10<sup>6</sup>. This is what makes the statistic dimensionless and independent
+                of the sampling: a peak measured on a denser axis gives the same number, not a smaller
+                one.
+            </li>
+            <li>
+                <strong>Robust reference.</strong> The median of the measured widths is the width
+                reference — an empirical estimate of the instrument's resolution on <em>this</em>
+                spectrum, not a tabulated value. The spread is <code>1.4826 × MAD</code>, the usual
+                conversion from a median absolute deviation to a standard deviation. Both are robust by
+                construction, so the wide structures the filter exists to catch cannot inflate the very
+                threshold meant to catch them.
+            </li>
+            <li>
+                <strong>Threshold.</strong> A peak is rejected when
+                <code>width &gt; reference + z × σ</code>. Because the threshold is an offset from a
+                <em>measured</em> spread rather than an absolute number of samples, the false-positive
+                rate is a property of the observed dispersion and not of how many peaks the file happens
+                to contain.
+            </li>
+        </ol>
+        <p>
+            A peak is <strong>unmeasurable</strong> — and therefore <em>kept</em> — when the scan reaches a
+            border of the spectrum, when its height is not positive, when its index is outside the input
+            wave, or when its m/z is not positive. It also leaves the reference population. The
+            alternative, dropping what cannot be measured, would reject peaks on a guess; a peak nobody
+            could measure is not evidence of anything.
+        </p>
+        <p>
+            Below <strong>8 measurable widths</strong> there is no population to describe, and the filter
+            declines to judge: nothing is rejected, and the node says so rather than looking like it found
+            nothing suspicious. Below that count a median and a MAD are not an estimate of anything.
+        </p>
+        <p>
+            Two limitations are worth stating plainly. The width is taken <strong>at half height</strong>
+            without a baseline subtraction, so on a spectrum with a high background a peak barely above
+            the noise has an inflated width; a local signal-to-noise gate, or a morphological baseline at
+            the peak's own scale, would address it. And the reference is a single median over the whole
+            <em>m/z</em> range, which assumes a resolution that does not vary across it — reasonable for a
+            fixed detection frequency, not for a frequency sweep, where the filter is biased at both ends
+            of the range.
+        </p>
+
+        <h4>Choosing <code>z</code></h4>
+        <p>
+            The <code>z</code> is a threshold in units of the robust spread, and there are two ways to
+            arrive at one.
+        </p>
+        <p>
+            <strong>The convention.</strong> <code>z = 3</code> is the default: roughly three robust
+            sigmas above the median width. It is a statistical convention, not a setting fitted to your
+            data, and that is what makes the node usable with no tuning.
+        </p>
+        <p>
+            <strong>Reading it from the spectrum.</strong> The <em>Guess</em> control measures the largest
+            gap between consecutive sorted widths, in robust sigmas, and returns half of it. When a
+            spectrum holds both sharp peaks and broad ones there is a gap between the two populations, and
+            the cut belongs in that gap; half of it puts the threshold where the wide population
+            <em>starts</em>, which is what the filter is for.
+        </p>
+        <p>
+            That gap is only believed when it clears the noise: a unimodal set of widths still has a
+            largest gap, and acting on it would place the cut inside the real population and throw away
+            half the peaks. A gap must exceed the typical step between neighbours by a factor of 8, and
+            the guess falls back to the convention otherwise. It always returns a usable value.
+        </p>
+        <p>
+            A <code>z</code> read this way can be <strong>large</strong> — hundreds — and that is the
+            honest answer rather than an anomaly: when the bulk of the widths is extremely tight, a
+            threshold anywhere near it would keep the whole wide population. A reading of exactly
+            <code>3</code> is treated as <em>no</em> reading: the kernel returns the convention both when
+            it measured a gap and when it had no population to measure, and the two are not
+            distinguishable from the number alone, so the automatic reading keeps trying on the next
+            resolve.
+        </p>
+        <p>
+            <strong>Automatic by default.</strong> While <code>zSource</code> is <code>convention</code> —
+            that is, while nobody has chosen a value — the node reads <code>z</code> from each resolve and
+            the filter runs with it. Typing a value, or pressing <em>Guess</em>, settles the question
+            permanently and the reading stops. This mirrors the classifier's <code>null</code> slope: both
+            parameters are “auto until you decide”. <code>zSource</code> is serialised with the session,
+            so a session saved before it existed is read as <code>convention</code>, which is what it was.
+        </p>
 
         <h4>Interactive behaviour</h4>
         <ul>
             <li>
                 The persistence diagram shows kept pairs in green and discarded pairs in grey, on a
-                WebGL canvas.
+                WebGL canvas. It describes stage 1 only: the width filter acts on the profile, not on the
+                diagram, and has no representation there.
+            </li>
+            <li>
+                The two stages sit under separate captions, <strong>Persistent Homology</strong> and
+                <strong>Anti-radio</strong>. They are independent decisions and read as such; each carries
+                its own controls and its own readout.
+            </li>
+            <li>
+                The anti-radio readout shows the <strong>width reference in ppm</strong> and the
+                <code>kept / candidates</code> ratio. The reference is the number to watch: it is the
+                instrument's measured width on this spectrum, and it can be checked against a datasheet.
+                A dash means no reference could be measured, which is not the same as “nothing found”.
             </li>
             <li>
                 The classifier line is an SVG overlay drawn through the origin:
                 <code>death = slope × birth</code>.
             </li>
             <li>Clicking the diagram places the classifier at that location and recomputes the filter.</li>
-            <li>Changing the slope never recomputes H0: only the classification kernel is re-run.</li>
+            <li>
+                Changing the slope or the <code>z</code> never recomputes H0: only the classification and
+                the width kernels are re-run, and the width scan is skipped entirely when the input has no
+                mass axis.
+            </li>
+            <li>
+                The numeric fields are the only elements that shrink when the panel is narrow: the
+                <em>Guess</em> buttons and the readouts keep their width, so they are the last things to
+                be pushed out of sight.
+            </li>
         </ul>
 
         <h4>Error conditions</h4>
@@ -400,26 +540,55 @@ index(i, 1)          // Y of point i</pre>
                 no wave connected yet, or the connected value carries no usable wave.
             </li>
             <li>
+                <span class="badge warn">stage 2 skipped</span>
+                the input is a 1D wave, so there is no mass axis and a width in ppm cannot be computed.
+                The classified peaks are published unchanged and the readout shows a dash. The stage is
+                <em>not</em> reported as having found nothing: it never ran.
+            </li>
+            <li>
+                <span class="badge warn">non fatal</span>
+                if the width kernel fails, the classified peaks are still published. They are valid work,
+                and losing them to a failure in the second stage would be the worse outcome.
+            </li>
+            <li>
                 <span class="badge warn">fallback</span>
-                WebAssembly or workers unavailable: an equivalent JavaScript implementation is used.
+                WebAssembly or workers unavailable: an equivalent JavaScript implementation is used, with
+                the same constants and the same decision rules.
             </li>
         </ul>
 
         <h4>Session behaviour</h4>
         <p>
-            The classifier slope, its marker position and the filtration mode are serialised with the
-            session and restored on reload, so a fitted slope is never silently recomputed. Legacy sessions
-            are migrated automatically: the removed slope input and birth/death output are dropped, and the
-            points output is remapped to output <code>0</code>.
+            The classifier slope, its marker position, the filtration mode, the <code>z</code> and the
+            <code>zSource</code> are serialised with the session and restored on reload, so a fitted slope
+            and a hand-chosen <code>z</code> are never silently recomputed.
+        </p>
+        <p>
+            Legacy sessions are migrated automatically, and the node has carried three names. Sessions
+            referring to the former <code>PersistentHomology0DNode</code> — with or without the input-index
+            output — and to the separate <code>AntiRadioNode</code> all load as a single Peak picking node
+            with one input and one output. A separate anti-radio node is dropped along with its links:
+            keeping the cable would leave a peak-picking node reading from another one, and the width
+            filter would run twice.
         </p>
 
         <h4>Data flow</h4>
         <pre>input wave core
    → kernel: persistent_homology_0d_waves(mode, stride)
-   → births, deaths, pointsX, pointsY, defaultSlope
-   → kernel: classify_persistence_0d(slope)
-   → keptPointsX, keptPointsY, keptCount
+   → births, deaths, pointsX, pointsY, birthIndices, defaultSlope
+   → kernel: classify_persistence_0d(slope, pointsIndex)
+   → keptPointsX, keptPointsY, keptIndices, keptCount
+   → kernel: anti_radio_guess_z(pointsIndex)          [while zSource = convention]
+   → one f64: the z read from the widths
+   → kernel: anti_radio_filter(profile, kept…, z)
+   → pointsX, pointsY, keptCount, referencePpm, thresholdPpm
    → output wave [X…, Y…]</pre>
+        <p>
+            The guess runs <em>after</em> the classification, never before: it measures the classified peaks
+            at their input indices, so those indices must already exist. Placing it there is also what
+            keeps a resolve at a single classifier run instead of two. The guess returns one number and
+            allocates nothing, for the same reason the trimmer's does — the shell only needs the value.
+        </p>
 
         <h4>Trimmer <span class="badge">intensity</span></h4>
         <p>
