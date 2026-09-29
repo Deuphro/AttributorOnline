@@ -1,3 +1,11 @@
 # the cached NIST pages: a rebuild never re-downloads, and the parse can be
 # checked offline. Regenerate with: powershell -File TOOLS/fetch-nist.ps1
 .cache/
+
+# the Rust build directory: several hundred .o, .rlib, fingerprint and
+# timestamp files that cargo recreates from src/ and Cargo.lock on every build.
+# It was tracked by mistake and drowned every diff in noise. Its CACHEDIR.TAG
+# already said so, but that is a convention for backup tools, not for git.
+# Regenerate with: cargo build --release --target wasm32-unknown-unknown
+#                  wasm-pack build --target web --out-dir pkg --release
+XOP/rust-extension/target/
