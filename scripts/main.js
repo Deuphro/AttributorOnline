@@ -13,6 +13,8 @@ async function run(){
 }
 run()
 
+/* The App loads what it needs, including the periodic table: main.js only
+   starts things, it does not know what a session is made of. */
 globalThis.Attributor=new App();
 globalThis.d3=d3
 globalThis.util=util

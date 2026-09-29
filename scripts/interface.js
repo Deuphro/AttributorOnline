@@ -5,6 +5,10 @@ import {defaultMenu} from "../resources/config.js"
 import { Data , Vector, Wave, XYTrace} from "./formats.js"
 import {computePool} from "./workerPool.js"
 import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
+//the chemistry engine. The CLASSES are imported directly; the periodic table
+//is DATA and is fetched by the App that needs it (see App), never at module
+//load: importing a node graph must not drag a 72 Ko download with it.
+import {Formula,loadTable} from "./chemistry.js"
 
 window.raie=new Wave(10,2)
 window.eiar=new Wave(7)
@@ -262,6 +266,15 @@ class Node{
         this.parameters.position={...position}
         this.SVGg.attr('transform',`translate(${position.x},${position.y})`)
         this.destination.updateLinks()
+    }
+    /* "My output just changed, bring my descendants up to date."
+
+       This is the ONLY re-resolve a node should trigger by itself. It is
+       deliberately not resolveFlow(): a source node changing must not recompute
+       the branches the user never touched. The knowledge of what is downstream
+       belongs to the Flow, so the work is done there. */
+    resolveChildren(){
+        return this.destination?.resolveDescendantsOf(this)??Promise.resolve()
     }
     set status(value){
         const possible=['resolved','error','pending','floating']
@@ -1428,35 +1441,11 @@ class TrimmerNode extends NodeWithAccordion{
             this.resolveChildren()
         },120)
     }
-    //Re-resolves everything downstream of this node, without re-resolving this
-    //node itself (its output is already published). Mirrors
-    //PersistentHomology0DNode.resolveChildren.
-    async resolveChildren(){
-        const flow=this.destination
-        if(!flow) return
-        const descendants=new Set()
-        const collectDescendants=(n)=>{
-            for(const child of flow.childrenMap(n).keys()){
-                if(!descendants.has(child)){
-                    descendants.add(child)
-                    collectDescendants(child)
-                }
-            }
-        }
-        collectDescendants(this)
-        if(descendants.size===0) return
-        for(const desc of descendants){
-            flow.forwardStatus(desc,"floating")
-        }
-        const subLeaves=Array.from(descendants).filter(d=>{
-            const kids=Array.from(flow.childrenMap(d).keys())
-            return kids.length===0||kids.every(k=>!descendants.has(k))
-        })
-        const resolutions=new Map()
-        //this node is NOT re-resolved: its output is the new value already
-        resolutions.set(this,Promise.resolve())
-        await Promise.all(subLeaves.map(leaf=>flow.resolveNode(leaf,resolutions)))
-    }
+    //resolveChildren() is inherited from Node, which delegates to the flow.
+    //A copy of that traversal used to live here, and another in
+    //PersistentHomology0DNode: three identical implementations of "what is
+    //downstream of me" is exactly how they drift apart.
+
     trimBoundsSnapshot(){
         return {low:this.parameters.lowBound,high:this.parameters.highBound}
     }
@@ -1640,6 +1629,213 @@ class TrimmerNode extends NodeWithAccordion{
             this.outputs[0]=[]
         }
         this.refreshTrimmerUI()
+    }
+}
+
+/* -----------------------------------------------------------------
+   Formula: une formule chimique saisie au clavier, une seule sortie.
+   La COQUILLE seulement pour l'instant — l'analyse de la notation
+   (core / ionisation / adduits) vit dans chemistry.js: ce noeud ne fait
+   qu'héberger son résultat. Tout le métier
+   passe par startResolve(), un seul point d'entrée à compléter.
+   ---------------------------------------------------------------- */
+class FormulaNode extends NodeWithAccordion{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        //pas d'entrée: la formule est une SOURCE, elle se tape
+        super(title,[],[[]],origin,destinationFlow,position)
+        this.status="floating"
+        //la notation, telle que tapée: une seule chaîne, la grammaire de
+        //chemistry.js fait le reste ("C6H12O6 [H+]", "12C6 1H12 16O6 [2H+]"…)
+        this.parameters.notation="C6H12O6 [H+]"
+        //la formule ANALYSÉE, ou null tant que le métier n'est pas branché
+        this.formula=null
+        //erreur de lecture courante, affichée telle quelle
+        this.parseError=null
+        //ticket monotone: seule la frappe la plus récente publie son résultat
+        this.resolveRun=0
+        const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: the chemical formula</title>'
+    }
+    registered(e){
+        if(e.detail.msg.caster!==this||this.accordion){
+            return
+        }
+        super.registered(e)
+        this.setupFormulaUI()
+        //the default notation is a real formula, and a node whose output is
+        //empty until the first keystroke would show a dead link in the graph
+        this.startResolve()
+    }
+    setupFormulaUI(){
+        if(!this.accordion) return
+        const content=this.accordion.DOMelt.content
+        content.replaceChildren()
+        /* "content" sizing, not "viewport": the panel is an input line and a
+           short readout, so it should be exactly as tall as what it holds. The
+           fixed viewport height is for the nodes that embed a WebGL plot
+           (Trimmer, PersistentHomology), where a height following the content
+           would feed back into the plot's own measuring. There is no plot here,
+           and a 260 px box around two rows is mostly emptiness.
+
+           setSizingMode("content") puts the content back to display:block and
+           height:auto, so the grid below is ours to define freely: one column,
+           rows sized by what they hold. No height:100% and no minmax(0,1fr) -
+           both exist to tame a BOUNDED box, and there is no bound here. */
+        this.accordion.setSizingMode("content")
+        stylize(content,{
+            display:"grid",
+            "grid-template-columns":"minmax(0, 1fr)",
+            padding:"4px",
+            gap:"4px"
+        })
+        //la notation est LE contenu du noeud: une seule ligne, large
+        this.notationInput=CE("input",{
+            type:"text",
+            value:this.parameters.notation,
+            spellcheck:false,
+            title:"Chemical formula, composition then ionisation between brackets"
+        },[])
+        stylize(this.notationInput,{
+            width:"100%",
+            boxSizing:"border-box",
+            fontFamily:"inherit",
+            fontSize:"0.9em",
+            padding:"4px 6px",
+            borderRadius:"4px"
+        })
+        //ENTER commits: the node already re-reads itself on every keystroke,
+        //but the DESCENDANTS are not re-resolved on each key - a subtree may be
+        //expensive, and re-running it for every letter would make typing
+        //unusable. ENTER says "this notation is the one", and only then are the
+        //children brought up to date. Strictly downstream: the rest of the flow,
+        //including the branches this node does not feed, is left alone.
+        this.notationInput.addEventListener("keydown",(e)=>{
+            if(e.key==="Enter"){
+                e.preventDefault()
+                this.resolveChildren()
+            }
+        })
+        //EVERY keystroke resolves this node: a formula is short text whose
+        //reading is the whole point of the node, so making the user press a
+        //key to see whether "C6H12O6" is valid would be a tax on every symbol.
+        //The output is therefore always the last complete reading, never a
+        //half-typed one: "C6H12O" still yields the glucose composition.
+        this.notationInput.addEventListener("input",()=>{
+            this.parameters.notation=this.notationInput.value
+            this.startResolve()
+        })
+        content.append(this.notationInput)
+        //the readout: composition, charge, m/z - or the reading error. Three
+        //short lines, so it grows with its text: no overflow:auto, which would
+        //only hide the last line behind a scrollbar nobody asked for
+        this.readout=CE("div",{
+            style:{
+                fontSize:"0.85em",
+                opacity:"0.85",
+                padding:"2px 4px",
+                whiteSpace:"pre-wrap"
+            }
+        },[])
+        content.append(this.readout)
+        this.renderReadout()
+    }
+    //the table belongs to the ORIGINE (the App that owns this node), never to a
+    //global: two Apps may carry two different tables, and a node can never
+    //parse with another window's table.
+    //It AWAITS tableReady rather than reading origin.table: the App loads in the
+    //background, so an immediate read would report "no table" for a table still
+    //in flight, and the node would look broken for a few hundred ms.
+    //The App fetches eagerly rather than lazily ON PURPOSE (speed of use, see
+    //the App constructor): the wait lands here, once, and only when a formula
+    //is actually parsed.
+    async table(){
+        if(this.origin.table) return this.origin.table
+        await this.origin.tableReady
+        return this.origin.table??null
+    }
+    /* The one and only entry point of the business logic.
+
+       It runs on EVERY keystroke, and it awaits the table, so two resolves can
+       be in flight at once: typing "C6H1" then "2O6" quickly could settle them
+       out of order and leave the node showing the OLDER reading. resolveRun is
+       the monotonic ticket - only the newest run may publish. Same guard as
+       TrimmerNode.trimRun, and for the same reason. */
+    async startResolve(){
+        const run=++this.resolveRun
+        const notation=this.parameters.notation
+        const table=await this.table()
+        if(run!==this.resolveRun) return   // a newer keystroke already won
+        if(!table||!notation.trim()){
+            this.formula=null
+            this.parseError=null
+            this.outputs[0]=[]
+            this.setStatus("floating")
+            this.renderReadout()
+            return
+        }
+        try{
+            const formula=Formula.parse(notation,table)
+            this.formula=formula
+            this.parseError=null
+            //the Formula itself IS the output, published as-is: a formula is
+            //one thing, and wrapping it in a wave or a list of lists would only
+            //force the next node to unwrap it again
+            this.outputs[0]=[formula]
+            this.setStatus("resolved")
+        }catch(err){
+            //a typing mistake is a RESULT, not an exception: the node shows it
+            //and propagates nothing, or resolveFlow would stop on this node
+            this.formula=null
+            this.outputs[0]=[]
+            this.parseError=err.message
+            this.setStatus("error")
+        }
+        this.renderReadout()
+    }
+    renderReadout(){
+        if(!this.readout) return
+        if(this.parseError){
+            this.readout.textContent=this.parseError
+            return
+        }
+        if(!this.formula){
+            //no parsed formula yet: either nothing typed, or the table is
+            //still loading. The origin says which, and a node that guesses
+            //would tell the user the table is missing while it downloads.
+            this.readout.textContent=this.origin.tableError
+                ?`table périodique indisponible: ${this.origin.tableError}`
+                :""
+            return
+        }
+        const f=this.formula
+        this.readout.textContent=[
+            Formula.compositionToString(f.composition,f.rule),
+            `charge ${f.charge>0?"+":""}${f.charge}`,
+            `m/z ${f.mz.toFixed(6)}`
+        ].join("\n")
+    }
+    //un état unique pour le statut, pour ne pas oublier la diffusion
+    setStatus(status){
+        this.status=status
+        dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,status))
+    }
+    serializeState(){
+        return {
+            notation:this.parameters.notation
+        }
+    }
+    restoreState(state){
+        if(typeof state?.notation==="string"){
+            this.parameters.notation=state.notation
+        }
+        if(this.notationInput) this.notationInput.value=this.parameters.notation
+        //the Formula itself is NOT saved: it is derived from the notation and
+        //from the table, both of which may have changed since. It is re-parsed
+        //here, though, because a restored node that shows nothing until someone
+        //touches the field would come back looking broken. This is a READ, not
+        //a publication: it restores this node's own output, it does not
+        //resolve the children, which is the flow's business.
+        this.startResolve()
     }
 }
 
@@ -2078,35 +2274,9 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         }
     }
 
-    async resolveChildren(){
-        const flow = this.destination
-        if(!flow) return
-        const descendants = new Set()
-        const collectDescendants = (n) => {
-            const children = flow.childrenMap(n)
-            for(const child of children.keys()){
-                if(!descendants.has(child)){
-                    descendants.add(child)
-                    collectDescendants(child)
-                }
-            }
-        }
-        collectDescendants(this)
-        if(descendants.size === 0) return
-
-        for(const desc of descendants){
-            flow.forwardStatus(desc, "floating")
-        }
-
-        const subLeaves = Array.from(descendants).filter(d => {
-            const kids = Array.from(flow.childrenMap(d).keys())
-            return kids.length === 0 || kids.every(k => !descendants.has(k))
-        })
-
-        const resolutions = new Map()
-        resolutions.set(this, Promise.resolve())
-        await Promise.all(subLeaves.map(leaf => flow.resolveNode(leaf, resolutions)))
-    }
+    //resolveChildren() is inherited from Node: this class used to carry its own
+    //copy of the traversal, identical to TrimmerNode's, and both now delegate
+    //to the flow.
 
     serializeState(){
         return {
@@ -2885,6 +3055,9 @@ function createNodeForHistory(origin,flow,data){
         case "TrimmerNode":
             node=new TrimmerNode(data.title,origin,flow,position)
             break
+        case "FormulaNode":
+            node=new FormulaNode(data.title,origin,flow,position)
+            break
         default:
             node=new Node(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
             break
@@ -3186,6 +3359,41 @@ class Flow{
         }
         return children
     }
+    /* Re-resolves everything DOWNSTREAM of `node`, and nothing else.
+
+       This is the only correct scope for "my output just changed": the flow
+       must not be resolved from the leaves (that would redo unrelated branches
+       and, for a source node, re-run work the user did not touch), and this
+       node itself must NOT be re-resolved - its output is already published,
+       and re-resolving it would overwrite a fresh result with a stale one.
+
+       The descendants are resolved from their own LEAVES, because a node in the
+       middle of the subtree may depend on a sibling further down: resolving the
+       tips upward is what makes the shared resolutions Map do its job. */
+    async resolveDescendantsOf(node){
+        const descendants=new Set()
+        const collect=(n)=>{
+            for(const child of this.childrenMap(n).keys()){
+                if(!descendants.has(child)){
+                    descendants.add(child)
+                    collect(child)
+                }
+            }
+        }
+        collect(node)
+        if(descendants.size===0) return
+        for(const desc of descendants){
+            this.forwardStatus(desc,"floating")
+        }
+        const subLeaves=Array.from(descendants).filter(d=>{
+            const kids=Array.from(this.childrenMap(d).keys())
+            return kids.length===0||kids.every(k=>!descendants.has(k))
+        })
+        const resolutions=new Map()
+        //the starting node is not re-resolved: its output is the new value
+        resolutions.set(node,Promise.resolve())
+        await Promise.all(subLeaves.map(leaf=>this.resolveNode(leaf,resolutions)))
+    }
     async parentSynapse(node,parentsMap){//download outputs into inputs for each link extracted in parentMap
         for(let k in node.inputs){
             node.inputs[k]=new Map()
@@ -3399,6 +3607,10 @@ class MainFlowMenu extends Menu{
                     switch (type) {
                         case "trimmer": {
                             node = new TrimmerNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
+                            break
+                        }
+                        case "formula": {
+                            node = new FormulaNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
                             break
                         }
                         case "delimitedText":
@@ -5974,7 +6186,50 @@ class Accordion{
 }
 
 class App{
-    constructor(){
+    /* The periodic table belongs to the App, and the App LOADS it itself.
+
+       `table` is an optional injection point: pass a table to test with a
+       fixture, or to run two Apps against different masses (NIST, AME,
+       enriched isotopes). Left out, the App fetches data/elements.json once
+       and owns the result.
+
+       The load is NOT awaited by the constructor: the interface must be usable
+       the instant it appears. So this.table is null for a few hundred
+       milliseconds and tableReady is the promise that settles it. Any node
+       that needs the table AWAITS tableReady - it never reads this.table
+       without awaiting, or it would report "no table" for a table merely still
+       in flight. A load failure resolves tableReady to null and says so once,
+       instead of leaving a promise that rejects into nowhere.
+
+       WHY HERE, and not in main.js: main.js starts the program, it does not
+       know what a session is made of. Making IT fetch the table meant writing
+       down, in the bootstrap, a list of what the App needs - the first line of
+       a second source of truth that would grow with every feature. Inside the
+       App the list stays implicit: whatever a node asks the origin for, the
+       origin is the one that provides it.
+
+       This is a deliberate PRAGMATIC choice, not the ideal architecture. Two
+       things are knowingly left rough, and both are one refactor away:
+         - the table is loaded even for a session that never parses a formula.
+           Making it lazy (a getter that fetches on first access) would remove
+           the 72 Ko from a pure-data session; it costs an await in every
+           consumer, which is why it is not done yet.
+         - every App fetches its own copy, so "New session" re-downloads the
+           file. Sharing one instance per window would fix it, at the price of
+           a module-level cache - the very global this was moved away from. */
+    constructor({table=null,tableUrl="../data/elements.json"}={}){
+        this.table=table
+        this.tableError=null
+        this.tableReady=table
+            ?Promise.resolve(table)
+            :loadTable(tableUrl).then(
+                loaded=>{this.table=loaded; return loaded},
+                err=>{
+                    this.tableError=err.message??String(err)
+                    console.error("[App] le tableau périodique n'a pas pu être chargé:",err)
+                    return null
+                }
+            )
         this.channel=new Channel(this)
         this.history=new History()
         this.parameters={
@@ -6984,4 +7239,4 @@ class PetitGazFusion {
 
 
 
-export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode, TrimmerNode}
+export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode, TrimmerNode, FormulaNode}

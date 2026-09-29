@@ -26,11 +26,11 @@ const defaultMenu={
     mainFlowMenu:{
         "Data":{
             "Simple XY file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY file',type:'delimitedText'}}}))},
-            "hr":{},
-            "Trimmer":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Trimmer',type:'trimmer'}}}))},
+            "Formula":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Formula',type:'formula'}}}))},
         },
         "Operation":{
             "+1 on each pair element":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Operation +1',type:'operation'}}}))},
+            "Trimmer":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Trimmer',type:'trimmer'}}}))},
             "Persistent Homology":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Persistent Homology',type:'persistentHomology0D'}}}))},
         },
         "Display":{
