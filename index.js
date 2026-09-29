@@ -68,6 +68,10 @@ function serveStaticFileLimited(req, res) {
         '/XOP/rust-extension/pkg/attribrustor_bg.wasm':'XOP/rust-extension/pkg/attribrustor_bg.wasm',
         "/resources/config.js":"resources/config.js",
         "/scripts/formats.js":"scripts/formats.js",
+        "/scripts/chemistry.js":"scripts/chemistry.js",
+        "/scripts/valence.js":"scripts/valence.js",
+        //where the flow arranges its nodes and wires the new ones by itself
+        "/scripts/layout.js":"scripts/layout.js",
         "/resources/pattern.svg":"resources/pattern.svg",
         "/scripts/sessions.js":"scripts/sessions.js",
         "/scripts/plot2d-gl.js":"scripts/plot2d-gl.js"

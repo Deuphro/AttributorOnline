@@ -47,7 +47,10 @@ const defaultMenu={
             "Right accordion with graph":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Right accordion with graph',type:'rightAccordionGraph'}}}))},
         },
         "Flow":{
-            Resolve:(e)=>{dispatchEvent(new CustomEvent('resolveFlow',{detail:{msg:""}}))}
+            Resolve:(e)=>{dispatchEvent(new CustomEvent('resolveFlow',{detail:{msg:""}}))},
+            //forget every node the user placed by hand and lay the whole flow
+            //out again: no overlap, shortest drawing, fewest crossed cables
+            "Arrange nodes":(e)=>{dispatchEvent(new CustomEvent('arrangeFlow',{detail:{msg:""}}))}
         }
     }
 }

@@ -559,6 +559,10 @@ input[type=checkbox]{
 .flow.container{
     background: url('../resources/pattern.svg');
     background-color:#20242e;
+    /* le champ svg est agrandi pour contenir le dessin (Flow.fitField): une
+       fois qu'il déborde, c'est CEhui-ci qui doit défiler, sinon les nœuds
+       sont simplement hors cadre et hors d'atteinte */
+    overflow:auto;
 }
 
 .flow.workspace{
@@ -576,6 +580,18 @@ input[type=checkbox]{
 }
 .flow.workspace>.flow.container{
     min-height:0;
+}
+
+.nodeContainer{
+    /* le réagencement automatique (Flow.autoLayout) déplace les nœuds d'un
+       coup: sans transition, un graphe se téléporte et l'œil perd le fil de
+       ce qui a bougé. La durée est pilotée par LAYOUT_ANIMATION_MS côté JS */
+    transition: transform 260ms ease-out;
+}
+.nodeContainer.dragging{
+    /* pendant un glissement, le suivi doit être instantané: un nœud qui a un
+       coup de retard sous le curseur passe pour cassé */
+    transition: none;
 }
 
 .node{

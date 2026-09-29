@@ -164,6 +164,10 @@ function serializeNode(node, state) {
         inputs: encodeValue(node.inputs),
         outputs: encodeValue(node.outputs),
         position: encodeValue(node.parameters?.position ?? {x: 10, y: 10}),
+        //a node the user dragged by hand is pinned: the arrangement flows
+        //around it. Optional, so a session saved before the pins existed still
+        //opens - it just comes back with every node free to move
+        pinned: !!node.parameters?.pinned,
         state: encodeValue(node.serializeState?.()),
         status: node.status
     }
@@ -323,6 +327,12 @@ function importSession(serialized, options = {}) {
             }
             if (node.parameters) {
                 node.parameters.position = decodeValue(nodeData.position, registrations)
+                // pinned = the user placed this node by hand, so the automatic
+                // arrangement flows around it. Absent in older files, which
+                // simply come back with every node free to move
+                if (nodeData.pinned !== undefined) {
+                    node.parameters.pinned = nodeData.pinned
+                }
             }
             if (nodeData.status !== undefined) {
                 node.status = nodeData.status

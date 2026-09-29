@@ -9,9 +9,18 @@ import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 //is DATA and is fetched by the App that needs it (see App), never at module
 //load: importing a node graph must not drag a 72 Ko download with it.
 import {Formula,loadTable} from "./chemistry.js"
+//where the nodes go, and which two of them get wired together by themselves.
+//Pure functions over plain descriptors, so the whole thing is testable
+//without a browser (see layout.test.mjs).
+import {LAYOUT_DEFAULTS,autoLinkPlan,buildGraph,layoutFlow} from "./layout.js"
 
 window.raie=new Wave(10,2)
 window.eiar=new Wave(7)
+
+//kept between a node and the edge of the viewport when the field scrolls to it
+const LAYOUT_REVEAL_MARGIN=24
+//a bezier handle shorter than this and a short cable curls back on itself
+const LAYOUT_MIN_LINK_HANDLE=20
 
 class Command{
     constructor({label="action",undo,redo}={}){
@@ -227,6 +236,10 @@ class Node{
         let dy=e.clientY;
         const pilot=e.target.pilot
         const before={...pilot.parameters.position}
+        //no transition while a node is being dragged: a node that lags behind
+        //the cursor feels broken, and the transition is only there to make the
+        //automatic rearrangement readable
+        pilot.DOMelt.classList.add("dragging")
         document.onmousemove=(e)=>{
             e.preventDefault();
             dx-=e.clientX;
@@ -242,6 +255,10 @@ class Node{
             e.preventDefault();
             document.onmousemove=null;
             document.onmouseup=null;
+            pilot.DOMelt.classList.remove("dragging")
+            //hand-placed: the automatic rearrangement now flows AROUND this
+            //node instead of moving it. Only "Arrange nodes" takes the pin off.
+            pilot.parameters.pinned=true
             const after={...pilot.parameters.position}
             if(before.x!==after.x||before.y!==after.y){
                 //the command resolves the live node at execution time: the pilot
@@ -262,9 +279,15 @@ class Node{
             }
         }
     }
-    setPosition(position){
+    /* Moves the node and nothing else. The batch version: an arrangement moves
+       every node at once and redraws the cables once at the end, instead of
+       once per node. */
+    applyPosition(position){
         this.parameters.position={...position}
         this.SVGg.attr('transform',`translate(${position.x},${position.y})`)
+    }
+    setPosition(position){
+        this.applyPosition(position)
         this.destination.updateLinks()
     }
     /* "My output just changed, bring my descendants up to date."
@@ -3430,6 +3453,9 @@ function nodeRestoreData(node){
         inputs:node.inputs.map(entry=>entry instanceof Map ? new Map() : DC(entry)),
         outputs:DC(node.outputs),
         position:{...node.parameters.position},
+        //the pin travels with the node: an undo that brings a node back must
+        //bring back the choice the user made about where it lives
+        pinned:!!node.parameters.pinned,
         status:node.status,
         source:node.parameters.source?DC(node.parameters.source):null,
         state:node.serializeState?.()??null
@@ -3472,6 +3498,7 @@ function createNodeForHistory(origin,flow,data){
             break
     }
     origin.channel.register(data.registrationName??"node",node,node.title)
+    node.parameters.pinned=!!data.pinned
     if(data.source){
         node.parameters.source=DC(data.source)
         node.updateLabel(node.parameters.source.fileName)
@@ -3504,7 +3531,9 @@ class Flow{
             nodeMove(e){this.updateLinks()},
             startLinkDrawing(e){this.startBuildingLink(e)},
             stopLinkDrawing(e){this.stopBuildingLink(e)},
-            nodeKilled(e){this.updateLinks()},
+            //a node that dies leaves a hole where it was: the arrangement is
+            //what closes it, so the field never keeps a gap nobody can fill
+            nodeKilled(e){this.autoLayout()},
             nodeStatusChanged(e){this.forwardStatus(e.detail.emitter,e.detail.msg.status)},
             linkSelected(e){},
             async resolveFlow(e){
@@ -3521,13 +3550,23 @@ class Flow{
                 drawn:false,
                 node:[],
                 links:{stiffness:75}
-            }
+            },
+            //the arrangement is a PARAMETER, not a constant buried in the
+            //layout: a bigger flow wants wider columns, and a session that
+            //remembers its own spacing reopens looking the way it was left
+            layout:{...LAYOUT_DEFAULTS}
         }
         stylize(this.container,{
             position:"relative",
             width:"100%",
             height:"100%",
+            //the field is grown to fit the drawing, so a flow bigger than the
+            //window scrolls instead of losing nodes off the right edge
+            overflow:"auto"
         })
+        //the App observes any element that owns a handleResize, so the field
+        //follows the window: a narrower window must not crop the drawing
+        this.container.handleResize=()=>this.fitField()
         this.destination.appendChild(this.container)
         this.draw()
     }
@@ -3539,6 +3578,255 @@ class Flow{
                 .attr("width","100%")
                 .attr("height","100%")
                 .attr("class","flow field")
+        }
+    }
+    layoutOptions(){
+        //always merged over the defaults: a session restores flow.parameters
+        //field by field, and an older file simply has no layout in it
+        return {...LAYOUT_DEFAULTS,...this.parameters.layout}
+    }
+    /* The flow, described the way layout.js wants it: plain numbers, no DOM.
+
+       Mind the names, they are the ones of the DOM and they read backwards -
+       the node that PRODUCES is link.inputNode and owns an output anchor, the
+       node that CONSUMES is link.outputNode. */
+    graphSnapshot(){
+        return {
+            nodes:[...this.nodeSet].map(node=>({
+                id:node,
+                width:node.parameters.width,
+                height:node.nodeHeight,
+                inputCount:node.inputs.length,
+                outputCount:node.outputs.length,
+                x:node.parameters.position.x,
+                y:node.parameters.position.y,
+                pinned:!!node.parameters.pinned
+            })),
+            links:this.linkList
+                .filter(link=>link.inputNode&&link.outputNode)
+                .map(link=>({
+                    source:link.inputNode,
+                    target:link.outputNode,
+                    sourcePort:Number(link.inputAnchor?.id??0),
+                    targetPort:Number(link.outputAnchor?.id??0)
+                }))
+        }
+    }
+    positionsSnapshot(){
+        return new Map([...this.nodeSet].map(node=>[node,{
+            x:node.parameters.position.x,
+            y:node.parameters.position.y,
+            pinned:!!node.parameters.pinned
+        }]))
+    }
+    restorePositions(snapshot){
+        for(const [node,position] of snapshot){
+            if(!this.nodeSet.has(node)){
+                continue
+            }
+            node.parameters.pinned=position.pinned
+            node.applyPosition(position)
+        }
+        this.updateLinks()
+        this.fitField()
+    }
+    /* Puts every node where it belongs: one column per stage of the flow, the
+       nodes of a column packed with the smallest gap that still reads as a
+       gap, and the order inside a column chosen to cross as few cables as
+       possible. Nodes the user dragged by hand (pinned) stay exactly where
+       they are and everything else flows around them.
+
+       It runs on its own whenever the shape of the flow changes; only the
+       "Arrange nodes" command records it, because an arrangement the user did
+       not ask for has no business in the undo stack. */
+    autoLayout(){
+        if(!this.nodeSet.size||!this.field){
+            return null
+        }
+        const {positions,bounds}=layoutFlow({
+            ...this.graphSnapshot(),
+            options:this.layoutOptions()
+        })
+        for(const node of this.nodeSet){
+            const target=positions.get(node)
+            if(target){
+                node.applyPosition(target)
+            }
+        }
+        this.updateLinks()
+        this.fitField(bounds)
+        return bounds
+    }
+    /* What the user asked for: forget every pin and lay the whole flow out
+       again. Recorded - but only if it moved something, because an undo entry
+       that undoes nothing is an undo entry that confuses. */
+    arrangeNodes(){
+        const before=this.positionsSnapshot()
+        this.autoLayout()
+        const after=this.positionsSnapshot()
+        if(this.origin.history.replaying){
+            return
+        }
+        let moved=false
+        for(const [node,position] of before){
+            const now=after.get(node)
+            if(now&&(now.x!==position.x||now.y!==position.y||now.pinned!==position.pinned)){
+                moved=true
+                break
+            }
+        }
+        if(!moved){
+            return
+        }
+        this.origin.history.record(new Command({
+            label:"Arrange nodes",
+            undo:()=>this.restorePositions(before),
+            redo:()=>this.restorePositions(after)
+        }))
+    }
+    /* Can these two ends be joined at all? Everything that makes a cable
+       impossible is decided here, once, so the click and the automatic wiring
+       can never disagree about what a link is. */
+    canLink({source,sourceIndex=0,target,targetIndex=0}={}){
+        if(!source||!target||source===target){
+            return false
+        }
+        if(!this.nodeSet.has(source)||!this.nodeSet.has(target)){
+            return false
+        }
+        if(!(sourceIndex>=0&&sourceIndex<source.outputs.length)){
+            return false
+        }
+        if(!(targetIndex>=0&&targetIndex<target.inputs.length)){
+            return false
+        }
+        //the same cable twice would make Delete ambiguous
+        const alreadyThere=this.linkList.some(link=>
+            link.inputNode===source
+            &&link.outputNode===target
+            &&Number(link.inputAnchor?.id)===sourceIndex
+            &&Number(link.outputAnchor?.id)===targetIndex
+        )
+        if(alreadyThere){
+            return false
+        }
+        //a flow resolves from its leaves: a loop would never finish
+        return !this.reaches(target,source)
+    }
+    reaches(from,to){
+        if(from===to){
+            return true
+        }
+        const seen=new Set([from])
+        const stack=[from]
+        while(stack.length){
+            for(const child of this.childrenMap(stack.pop()).keys()){
+                if(child===to){
+                    return true
+                }
+                if(!seen.has(child)){
+                    seen.add(child)
+                    stack.push(child)
+                }
+            }
+        }
+        return false
+    }
+    /* THE way two nodes get connected.
+
+       The click (anchor to anchor) and the wiring a brand new node does by
+       itself both come through here, so a cable can only be born one way:
+       checked, drawn, undoable, and followed by an arrangement that keeps it
+       readable. `source` is the node that PRODUCES (it owns the output
+       anchor), `target` the one that consumes. */
+    linkNodes({source,sourceIndex=0,target,targetIndex=0,record=true,relayout=true}={}){
+        if(!this.canLink({source,sourceIndex,target,targetIndex})){
+            console.warn("[Flow] link refused: not a valid cable for this flow")
+            return null
+        }
+        const link=this.createLink(source,sourceIndex,target,targetIndex)
+        if(!link){
+            return null
+        }
+        this.forwardStatus(target,'floating')
+        if(record&&!this.origin.history.replaying){
+            this.origin.history.record(new Command({
+                label:`Create link ${source.title} -> ${target.title}`,
+                undo:()=>{
+                    this.deleteLink(link,{record:false})
+                    this.autoLayout()
+                },
+                redo:()=>{
+                    link=this.createLink(source,sourceIndex,target,targetIndex)
+                    this.autoLayout()
+                }
+            }))
+        }
+        if(relayout){
+            this.autoLayout()
+        }
+        return link
+    }
+    /* A node that shows up where there is obviously room for it is wired in
+       without asking: one dangling output in the whole flow and a free input
+       here, and the same the other way round. Two dangling ends is ambiguity,
+       and nothing is guessed - the user draws that one cable. The caller
+       arranges the flow afterwards, so the newcomer lands in its column. */
+    linkNewNode(node){
+        const plan=autoLinkPlan(buildGraph(this.graphSnapshot()),node)
+        const wired=[]
+        for(const proposal of plan){
+            const link=this.linkNodes({...proposal,record:false,relayout:false})
+            if(link){
+                wired.push(proposal)
+            }
+        }
+        return wired
+    }
+    /* Grows the svg to the drawing. A node the layout pushed past the edge of
+       the window is not lost: the container scrolls, and revealNode scrolls to
+       the one the user just made. */
+    fitField(bounds){
+        if(!this.field){
+            return
+        }
+        const box=this.container.getBoundingClientRect()
+        const content=bounds??this.contentBounds()
+        this.field
+            .attr("width",Math.max(Math.round(box.width),Math.ceil(content.width)))
+            .attr("height",Math.max(Math.round(box.height),Math.ceil(content.height)))
+    }
+    contentBounds(){
+        let maxX=0
+        let maxY=0
+        for(const node of this.nodeSet){
+            const {x,y}=node.parameters.position
+            maxX=Math.max(maxX,x+node.parameters.width)
+            maxY=Math.max(maxY,y+node.nodeHeight)
+        }
+        const margin=this.layoutOptions().margin
+        return {width:maxX+margin,height:maxY+margin}
+    }
+    revealNode(node){
+        if(!this.container||!node){
+            return
+        }
+        const box=this.container.getBoundingClientRect()
+        const {x,y}=node.parameters.position
+        //the positions are the ones just computed, NOT the ones on screen: the
+        //css transition is still running, so a measurement would scroll to
+        //where the node used to be
+        const width=node.parameters.width
+        const height=node.nodeHeight
+        if(x<this.container.scrollLeft){
+            this.container.scrollLeft=x-LAYOUT_REVEAL_MARGIN
+        }else if(x+width>this.container.scrollLeft+box.width){
+            this.container.scrollLeft=x+width-box.width+LAYOUT_REVEAL_MARGIN
+        }
+        if(y<this.container.scrollTop){
+            this.container.scrollTop=y-LAYOUT_REVEAL_MARGIN
+        }else if(y+height>this.container.scrollTop+box.height){
+            this.container.scrollTop=y+height-box.height+LAYOUT_REVEAL_MARGIN
         }
     }
     startBuildingLink(e){
@@ -3562,45 +3850,21 @@ class Flow{
         }
         document.onmouseup=(e)=>{
             e.preventDefault();
-            if(!this.linkList.at(-1).endingAnchor){
-                this.linkList.at(-1).node().remove()
+            //the cable drawn while the mouse was down is only a PREVIEW: it is
+            //thrown away and the real one is built by linkNodes, so the click
+            //and the automatic wiring produce exactly the same cable
+            const draft=this.linkList.at(-1)
+            if(draft?.endingAnchor){
+                const source=draft.inputNode
+                const target=draft.outputNode
+                const sourceIndex=Number(draft.inputAnchor.id)
+                const targetIndex=Number(draft.outputAnchor.id)
+                draft.node().remove()
                 this.linkList.pop()
+                this.linkNodes({source,sourceIndex,target,targetIndex})
             }else{
-                const endingPos=Node.anchorAbsPos(this.linkList.at(-1).endingAnchor)
-                let link=this.linkList.at(-1)
-                link.attr("d", `M ${startingPos.x} ${startingPos.y}
-                    C ${startingPos.x+bezierSide} ${startingPos.y},
-                    ${endingPos.x-bezierSide} ${endingPos.y},
-                    ${endingPos.x} ${endingPos.y}`)
-                link.style('pointer-events','stroke')
-                link.attr("id",this.linkList.length-1)
-                link.attr("tabindex",0)
-                link.lower()
-                link.node().pilot=this
-                link.node().handleClick=(e)=>{dispatchEvent(e.target.pilot.events.broadcast.linkSelected.call(e.target.pilot,e.target))}
-                link.node().handleKeyDown=(e)=>{
-                    if(e.key==="Delete"){
-                        e.target.pilot.deleteLink(e.target)
-                    }
-                }
-                if(!this.origin.history.replaying){
-                    const descriptor={
-                        inputNode:link.inputNode,
-                        inputIndex:Number(link.inputAnchor.id),
-                        outputNode:link.outputNode,
-                        outputIndex:Number(link.outputAnchor.id)
-                    }
-                    this.origin.history.record(new Command({
-                        label:`Create link ${descriptor.inputNode.title} -> ${descriptor.outputNode.title}`,
-                        undo:()=>this.deleteLink(link,{record:false}),
-                        redo:()=>{link=this.createLink(
-                            descriptor.inputNode,
-                            descriptor.inputIndex,
-                            descriptor.outputNode,
-                            descriptor.outputIndex
-                        )}
-                    }))
-                }
+                draft?.node().remove()
+                this.linkList.pop()
             }
             document.onmousemove=null;
             document.onmouseup=null;
@@ -3639,6 +3903,9 @@ class Flow{
         link.node().handleKeyDown=e=>{
             if(e.key==="Delete"){
                 e.target.pilot.deleteLink(e.target)
+                //a deleted cable may have emptied a column: the arrangement is
+                //what closes the hole it leaves
+                e.target.pilot.autoLayout()
             }
         }
         this.field.node().appendChild(link.node())
@@ -3698,16 +3965,35 @@ class Flow{
                 this.linkList.at(-1).inputAnchor=this.linkList.at(-1).endingAnchor
                 this.linkList.at(-1).outputAnchor=this.linkList.at(-1).startingAnchor
             }
-            this.forwardStatus(this.linkList.at(-1).outputNode,'floating')
+            //the status is NOT forwarded here: stopBuildingLink only records
+            //where the cable was dropped. It is linkNodes, which decides
+            //whether a cable is born at all, that marks the target as owing a
+            //new resolve - a refused link must change nothing.
         }
     }
     updateLinks(){
         for(let k=0;k<this.linkList.length;k++){
-            if(this.nodeSet.has(this.linkList[k].startingNode) && this.nodeSet.has(this.linkList[k].endingNode)){
-                const startingPos=Node.anchorAbsPos(this.linkList[k].startingAnchor)
-                const endingPos=Node.anchorAbsPos(this.linkList[k].endingAnchor)
-                let bezierSide=this.linkList[k].startingNode.parameters.anchorMap.get(this.linkList[k].startingAnchor).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
-                this.linkList[k].attr("d", `M ${startingPos.x} ${startingPos.y}
+            const link=this.linkList[k]
+            if(!link.startingNode||!link.endingNode){
+                //a cable that is still being drawn: it has one end, so there
+                //is nothing to route and nothing to clean up. It is NOT a
+                //dangling link - it is a cable in the making
+                continue
+            }
+            if(this.nodeSet.has(link.startingNode) && this.nodeSet.has(link.endingNode)){
+                const startingPos=Node.anchorAbsPos(link.startingAnchor)
+                const endingPos=Node.anchorAbsPos(link.endingAnchor)
+                //the handle follows the gap the arrangement left between the
+                //two columns: a fixed handle on a short cable folds back on
+                //itself, and a long one stays flat when the two ends are far
+                //apart
+                const stiffness=this.parameters.field.links.stiffness
+                const handle=Math.max(
+                    LAYOUT_MIN_LINK_HANDLE,
+                    Math.min(stiffness,Math.abs(endingPos.x-startingPos.x)*0.5)
+                )
+                const bezierSide=link.startingNode.parameters.anchorMap.get(link.startingAnchor).type==="output"?handle:-handle
+                link.attr("d", `M ${startingPos.x} ${startingPos.y}
                 C ${startingPos.x+bezierSide} ${startingPos.y},
                 ${endingPos.x-bezierSide} ${endingPos.y},
                 ${endingPos.x} ${endingPos.y}`)
@@ -4010,6 +4296,9 @@ class MainFlowMenu extends Menu{
         this.events={
             broadcast:{},
             listen:{
+                arrangeFlow(e){
+                    origin.channel.get("mainFlow")?.arrangeNodes()
+                },
                 createNode(e){
                     const {title,type,source} = e.detail.msg
                     let node
@@ -4138,6 +4427,16 @@ class MainFlowMenu extends Menu{
                             break
                     }
                     origin.channel.register("node", node, node.title)
+                    const flow=origin.channel.get("mainFlow")
+                    //a node that lands where there is obviously room for it
+                    //wires itself in. Those cables belong to the SAME command
+                    //as the node: one undo removes the node and everything the
+                    //app did to it on its own
+                    flow?.linkNewNode(node)
+                    //the arrangement runs whether the newcomer wired itself in
+                    //or not: a node created at the default spot would otherwise
+                    //land on top of whatever is already there
+                    flow?.autoLayout()
                     if(type === "delimitedText" && source){
                         node.parameters.source={labels:["x","y"],...node.parameters.source,...source}
                         node.setColumnLabels?.(node.parameters.source.labels)
@@ -4151,10 +4450,19 @@ class MainFlowMenu extends Menu{
                             undo:()=>node.suicide({skipHistory:true}),
                             redo:()=>{
                                 node=createNodeForHistory(origin,origin.channel.get("mainFlow"),nodeData)
+                                //the cables are DECIDED AGAIN rather than
+                                //replayed: the rule only depends on the shape
+                                //of the flow, which the undo just put back
+                                //exactly as it was - and a recorded cable would
+                                //point at a node instance that no longer exists
+                                flow?.linkNewNode(node)
+                                flow?.autoLayout()
                                 node.refreshFromLinks?.()
+                                flow?.revealNode(node)
                             }
                         }))
                     }
+                    flow?.revealNode(node)
                 }
             }
         }
