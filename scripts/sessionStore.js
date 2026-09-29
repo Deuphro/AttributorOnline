@@ -282,6 +282,63 @@ export function readPreferences(storage=globalThis.localStorage){
     return isObject(document)?document:null
 }
 
+/* --- the durable copy, and the one destructive gesture ------------------ */
+
+/* The full session, not the skeleton: this is the copy that outlives the tab,
+   and it is deliberately the COMPLETE one, data and all. The lifecycle is what
+   makes that acceptable rather than merely convenient - a durable copy is never
+   overwritten behind the user's back, and "New session" is a hard reset that
+   takes it with it, so the data is either there or deliberately gone. */
+const LOCAL_SESSION_KEY="attributor:session:local"
+/* What an older build called its durable copy. PurgeAll removes it too: a reset
+   that leaves one key behind is not a reset. */
+const LEGACY_LOCAL_KEY="attributor-session"
+
+export function hasLocalSession(storage=globalThis.localStorage){
+    return Boolean(storage?.getItem(LOCAL_SESSION_KEY))
+}
+export function readLocalSession(storage=globalThis.localStorage){
+    return storage?.getItem(LOCAL_SESSION_KEY)??null
+}
+/* A refused write is the one save failure the user MUST hear about, and the
+   reason matters: the budget is a browser limit, not a bug, and there is a way
+   out of it that does not involve throwing their work away. */
+export function saveLocalSession(json,storage=globalThis.localStorage){
+    try{
+        storage.setItem(LOCAL_SESSION_KEY,json)
+    }catch(error){
+        if(error?.name==="QuotaExceededError"||error?.code===22){
+            const mb=(json.length/1e6).toFixed(1)
+            throw new RangeError(
+                `This session needs ${mb} MB and the browser only allows 5 MB per site. `+
+                `"Export session" puts it on disk instead, where there is no such limit.`
+            )
+        }
+        throw error
+    }
+    return {bytes:json.length}
+}
+export function clearLocalSession(storage=globalThis.localStorage){
+    storage?.removeItem(LOCAL_SESSION_KEY)
+}
+/* A HARD RESET, and the only destructive gesture in the app.
+
+   One button, one meaning: everything this app kept is gone, from everywhere it
+   kept it - the tab's skeleton, the durable copy, and the panel geometry. The
+   geometry goes with it on purpose. A program that offers to cancel but keep
+   some of it makes the reader wonder which of the buttons they are about to
+   press, and the answer changes with what happens to be present at the time. */
+export function purgeAll({
+    session=globalThis.sessionStorage,
+    local=globalThis.localStorage
+}={}){
+    session?.removeItem(SKELETON_KEY)
+    local?.removeItem(LOCAL_SESSION_KEY)
+    local?.removeItem(PREFERENCES_KEY)
+    local?.removeItem(LEGACY_LOCAL_KEY)
+    return true
+}
+
 /* --- booting from a skeleton ----------------------------------------- */
 
 /* The options for sessions.js, or null when there is nothing to import - which

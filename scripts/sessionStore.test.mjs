@@ -16,11 +16,15 @@ import {
     clearSession,
     debounce,
     exportSkeleton,
+    hasLocalSession,
     importOptions,
     parseSkeleton,
+    purgeAll,
+    readLocalSession,
     readPreferences,
     readSession,
     reparseRestoredSource,
+    saveLocalSession,
     savePreferences,
     writeSession
 } from "./sessionStore.js"
@@ -416,6 +420,49 @@ console.log("booting: options are built from the skeleton, and only from a real 
     test("a node that cannot parse is not an error",()=>{
         eq(reparseRestoredSource({parameters:{}}),null)
         eq(reparseRestoredSource(null),null)
+    })
+}
+
+console.log("the durable copy, and the one hard reset")
+{
+    const local=memoryStorage()
+    const session=memoryStorage()
+    test("a durable copy is written, found, and read back whole",()=>{
+        eq(hasLocalSession(local),false)
+        const json=exportSkeleton(makeApp([makeNode()]))
+        const result=saveLocalSession(json,local)
+        eq(result.bytes,json.length)
+        eq(hasLocalSession(local),true)
+        eq(readLocalSession(local),json)
+    })
+    test("a refused durable write says how big it was and what to do instead",()=>{
+        const full={
+            getItem:()=>null,
+            setItem:()=>{const e=new Error("full");e.name="QuotaExceededError";throw e},
+            removeItem:()=>{}
+        }
+        let raised=null
+        try{ saveLocalSession("x".repeat(2_400_000),full) }catch(error){ raised=error }
+        ok(raised instanceof RangeError,`expected a RangeError, got ${raised}`)
+        ok(raised.message.includes("2.4 MB"),`the size is missing: ${raised.message}`)
+        ok(raised.message.includes("Export session"),`the way out is missing: ${raised.message}`)
+    })
+    test("the hard reset takes the skeleton, the durable copy and the geometry",()=>{
+        writeSession(makeApp([makeNode()]),session)
+        saveLocalSession("{\"a\":1}",local)
+        savePreferences(makeApp([makeNode()]),local)
+        eq(purgeAll({session,local}),true)
+        if(!isNull(readSession(session))) throw new Error("the skeleton survived")
+        eq(hasLocalSession(local),false)
+        if(!isNull(readPreferences(local))) throw new Error("the geometry survived a hard reset")
+    })
+    test("the hard reset also removes the key an older build used",()=>{
+        local.setItem("attributor-session","legacy")
+        purgeAll({session,local})
+        if(local.getItem("attributor-session")!==null) throw new Error("a reset that leaves one key behind is not a reset")
+    })
+    test("and it is not a reset when there was nothing to reset",()=>{
+        eq(purgeAll({session,local}),true)
     })
 }
 

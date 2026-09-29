@@ -17,11 +17,16 @@ import {LAYOUT_DEFAULTS,autoLinkPlan,buildGraph,layoutFlow} from "./layout.js"
 //geometry that outlives it. See the module header for why the two live in two
 //different stores.
 import {
-    clearSession,
+    clearLocalSession,
     debounce,
+    exportSkeleton,
     importOptions,
+    parseSkeleton,
+    purgeAll,
+    readLocalSession,
     readPreferences,
     reparseRestoredSource,
+    saveLocalSession,
     savePreferences,
     writeSession
 } from "./sessionStore.js"
@@ -4477,16 +4482,42 @@ class MainMenu extends Menu{
             },
             about(e){origin.about()},
             newSession(e){
-                /* The skeleton goes WITH the session, and the pending autosave is
-                   cancelled first: a timer still waiting would put the pipeline
-                   straight back into the store a moment after the clear, and the
-                   "New session" would not stick. The panel geometry stays - it is
-                   a preference, not a session. */
+                /* A HARD RESET, and the only destructive gesture in the app: the
+                   skeleton, the durable copy and the panel geometry all go, and
+                   they go together. Nothing partial about it, nothing that means
+                   something different depending on what is on screen.
+
+                   The pending autosave is cancelled first, or a timer still
+                   waiting would put the pipeline straight back into the store a
+                   moment after the purge and the reset would not stick. */
                 origin.saveSessionSoon?.cancel()
-                clearSession()
+                purgeAll()
                 //replaces the current app with a fresh empty one
                 origin.dispose()
                 globalThis.Attributor=new App()
+            },
+            saveLocalSession(e){
+                try{
+                    const bytes=exportSkeleton(origin).length
+                    origin.saveSession({localStorage:true})
+                    origin.notice(
+                        "Saved locally",
+                        `${(bytes/1e6).toFixed(2)} MB kept in this browser: the graph, your `+
+                        `settings and the text of your file. It is not on your disk, and `+
+                        `"New session" deletes it - use "Export session" for anything you keep.`
+                    )
+                }catch(error){
+                    //the budget is a browser limit, not a bug, and the way out
+                    //does not involve losing the session
+                    origin.notice("Not saved", error.message)
+                }
+            },
+            openLocalSession(e){
+                try{
+                    origin.openLocalCopy()
+                }catch(error){
+                    origin.notice("Could not open the local copy",error.message)
+                }
             },
         }}
     }
@@ -7743,9 +7774,69 @@ class App{
             SingleJsonFile(json)
         }
         if(options.localStorage){
-            localStorage.setItem("attributor-session",json)
+            /* The SKELETON, not the full session, and the difference is not a
+               detail. A full session carries the file text AND the parsed pairs
+               AND the resolved outputs, and measures about three times as much:
+               5000 points of a real spectrum is already 4 MB complete, which is
+               the entire browser budget for the whole site. The skeleton keeps
+               the text, and the resolve rebuilds the rest - so a durable copy of
+               the same spectrum is 0.14 MB and a handful of them fit.
+
+               The full session is what goes to a FILE, where there is no budget
+               and being able to reopen without re-running a kernel is worth it. */
+            saveLocalSession(exportSkeleton(this))
         }
         return json
+    }
+    /* The durable copy comes back the way a reload does: as a skeleton, through
+       the same two steps, with the same guarantees. One code path means one set
+       of bugs, and the alternative - a second restore for the local copy - is a
+       second thing to keep in step with the first. */
+    openLocalCopy(){
+        const document=parseSkeleton(readLocalSession())
+        if(!document){
+            throw new Error(
+                "There is no local copy to open. \"Save (local)\" in the File menu makes one."
+            )
+        }
+        this.dispose()
+        let restored=null
+        try{
+            restored=restoreSession(document)
+        }catch(error){
+            //the skeleton is dropped rather than kept: one this build cannot read
+            //would fail again on every opening, with no way past it
+            console.error("[App] the local copy could not be opened:",error)
+            clearLocalSession()
+        }
+        if(!restored){
+            //never leave the user with nothing: an empty app beats no app
+            globalThis.Attributor=new App()
+            return globalThis.Attributor
+        }
+        globalThis.Attributor=restored
+        restored.applyPanelParameters()
+        restored.resolveAfterRestore()
+        return restored
+    }
+    /* The one way this app talks instead of writing to the console.
+
+       It exists because the two failures that matter - a storage budget
+       exceeded, a local copy that cannot be read - are both invisible from the
+       outside: the app keeps working perfectly, and the user only finds out
+       later that nothing was saved. A Dialog is what this codebase already has
+       for saying something, so it is what this uses. */
+    notice(title,text){
+        const dialog=new Dialog(title,this,this.main)
+        stylize(dialog.DOMelt.window,{
+            width:"420px",
+            top:"35%",
+            left:"35%"
+        })
+        dialog.DOMelt.content.appendChild(
+            CE("div",{style:{padding:"10px",lineHeight:"1.5"}},[text])
+        )
+        return dialog
     }
     /* THE AUTOSAVE, and the two places it listens from.
 
@@ -7853,7 +7944,10 @@ class App{
         }
         let json=options.json
         if(options.localStorage){
-            json=localStorage.getItem("attributor-session")
+            json=readLocalSession()
+            if(!json){
+                throw new Error("There is no local copy to open. \"Save (local)\" makes one.")
+            }
         }
         if(options.file){
             json=await options.file.text()
@@ -7925,6 +8019,18 @@ class App{
             CE("div",{},[new CycloSpinner(15)]),
             CE("div",{},[new CycloSpinner(15),new CycloSpinner(15)])
         ]))
+        /* Where the work goes, stated where somebody goes looking for it.
+
+           The honest version is three sentences, not a paragraph: nothing leaves
+           the machine, a durable copy can be deleted with one button, and a large
+           spectrum may be refused by the browser's budget. Anything longer stops
+           being read. */
+        this.notice(
+            "Where your data goes",
+            "Your work is kept in this browser only. Nothing is sent to a server, and no one else can read it. "+
+            "\"New session\" deletes all of it: the current session, the local copy, and the window layout. "+
+            "Use \"Export session\" for anything you want to keep on disk."
+        )
     }
 }
 

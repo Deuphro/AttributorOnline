@@ -2,8 +2,14 @@ const defaultMenu={
     mainMenu:{
         File:{
             "New session":(e)=>{dispatchEvent(new CustomEvent('newSession',{detail:{msg:""}}))},
-              "Import flow":(e)=>{dispatchEvent(new CustomEvent('importSession',{detail:{msg:{format:"json",source:"file"}}}))},
-              "Export flow":(e)=>{dispatchEvent(new CustomEvent('exportSession',{detail:{msg:{format:"json",target:"file"}}}))},
+              "Save (local)":(e)=>{dispatchEvent(new CustomEvent('saveLocalSession',{detail:{msg:""}}))},
+              "Open local copy":(e)=>{dispatchEvent(new CustomEvent('openLocalSession',{detail:{msg:""}}))},
+              hr:{},
+              //these two were labelled "flow" and always were about the whole
+              //session: the graph, its settings, the loaded data, the panel
+              //layout. The label was the only thing out of date.
+              "Import session":(e)=>{dispatchEvent(new CustomEvent('importSession',{detail:{msg:{format:"json",source:"file"}}}))},
+              "Export session":(e)=>{dispatchEvent(new CustomEvent('exportSession',{detail:{msg:{format:"json",target:"file"}}}))},
         },
         Edit:{
             Undo:(e)=>{dispatchEvent(new CustomEvent('undo',{detail:{msg:""}}))},
