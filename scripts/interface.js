@@ -7772,9 +7772,10 @@ class App{
            change - and anything done in the last moment before the tab closes
            would be lost outright. One forced write on the way out is what makes
            "nothing is lost" true instead of nearly true. */
-        globalThis.addEventListener("pagehide",()=>{
+        this.flushOnPageHide=()=>{
             this.saveSessionSoon?.flush()
-        },{once:true})
+        }
+        globalThis.addEventListener("pagehide",this.flushOnPageHide)
         //the panel geometry is NOT in the history stack: a resize is not an
         //undoable act, so the septa announce themselves instead
         this.savePreferencesSoon=debounce(()=>{
@@ -7834,9 +7835,11 @@ class App{
         }
         this.disposed=true
         //the autosave must not outlive the app it describes: a pending write
-        //would put an app back that is no longer on screen
+        //would put an app back that is no longer on screen, and a pagehide
+        //listener left attached would keep writing a session the user deleted
         this.saveSessionSoon?.cancel()
         globalThis.removeEventListener("historyChanged",this.saveSessionSoon)
+        globalThis.removeEventListener("pagehide",this.flushOnPageHide)
         this.resizeObserver?.disconnect()
         this.mutObserver?.disconnect()
         this.channel.get("mainMenu")?.dispose?.()
