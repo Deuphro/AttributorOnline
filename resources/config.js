@@ -31,12 +31,11 @@ const defaultMenu={
             "+1 on each pair element":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Operation +1',type:'operation'}}}))},
             "F-KMD":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'F-KMD',type:'fkmd'}}}))},
             "Trimmer":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Trimmer',type:'trimmer'}}}))},
-            "Persistent Homology":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Persistent Homology',type:'persistentHomology0D'}}}))},
-            //Anti-Radio has THREE inputs - raw profile, PH points, PH indices -
-            //and it is the only node that does. It sits right after Persistent
-            //Homology because that is the node it consumes, TWICE: its output 0
-            //feeds input 1 and its output 1 feeds input 2.
-            "Anti-Radio":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Anti-Radio',type:'antiRadio'}}}))},
+            //One entry for the two stages: the persistence classifier and the
+            //anti-radio width filter answer ONE question - which points are
+            //peaks - and asking for it took three cables when they were separate
+            //nodes. The kernels stay in their own files; only the node merged.
+            "Peak picking":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Peak picking',type:'peakPicking'}}}))},
         },
         "Display":{
             "Simple XY plot":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY plot',type:'simpleXYPlot'}}}))},

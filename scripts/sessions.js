@@ -301,16 +301,25 @@ function importSession(serialized, options = {}) {
             const node = nodes.get(nodeData.id)
             node.inputs = decodeValue(nodeData.inputs, registrations)
             node.outputs = decodeValue(nodeData.outputs, registrations)
-            // Legacy persistent-homology sessions had a slope input and two
-            // outputs. Only the original-points output survives; the slope link
-            // is dropped and the points output becomes output 0.
-            if (node.constructor.name === "PersistentHomology0DNode") {
+            // Sessions saved before the merge, in chronological order of what
+            // they could have contained:
+            //  - a slope input plus two outputs (the oldest homology node)
+            //  - two outputs, the second carrying the input indices for a
+            //    separate Anti-Radio node
+            // All of them become ONE PeakPickingNode with one input and one
+            // output. The extra slots are dropped rather than restored: the
+            // indices are recomputed from the profile on every resolve, and a
+            // stale copy would let the width filter measure the wrong peaks.
+            if (node.constructor.name === "PeakPickingNode") {
                 node.inputs = [new Map()]
-                // The index output is new, but it is NOT persisted: it is
-                // recomputed from the input profile on every resolve, and
-                // restoring a stale one would let Anti-Radio measure the wrong
-                // peaks. So both slots exist and the second starts empty.
-                node.outputs = [[], []]
+                node.outputs = [[]]
+            }
+            // A separate Anti-Radio node is now a PeakPickingNode, so the link
+            // that fed it the indices (output 1 of the old homology node) must
+            // NOT be restored: both nodes would then resolve against each other
+            // and the merged node would filter twice.
+            if (nodeData.type === "AntiRadioNode") {
+                node.mergedAway = true
             }
             if (node.parameters) {
                 node.parameters.position = decodeValue(nodeData.position, registrations)
@@ -327,16 +336,10 @@ function importSession(serialized, options = {}) {
             if (!inputNode || !outputNode) {
                 throw new Error("Cannot restore link: node not found")
             }
-            if (inputNode.constructor.name === "PersistentHomology0DNode") {
-                if (linkData.inputIndex !== 0) continue
-            }
-            if (outputNode.constructor.name === "PersistentHomology0DNode") {
-                // Legacy sessions only ever linked output 0, and the migration
-                // above renumbered that slot. A link to output 1 can only come
-                // from a session saved with the index output, and its index is
-                // already the right one, so it passes through untouched.
-                if (linkData.outputIndex > 1) continue
-            }
+            //a link to or from a node the merge absorbed is dropped, along with
+            //the node: keeping the cable would leave a peak-picking node reading
+            //from another peak-picking node
+            if (inputNode.mergedAway || outputNode.mergedAway) continue
             if (typeof options.createLink !== "function") {
                 throw new TypeError("importSession requires options.createLink")
             }

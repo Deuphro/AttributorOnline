@@ -1433,7 +1433,7 @@ class TrimmerNode extends NodeWithAccordion{
     //Debounced downstream resolve. A drag fires dozens of pointermove events,
     //and each one would otherwise queue a kernel run plus a whole subtree
     //re-resolve: the downstream graphs would strobe and the last write could
-    //land before the first. Same pattern as PersistentHomology0DNode.
+    //land before the first. Same pattern as the peak-picking node.
     scheduleResolveChildren(){
         if(this.dragDebounceTimer) clearTimeout(this.dragDebounceTimer)
         this.dragDebounceTimer=setTimeout(()=>{
@@ -1442,9 +1442,9 @@ class TrimmerNode extends NodeWithAccordion{
         },120)
     }
     //resolveChildren() is inherited from Node, which delegates to the flow.
-    //A copy of that traversal used to live here, and another in
-    //PersistentHomology0DNode: three identical implementations of "what is
-    //downstream of me" is exactly how they drift apart.
+    //A copy of that traversal used to live here, and another in the peak-picking
+    //node: three identical implementations of "what is downstream of me" is
+    //exactly how they drift apart.
 
     trimBoundsSnapshot(){
         return {low:this.parameters.lowBound,high:this.parameters.highBound}
@@ -1998,285 +1998,17 @@ class FKMDNode extends NodeWithAccordion{
     }
 }
 
-/* Anti-radio: removes the peaks whose half-height width is out of the width
-   population of the spectrum itself.
-
-   THREE inputs, and the split is the whole design. Input 0 is the RAW profile:
-   a width is a property of the signal, and the signal is the only thing that
-   has the samples on both sides of a peak. Input 1 is the persistence homology
-   points: it knows which points are candidates. Input 2 is the index each of
-   those points has in the raw profile, without which none of them can be
-   located in it. No input is enough alone - the points alone cannot be
-   measured, the profile alone does not know what is a peak, and the indices
-   without the points they index are just numbers.
-
-   The reference is measured on the data in hand (median + MAD of the observed
-   widths), so the filter follows the instrument's actual resolution rather
-   than a hard-coded one, and the rate at which peaks are rejected is a
-   property of the spread instead of of how many peaks the file happens to
-   contain. `z` is the only knob, and it is a statistical convention. */
-class AntiRadioNode extends NodeWithAccordion{
-    constructor(title,origin,destinationFlow,position={x:180,y:10}){
-        super(
-            title,
-            //THREE inputs, not two. The filter reads three distinct things and
-            //collapsing them would mean a link carrying two meanings:
-            //  0 - the RAW profile, the only thing that has the samples on both
-            //      sides of a peak, so the only thing a width can be measured on
-            //  1 - the candidate peaks (PH output 0)
-            //  2 - the index of each candidate in that profile (PH output 1)
-            [[], [], []],
-            [[]],      // 1: the peaks that are not radio
-            origin,
-            destinationFlow,
-            position
-        )
-        this.status="floating"
-        this.parameters.z=3
-        //a z the GUESS read is not the same claim as a z the user typed, and the
-        //readout has to be able to say which one is in force
-        this.zSource="convention"
-        this.lastResult=null
-        this.resolveRun=0
-        const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
-        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input 0: the RAW profile (XY wave: X=m/z, Y=intensity)</title>'
-        if(inputAnchors[1]) inputAnchors[1].innerHTML='<title>Input 1: the candidate peaks — PersistentHomology0D output 0</title>'
-        if(inputAnchors[2]) inputAnchors[2].innerHTML='<title>Input 2: the index of each peak in the raw profile — PersistentHomology0D output 1</title>'
-        const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
-        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: the peaks that are not radio</title>'
-    }
-    registered(e){
-        if(e.detail.msg.caster!==this||this.accordion){
-            return
-        }
-        super.registered(e)
-        this.setupRadioUI()
-    }
-    setupRadioUI(){
-        if(!this.accordion) return
-        const content=this.accordion.DOMelt.content
-        content.replaceChildren()
-        //"content" sizing, like FKMD: an input line and a short readout have no
-        //bounded box to tame, so the panel is exactly as tall as what it holds.
-        this.accordion.setSizingMode("content")
-        const controls=CE("div",{
-            style:{
-                display:"grid",
-                gridTemplateColumns:"minmax(0,1fr) auto",
-                alignItems:"center",
-                gap:"4px",
-                fontSize:"0.85em",
-                padding:"2px 4px"
-            }
-        },[])
-        //no caption: the field is self-explanatory and the tooltip says what the
-        //number means, which is the part that is not obvious
-        this.zInput=CE("input",{
-            type:"number",
-            step:"0.1",
-            min:"0",
-            value:String(this.parameters.z),
-            title:"Number of robust sigma above the median width above which a peak is called radio"
-        },[])
-        this.zInput.addEventListener("change",()=>{
-            const z=Number(this.zInput.value)
-            //a non-positive or unreadable z would either keep everything or
-            //reject on any spread at all: both are silent nonsense
-            this.parameters.z=Number.isFinite(z)&&z>0?z:3
-            this.zSource="manual"
-            //resolveChildren and NOT TrimmerNode.scheduleResolveChildren: that
-            //one is a 120 ms debounce for a drag firing dozens of events, and it
-            //lives on the trimmer, not on Node. There is nothing to coalesce
-            //here - a commit is a single event - and borrowing the trimmer's
-            //method would have made this node depend on a sibling's internals.
-            this.startResolve().then(()=>this.resolveChildren())
-        })
-        //the SAME one-button convention as the trimmer and the homology node: the
-        //button puts back the value the DATA suggest, leaving the field free
-        //for the user to override it.
-        const guessBtn=CE("button",{
-            type:"button",
-            title:"Read z from the spectrum: half the gap between the tight peak population and the wide one. Falls back to 3 when the widths form a single population.",
-            style:{cursor:"pointer",padding:"2px 6px"}
-        },["Guess"])
-        guessBtn.addEventListener("click",()=>{this.guessZFromKernel()})
-        this.readout=CE("div",{
-            style:{fontSize:"0.85em",opacity:"0.85",padding:"2px 4px",whiteSpace:"pre-wrap"}
-        },[])
-        controls.append(this.zInput, guessBtn)
-        content.append(controls,this.readout)
-        this.renderReadout()
-    }
-    /* Asks the kernel for a z read from the widths, then commits it the same way
-       the field does. Split from the field's own handler so both paths apply the
-       same validation and the same re-resolve: a guess is not a privileged way
-       of setting z, it is a way of CHOOSING it. */
-    async guessZFromKernel(){
-        const profile=this.firstWaveOn(0)
-        const indices=this.firstWaveOn(2)
-        //no guess without both: the guess measures the profile at the indices
-        if(!profile||!indices){ return }
-        try{
-            const z=await computePool.run("antiRadioGuessZ",{
-                core:profile.core,
-                pointsIndex:indices.core,
-                params:{stride:2}
-            })
-            if(!Number.isFinite(z)||!(z>0)) return
-            this.parameters.z=z
-            if(this.zInput) this.zInput.value=String(Number(z.toFixed(2)))
-            this.zSource="guess"
-            await this.startResolve()
-            this.resolveChildren()
-        }catch(err){
-            console.warn("[AntiRadioNode] guess failed, keeping the current z:",err)
-        }
-    }
-    //The first XY wave on an anchor. Returns null rather than a guess: this
-    //node's inputs mean different things and swapping them would produce a
-    //plausible, wrong measurement instead of an error.
-    firstWaveOn(anchor){
-        const input=this.inputs[anchor]
-        if(!(input instanceof Map)) return null
-        for(const values of input.values()){
-            for(const parentOutputs of values){
-                if(!Array.isArray(parentOutputs)) continue
-                for(const wave of parentOutputs){
-                    if(wave instanceof Wave) return wave
-                }
-            }
-        }
-        return null
-    }
-    //Refuses what it cannot honestly measure, loudly, instead of filtering on a
-    //width it had to invent.
-    fail(message){
-        this.status="error"
-        this.outputs[0]=[]
-        this.lastResult=null
-        if(this.readout) this.readout.textContent=message
-        console.error(`[AntiRadioNode] ${message}`)
-    }
-    async startResolve(){
-        const run=++this.resolveRun
-        const profile=this.firstWaveOn(0)
-        const candidates=this.firstWaveOn(1)
-        const indices=this.firstWaveOn(2)
-        if(!profile||!candidates||!indices){
-            //named one by one: "an input is missing" leaves the user hunting
-            //for which of the three anchors is empty
-            const missing=[]
-            if(!profile) missing.push("0 (raw profile)")
-            if(!candidates) missing.push("1 (peaks from PersistentHomology0D output 0)")
-            if(!indices) missing.push("2 (indices from PersistentHomology0D output 1)")
-            this.fail(`missing input ${missing.join(", ")}`)
-            return
-        }
-        //A width in ppm needs a mass axis. On a 1D profile there is none, and a
-        //width in POINTS would silently reintroduce the sampling dependence the
-        //ppm conversion exists to remove.
-        if(!(profile.degree===2&&profile.dims[1]===2)){
-            this.fail("input 0 must be a 2D wave (X=m/z, Y=intensity): a width in ppm needs a mass axis")
-            return
-        }
-        if(!(candidates.degree===2&&candidates.dims[1]===2)){
-            this.fail("input 1 must be a 2D wave of points (the PersistentHomology0D output)")
-            return
-        }
-        //The index lives on the SECOND output of the homology node, hence its own
-        //anchor. Without it there is no way back to the profile, and the missing
-        //input is already named above.
-        if(indices.dims[0]!==candidates.dims[0]){
-            this.fail(`input index has ${indices.dims[0]} values for ${candidates.dims[0]} points: the two are not row-aligned`)
-            return
-        }
-        this.status="pending"
-        const n=candidates.dims[0]
-        const pointsX=candidates.core.subarray(0,n)
-        const pointsY=candidates.core.subarray(n,2*n)
-        const pointsIndex=indices.core.subarray(0,n)
-        try{
-            const result=await computePool.run("antiRadioFilter",{
-                core:profile.core,
-                pointsX,pointsY,pointsIndex,
-                params:{stride:2,z:this.parameters.z}
-            })
-            //a resolve may have been superseded while the kernel ran
-            if(run!==this.resolveRun) return
-            this.lastResult=result
-            this.outputs[0]=result.keptCount
-                ?[Wave.fromCoordinates(result.pointsX,result.pointsY,{
-                    title:`${this.title} (not radio)`,
-                    z:this.parameters.z,
-                    kept:result.keptCount,
-                    total:n
-                },["x","y"])]
-                :[]
-            this.status="resolved"
-            this.renderReadout()
-            //the output just changed, so everything downstream must recompute
-            this.resolveChildren()
-        }catch(err){
-            console.error("[AntiRadioNode] Error filtering:",err)
-            this.fail(err?.message??String(err))
-        }
-    }
-    renderReadout(){
-        if(!this.readout) return
-        if(this.status==="error") return   //fail() already wrote the reason
-        const r=this.lastResult
-        if(!r){
-            this.readout.textContent="link the raw profile (0), the PH points (1) and the PH indices (2)"
-            return
-        }
-        const total=r.widthsPpm?.length??0
-        const lines=[]
-        //The reference is the interesting number, not the count: it is the
-        //measured FWHM of the instrument on this very spectrum, and a reader can
-        //check it against the datasheet.
-        if(Number.isFinite(r.referencePpm)){
-            lines.push(`kept ${r.keptCount} / ${total} · rejected ${total-r.keptCount}`)
-            lines.push(`width ref ${r.referencePpm.toFixed(1)} ppm · seuil ${Number.isFinite(r.thresholdPpm)?r.thresholdPpm.toFixed(1):"—"} ppm`)
-            //WHERE the z came from, because "3" and "3 read from this spectrum"
-            // are different claims and the readout is where the user looks
-            const source=this.zSource==="guess"?"(lu)":(this.zSource==="manual"?"(manuel)":"(convention)")
-            lines.push(`z ${Number(this.parameters.z).toPrecision(3)} ${source}`)
-        }else{
-            //Below MIN_PEAKS_FOR_REFERENCE nothing was dropped, and saying
-            //"0 rejected" alone would read like a clean bill of health.
-            lines.push(`kept ${r.keptCount} / ${total}`)
-            lines.push("trop peu de pics mesurables: aucun rejet")
-        }
-        this.readout.textContent=lines.join("\n")
-    }
-    serializeState(){
-        return {z:this.parameters.z,zSource:this.zSource,status:this.status}
-    }
-    restoreState(state){
-        if(!state) return
-        if(Number.isFinite(state.z)&&state.z>0) this.parameters.z=state.z
-        //a session saved before this field existed has no zSource: it is read
-        //as the convention, which is what it was
-        this.zSource=state.zSource??"convention"
-        this.status=state.status??"floating"
-    }
-}
-
-class PersistentHomology0DNode extends NodeWithAccordion{
+class PeakPickingNode extends NodeWithAccordion{
 
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(
             title,
             [[]],  // 1 input: 1D or 2D wave
-            // 2 outputs, on purpose. Output 0 is the kept points, and it stays a
-            // plain XY wave so every existing consumer (Trimmer, F-KMD) keeps
-            // working untouched. Output 1 carries, for the same kept points, the
-            // index each one has in the INPUT wave. A filter that must measure
-            // something ON the profile - a width, a shape - has no way to find
-            // the samples around a point that is only a coordinate, so the
-            // indices travel on their own slot rather than as a third column
-            // that every downstream node would then have to learn to ignore.
-            [[], []],
+            //ONE output again. The index of each kept point used to ride on a
+            //second slot so that the Anti-Radio node could walk the profile
+            //around it; now that both stages live in this node, the index never
+            //leaves it, and an output nothing consumes is just a cable to wire.
+            [[]],
             origin,
             destinationFlow,
             position
@@ -2288,17 +2020,21 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         this.parameters.slopeAnchorBirth=null // where the marker sits on the line
         this.parameters.filtrationMode="superlevel" // "sublevel" or "superlevel"
         this.parameters.logLogAxes=false
+        //anti-radio stage: the same z, the same source tracking, and the same
+        //kernel, moved here rather than rewritten
+        this.parameters.z=3
+        this.parameters.zSource="convention"
         this.pairsData=null
         this.lastInputWave=null
         this.dragDebounceTimer=null
         this.graph=null
+        this.radioResult=null
 
         // Tooltips on SVG anchors for clarity
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D)</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
-        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: Filtered original points</title>'
-        if(outputAnchors[1]) outputAnchors[1].innerHTML='<title>Output: index of each kept point in the INPUT wave (for Anti-Radio)</title>'
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: the picked peaks</title>'
     }
 
     registered(e){
@@ -2315,7 +2051,11 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         content.replaceChildren()
         stylize(content, {
             display: "grid",
-            "grid-template-rows": "auto minmax(0, 1fr)",
+            //three rows, not two: the classifier controls, the plot, and the
+            //anti-radio strip below it. The plot is the ONLY flexible one - the
+            //two bars are content-sized, so adding a section under the graph
+            //cannot squeeze the plot away.
+            "grid-template-rows": "auto minmax(0, 1fr) auto",
             minHeight: "0",
             height: "100%",
             overflow: "hidden",
@@ -2420,7 +2160,7 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             }
         }, [])
 
-        content.append(controls, graphContainer)
+        content.append(controls, graphContainer, this.buildAntiRadioStrip())
 
         // 3. Plot2DWebGL instance
         this.graph = new Plot2DWebGL([], `${this.title} graph`, this.origin, graphContainer)
@@ -2441,6 +2181,101 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         this.graph.drawGraph()
     }
 
+    /* The anti-radio strip, built as its own row under the plot.
+
+       A SEPARATE box, not a continuation of the classifier bar: the two stages
+       are independent decisions, and the border is what says so at a glance.
+       The label is kept - unlike the classifier, whose slope is self-evident,
+       "z" is not, and an unlabelled number on a second row reads as part of the
+       first row's control set. */
+    buildAntiRadioStrip(){
+        const strip=CE("div",{
+            style:{
+                display:"grid",
+                gridTemplateColumns:"auto minmax(0,1fr) auto auto",
+                alignItems:"center",
+                gap:"4px",
+                fontSize:"0.85em",
+                padding:"2px 4px",
+                borderRadius:"4px",
+                //a top border is the separation, and it is the one border that
+                //still reads when the node is unfolded and the bars touch
+                borderTop:"1px solid rgba(255,255,255,0.15)",
+                background:"rgba(255,255,255,0.03)"
+            }
+        },[])
+        const label=CE("span",{
+            title:"Anti-radio: drops the peaks whose half-height width is out of the width population of this spectrum",
+            style:{opacity:"0.75",whiteSpace:"nowrap"}
+        },["Anti-radio"])
+        this.zInput=CE("input",{
+            type:"number",
+            step:"0.1",
+            min:"0",
+            value:String(this.parameters.z),
+            title:"Number of robust sigma above the median width above which a peak is called radio",
+            style:{width:"100%",padding:"2px"}
+        },[])
+        this.zInput.addEventListener("change",()=>{
+            const z=Number(this.zInput.value)
+            //a non-positive or unreadable z would either keep everything or
+            //reject on any spread at all: both are silent nonsense
+            this.parameters.z=Number.isFinite(z)&&z>0?z:3
+            this.parameters.zSource="manual"
+            //resolveChildren and NOT TrimmerNode.scheduleResolveChildren: that one
+            //is a 120 ms debounce for a drag, and there is no drag here.
+            this.applySlopeFilter().then(()=>this.resolveChildren())
+        })
+        const zGuess=CE("button",{
+            type:"button",
+            title:"Read z from the spectrum: half the gap between the tight peak population and the wide one. Falls back to 3 when the widths form a single population.",
+            style:{cursor:"pointer",padding:"2px 6px"}
+        },["Guess"])
+        zGuess.addEventListener("click",()=>{this.guessZFromKernel()})
+        this.radioLabel=CE("span",{
+            title:"Peaks kept / candidates, the measured width reference, and the z in force",
+            style:{opacity:"0.8",whiteSpace:"nowrap",justifySelf:"end"}
+        },[""])
+        strip.append(label,this.zInput,zGuess,this.radioLabel)
+        return strip
+    }
+    /* Asks the kernel for a z read from the widths, then commits it the same way
+       the field does: a guess is not a privileged way of setting z, it is a way
+       of CHOOSING it. */
+    async guessZFromKernel(){
+        const profile=this.lastInputWave
+        const indices=this.persistenceKeptIndices
+        if(!profile||!indices?.length) return
+        //the width is measured on the profile, so there is nothing to read on a
+        //1D wave: no mass axis means no ppm, which is the whole point
+        if(!(profile.degree===2&&profile.dims[1]===2)) return
+        try{
+            const z=await computePool.run("antiRadioGuessZ",{
+                core:profile.core,
+                pointsIndex:indices,
+                params:{stride:2}
+            })
+            if(!Number.isFinite(z)||!(z>0)) return
+            this.parameters.z=z
+            this.parameters.zSource="guess"
+            if(this.zInput) this.zInput.value=String(Number(z.toFixed(2)))
+            await this.applySlopeFilter()
+            this.resolveChildren()
+        }catch(err){
+            console.warn("[PeakPickingNode] anti-radio guess failed, keeping the current z:",err)
+        }
+    }
+    /* kept N / candidates, the measured width reference, and the z in force -
+       because "3" and "3 read from this spectrum" are different claims. */
+    renderRadioReadout(result, candidateCount){
+        if(!this.radioLabel) return
+        if(!result||!Number.isFinite(result.referencePpm)){
+            this.radioLabel.textContent=result?`kept ${result.keptCount} / ${candidateCount} · pas de référence`:""
+            return
+        }
+        const source=this.parameters.zSource==="guess"?"(lu)":(this.parameters.zSource==="manual"?"(manuel)":"(conv.)")
+        this.radioLabel.textContent=`kept ${result.keptCount} / ${candidateCount} · ref ${result.referencePpm.toFixed(1)} ppm · z ${Number(this.parameters.z).toPrecision(3)} ${source}`
+    }
     extractInputWave(){
         const input = this.inputs[0]
         if(!(input instanceof Map)) return null
@@ -2483,14 +2318,15 @@ class PersistentHomology0DNode extends NodeWithAccordion{
     fail(message){
         this.status="error"
         this.outputs[0]=[]
-        //output 1 must be cleared with output 0: a stale index wave would let
-        //Anti-Radio measure the wrong peaks, silently and plausibly
-        this.outputs[1]=[]
         this.persistenceBirths=null
         this.persistenceDeaths=null
         this.persistencePointsX=null
         this.persistencePointsY=null
-        console.error(`[PersistentHomology0DNode] ${message}`)
+        this.persistenceKeptPointsX=null
+        this.persistenceKeptPointsY=null
+        this.persistenceKeptIndices=null
+        this.radioResult=null
+        console.error(`[PeakPickingNode] ${message}`)
         this.graph?.setTraces([])
         this.graph?.drawGraph()
     }
@@ -2498,11 +2334,11 @@ class PersistentHomology0DNode extends NodeWithAccordion{
     async startResolve(){
         //Only the INPUT is constrained to a single link. The previous check
         //counted the links whose inputNode is this one, which - as childrenMap()
-        //shows - are its CONSUMERS. With one output that went unnoticed; with
-        //two it became fatal, because feeding output 0 to a plot AND output 1
-        //to Anti-Radio is exactly what this node is for, and the second link
-        //made the node refuse to resolve. Fan-out on the OUTPUT is none of its
-        //business. Same fix, same reason as TrimmerNode (see the note there).
+        //shows - are its CONSUMERS, and refused to resolve as soon as two nodes
+        //consumed the output. That was a latent bug until the node grew a second
+        //output; it is now plainly a single-output node, and the check is the
+        //one TrimmerNode uses (see the note there). Fan-out on the OUTPUT is
+        //none of this node's business.
         const links=this.incomingLinks()
         if(links.length>1 || links.some(link=>link.inputAnchor.id!=="0")){
             this.fail("exactly one link on input 0 is required")
@@ -2512,7 +2348,6 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         if(!inputWave){
             this.status = "floating"
             this.outputs[0] = []
-            this.outputs[1] = []
             return
         }
         this.status = "pending"
@@ -2560,27 +2395,15 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             params:{slope}
         })
         const pairCount=this.persistenceBirths.length
-        this.outputs[0]=classification.keptPointsX.length
-            ?[Wave.fromCoordinates(classification.keptPointsX,classification.keptPointsY,{title:`${this.title} (Points)`,slope})]
-            :[]
-        //Output 1, a 1D wave of the same length as output 0: keptPointsX[i]
-        //stands at input index keptIndices[i]. Anti-Radio reads it to walk the
-        //profile around each candidate. An index that is not a finite integer
-        //is published as NaN rather than dropped, so the two outputs keep the
-        //same length and stay row-aligned - a consumer that zips them cannot
-        //end up pairing point i with the index of some other point.
-        this.outputs[1]=classification.keptIndices?.length
-            ?[new Wave(classification.keptIndices.length,1)]
-            :[]
-        if(this.outputs[1].length){
-            const indexWave=this.outputs[1][0]
-            indexWave.core.set(classification.keptIndices)
-            //a one-column wave is still degree 2, so a single label would leave a
-            //HOLEY array with a hole at index 1. Two labels, the second unnamed.
-            indexWave.labels=["inputIndex",""]
-            indexWave.metadata={title:`${this.title} (input indices)`,slope}
-            indexWave.revision=(indexWave.revision??0)+1
-        }
+        //the classified points, held in memory rather than published: the
+        //anti-radio stage reads them together with their indices, and the OUTPUT
+        //is whatever survives both stages.
+        this.persistenceKeptPointsX=classification.keptPointsX
+        this.persistenceKeptPointsY=classification.keptPointsY
+        this.persistenceKeptIndices=classification.keptIndices
+        this.persistenceKeptCount=classification.keptCount
+
+        await this.applyAntiRadio()
 
         if(this.graph){
             const traces=[]
@@ -2604,6 +2427,57 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             this.updateClassifierSVG()
         }
         if(this.countLabel) this.countLabel.textContent=`${classification.keptCount}/${pairCount}`
+    }
+
+    /* The second stage, in this node: drop the classified peaks whose
+       half-height width sits out of the width population of THIS spectrum.
+
+       It runs on the RAW profile (the only thing with samples on both sides of a
+       peak) at the indices the classifier carried through, and its result is the
+       node's single output. When the input has no mass axis the stage is SKIPPED
+       and the classified peaks are published as they are: a width in ppm cannot
+       be computed on a 1D wave, and silently passing everything through would
+       claim the stage had found nothing. */
+    async applyAntiRadio(){
+        const profile=this.lastInputWave
+        const px=this.persistenceKeptPointsX
+        const py=this.persistenceKeptPointsY
+        const indices=this.persistenceKeptIndices
+        if(!profile||!px?.length){ this.publishOutput(px,py,0); return }
+        if(!(profile.degree===2&&profile.dims[1]===2)){
+            this.radioResult=null
+            this.publishOutput(px,py,px.length)
+            this.renderRadioReadout(null,px.length)
+            return
+        }
+        try{
+            const result=await computePool.run("antiRadioFilter",{
+                core:profile.core,
+                pointsX:px,pointsY:py,pointsIndex:indices,
+                params:{stride:2,z:this.parameters.z}
+            })
+            this.radioResult=result
+            this.publishOutput(result.pointsX,result.pointsY,result.keptCount)
+            this.renderRadioReadout(result,px.length)
+        }catch(err){
+            //a failing filter must not take the peaks with it: the classified
+            //result is still valid, and hiding it would lose real work
+            console.error("[PeakPickingNode] anti-radio failed, publishing the classified peaks:",err)
+            this.radioResult=null
+            this.publishOutput(px,py,px.length)
+            this.renderRadioReadout(null,px.length)
+        }
+    }
+    publishOutput(pointsX,pointsY,kept){
+        this.outputs[0]=kept&&pointsX?.length
+            ?[Wave.fromCoordinates(pointsX,pointsY,{
+                title:`${this.title} (peaks)`,
+                slope:this.parameters.slope,
+                z:this.parameters.z,
+                kept,
+                total:this.persistenceKeptCount??kept
+            },["x","y"])]
+            :[]
     }
 
     updateControlsUI(){
@@ -2750,6 +2624,10 @@ class PersistentHomology0DNode extends NodeWithAccordion{
             slope: this.parameters.slope,
             slopeAnchorBirth: this.parameters.slopeAnchorBirth,
             filtrationMode: this.parameters.filtrationMode,
+            //both stages travel together: a session that kept the classifier but
+            //lost the anti-radio settings would come back looking filtered
+            z: this.parameters.z,
+            zSource: this.parameters.zSource,
             status: this.status
         }
     }
@@ -2759,6 +2637,10 @@ class PersistentHomology0DNode extends NodeWithAccordion{
         if(Number.isFinite(state.slope)) this.parameters.slope = state.slope
         if(Number.isFinite(state.slopeAnchorBirth)) this.parameters.slopeAnchorBirth = state.slopeAnchorBirth
         if(state.filtrationMode !== undefined) this.parameters.filtrationMode = state.filtrationMode
+        if(Number.isFinite(state.z)&&state.z>0) this.parameters.z = state.z
+        //a session saved before the anti-radio stage existed has no zSource: it
+        //is read as the convention, which is what it was
+        this.parameters.zSource = state.zSource ?? "convention"
         this.status = state.status ?? "floating"
         this.updateControlsUI()
     }
@@ -3516,11 +3398,8 @@ function createNodeForHistory(origin,flow,data){
         case "Operation":
             node=new Operation(data.title,origin,flow,position)
             break
-        case "AntiRadioNode":
-            node=new AntiRadioNode(data.title,origin,flow,position)
-            break
-        case "PersistentHomology0DNode":
-            node=new PersistentHomology0DNode(data.title,origin,flow,position)
+        case "PeakPickingNode":
+            node=new PeakPickingNode(data.title,origin,flow,position)
             break
         case "TrimmerNode":
             node=new TrimmerNode(data.title,origin,flow,position)
@@ -4175,16 +4054,12 @@ class MainFlowMenu extends Menu{
                                 {x:180,y:10}
                             )
                             break
-                        case "antiRadio":
-                            node = new AntiRadioNode(
-                                title,
-                                origin,
-                                origin.channel.get("mainFlow"),
-                                {x:180,y:10}
-                            )
-                            break
-                        case "persistentHomology0D":
-                            node = new PersistentHomology0DNode(
+                        //"peakPicking" and not two entries: the classifier and the
+                        //anti-radio width filter are two stages of ONE decision, and
+                        //making them two nodes made the user wire three cables to
+                        //ask one question.
+                        case "peakPicking":
+                            node = new PeakPickingNode(
                                 title,
                                 origin,
                                 origin.channel.get("mainFlow"),
@@ -7331,8 +7206,12 @@ class App{
                     SimpleXYPlotNode,
                     DelimitedTextNode,
                     Operation,
-                    PersistentHomology0DNode,
-                    AntiRadioNode,
+                    //the three names the peak-picker has carried: a session saved
+                    //before the merge names the old nodes, and an unknown type
+                    //would silently become a bare Node with no inputs at all
+                    PeakPickingNode,
+                    PersistentHomology0DNode:PeakPickingNode,
+                    "AntiRadioNode":PeakPickingNode,
                     TrimmerNode,
                     FKMDNode
                 }
@@ -7340,8 +7219,8 @@ class App{
                 //these build their own inputs and outputs (they are not restored
                 //field by field): they take (title, origin, flow, position)
                 const selfShaped=[
-                    DelimitedTextNode,Operation,PersistentHomology0DNode,
-                    AntiRadioNode,TrimmerNode,FKMDNode
+                    DelimitedTextNode,Operation,PeakPickingNode,
+                    TrimmerNode,FKMDNode
                 ]
                 if(selfShaped.includes(NodeType)){
                     return new NodeType(data.title,app,flow,data.position)
@@ -7726,4 +7605,4 @@ class PetitGazFusion {
 
 
 
-export {App, Plot2D, Plot2DWebGL, PersistentHomology0DNode, AntiRadioNode, TrimmerNode, FKMDNode}
+export {App, Plot2D, Plot2DWebGL, PeakPickingNode, TrimmerNode, FKMDNode}
