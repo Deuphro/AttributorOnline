@@ -664,6 +664,10 @@ function clampClassifierSlope(value){
 function formatSlope(value){
     return String(Number(Number(value).toPrecision(6)))
 }
+//The 3σ convention, and the value the kernel returns when it has no population
+//to read a z from. Named because "3" appears as a DEFAULT in three places that
+//have to agree, and a literal in each of them is how they drift apart.
+const CONVENTIONAL_Z=3
 //slope of a line that keeps every pair with a positive birth (birth ≤ 0
 //pairs can never sit under a line through the origin)
 function keepAllSlope(pairs){
@@ -2022,7 +2026,7 @@ class PeakPickingNode extends NodeWithAccordion{
         this.parameters.logLogAxes=false
         //anti-radio stage: the same z, the same source tracking, and the same
         //kernel, moved here rather than rewritten
-        this.parameters.z=3
+        this.parameters.z=CONVENTIONAL_Z
         this.parameters.zSource="convention"
         this.pairsData=null
         this.lastInputWave=null
@@ -2073,30 +2077,27 @@ class PeakPickingNode extends NodeWithAccordion{
             this.accordion.DOMelt.container.style.maxHeight="75%"
         }
 
-        // 1. Controls bar
-        const controls = CE("div", {
-            style: {
-                display: "grid",
-                gridTemplateColumns: "minmax(0,1fr) auto auto auto",
-                alignItems: "center",
-                gap: "4px",
-                fontSize: "0.85em",
-                padding: "2px 4px",
-                borderRadius: "4px",
-                background: "rgba(255,255,255,0.05)"
-            }
-        }, [])
+        // 1. Persistent-homology section
+        //A plain block with a CAPTION, not a folding <details>: the two stages are
+        //always in force, so a control that hides them implies they can be
+        //switched off, and they cannot. The caption keeps the trace editor's
+        //label style so a section header reads the same wherever it appears.
+        const phSection=CE("div",{className:"pp-section"},[])
+        phSection.append(CE("div",{className:"pp-caption"},["Persistent Homology"]))
 
         //no "Slope:" caption: it only stole a grid column and pushed the
         //neighbouring panels; the input carries the explanation in its title
-        //and the value stays visible and editable
+        //and the value stays visible and editable. `size` (not width) is what
+        //keeps it from eating the row: an input sized to its digits gives way
+        //with the column, and the buttons keep their own width.
         this.slopeInput = CE("input", {
             type: "number",
             step: "any",
+            size: 6,
             value: Number.isFinite(this.parameters.slope) ? formatSlope(this.parameters.slope) : "",
             placeholder: "auto",
             title: "Classifier slope (< 1): pairs under death = slope × birth are kept",
-            style: { width: "100%", padding: "2px" }
+            style: { width: "100%", minWidth: "0", padding: "2px" }
         }, [])
         this.slopeInput.addEventListener("change", () => {
             const val = parseFloat(this.slopeInput.value)
@@ -2142,11 +2143,19 @@ class PeakPickingNode extends NodeWithAccordion{
         //no unit in the text: it costs width on the narrowest element of the
         //bar, the ratio is self-explanatory and the tooltip spells it out
         this.countLabel = CE("span", {
-            title: "Pairs kept / total pairs — persistence intervals kept under the classifier line",
-            style: { opacity: "0.8", whiteSpace: "nowrap", justifySelf: "end" }
+            className: "pp-readout",
+            title: "Pairs kept / total pairs — persistence intervals kept under the classifier line"
         }, ["0/0"])
 
-        controls.append(this.slopeInput, guessBtn, this.logLogBtn, this.countLabel)
+        //minmax(0,1fr) on the input and auto on everything else: the input is the
+        //only element allowed to shrink, so the Guess button, the scale switch
+        //and the count are the LAST things to disappear, not the first.
+        const phRow=CE("div",{
+            className:"pp-row",
+            style:{gridTemplateColumns:"minmax(0,1fr) auto auto auto",fontSize:"0.85em"}
+        },[])
+        phRow.append(this.slopeInput, guessBtn, this.logLogBtn, this.countLabel)
+        phSection.append(phRow)
 
         // 2. Graph container
         const graphContainer = CE("div", {
@@ -2160,7 +2169,7 @@ class PeakPickingNode extends NodeWithAccordion{
             }
         }, [])
 
-        content.append(controls, graphContainer, this.buildAntiRadioStrip())
+        content.append(phSection, graphContainer, this.buildAntiRadioSection())
 
         // 3. Plot2DWebGL instance
         this.graph = new Plot2DWebGL([], `${this.title} graph`, this.origin, graphContainer)
@@ -2168,6 +2177,15 @@ class PeakPickingNode extends NodeWithAccordion{
         this.graph.parameters.axis.bottom.autoLabel = false
         this.graph.parameters.axis.left.label = "Death"
         this.graph.parameters.axis.left.autoLabel = false
+        //The birth axis (bottom) sits 10px LOWER than the default. Increasing the
+        //bottom margin moves the axis UP, not down: the margin is the space
+        //BELOW the plot, so more of it lifts the frame. Lowering the axis is
+        //therefore a SMALLER margin - 52 -> 42. The base margins are what
+        //updateMargins() recomputes from, so bumping parameters.margins here
+        //would be overwritten on the next redraw, and the value is absolute
+        //rather than an increment so a rebuilt accordion cannot shift it twice.
+        this.graph.parameters.baseMargins.bottom=38
+        this.graph.updateMargins()
 
         // Hook drawGraph so it always repaints the SVG classifier, and let a
         // plain click anywhere on the plot place it (see handleClassifierClick)
@@ -2181,46 +2199,33 @@ class PeakPickingNode extends NodeWithAccordion{
         this.graph.drawGraph()
     }
 
-    /* The anti-radio strip, built as its own row under the plot.
+    /* The anti-radio section: a plain block under the plot, captioned like the
+       classifier one. The label is a caption, not a caption on the row - a
+       label in the grid took a column, and the number it labelled was the one
+       element that had to be free to shrink. */
+    buildAntiRadioSection(){
+        const section=CE("div",{className:"pp-section"},[])
+        section.append(CE("div",{
+            className:"pp-caption",
+            title:"Drops the peaks whose half-height width is out of the width population of this spectrum"
+        },["Anti-radio"]))
 
-       A SEPARATE box, not a continuation of the classifier bar: the two stages
-       are independent decisions, and the border is what says so at a glance.
-       The label is kept - unlike the classifier, whose slope is self-evident,
-       "z" is not, and an unlabelled number on a second row reads as part of the
-       first row's control set. */
-    buildAntiRadioStrip(){
-        const strip=CE("div",{
-            style:{
-                display:"grid",
-                gridTemplateColumns:"auto minmax(0,1fr) auto auto",
-                alignItems:"center",
-                gap:"4px",
-                fontSize:"0.85em",
-                padding:"2px 4px",
-                borderRadius:"4px",
-                //a top border is the separation, and it is the one border that
-                //still reads when the node is unfolded and the bars touch
-                borderTop:"1px solid rgba(255,255,255,0.15)",
-                background:"rgba(255,255,255,0.03)"
-            }
-        },[])
-        const label=CE("span",{
-            title:"Anti-radio: drops the peaks whose half-height width is out of the width population of this spectrum",
-            style:{opacity:"0.75",whiteSpace:"nowrap"}
-        },["Anti-radio"])
         this.zInput=CE("input",{
             type:"number",
             step:"0.1",
             min:"0",
+            //same reason as the slope: size to the digits so the field is the
+            //element that gives way, never the buttons around it
+            size:5,
             value:String(this.parameters.z),
             title:"Number of robust sigma above the median width above which a peak is called radio",
-            style:{width:"100%",padding:"2px"}
+            style:{width:"100%",minWidth:"0",padding:"2px"}
         },[])
         this.zInput.addEventListener("change",()=>{
             const z=Number(this.zInput.value)
             //a non-positive or unreadable z would either keep everything or
             //reject on any spread at all: both are silent nonsense
-            this.parameters.z=Number.isFinite(z)&&z>0?z:3
+            this.parameters.z=Number.isFinite(z)&&z>0?z:CONVENTIONAL_Z
             this.parameters.zSource="manual"
             //resolveChildren and NOT TrimmerNode.scheduleResolveChildren: that one
             //is a 120 ms debounce for a drag, and there is no drag here.
@@ -2232,49 +2237,98 @@ class PeakPickingNode extends NodeWithAccordion{
             style:{cursor:"pointer",padding:"2px 6px"}
         },["Guess"])
         zGuess.addEventListener("click",()=>{this.guessZFromKernel()})
-        this.radioLabel=CE("span",{
-            title:"Peaks kept / candidates, the measured width reference, and the z in force",
-            style:{opacity:"0.8",whiteSpace:"nowrap",justifySelf:"end"}
+        //the measured width reference, and the kept/total ratio. The z is NOT
+        //repeated here: it is on screen two cells to the left, and saying it
+        //twice in the same row is the kind of redundancy that costs width.
+        this.radioRef=CE("span",{
+            className:"pp-readout",
+            title:"Width reference measured on this spectrum (median peak width), in ppm"
         },[""])
-        strip.append(label,this.zInput,zGuess,this.radioLabel)
-        return strip
+        this.radioLabel=CE("span",{
+            className:"pp-readout",
+            title:"Peaks kept / candidates entering this stage"
+        },[""])
+        //ONE row, like the classifier's: the field gives way first (it is the
+        //only 1fr), so the reference and the ratio stay put instead of pushing
+        //each other off the panel.
+        const arRow=CE("div",{
+            className:"pp-row",
+            style:{gridTemplateColumns:"minmax(0,1fr) auto auto auto",fontSize:"0.85em"}
+        },[])
+        arRow.append(this.zInput,zGuess,this.radioRef,this.radioLabel)
+        section.append(arRow)
+        return section
     }
-    /* Asks the kernel for a z read from the widths, then commits it the same way
-       the field does: a guess is not a privileged way of setting z, it is a way
-       of CHOOSING it. */
-    async guessZFromKernel(){
+    /* The z the kernel reads off the widths, or null when it cannot read one.
+
+       Split from the commit so the automatic path and the button do the same
+       measurement and only differ in what they do with the answer. */
+    async readZFromKernel(){
         const profile=this.lastInputWave
         const indices=this.persistenceKeptIndices
-        if(!profile||!indices?.length) return
+        if(!profile||!indices?.length) return null
         //the width is measured on the profile, so there is nothing to read on a
         //1D wave: no mass axis means no ppm, which is the whole point
-        if(!(profile.degree===2&&profile.dims[1]===2)) return
+        if(!(profile.degree===2&&profile.dims[1]===2)) return null
         try{
             const z=await computePool.run("antiRadioGuessZ",{
                 core:profile.core,
                 pointsIndex:indices,
                 params:{stride:2}
             })
-            if(!Number.isFinite(z)||!(z>0)) return
-            this.parameters.z=z
-            this.parameters.zSource="guess"
-            if(this.zInput) this.zInput.value=String(Number(z.toFixed(2)))
-            await this.applySlopeFilter()
-            this.resolveChildren()
+            return Number.isFinite(z)&&z>0?z:null
         }catch(err){
             console.warn("[PeakPickingNode] anti-radio guess failed, keeping the current z:",err)
+            return null
         }
     }
-    /* kept N / candidates, the measured width reference, and the z in force -
-       because "3" and "3 read from this spectrum" are different claims. */
+    applyZ(z,source){
+        this.parameters.z=z
+        this.parameters.zSource=source
+        if(this.zInput) this.zInput.value=String(Number(z.toFixed(2)))
+    }
+    /* The Guess button: read a z and commit it whatever the current one is.
+       A guess is not a privileged way of setting z, it is a way of CHOOSING
+       it, so it goes through the same commit as the field. */
+    async guessZFromKernel(){
+        const z=await this.readZFromKernel()
+        if(z===null) return
+        this.applyZ(z,"guess")
+        await this.applySlopeFilter()
+        this.resolveChildren()
+    }
+    /* The z the filter runs with when nobody has chosen one, read from the
+       spectrum like the slope's "auto".
+
+       The condition is zSource, NOT "is z finite": z defaults to the 3σ
+       convention, which is finite, so a finiteness test would never fire and
+       the auto path would be dead code.
+
+       A reading of exactly the convention is treated as NO reading: the kernel
+       returns 3.0 both when it measured a gap and when it had no population to
+       measure, and the two are not distinguishable from the number alone. So
+       the state stays "convention" and the next resolve tries again - a first
+       resolve on a short spectrum can be too poor to read, and the second one
+       may not be. A genuine reading of 3.00 simply re-reads the same value. */
+    async resolveZIfUnset(){
+        if(this.parameters.zSource!=="convention") return
+        const z=await this.readZFromKernel()
+        if(z===null) return
+        this.applyZ(z, z===CONVENTIONAL_Z ? "convention" : "guess")
+    }
+    /* Two readouts, matching the classifier's: the width reference in ppm, and
+       the kept/total ratio. Neither carries the z - it is already in the field
+       beside them - nor the word "ref", which only ever repeated the unit the
+       number states. The ratio uses the same .pp-readout class as the
+       classifier's count, so the two rows end on the same visual note. */
     renderRadioReadout(result, candidateCount){
-        if(!this.radioLabel) return
-        if(!result||!Number.isFinite(result.referencePpm)){
-            this.radioLabel.textContent=result?`kept ${result.keptCount} / ${candidateCount} · pas de référence`:""
-            return
-        }
-        const source=this.parameters.zSource==="guess"?"(lu)":(this.parameters.zSource==="manual"?"(manuel)":"(conv.)")
-        this.radioLabel.textContent=`kept ${result.keptCount} / ${candidateCount} · ref ${result.referencePpm.toFixed(1)} ppm · z ${Number(this.parameters.z).toPrecision(3)} ${source}`
+        if(this.radioLabel) this.radioLabel.textContent=result?`${result.keptCount} / ${candidateCount}`:""
+        if(!this.radioRef) return
+        //no reference means the widths were not measurable, and "—" says that
+        //without pretending the filter ran and found nothing
+        this.radioRef.textContent=result&&Number.isFinite(result.referencePpm)
+            ?`${result.referencePpm.toFixed(1)} ppm`
+            :"—"
     }
     extractInputWave(){
         const input = this.inputs[0]
@@ -2402,6 +2456,12 @@ class PeakPickingNode extends NodeWithAccordion{
         this.persistenceKeptPointsY=classification.keptPointsY
         this.persistenceKeptIndices=classification.keptIndices
         this.persistenceKeptCount=classification.keptCount
+
+        //The auto z runs HERE, between the classification and the filter: the
+        //guess measures the CLASSIFIED peaks at their input indices, so those
+        //indices must exist first. Placing it after this one call is also what
+        //keeps a resolve at a single classifier run instead of two.
+        await this.resolveZIfUnset()
 
         await this.applyAntiRadio()
 

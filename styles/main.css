@@ -349,6 +349,73 @@ div{
     text-transform:uppercase;
 }
 
+/* ---- Peak picking: the two stages, each a collapsible section ---- */
+/* Same visual language as the trace editor's ::before label (uppercase, spaced,
+   blue-grey), so a section header reads the same wherever it appears. The
+   number inputs carry a SIZE, not a width: an input sized to its digits must
+   shrink last, or a wide placeholder pushes the buttons off the row. */
+.pp-section{
+    min-width:0;
+}
+/* the caption a <summary> used to carry: same visual language as the trace
+   editor's ::before label (uppercase, spaced, blue-grey), on a plain row now
+   that the sections no longer fold */
+.pp-caption{
+    color:#9aafc1;
+    font-size:0.8em;
+    font-weight:600;
+    letter-spacing:0.04em;
+    text-transform:uppercase;
+    padding:2px 4px;
+    user-select:none;
+}
+.pp-row{
+    display:grid;
+    align-items:center;
+    gap:4px;
+    padding:2px 4px;
+    min-width:0;
+}
+/* the row of numeric controls: the two fields flex, the buttons and the
+   readout keep their own size, and min-width:0 lets the fields be the ones
+   that give way */
+.pp-row input[type=number]{
+    min-width:0;
+    /* max-width, not only min-width: the 1fr track already lets the field give
+       way, but an intrinsic size also sets a FLOOR. Capping it means the field
+       can never grow past this and push the buttons off the row, however wide a
+       value or placeholder it holds. */
+    max-width:8em;
+    width:100%;
+    box-sizing:border-box;
+    padding:2px;
+    /* appearance on the INPUT, not only on the ::-webkit-inner-spin-button
+       pseudo-element below: a generic `input { }` rule later in this file
+       resets the element's own appearance, and on Chromium that brings the
+       spinners straight back even though the pseudo-element rule still matches. */
+    -webkit-appearance:none;
+    appearance:none;
+}
+/* the native number spinners are useless on a threshold: you type a value or
+   take one from the Guess button, you never nudge it by one step. Same reason
+   as the trimmer cursors, and the same rules - the spinner also costs width on
+   the narrowest element in the row. */
+.pp-row input[type=number]::-webkit-outer-spin-button,
+.pp-row input[type=number]::-webkit-inner-spin-button{
+    -webkit-appearance:none;
+    margin:0;
+}
+.pp-row input[type=number]::-moz-outer-spin-button,
+.pp-row input[type=number]::-moz-inner-spin-button{
+    -moz-appearance:none;
+    display:none;
+}
+.pp-readout{
+    opacity:0.8;
+    white-space:nowrap;
+    justify-self:end;
+}
+
 input[type=range].dual{
     -webkit-appearance: none;
     appearance: none;
