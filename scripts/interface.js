@@ -1931,16 +1931,22 @@ class FKMDNode extends NodeWithAccordion{
                 //to every other link that reads it
                 const result=await computePool.run("fkmd",{
                     core:wave.core,
-                    params:{
-                        mz,
-                        stride:2,
-                        pointCount:wave.dims[0]
-                    }
+                    //the m/z is the whole parameter: the kernel derives
+                    //round(mz)/m/z itself, once, and needs nothing else
+                    params:{mz}
                 })
                 if(run!==this.kernelRun) return   // superseded: publish nothing
                 const core=result?.core
                 if(!(core instanceof Float64Array)||core.length%2){
                     errors.push(`the kernel returned ${core?.length??"nothing"}, not a flat XY`)
+                    continue
+                }
+                if(core.length===0){
+                    //the kernel REFUSED this m/z (non-finite, or it rounds to
+                    //zero). An empty result is an answer, not a failure and not
+                    //a zero-point wave: publishing the latter would put a dead
+                    //wave in the graph and count as a success
+                    errors.push(`m/z ${mz} gives no scale: nothing to divide by`)
                     continue
                 }
                 const pointCount=core.length/2

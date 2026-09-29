@@ -117,6 +117,21 @@ export function zeros_matrix(n: number): Int32Array;
 */
 export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
 /**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core: Float64Array, mz: number): Float64Array;
+/**
 */
 export class PersistenceAnalysis {
   free(): void;
@@ -262,6 +277,7 @@ export interface InitOutput {
   readonly sieve: (a: number) => void;
   readonly zeros_matrix: (a: number, b: number) => void;
   readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;

@@ -72,13 +72,19 @@ class WorkerPool{
 //the addScalar kernel of kernelWorker.js
 function runKernelLocally(kernel,payload){
     if(kernel==="fkmd"){
+        //same two steps as fkmd.rs, same order: the defect reads the NEW x
         const {core,params}=payload
-        const pointCount=params?.pointCount??Math.floor((core?.length??0)/2)
-        const n=Math.min(pointCount,Math.floor((core?.length??0)/2))
+        const mz=params?.mz??0
+        if(!Number.isFinite(mz)||mz<=0) return {core:new Float64Array(0)}
+        const reference=Math.round(mz)
+        if(!(reference>0)) return {core:new Float64Array(0)}
+        const factor=reference/mz
+        const n=Math.floor((core?.length??0)/2)
         const result=new Float64Array(n*2)
         for(let i=0;i<n;i++){
-            result[i]=core[i]           // X = mass
-            result[n+i]=core[n+i]       // Y = intensity
+            const scaled=core[i]*factor
+            result[i]=scaled
+            result[n+i]=scaled-Math.round(scaled)
         }
         return {core:result}
     }

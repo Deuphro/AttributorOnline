@@ -130,29 +130,25 @@ const kernels={
     },
     /* F-KMD: Formula - Kendrick Mass Defect.
 
-       For now the kernel COPIES the input XY through, unchanged. It is named
-       "fkmd" on purpose: the Rust side will be fkmd.rs, beside persistence.rs
-       and trim.rs, and it will replace the JS fallback below without any caller
-       having to be renamed. The m/z is already passed in, so the contract is
-       fixed - only the arithmetic is missing.
+       The Rust kernel is fkmd.rs, beside persistence.rs and trim.rs. It returns
+       a FLAT, non-interleaved [x'0..x'N, y'0..y'N] - the same layout a 2D Wave
+       core uses, so the shell hands it straight to Wave.fromCoordinates.
 
-       The output is a FLAT XY array, [x0..xN, y0..yN], the same layout a 2D
-       Wave core uses, which is what the node rebuilds a Wave from. */
+       fkmd returns a bare Float64Array, NOT a struct: the only thing it has to
+       say is the wave, and a wrapper would be one more shape to keep in step.
+       The JS fallback below computes exactly the same thing, so a stale or
+       failed wasm build still resolves the flow. */
     async fkmd({core,params}){
-        const pointCount=params?.pointCount??Math.floor((core?.length??0)/2)
-        let result
         try{
             await ensureWasm()
             if(typeof rust.fkmd!=="function"){
                 throw new Error("rust fkmd is missing (stale pkg build?)")
             }
-            const out=rust.fkmd(core,params?.mz??0,pointCount)
-            result={core:toFloat64(out?.core??out)}
+            return {core:toFloat64(rust.fkmd(core,params?.mz??0))}
         }catch(err){
             console.warn("[kernelWorker] rust fkmd unavailable, JS fallback:",err)
-            result={core:fkmdJS(core,params?.mz??0,pointCount)}
+            return {core:fkmdJS(core,params?.mz??0)}
         }
-        return result
     },
     async trimHistogram({core,params}){
         const stride=params?.stride??1
@@ -180,16 +176,22 @@ const kernels={
     }
 }
 
-//Same semantics as the future fkmd.rs, so a stale or failed wasm build still
-//resolves the flow. For now: a PASS-THROUGH copy of the input XY. The m/z is
-//accepted and ignored - it is the whole point of the kernel, and leaving it in
-//the signature now means the Rust version only has to fill in the arithmetic.
-function fkmdJS(core,mz,pointCount){
-    const n=Math.min(pointCount,Math.floor((core?.length??0)/2))
+//Same semantics as fkmd.rs, so a stale or failed wasm build still resolves the
+//flow. Both steps, in the same order: the defect reads the NEW x, which is the
+//whole definition of the transform. A non-finite or non-positive m/z yields an
+//EMPTY result, never a silent pass-through - the shell must be able to tell
+//"no result" from "result identical to the input".
+function fkmdJS(core,mz){
+    if(!Number.isFinite(mz)||mz<=0) return new Float64Array(0)
+    const reference=Math.round(mz)
+    if(!(reference>0)) return new Float64Array(0)
+    const factor=reference/mz        //constant for the whole wave: computed ONCE
+    const n=Math.floor((core?.length??0)/2)
     const out=new Float64Array(n*2)
     for(let i=0;i<n;i++){
-        out[i]=core[i]          // X = mass
-        out[n+i]=core[n+i]      // Y = intensity
+        const scaled=core[i]*factor
+        out[i]=scaled                 //X' = x * round(mz)/m/z
+        out[n+i]=scaled-Math.round(scaled)  //Y' = x' - round(x'), per index
     }
     return out
 }

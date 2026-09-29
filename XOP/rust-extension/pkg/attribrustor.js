@@ -366,6 +366,36 @@ export function persistent_homology_0d(data, mode) {
     }
 }
 
+/**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core, mz) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.fkmd(retptr, ptr0, len0, mz);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v2 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
 const PersistenceAnalysisFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_persistenceanalysis_free(ptr >>> 0));
