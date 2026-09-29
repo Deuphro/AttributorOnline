@@ -934,11 +934,25 @@ class TrimmerNode extends NodeWithAccordion{
     trimValueDomain(){
         const [low,high]=this.linearValueDomain
         if(!this.parameters.logY) return [low,high]
+        if(!(high>0)){
+            return [1,10]//no data at all: a readable empty frame beats NaN
+        }
         const pad=Math.pow(10,0.1)
-        return [Math.max(low/pad,Number.MIN_VALUE),high*pad]
+        /* The "strictly positive" floor above is a property of the KERNEL's
+           report, not of this function, and the two states of a node disagree:
+           before the first resolve linearValueDomain is still the constructor's
+           [0,100000] placeholder. 0/pad is 0, and clamping it to
+           Number.MIN_VALUE is far worse than useless on a log axis - that is
+           4.9e-324, i.e. -323 decades, so the frame shows one sliver of bars
+           under 323 empty ones, and a restored node sits like that until the
+           user resolves. With no floor to honour, six decades under the top is
+           the smallest assumption a reader can interpret. */
+        const floor=low>0?low:high/1e6
+        return [Math.max(floor/pad,Number.MIN_VALUE),high*pad]
     }
     setLogY(on){
         if(this.parameters.logY===on) return
+        const before=this.trimSettingsSnapshot()
         this.parameters.logY=on
         if(this.graph){
             //plotScales() already honours axis.left.scale, so the toggle only
@@ -952,6 +966,7 @@ class TrimmerNode extends NodeWithAccordion{
         //full resolve re-histograms in the new spacing and re-seeds an absent
         //cursor, which the scale change may have invalidated
         if(this.lastInputWave) this.startResolve()
+        this.recordTrimSettings(before,"Trimmer scale")
     }
     setupTrimmerUI(){
         if(!this.accordion) return
@@ -996,13 +1011,22 @@ class TrimmerNode extends NodeWithAccordion{
             methodSelect.title=this.currentMethod().hint??""
         }
         applyHint()
-        methodSelect.addEventListener("change",()=>{
+        //the widgets ARE the visible state, and a restore pushes the parameters
+        //into them: it can only do that if it can REACH them
+        this.methodSelect=methodSelect
+        this.applyMethodHint=applyHint
+        methodSelect.addEventListener("change",async()=>{
+            const before=this.trimSettingsSnapshot()
             this.parameters.method=methodSelect.value
             applyHint()
             //the new method exposes its own knobs: rebuild the row before the
             //guess, so the fields shown are the ones that were actually used
             this.renderMethodFields()
-            this.guessFromKernel()
+            //AWAITED before recording: the guess moves the cursors from the
+            //kernel, and a command closed too early would undo back to bounds
+            //the method that was just left never chose
+            await this.guessFromKernel()
+            this.recordTrimSettings(before,`Trimmer method ${this.parameters.method}`)
         })
         const guessBtn=CE("button",{type:"button",title:"Use the guess provided by the selected method"},["Guess"])
         guessBtn.addEventListener("click",()=>{this.guessFromKernel()})
@@ -1014,6 +1038,9 @@ class TrimmerNode extends NodeWithAccordion{
             rightLabel:"Log",
             title:"Value axis scale"
         })
+        //scaleToggle paints itself from get() and hands the painter back as
+        //wrap.paint, so a restore can re-sync the colours without a click
+        this.logYToggle=logBtn
         //kept/total readout: without it there is no way to tell "trimmed 12000
         //of 50000" from "did nothing", which is exactly the ambiguity the cursors
         //alone cannot resolve
@@ -1249,13 +1276,15 @@ class TrimmerNode extends NodeWithAccordion{
                 ?this.effectiveThreshold()
                 :(params[field.key]??field.value)
             input.value=formatCursorValue(shown)
-            input.addEventListener("change",()=>{
+            input.addEventListener("change",async()=>{
                 const parsed=parseFloat(input.value)
                 if(!Number.isFinite(parsed)){input.value=formatCursorValue(params[field.key]??field.value);return}
+                const before=this.trimSettingsSnapshot()
                 this.parameters.methodParams={...this.parameters.methodParams,[field.key]:parsed}
                 //the knob moved: the method threshold moved with it, so the
                 //cursor must be re-seeded and the wave re-trimmed
-                this.guessFromKernel()
+                await this.guessFromKernel()
+                this.recordTrimSettings(before,`Trimmer ${field.key}`)
             })
             const label=CE("label",{
                 for:id,
@@ -1415,7 +1444,12 @@ class TrimmerNode extends NodeWithAccordion{
             field.addEventListener("change",()=>{
                 const parsed=parseFloat(field.value)
                 if(!Number.isFinite(parsed)){field.value=String(value);return}
+                //a typed bound is a DISCRETE act, so it is recorded HERE and not
+                //in setTrimBound: the drag goes through that same function once
+                //per pointermove, and a command per event would bury the stack
+                const before=this.trimSettingsSnapshot()
                 this.setTrimBound(key,parsed)
+                this.recordTrimSettings(before,`Trimmer ${key}`)
             })
             //The box must be LARGER than the input it hosts. A foreignObject clips
             //its content, so an input wider or taller than the frame is simply
@@ -1473,22 +1507,54 @@ class TrimmerNode extends NodeWithAccordion{
     //node: three identical implementations of "what is downstream of me" is
     //exactly how they drift apart.
 
-    trimBoundsSnapshot(){
-        return {low:this.parameters.lowBound,high:this.parameters.highBound}
+    /* Every setting this node owns, in one object.
+
+       The undo stack and the session file ask the SAME question - "what were
+       the settings?" - and the two must not be able to drift apart, so there is
+       one snapshot and both take it. That is also the shape serializeState
+       writes, one field at a time. linearValueDomain is deliberately absent: it
+       is read off the data on every resolve, and a saved copy would be a number
+       nobody chose. */
+    trimSettingsSnapshot(){
+        return {
+            method:this.parameters.method,
+            methodParams:{...this.parameters.methodParams},
+            lowBound:this.parameters.lowBound,
+            highBound:this.parameters.highBound,
+            logY:!!this.parameters.logY
+        }
     }
-    restoreTrimBounds(snapshot){
-        this.parameters.lowBound=snapshot.low
-        this.parameters.highBound=snapshot.high
-        this.refreshTrimmerUI()
-        //undo must restore the OUTPUT too, not just the cursor position
+    /* Puts a snapshot back AND re-applies it. The output matters as much as the
+       cursors: a trimmer whose window moved back while its wave still shows the
+       old cut is lying about what it did. applyTrimBounds returns early without
+       an input wave, so this is safe before the first resolve. */
+    restoreTrimSettings(snapshot){
+        this.parameters.method=snapshot.method
+        this.parameters.methodParams={...snapshot.methodParams}
+        this.parameters.lowBound=snapshot.lowBound
+        this.parameters.highBound=snapshot.highBound
+        this.parameters.logY=!!snapshot.logY
+        this.updateTrimmerControls()
         this.applyTrimBounds()
     }
-    recordTrimBounds(before,after,label){
-        if(before.low===after.low&&before.high===after.high) return
+    /* One command per DISCRETE act. A drag of a cursor records once, at
+       pointerup: its dozens of setTrimBound calls in between are not acts, they
+       are one act in progress, and a command each would bury every other undo.
+       Nothing is recorded if nothing moved, so the scale toggle cannot be
+       double-counted by a restore that goes through it. */
+    recordTrimSettings(before,label){
+        const after=this.trimSettingsSnapshot()
+        const unchanged=before.method===after.method
+            &&before.lowBound===after.lowBound
+            &&before.highBound===after.highBound
+            &&before.logY===after.logY
+            &&Object.keys(before.methodParams).length===Object.keys(after.methodParams).length
+            &&Object.entries(after.methodParams).every(([key,value])=>before.methodParams[key]===value)
+        if(unchanged) return
         this.origin?.history?.record?.(new Command({
             label,
-            undo:()=>this.restoreTrimBounds(before),
-            redo:()=>this.restoreTrimBounds(after)
+            undo:()=>this.restoreTrimSettings(before),
+            redo:()=>this.restoreTrimSettings(after)
         }))
     }
     handleTrimPointerDown(event){
@@ -1517,7 +1583,7 @@ class TrimmerNode extends NodeWithAccordion{
         const grabbed=candidates.reduce((best,entry)=>entry.distance<best.distance?entry:best,candidates[0]??null)
         if(!grabbed) return
         const key=grabbed.key
-        const before=this.trimBoundsSnapshot()
+        const before=this.trimSettingsSnapshot()
         this.setTrimBound(key,toValue(pointer()))
         const onMove=(moveEvent)=>{
             this.setTrimBound(key,toValue(moveEvent.clientY-rect.top-graph.parameters.margins.top))
@@ -1532,7 +1598,7 @@ class TrimmerNode extends NodeWithAccordion{
                 this.trimDebounceTimer=null
                 this.applyTrimBounds()
             }
-            this.recordTrimBounds(before,this.trimBoundsSnapshot(),"Trimmer bounds")
+            this.recordTrimSettings(before,"Trimmer bounds")
         }
         window.addEventListener("pointermove",onMove)
         window.addEventListener("pointerup",onUp)
@@ -1654,6 +1720,77 @@ class TrimmerNode extends NodeWithAccordion{
             console.error("[TrimmerNode] Error resolving:",err)
             this.status="error"
             this.outputs[0]=[]
+        }
+        this.refreshTrimmerUI()
+    }
+    /* What this node IS, as opposed to what it computed.
+
+       This is the only durable record of the settings. The undo stack cannot
+       be one: a Command holds closures, and closures do not serialize, so the
+       history dies with the tab whatever we do. The trimmer had neither half of
+       this, and an exported session came back as a pass-through with no window
+       - a silent loss of the one number the user had tuned. */
+    serializeState(){
+        return {
+            method:this.parameters.method,
+            //methodParams is stored VERBATIM, an untouched field staying ABSENT
+            //rather than filled with its default: methodParams() must keep
+            //telling "the user typed this" from "this is the method's default",
+            //or effectiveThreshold quietly falls back to the data quantile and
+            //the typed threshold is gone
+            methodParams:{...this.parameters.methodParams},
+            lowBound:this.parameters.lowBound,
+            highBound:this.parameters.highBound,
+            logY:!!this.parameters.logY,
+            status:this.status
+        }
+    }
+    /* Reads a state back, defensively on every field: a session saved by an
+       older build, or one naming a method this build no longer knows, has to
+       degrade to a default instead of throwing halfway through an import.
+
+       The kernel is NOT run here. It is the flow's own resolve that will call
+       startResolve(), in order, with the inputs rebuilt from the links - the
+       same rule FKMDNode follows. */
+    restoreState(state){
+        if(!state) return
+        if(typeof state.method==="string"&&TRIM_METHODS[state.method]){
+            this.parameters.method=state.method
+        }
+        if(state.methodParams&&typeof state.methodParams==="object"){
+            this.parameters.methodParams={...state.methodParams}
+        }
+        //null is a MEANINGFUL value here - "this cursor was never placed" - so
+        //it is accepted, while undefined and NaN leave the default alone
+        if(state.lowBound===null||Number.isFinite(state.lowBound)){
+            this.parameters.lowBound=state.lowBound
+        }
+        if(state.highBound===null||Number.isFinite(state.highBound)){
+            this.parameters.highBound=state.highBound
+        }
+        if(typeof state.logY==="boolean"){
+            this.parameters.logY=state.logY
+        }
+        this.status=state.status??"floating"
+        this.updateTrimmerControls()
+    }
+    /* Pushes the parameters into the widgets. Without it a restored node would
+       trim with madResidual while its own dropdown still read "pass-through" -
+       the node and its own inspector telling different stories. */
+    updateTrimmerControls(){
+        if(this.methodSelect) this.methodSelect.value=this.parameters.method
+        this.applyMethodHint?.()
+        this.renderMethodFields()
+        if(this.logYToggle){
+            //the toggle paints from get(), and a restore sets logY directly, so
+            //the colours have to be re-read from the parameter
+            this.logYToggle.paint()
+        }
+        if(this.graph){
+            //setLogY normally re-pins the frame, and a restore does not go
+            //through it, so the scale and the frame are set here instead
+            this.graph.parameters.axis.left.scale=this.parameters.logY?"log":"linear"
+            this.pinTrimDomains()
         }
         this.refreshTrimmerUI()
     }
