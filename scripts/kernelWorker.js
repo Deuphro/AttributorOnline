@@ -54,28 +54,83 @@ const kernels={
         }
         return result
     },
-    async classifyPersistence0D({births,deaths,pointsX,pointsY,params}){
+    async classifyPersistence0D({births,deaths,pointsX,pointsY,pointsIndex,params}){
         const slope=params?.slope
         if(!Number.isFinite(slope)) throw new Error("classification requires a finite slope")
+        //pointsIndex travels with the points and is returned untouched: it is
+        //the only route from a kept point back to the profile it was read from,
+        //which is what a width-based filter (anti_radio) needs.
+        const indices=pointsIndex??new Float64Array(births.length)
         let result
         try{
             await ensureWasm()
             if(typeof rust.classify_persistence_0d!=="function"){
                 throw new Error("rust classify_persistence_0d is missing (stale pkg build?)")
             }
-            const classification=rust.classify_persistence_0d(births,deaths,pointsX,pointsY,slope)
+            const classification=rust.classify_persistence_0d(births,deaths,pointsX,pointsY,indices,slope)
             result={
                 keptBirths:toFloat64(classification.kept_births),
                 keptDeaths:toFloat64(classification.kept_deaths),
                 keptPointsX:toFloat64(classification.kept_points_x),
                 keptPointsY:toFloat64(classification.kept_points_y),
+                keptIndices:toFloat64(classification.kept_indices),
                 discardedBirths:toFloat64(classification.discarded_births),
                 discardedDeaths:toFloat64(classification.discarded_deaths),
                 keptCount:classification.kept_count
             }
         }catch(err){
             console.warn("[kernelWorker] rust classification unavailable, JS fallback:",err)
-            result=classifyPersistence0DJS(births,deaths,pointsX,pointsY,slope)
+            result=classifyPersistence0DJS(births,deaths,pointsX,pointsY,indices,slope)
+        }
+        return result
+    },
+    /* The guess for z: a threshold READ from the spectrum rather than the 3
+       convention. Returns ONE number, like trim_guess, so the shell does not
+       have to re-measure every width to show it. */
+    async antiRadioGuessZ({core,pointsIndex,params}){
+        const stride=params?.stride??2
+        try{
+            await ensureWasm()
+            if(typeof rust.anti_radio_guess_z!=="function"){
+                throw new Error("rust anti_radio_guess_z is missing (stale pkg build?)")
+            }
+            return rust.anti_radio_guess_z(core,stride,pointsIndex)
+        }catch(err){
+            console.warn("[kernelWorker] rust anti-radio guess unavailable, JS fallback:",err)
+            return antiRadioGuessZJS(core,stride,pointsIndex)
+        }
+    },
+    /* Anti-radio: drops the peaks whose half-height width is out of the width
+       population measured on the spectrum itself. Mirrors antiradio.rs.
+
+       Two inputs and NOT one, and that is the whole point: the CANDIDATES come
+       from the persistence homology node (it knows which points are peaks), and
+       the PROFILE comes from the raw wave (only it has the samples around a
+       peak, so only it can say how wide that peak is). A width is a property of
+       the signal, not of the point list. */
+    async antiRadioFilter({core,pointsX,pointsY,pointsIndex,params}){
+        const stride=params?.stride??2
+        const z=params?.z??3
+        let result
+        try{
+            await ensureWasm()
+            if(typeof rust.anti_radio_filter!=="function"){
+                throw new Error("rust anti_radio_filter is missing (stale pkg build?)")
+            }
+            const decision=rust.anti_radio_filter(core,stride,pointsX,pointsY,pointsIndex,z)
+            result={
+                pointsX:toFloat64(decision.points_x),
+                pointsY:toFloat64(decision.points_y),
+                indices:toFloat64(decision.indices),
+                widthsPpm:toFloat64(decision.widths_ppm),
+                isRadio:Array.from(decision.is_radio),
+                keptCount:decision.kept_count,
+                referencePpm:decision.reference_ppm,
+                thresholdPpm:decision.threshold_ppm
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust anti-radio unavailable, JS fallback:",err)
+            result=antiRadioFilterJS(core,stride,pointsX,pointsY,pointsIndex,z)
         }
         return result
     },
@@ -336,16 +391,104 @@ function analysePersistence0DJS(core,stride=1,mode="sublevel"){
     const slope=sumBirth>0&&Number.isFinite(sumDeath/sumBirth)?clampJS(sumDeath/sumBirth):clampJS(keepAllSlopeJS(births,deaths))
     return {births,deaths,pointsX,pointsY,birthIndices,slope}
 }
-function classifyPersistence0DJS(births,deaths,pointsX,pointsY,slope){
+function classifyPersistence0DJS(births,deaths,pointsX,pointsY,pointsIndex,slope){
     const count=births.length
-    const keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count)
+    const keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),keptIndices=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count)
     let kept=0,discarded=0
     for(let i=0;i<count;i++){
         if(deaths[i]<=slope*births[i]||deaths[i]<=slope*births[i]+1e-9*Math.max(1,Math.abs(births[i]))){
-            keptBirths[kept]=births[i];keptDeaths[kept]=deaths[i];keptPointsX[kept]=pointsX[i];keptPointsY[kept]=pointsY[i];kept++
+            keptBirths[kept]=births[i];keptDeaths[kept]=deaths[i];keptPointsX[kept]=pointsX[i];keptPointsY[kept]=pointsY[i]
+            //NaN, never a guess: see the note on the Rust side
+            keptIndices[kept]=pointsIndex?.[i]??NaN
+            kept++
         }else{discardedBirths[discarded]=births[i];discardedDeaths[discarded]=deaths[i];discarded++}
     }
-    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
+    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),keptIndices:keptIndices.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
+}
+//Same semantics as antiradio.rs: a self-limiting half-height scan, then a
+//robust (median + MAD) reference built from the spectrum's own widths. The
+//constants are duplicated on purpose - the same reason trim.js keeps its own
+//LOG_BINS_PER_DECADE - so a stale wasm build still filters identically.
+const MAD_TO_SIGMA_JS=1.4826
+const MIN_PEAKS_FOR_REFERENCE_JS=8
+function medianJS(values){
+    if(!values.length) return NaN
+    const sorted=Array.from(values).sort((a,b)=>a-b)
+    const n=sorted.length
+    return n%2===1?sorted[n/2]:0.5*(sorted[n/2-1]+sorted[n/2])
+}
+function widthPpmJS(x,y,peak){
+    const n=y.length
+    if(peak<0||peak>=n) return NaN
+    const height=y[peak]
+    if(!Number.isFinite(height)||height<=0) return NaN
+    const level=0.5*height
+    let left=peak
+    while(left>0&&y[left-1]>level) left--
+    let right=peak
+    while(right+1<n&&y[right+1]>level) right++
+    if(left===0||right===n-1) return NaN
+    const mass=x[peak]
+    if(!Number.isFinite(mass)||mass<=0) return NaN
+    return (x[right]-x[left])/mass*1e6
+}
+//Same semantics as antiradio.rs anti_radio_guess_z, so a stale wasm build still
+//guesses. The width scan, the robust spread and the gap test all mirror the
+//Rust side; the fallback exists for a browser with no Worker, not as a second
+//implementation to maintain on its own.
+const MIN_GAP_OVER_NOISE_JS=8
+function antiRadioGuessZJS(core,stride,pointsIndex){
+    const n=Math.floor(core.length/stride)
+    const x=stride===2?core.subarray(0,n):null
+    const y=stride===2?core.subarray(n):core
+    if(!x) return 3
+    const measured=[]
+    for(let i=0;i<(pointsIndex?.length??0);i++){
+        const idx=pointsIndex[i]
+        if(!Number.isFinite(idx)) continue
+        const w=widthPpmJS(x,y,Math.round(idx))
+        if(Number.isFinite(w)&&w>0) measured.push(w)
+    }
+    if(measured.length<MIN_PEAKS_FOR_REFERENCE_JS) return 3
+    measured.sort((a,b)=>a-b)
+    const reference=medianJS(measured)
+    const spread=MAD_TO_SIGMA_JS*medianJS(measured.map(w=>Math.abs(w-reference)))
+    if(!(spread>0)) return 3
+    const steps=[]
+    for(let i=1;i<measured.length;i++) steps.push((measured[i]-measured[i-1])/spread)
+    if(!steps.length) return 3
+    const bestGap=Math.max(...steps)
+    if(!(bestGap>MIN_GAP_OVER_NOISE_JS*medianJS(steps))) return 3
+    const z=bestGap/2
+    return Number.isFinite(z)&&z>0?z:3
+}
+function antiRadioFilterJS(core,stride,pointsX,pointsY,pointsIndex,z){
+    const n=Math.floor(core.length/stride)
+    const x=stride===2?core.subarray(0,n):null
+    const y=stride===2?core.subarray(n):core
+    const count=pointsX.length
+    const widths=new Float64Array(count)
+    for(let i=0;i<count;i++){
+        const idx=pointsIndex?.[i]
+        widths[i]=Number.isFinite(idx)?widthPpmJS(x,y,Math.round(idx)):NaN
+    }
+    const measured=Array.from(widths).filter(w=>Number.isFinite(w)&&w>0)
+    let reference=NaN,threshold=Infinity
+    if(measured.length>=MIN_PEAKS_FOR_REFERENCE_JS){
+        reference=medianJS(measured)
+        const deviations=measured.map(w=>Math.abs(w-reference))
+        const spread=MAD_TO_SIGMA_JS*medianJS(deviations)
+        const zSafe=Number.isFinite(z)?z:3
+        threshold=reference+zSafe*spread
+    }
+    const xs=[],ys=[],indices=[],isRadio=new Array(count).fill(0)
+    let kept=0
+    for(let i=0;i<count;i++){
+        const radio=Number.isFinite(widths[i])&&widths[i]>threshold
+        isRadio[i]=radio?1:0
+        if(!radio){xs.push(pointsX[i]);ys.push(pointsY[i]);indices.push(pointsIndex?.[i]??NaN);kept++}
+    }
+    return {pointsX:Float64Array.from(xs),pointsY:Float64Array.from(ys),indices:Float64Array.from(indices),widthsPpm:widths,isRadio,keptCount:kept,referencePpm:reference,thresholdPpm:threshold}
 }
 function clampJS(v){return Number.isFinite(v)?Math.min(1-1e-12,Math.max(1e-9,v)):1-1e-12}
 function keepAllSlopeJS(births,deaths){let r=0;for(let i=0;i<births.length;i++)if(births[i]>0)r=Math.max(r,deaths[i]/births[i]);return r}

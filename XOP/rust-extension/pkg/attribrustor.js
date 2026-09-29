@@ -147,14 +147,19 @@ export function persistent_homology_0d_waves(core, stride, mode) {
 }
 
 /**
+* `points_index` is the position of each point in the INPUT wave (the
+* birth_indices of persistent_homology_0d_waves, already sorted and aligned
+* with the points). It is carried through the classifier untouched: the slope
+* decides WHICH points survive, never where they came from.
 * @param {Float64Array} births
 * @param {Float64Array} deaths
 * @param {Float64Array} points_x
 * @param {Float64Array} points_y
+* @param {Float64Array} points_index
 * @param {number} slope
 * @returns {PersistenceClassification}
 */
-export function classify_persistence_0d(births, deaths, points_x, points_y, slope) {
+export function classify_persistence_0d(births, deaths, points_x, points_y, points_index, slope) {
     const ptr0 = passArrayF64ToWasm0(births, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF64ToWasm0(deaths, wasm.__wbindgen_malloc);
@@ -163,7 +168,9 @@ export function classify_persistence_0d(births, deaths, points_x, points_y, slop
     const len2 = WASM_VECTOR_LEN;
     const ptr3 = passArrayF64ToWasm0(points_y, wasm.__wbindgen_malloc);
     const len3 = WASM_VECTOR_LEN;
-    const ret = wasm.classify_persistence_0d(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, slope);
+    const ptr4 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.classify_persistence_0d(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, slope);
     return PersistenceClassification.__wrap(ret);
 }
 
@@ -239,6 +246,67 @@ export function trim_histogram(core, stride, bins, scale) {
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.trim_histogram(ptr0, len0, stride, bins, ptr1, len1);
     return TrimHistogram.__wrap(ret);
+}
+
+/**
+* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
+*
+* The MAD is a spread; the cut has to be somewhere. When the widths form one
+* population the two agree, but when a spectrum is MOSTLY radio - a dirty
+* sample, a failed acquisition - the MAD is inflated by the very peaks the
+* filter should catch, and 3σ then rejects nothing. A gap does not have that
+* failure mode: it measures where the bulk ends whatever lies beyond.
+*
+* The cut is read as the largest gap between consecutive sorted widths, in
+* robust sigma, and only when that gap is far larger than the typical spacing
+* between neighbours. Two earlier attempts are worth recording, because both
+* are plausible and both are wrong:
+*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
+*     wide peak in eight, and reports a z of about 1, which would reject the
+*     whole cluster;
+*   - a ratio to the median width is not scale-free - a comb of near-identical
+*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_index
+* @returns {number}
+*/
+export function anti_radio_guess_z(core, stride, points_index) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.anti_radio_guess_z(ptr0, len0, stride, ptr1, len1);
+    return ret;
+}
+
+/**
+*
+* `z` is the ONE knob, and it is a statistical convention rather than a fitted
+* setting: a peak is "radio" when its width sits z robust sigma above the
+* median width of the spectrum. Since the reference is measured on the data in
+* hand, the filter follows the instrument's actual resolution instead of a
+* hard-coded one, and the false-positive rate stays a property of the spread
+* rather than of how many peaks the spectrum happens to contain.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} z
+* @returns {RadioDecision}
+*/
+export function anti_radio_filter(core, stride, points_x, points_y, points_index, z) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(points_x, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(points_y, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.anti_radio_filter(ptr0, len0, stride, ptr1, len1, ptr2, len2, ptr3, len3, z);
+    return RadioDecision.__wrap(ret);
 }
 
 /**
@@ -604,7 +672,7 @@ export class PersistenceClassification {
     /**
     * @returns {Float64Array}
     */
-    get discarded_births() {
+    get kept_indices() {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             wasm.persistenceanalysis_points_y(retptr, this.__wbg_ptr);
@@ -620,10 +688,26 @@ export class PersistenceClassification {
     /**
     * @returns {Float64Array}
     */
-    get discarded_deaths() {
+    get discarded_births() {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             wasm.persistenceanalysis_birth_indices(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get discarded_deaths() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.persistenceclassification_discarded_deaths(retptr, this.__wbg_ptr);
             var r0 = getInt32Memory0()[retptr / 4 + 0];
             var r1 = getInt32Memory0()[retptr / 4 + 1];
             var v1 = getArrayF64FromWasm0(r0, r1).slice();
@@ -639,6 +723,136 @@ export class PersistenceClassification {
     get kept_count() {
         const ret = wasm.persistenceclassification_kept_count(this.__wbg_ptr);
         return ret >>> 0;
+    }
+}
+
+const RadioDecisionFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_radiodecision_free(ptr >>> 0));
+/**
+* A candidate peak reduced to what the filter decides on.
+*/
+export class RadioDecision {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(RadioDecision.prototype);
+        obj.__wbg_ptr = ptr;
+        RadioDecisionFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        RadioDecisionFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_radiodecision_free(ptr);
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get points_x() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.radiodecision_points_x(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get points_y() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.radiodecision_points_y(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get indices() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.radiodecision_indices(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get widths_ppm() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.radiodecision_widths_ppm(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Uint8Array}
+    */
+    get is_radio() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.radiodecision_is_radio(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 1, 1);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {number}
+    */
+    get kept_count() {
+        const ret = wasm.radiodecision_kept_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+    * @returns {number}
+    */
+    get reference_ppm() {
+        const ret = wasm.radiodecision_reference_ppm(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get threshold_ppm() {
+        const ret = wasm.radiodecision_threshold_ppm(this.__wbg_ptr);
+        return ret;
     }
 }
 

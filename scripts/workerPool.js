@@ -1,6 +1,13 @@
 //Log-histogram bar density, kept in step with LOG_BINS_PER_DECADE in trim.rs
 const LOG_BINS_PER_DECADE=6
 const MIN_LOG_BINS=8
+//Anti-radio, kept in step with antiradio.rs: the MAD->sigma conversion and the
+//number of measurable widths below which there is no population to judge from.
+const MAD_TO_SIGMA=1.4826
+const MIN_PEAKS_FOR_REFERENCE=8
+//A gap must clear the noise to be read as a population split. Kept in step with
+//MIN_GAP_OVER_NOISE in antiradio.rs.
+const MIN_GAP_OVER_NOISE=8
 
 //WorkerPool: keeps a set of module workers alive and dispatches compute
 //tasks to them, so heavy kernels never run on the main thread.
@@ -191,6 +198,12 @@ function runKernelLocally(kernel,payload){
     if(kernel==="classifyPersistence0D"){
         return runPersistenceClassificationLocal(payload)
     }
+    if(kernel==="antiRadioFilter"){
+        return runAntiRadioFilterLocal(payload)
+    }
+    if(kernel==="antiRadioGuessZ"){
+        return runAntiRadioGuessZLocal(payload)
+    }
     if(kernel==="trimGuess"){
         return runTrimGuessLocal(payload)
     }
@@ -358,10 +371,89 @@ function runKernelLocallyOldH0(data,mode){
     if(superlevel){let mi=0;for(let i=1;i<n;i++)if(data[i]>data[mi])mi=i;births.push(data[mi]);deaths.push(0);bIdx.push(mi);dIdx.push(mi)}
     const c=births.length,out=new Float64Array(c*4);births.forEach((v,i)=>{out[i]=v;out[c+i]=deaths[i];out[2*c+i]=bIdx[i];out[3*c+i]=dIdx[i]});return out
 }
-function runPersistenceClassificationLocal({births,deaths,pointsX,pointsY,params={}}){
-    const count=births.length,keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count);let kept=0,discarded=0
-    for(let i=0;i<count;i++){const pass=deaths[i]<=params.slope*births[i]||deaths[i]<=params.slope*births[i]+1e-9*Math.max(1,Math.abs(births[i]));if(pass){keptBirths[kept]=births[i];keptDeaths[kept]=deaths[i];keptPointsX[kept]=pointsX[i];keptPointsY[kept]=pointsY[i];kept++}else{discardedBirths[discarded]=births[i];discardedDeaths[discarded]=deaths[i];discarded++}}
-    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
+function runPersistenceClassificationLocal({births,deaths,pointsX,pointsY,pointsIndex,params={}}){
+    const count=births.length,keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),keptIndices=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count);let kept=0,discarded=0
+    for(let i=0;i<count;i++){const pass=deaths[i]<=params.slope*births[i]||deaths[i]<=params.slope*births[i]+1e-9*Math.max(1,Math.abs(births[i]));if(pass){keptBirths[kept]=births[i];keptDeaths[kept]=deaths[i];keptPointsX[kept]=pointsX[i];keptPointsY[kept]=pointsY[i];keptIndices[kept]=pointsIndex?.[i]??NaN;kept++}else{discardedBirths[discarded]=births[i];discardedDeaths[discarded]=deaths[i];discarded++}}
+    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),keptIndices:keptIndices.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
+}
+//Mirrors antiradio.rs anti_radio_filter. Same reason as the constants above:
+//no Worker must not mean no filtering, and a browser without one still has to
+//behave like the wasm path rather than quietly passing every peak through.
+//Mirrors antiradio.rs anti_radio_guess_z. Returns ONE number, like trim_guess:
+//the shell only needs the z, and rebuilding the whole width list to read one
+//value off it is the allocation the trimmer comment warns about.
+function runAntiRadioGuessZLocal({core,pointsIndex,params={}}){
+    const stride=params.stride??2
+    const n=Math.floor(core.length/stride)
+    const x=stride===2?core.subarray(0,n):null
+    const y=stride===2?core.subarray(n):core
+    if(!x) return 3
+    const measured=[]
+    for(let i=0;i<(pointsIndex?.length??0);i++){
+        const idx=pointsIndex[i]
+        if(!Number.isFinite(idx)) continue
+        const w=localWidthPpm(x,y,Math.round(idx))
+        if(Number.isFinite(w)&&w>0) measured.push(w)
+    }
+    if(measured.length<MIN_PEAKS_FOR_REFERENCE) return 3
+    measured.sort((a,b)=>a-b)
+    const reference=localMedian(measured)
+    const spread=MAD_TO_SIGMA*localMedian(measured.map(w=>Math.abs(w-reference)))
+    if(!(spread>0)) return 3
+    const steps=[]
+    for(let i=1;i<measured.length;i++) steps.push((measured[i]-measured[i-1])/spread)
+    if(!steps.length) return 3
+    const bestGap=Math.max(...steps)
+    if(!(bestGap>MIN_GAP_OVER_NOISE*localMedian(steps))) return 3
+    const z=bestGap/2
+    return Number.isFinite(z)&&z>0?z:3
+}
+function runAntiRadioFilterLocal({core,pointsX,pointsY,pointsIndex,params={}}){
+    const stride=params.stride??2,z=params.z??3
+    const n=Math.floor(core.length/stride)
+    const x=stride===2?core.subarray(0,n):null
+    const y=stride===2?core.subarray(n):core
+    const count=pointsX.length
+    const widths=new Float64Array(count)
+    for(let i=0;i<count;i++){
+        const idx=pointsIndex?.[i]
+        widths[i]=Number.isFinite(idx)?localWidthPpm(x,y,Math.round(idx)):NaN
+    }
+    const measured=Array.from(widths).filter(w=>Number.isFinite(w)&&w>0)
+    let reference=NaN,threshold=Infinity
+    if(measured.length>=MIN_PEAKS_FOR_REFERENCE){
+        reference=localMedian(measured)
+        const spread=MAD_TO_SIGMA*localMedian(measured.map(w=>Math.abs(w-reference)))
+        threshold=reference+(Number.isFinite(z)?z:3)*spread
+    }
+    const xs=[],ys=[],indices=[],isRadio=new Array(count).fill(0)
+    let kept=0
+    for(let i=0;i<count;i++){
+        const radio=Number.isFinite(widths[i])&&widths[i]>threshold
+        isRadio[i]=radio?1:0
+        if(!radio){xs.push(pointsX[i]);ys.push(pointsY[i]);indices.push(pointsIndex?.[i]??NaN);kept++}
+    }
+    return {pointsX:Float64Array.from(xs),pointsY:Float64Array.from(ys),indices:Float64Array.from(indices),widthsPpm:widths,isRadio,keptCount:kept,referencePpm:reference,thresholdPpm:threshold}
+}
+function localWidthPpm(x,y,peak){
+    const n=y.length
+    if(peak<0||peak>=n||!x) return NaN
+    const height=y[peak]
+    if(!Number.isFinite(height)||height<=0) return NaN
+    const level=0.5*height
+    let left=peak
+    while(left>0&&y[left-1]>level) left--
+    let right=peak
+    while(right+1<n&&y[right+1]>level) right++
+    if(left===0||right===n-1) return NaN
+    const mass=x[peak]
+    if(!Number.isFinite(mass)||mass<=0) return NaN
+    return (x[right]-x[left])/mass*1e6
+}
+function localMedian(values){
+    if(!values.length) return NaN
+    const sorted=Array.from(values).sort((a,b)=>a-b),n=sorted.length
+    return n%2===1?sorted[n/2]:0.5*(sorted[n/2-1]+sorted[n/2])
 }
 
 export const computePool=new WorkerPool()

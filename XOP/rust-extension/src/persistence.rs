@@ -22,6 +22,12 @@ impl PersistenceAnalysis {
 #[wasm_bindgen]
 pub struct PersistenceClassification {
     kept_births: Vec<f64>, kept_deaths: Vec<f64>, kept_points_x: Vec<f64>, kept_points_y: Vec<f64>,
+    //The index of each KEPT point in the INPUT wave. The classifier only ever
+    //REORDERS or REMOVES points, so this is the only way back to the profile:
+    //without it a kept point is just a coordinate, and a filter that needs the
+    //raw samples around it (a width, a shape) has nothing to measure. It is the
+    //same convention as trim.rs kept_indices.
+    kept_indices: Vec<f64>,
     discarded_births: Vec<f64>, discarded_deaths: Vec<f64>, kept_count: usize,
 }
 #[wasm_bindgen]
@@ -30,6 +36,7 @@ impl PersistenceClassification {
     #[wasm_bindgen(getter)] pub fn kept_deaths(&self) -> Vec<f64> { self.kept_deaths.clone() }
     #[wasm_bindgen(getter)] pub fn kept_points_x(&self) -> Vec<f64> { self.kept_points_x.clone() }
     #[wasm_bindgen(getter)] pub fn kept_points_y(&self) -> Vec<f64> { self.kept_points_y.clone() }
+    #[wasm_bindgen(getter)] pub fn kept_indices(&self) -> Vec<f64> { self.kept_indices.clone() }
     #[wasm_bindgen(getter)] pub fn discarded_births(&self) -> Vec<f64> { self.discarded_births.clone() }
     #[wasm_bindgen(getter)] pub fn discarded_deaths(&self) -> Vec<f64> { self.discarded_deaths.clone() }
     #[wasm_bindgen(getter)] pub fn kept_count(&self) -> usize { self.kept_count }
@@ -83,11 +90,19 @@ pub fn persistent_homology_0d_waves(core: &[f64], stride: usize, mode: &str) -> 
     PersistenceAnalysis{births,deaths:out_deaths,points_x,points_y,birth_indices,slope}
 }
 
+/// `points_index` is the position of each point in the INPUT wave (the
+/// birth_indices of persistent_homology_0d_waves, already sorted and aligned
+/// with the points). It is carried through the classifier untouched: the slope
+/// decides WHICH points survive, never where they came from.
 #[wasm_bindgen]
-pub fn classify_persistence_0d(births:&[f64],deaths:&[f64],points_x:&[f64],points_y:&[f64],slope:f64)->PersistenceClassification{
-    let n=births.len(); let mut kept_births=Vec::new(); let mut kept_deaths=Vec::new(); let mut kept_points_x=Vec::new(); let mut kept_points_y=Vec::new();
+pub fn classify_persistence_0d(births:&[f64],deaths:&[f64],points_x:&[f64],points_y:&[f64],points_index:&[f64],slope:f64)->PersistenceClassification{
+    let n=births.len(); let mut kept_births=Vec::new(); let mut kept_deaths=Vec::new(); let mut kept_points_x=Vec::new(); let mut kept_points_y=Vec::new(); let mut kept_indices=Vec::new();
     let mut discarded_births=Vec::new(); let mut discarded_deaths=Vec::new();
-    for i in 0..n { if passes(deaths[i],births[i],slope) { kept_births.push(births[i]); kept_deaths.push(deaths[i]); kept_points_x.push(points_x[i]); kept_points_y.push(points_y[i]); } else { discarded_births.push(births[i]); discarded_deaths.push(deaths[i]); } }
-    let kept_count=kept_births.len(); PersistenceClassification{kept_births,kept_deaths,kept_points_x,kept_points_y,discarded_births,discarded_deaths,kept_count}
+    for i in 0..n { if passes(deaths[i],births[i],slope) { kept_births.push(births[i]); kept_deaths.push(deaths[i]); kept_points_x.push(points_x[i]); kept_points_y.push(points_y[i]);
+        //A missing or out-of-range index stays NaN rather than being clamped: a
+        //fabricated index would send a downstream profile read to the wrong
+        //peak, which is worse than an index that is visibly unusable.
+        kept_indices.push(points_index.get(i).copied().unwrap_or(f64::NAN)); } else { discarded_births.push(births[i]); discarded_deaths.push(deaths[i]); } }
+    let kept_count=kept_births.len(); PersistenceClassification{kept_births,kept_deaths,kept_points_x,kept_points_y,kept_indices,discarded_births,discarded_deaths,kept_count}
 }
 

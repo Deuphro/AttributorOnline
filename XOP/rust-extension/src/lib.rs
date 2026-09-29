@@ -1,8 +1,10 @@
 #![allow(unused)]
 use wasm_bindgen::prelude::*;
+mod antiradio;
 mod fkmd;
 mod persistence;
 mod trim;
+pub use antiradio::{anti_radio_filter, anti_radio_guess_z, RadioDecision};
 pub use fkmd::fkmd;
 pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,

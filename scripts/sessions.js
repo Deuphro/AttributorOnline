@@ -306,7 +306,11 @@ function importSession(serialized, options = {}) {
             // is dropped and the points output becomes output 0.
             if (node.constructor.name === "PersistentHomology0DNode") {
                 node.inputs = [new Map()]
-                node.outputs = [[]]
+                // The index output is new, but it is NOT persisted: it is
+                // recomputed from the input profile on every resolve, and
+                // restoring a stale one would let Anti-Radio measure the wrong
+                // peaks. So both slots exist and the second starts empty.
+                node.outputs = [[], []]
             }
             if (node.parameters) {
                 node.parameters.position = decodeValue(nodeData.position, registrations)
@@ -327,8 +331,11 @@ function importSession(serialized, options = {}) {
                 if (linkData.inputIndex !== 0) continue
             }
             if (outputNode.constructor.name === "PersistentHomology0DNode") {
-                if (linkData.outputIndex === 0) continue
-                linkData = {...linkData, outputIndex: 0}
+                // Legacy sessions only ever linked output 0, and the migration
+                // above renumbered that slot. A link to output 1 can only come
+                // from a session saved with the index output, and its index is
+                // already the right one, so it passes through untouched.
+                if (linkData.outputIndex > 1) continue
             }
             if (typeof options.createLink !== "function") {
                 throw new TypeError("importSession requires options.createLink")

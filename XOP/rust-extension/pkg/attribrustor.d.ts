@@ -11,14 +11,19 @@
 */
 export function persistent_homology_0d_waves(core: Float64Array, stride: number, mode: string): PersistenceAnalysis;
 /**
+* `points_index` is the position of each point in the INPUT wave (the
+* birth_indices of persistent_homology_0d_waves, already sorted and aligned
+* with the points). It is carried through the classifier untouched: the slope
+* decides WHICH points survive, never where they came from.
 * @param {Float64Array} births
 * @param {Float64Array} deaths
 * @param {Float64Array} points_x
 * @param {Float64Array} points_y
+* @param {Float64Array} points_index
 * @param {number} slope
 * @returns {PersistenceClassification}
 */
-export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, slope: number): PersistenceClassification;
+export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number): PersistenceClassification;
 /**
 * Where the SELECTED method wants the low cursor to sit, as a single number.
 *
@@ -71,6 +76,47 @@ export function trim_apply(core: Float64Array, stride: number, low_bound: number
 * @returns {TrimHistogram}
 */
 export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
+/**
+* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
+*
+* The MAD is a spread; the cut has to be somewhere. When the widths form one
+* population the two agree, but when a spectrum is MOSTLY radio - a dirty
+* sample, a failed acquisition - the MAD is inflated by the very peaks the
+* filter should catch, and 3σ then rejects nothing. A gap does not have that
+* failure mode: it measures where the bulk ends whatever lies beyond.
+*
+* The cut is read as the largest gap between consecutive sorted widths, in
+* robust sigma, and only when that gap is far larger than the typical spacing
+* between neighbours. Two earlier attempts are worth recording, because both
+* are plausible and both are wrong:
+*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
+*     wide peak in eight, and reports a z of about 1, which would reject the
+*     whole cluster;
+*   - a ratio to the median width is not scale-free - a comb of near-identical
+*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_index
+* @returns {number}
+*/
+export function anti_radio_guess_z(core: Float64Array, stride: number, points_index: Float64Array): number;
+/**
+*
+* `z` is the ONE knob, and it is a statistical convention rather than a fitted
+* setting: a peak is "radio" when its width sits z robust sigma above the
+* median width of the spectrum. Since the reference is measured on the data in
+* hand, the filter follows the instrument's actual resolution instead of a
+* hard-coded one, and the false-positive rate stays a property of the spread
+* rather than of how many peaks the spectrum happens to contain.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} z
+* @returns {RadioDecision}
+*/
+export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
 /**
 * @param {number} a
 * @param {number} b
@@ -175,10 +221,43 @@ export class PersistenceClassification {
   readonly kept_deaths: Float64Array;
 /**
 */
+  readonly kept_indices: Float64Array;
+/**
+*/
   readonly kept_points_x: Float64Array;
 /**
 */
   readonly kept_points_y: Float64Array;
+}
+/**
+* A candidate peak reduced to what the filter decides on.
+*/
+export class RadioDecision {
+  free(): void;
+/**
+*/
+  readonly indices: Float64Array;
+/**
+*/
+  readonly is_radio: Uint8Array;
+/**
+*/
+  readonly kept_count: number;
+/**
+*/
+  readonly points_x: Float64Array;
+/**
+*/
+  readonly points_y: Float64Array;
+/**
+*/
+  readonly reference_ppm: number;
+/**
+*/
+  readonly threshold_ppm: number;
+/**
+*/
+  readonly widths_ppm: Float64Array;
 }
 /**
 * One histogram bar: the graph needs centres and counts, nothing else.
@@ -244,14 +323,15 @@ export interface InitOutput {
   readonly persistenceanalysis_slope: (a: number) => number;
   readonly __wbg_persistenceclassification_free: (a: number) => void;
   readonly persistenceclassification_kept_births: (a: number, b: number) => void;
+  readonly persistenceclassification_discarded_deaths: (a: number, b: number) => void;
   readonly persistenceclassification_kept_count: (a: number) => number;
   readonly persistent_homology_0d_waves: (a: number, b: number, c: number, d: number, e: number) => number;
-  readonly classify_persistence_0d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
+  readonly classify_persistence_0d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => number;
   readonly persistenceclassification_kept_deaths: (a: number, b: number) => void;
   readonly persistenceclassification_kept_points_x: (a: number, b: number) => void;
   readonly persistenceclassification_kept_points_y: (a: number, b: number) => void;
+  readonly persistenceclassification_kept_indices: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_births: (a: number, b: number) => void;
-  readonly persistenceclassification_discarded_deaths: (a: number, b: number) => void;
   readonly __wbg_trimresult_free: (a: number) => void;
   readonly trimresult_points_x: (a: number, b: number) => void;
   readonly trimresult_points_y: (a: number, b: number) => void;
@@ -269,6 +349,17 @@ export interface InitOutput {
   readonly trimresult_low_bound: (a: number) => number;
   readonly trimresult_high_bound: (a: number) => number;
   readonly trimresult_kept_count: (a: number) => number;
+  readonly __wbg_radiodecision_free: (a: number) => void;
+  readonly radiodecision_points_x: (a: number, b: number) => void;
+  readonly radiodecision_points_y: (a: number, b: number) => void;
+  readonly radiodecision_indices: (a: number, b: number) => void;
+  readonly radiodecision_widths_ppm: (a: number, b: number) => void;
+  readonly radiodecision_is_radio: (a: number, b: number) => void;
+  readonly radiodecision_kept_count: (a: number) => number;
+  readonly radiodecision_reference_ppm: (a: number) => number;
+  readonly radiodecision_threshold_ppm: (a: number) => number;
+  readonly anti_radio_guess_z: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly anti_radio_filter: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
   readonly compute: (a: number, b: number) => number;
   readonly add: (a: number, b: number) => number;
   readonly arrust: (a: number, b: number, c: number) => void;
