@@ -303,8 +303,16 @@ function importSession(serialized, options = {}) {
 
         for (const nodeData of flowData.nodes) {
             const node = nodes.get(nodeData.id)
-            node.inputs = decodeValue(nodeData.inputs, registrations)
-            node.outputs = decodeValue(nodeData.outputs, registrations)
+            //only a file that DESCRIBES a node's shape may set it. A node that
+            //builds its own inputs and outputs (a source, a trimmer) is
+            //constructed with them, and writing undefined over that leaves a node
+            //whose parent links have nothing to iterate
+            if (nodeData.inputs !== undefined) {
+                node.inputs = decodeValue(nodeData.inputs, registrations)
+            }
+            if (nodeData.outputs !== undefined) {
+                node.outputs = decodeValue(nodeData.outputs, registrations)
+            }
             // Sessions saved before the merge, in chronological order of what
             // they could have contained:
             //  - a slope input plus two outputs (the oldest homology node)
@@ -362,7 +370,11 @@ function importSession(serialized, options = {}) {
             })
         }
 
-        flow.parameters = decodeValue(flowData.parameters, registrations)
+        //merged, never replaced: the live field is an object the Field class holds
+        //by reference, so assigning over flow.parameters would strand the drawing
+        //flags on an object nobody reads from any more
+        const { field, ...rest } = decodeValue(flowData.parameters, registrations) ?? {}
+        Object.assign(flow.parameters, rest)
     }
 
     if (document.app?.parameters) {

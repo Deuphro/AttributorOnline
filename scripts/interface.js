@@ -13,6 +13,18 @@ import {Formula,loadTable} from "./chemistry.js"
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
 import {LAYOUT_DEFAULTS,autoLinkPlan,buildGraph,layoutFlow} from "./layout.js"
+//what a reload finds: the skeleton of the work in progress, and the panel
+//geometry that outlives it. See the module header for why the two live in two
+//different stores.
+import {
+    clearSession,
+    debounce,
+    importOptions,
+    readPreferences,
+    reparseRestoredSource,
+    savePreferences,
+    writeSession
+} from "./sessionStore.js"
 
 window.raie=new Wave(10,2)
 window.eiar=new Wave(7)
@@ -365,6 +377,18 @@ class Node{
             }))
         }
     }
+    /* The one thing EVERY node gets back from a restore, and the reason it is
+       here rather than copied into each class: an accordion is a fresh object
+       after a reload, and a fresh accordion is open. A user who folded a node
+       did it to get it out of the way, so a reload that unfolds it takes that
+       choice back without touching anything they actually did.
+
+       Subclasses that override this must call super. */
+    restoreAfterImport(){
+        if(this.restoredFolded){
+            this.accordion?.fold()
+        }
+    }
     static anchorAbsPos(anchor){
         const anchorPos=anchor.pilot.parameters.anchorMap.get(anchor).positions
         const nodePos=anchor.pilot.parameters.position
@@ -394,7 +418,7 @@ class Node{
         for(let input of this.inputs){
             console.log('pour cet input :',input)
             for(let entry of input.entries()){
-                console.log('il y a cette entrée :',entry)
+                console.log('il y a cette entrÃ©e :',entry)
                 for(let values of entry[1]){
                     console.log('qui contient ces valeurs :',values)
                     if(!Array.isArray(values)){
@@ -406,7 +430,7 @@ class Node{
                         values=convert
                     }
                     for(let value of values){
-                        console.log('et pour cette valeur ',value,' on incrémente et la valeur et le tableau')
+                        console.log('et pour cette valeur ',value,' on incrÃ©mente et la valeur et le tableau')
                         protoOutput.push(value+1)
                     }
                 }
@@ -672,9 +696,25 @@ class DelimitedTextNode extends NodeWithAccordion{
         this.table=null
         super.suicide(options)
     }
+    /* The pairs are the PARSE of raw, and a skeleton only carries the text, so
+       re-parsing is what puts them back.
+
+       The widget draws its table from those pairs, and the accordion was built
+       at registration - with nothing in it. Without this re-render the node
+       comes back with an EMPTY table, which reads as "my file is gone" rather
+       than "not read yet".
+
+       An exported session file still carries the pairs, and then the cached
+       source makes the re-parse a no-op: what is rebuilt here is the skeleton. */
+    restoreAfterImport(){
+        super.restoreAfterImport()
+        if(reparseRestoredSource(this)){
+            this.renderAccordion()
+        }
+    }
 }
 
-/* classifier: a line through the origin, death = slope × birth. Superlevel
+/* classifier: a line through the origin, death = slope Ã— birth. Superlevel
    pairs live strictly below the diagonal (death < birth), so the slope is
    clamped into [MIN, MAX], with MAX just below 1. */
 const CLASSIFIER_MIN_SLOPE=1e-12
@@ -687,11 +727,11 @@ function clampClassifierSlope(value){
 function formatSlope(value){
     return String(Number(Number(value).toPrecision(6)))
 }
-//The 3σ convention, and the value the kernel returns when it has no population
+//The 3Ïƒ convention, and the value the kernel returns when it has no population
 //to read a z from. Named because "3" appears as a DEFAULT in three places that
 //have to agree, and a literal in each of them is how they drift apart.
 const CONVENTIONAL_Z=3
-//slope of a line that keeps every pair with a positive birth (birth ≤ 0
+//slope of a line that keeps every pair with a positive birth (birth â‰¤ 0
 //pairs can never sit under a line through the origin)
 function keepAllSlope(pairs){
     let slope=CLASSIFIER_MIN_SLOPE
@@ -802,7 +842,7 @@ const TRIM_METHODS={
         fields:[]
     },
     madResidual:{
-        label:"k·MAD on moving-average residual",
+        label:"kÂ·MAD on moving-average residual",
         hint:"Cuts below the baseline plus k times the noise. k is the rejection multiplier (5 keeps ~99.3% of a Gaussian; 1.96 would be 95%), and the window is the width of the moving average the noise is measured on.",
         //k and window are part of the PUBLISHED method, so they stay editable.
         //k is a multiplier, not a threshold: it means nothing without the sigma
@@ -1428,7 +1468,7 @@ class TrimmerNode extends NodeWithAccordion{
             const group=cursorLayer.append("g")
                 .attr("class",`trim-cursor trim-cursor-${key}`)
                 .style("cursor","ns-resize")
-            group.append("title").text(key==="lowBound"?"Lower bound — drag to move":"Upper bound — drag to move")
+            group.append("title").text(key==="lowBound"?"Lower bound â€” drag to move":"Upper bound â€” drag to move")
             group.append("line")
                 .attr("x1",0).attr("x2",zone.width).attr("y1",y).attr("y2",y)
                 .attr("stroke",color).attr("stroke-width",TRIM_CURSOR_STROKE)
@@ -2007,7 +2047,7 @@ class FKMDNode extends NodeWithAccordion{
             //loading. The origin says which, and a node that guessed would
             //tell the user the table is missing while it downloads.
             this.readout.textContent=this.origin.tableError
-                ?`table périodique indisponible: ${this.origin.tableError}`
+                ?`table pÃ©riodique indisponible: ${this.origin.tableError}`
                 :""
             return
         }
@@ -2021,7 +2061,7 @@ class FKMDNode extends NodeWithAccordion{
         //it, a node with three products and three inputs is indistinguishable
         //from one that silently dropped two.
         if(this.skippedInputs){
-            lines.push(`${this.skippedInputs} entrée(s) ignorée(s): pas une wave XY`)
+            lines.push(`${this.skippedInputs} entrÃ©e(s) ignorÃ©e(s): pas une wave XY`)
         }
         for(const err of this.kernelErrors??[]){
             lines.push(`kernel: ${err}`)
@@ -2178,7 +2218,7 @@ class PeakPickingNode extends NodeWithAccordion{
             position
         )
         this.status="floating"
-        //classifier: a line through the origin, death = slope × birth; null
+        //classifier: a line through the origin, death = slope Ã— birth; null
         //until the first data (then fitted to keep every pair) or a click
         this.parameters.slope=null
         this.parameters.slopeAnchorBirth=null // where the marker sits on the line
@@ -2256,7 +2296,7 @@ class PeakPickingNode extends NodeWithAccordion{
             size: 6,
             value: Number.isFinite(this.parameters.slope) ? formatSlope(this.parameters.slope) : "",
             placeholder: "auto",
-            title: "Classifier slope (< 1): pairs under death = slope × birth are kept",
+            title: "Classifier slope (< 1): pairs under death = slope Ã— birth are kept",
             style: { width: "100%", minWidth: "0", padding: "2px" }
         }, [])
         this.slopeInput.addEventListener("change", () => {
@@ -2304,7 +2344,7 @@ class PeakPickingNode extends NodeWithAccordion{
         //bar, the ratio is self-explanatory and the tooltip spells it out
         this.countLabel = CE("span", {
             className: "pp-readout",
-            title: "Pairs kept / total pairs — persistence intervals kept under the classifier line"
+            title: "Pairs kept / total pairs â€” persistence intervals kept under the classifier line"
         }, ["0/0"])
 
         //minmax(0,1fr) on the input and auto on everything else: the input is the
@@ -2460,7 +2500,7 @@ class PeakPickingNode extends NodeWithAccordion{
     /* The z the filter runs with when nobody has chosen one, read from the
        spectrum like the slope's "auto".
 
-       The condition is zSource, NOT "is z finite": z defaults to the 3σ
+       The condition is zSource, NOT "is z finite": z defaults to the 3Ïƒ
        convention, which is finite, so a finiteness test would never fire and
        the auto path would be dead code.
 
@@ -2484,11 +2524,11 @@ class PeakPickingNode extends NodeWithAccordion{
     renderRadioReadout(result, candidateCount){
         if(this.radioLabel) this.radioLabel.textContent=result?`${result.keptCount} / ${candidateCount}`:""
         if(!this.radioRef) return
-        //no reference means the widths were not measurable, and "—" says that
+        //no reference means the widths were not measurable, and "â€”" says that
         //without pretending the filter ran and found nothing
         this.radioRef.textContent=result&&Number.isFinite(result.referencePpm)
             ?`${result.referencePpm.toFixed(1)} ppm`
-            :"—"
+            :"â€”"
     }
     extractInputWave(){
         const input = this.inputs[0]
@@ -2507,7 +2547,7 @@ class PeakPickingNode extends NodeWithAccordion{
         return null
     }
 
-    //slope of the line through the origin and the centroid of the pairs —
+    //slope of the line through the origin and the centroid of the pairs â€”
     //a neutral split of the cloud (the old guess placed a threshold at mean(Y))
     guessSlope(){
         const births=this.persistenceBirths
@@ -2710,7 +2750,7 @@ class PeakPickingNode extends NodeWithAccordion{
         }
     }
 
-    //the classifier: a dashed line through the origin (death = slope × birth)
+    //the classifier: a dashed line through the origin (death = slope Ã— birth)
     //clipped to the graph zone, plus the marker point that fixes the slope
     //(see handleClassifierClick)
     updateClassifierSVG(){
@@ -2723,7 +2763,7 @@ class PeakPickingNode extends NodeWithAccordion{
             group = anchor.append("g")
                 .attr("class", "classifier-group")
             group.append("title")
-                .text("Classifier — click on the graph to place it: every pair under the line is kept")
+                .text("Classifier â€” click on the graph to place it: every pair under the line is kept")
             group.append("line")
                 .attr("class", "classifier-line")
                 .attr("stroke", "#e74c3c")
@@ -2747,9 +2787,9 @@ class PeakPickingNode extends NodeWithAccordion{
         const zone = this.graph.graphzone
         const { xScale, yScale } = this.graph.plotScales()
 
-        //the line death = slope × birth sampled across the whole visible
+        //the line death = slope Ã— birth sampled across the whole visible
         //x-range, so the segment always spans the graph zone and the clip
-        //only trims its ends (a birth 1→10 sample used to cut it at 10)
+        //only trims its ends (a birth 1â†’10 sample used to cut it at 10)
         let b0 = xScale.invert(0)
         let b1 = xScale.invert(zone.width)
         if(this.graph.parameters.axis.left.scale === "log"){
@@ -2790,7 +2830,7 @@ class PeakPickingNode extends NodeWithAccordion{
     }
 
     //a plain click places the classifier: the line passes through the origin
-    //and the clicked point, so its slope is death/birth — clamped above 1
+    //and the clicked point, so its slope is death/birth â€” clamped above 1
     //since every pair lives strictly above the diagonal death = birth
     handleClassifierClick(event){
         if(!this.graph) return
@@ -2933,6 +2973,7 @@ class NodeWithAccordionGraph extends Node{
         }
     }
     restoreAfterImport(){
+        super.restoreAfterImport()
         this.graph?.drawGraph()
     }
     suicide(options={}){
@@ -3004,6 +3045,7 @@ class NodeWithRightAccordionGraph extends Node{
         }
     }
     restoreAfterImport(){
+        super.restoreAfterImport()
         this.graph?.drawGraph()
     }
     suicide(options={}){
@@ -3128,7 +3170,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             const eye=document.createElement("button")
             eye.type="button"
             eye.title=trace.options.hidden?"Show trace":"Hide trace"
-            eye.textContent=trace.options.hidden?"🚫":"👁"
+            eye.textContent=trace.options.hidden?"ðŸš«":"ðŸ‘"
             eye.style.width="1.8em"
             eye.addEventListener("click",(event)=>{
                 event.stopPropagation()
@@ -3556,6 +3598,7 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         this.status=traces.length?"resolved":"error"
     }
     restoreAfterImport(){
+        super.restoreAfterImport()
         this.status="floating"
         if(this.inputs.some(input=>input instanceof Map&&input.size)){
             //the session import already decoded the inputs: rebuild the traces
@@ -3580,6 +3623,28 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     }
 }
 
+/* The type of every node a session can name, in ONE place. It used to be spelled
+   out inside App.importSession, and a list of node types written twice is a list
+   that drifts: a type added to one and forgotten in the other would come back as
+   a bare Node with no inputs at all, silently. */
+const NODE_CONSTRUCTORS={
+    Node,
+    NodeWithAccordion,
+    NodeWithAccordionGraph,
+    NodeWithRightAccordionGraph,
+    SimpleXYPlotNode,
+    DelimitedTextNode,
+    Operation,
+    //the three names the peak-picker has carried: a session saved before the
+    //merge names the old nodes, and an unknown type would silently become a
+    //bare Node with no inputs at all
+    PeakPickingNode,
+    PersistentHomology0DNode:PeakPickingNode,
+    "AntiRadioNode":PeakPickingNode,
+    TrimmerNode,
+    FKMDNode
+}
+
 function nodeRestoreData(node){
     return {
         title:node.title,
@@ -3601,39 +3666,17 @@ function nodeRestoreData(node){
 
 function createNodeForHistory(origin,flow,data){
     const position={...data.position}
-    let node
-    switch(data.type){
-        case "DelimitedTextNode":
-            node=new DelimitedTextNode(data.title,origin,flow,position)
-            break
-        case "SimpleXYPlotNode":
-            node=new SimpleXYPlotNode(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
-            break
-        case "NodeWithAccordionGraph":
-            node=new NodeWithAccordionGraph(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
-            break
-        case "NodeWithRightAccordionGraph":
-            node=new NodeWithRightAccordionGraph(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
-            break
-        case "NodeWithAccordion":
-            node=new NodeWithAccordion(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
-            break
-        case "Operation":
-            node=new Operation(data.title,origin,flow,position)
-            break
-        case "PeakPickingNode":
-            node=new PeakPickingNode(data.title,origin,flow,position)
-            break
-        case "TrimmerNode":
-            node=new TrimmerNode(data.title,origin,flow,position)
-            break
-        case "FKMDNode":
-            node=new FKMDNode(data.title,origin,flow,position)
-            break
-        default:
-            node=new Node(data.title,DC(data.inputs),DC(data.outputs),origin,flow,position)
-            break
-    }
+    //DC on the shape only: a record must not share its arrays with the node it
+    //brings back, or the next resolve would rewrite the history
+    const node=buildNode(
+        {
+            ...data,
+            inputs:data.inputs===undefined?undefined:DC(data.inputs),
+            outputs:data.outputs===undefined?undefined:DC(data.outputs)
+        },
+        origin,
+        flow
+    )
     origin.channel.register(data.registrationName??"node",node,node.title)
     node.parameters.pinned=!!data.pinned
     if(data.source){
@@ -3653,6 +3696,38 @@ function createNodeForHistory(origin,flow,data){
     }
     node.graph?.drawGraph()
     return node
+}
+
+/* THE ONE place that knows how a node class is called.
+
+   Two signatures coexist here: the nodes that build their own inputs and outputs
+   take (title, app, flow, position), the rest take the classic
+   (title, inputs, outputs, app, flow, position). Calling one the other way does
+   not fail politely - `destination` arrives undefined and the constructor dies on
+   this.destination.nodeSet, and the whole app goes with it. So the undo command,
+   the file import and the reload all come through here rather than each picking
+   its own spelling. */
+const SELF_SHAPED_NODES=new Set([
+    DelimitedTextNode,Operation,PeakPickingNode,TrimmerNode,FKMDNode
+])
+/* A file spells a node's shape out. A skeleton only knows how many slots the node
+   HAD: what was in them was data, and data is rebuilt by the resolve. A link is
+   restored by index, so it is the count that has to survive. */
+const emptySlots=count=>Array.from({length:Math.max(0,Math.trunc(count)||0)},()=>[])
+function buildNode(data,app,flow,constructors=NODE_CONSTRUCTORS){
+    const NodeType=constructors[data.type]??constructors.Node
+    const position={x:data.position?.x??10,y:data.position?.y??10}
+    if(SELF_SHAPED_NODES.has(NodeType)){
+        return new NodeType(data.title,app,flow,position)
+    }
+    return new NodeType(
+        data.title,
+        data.inputs??emptySlots(data.inputCount),
+        data.outputs??emptySlots(data.outputCount),
+        app,
+        flow,
+        position
+    )
 }
 
 class Flow{
@@ -4402,6 +4477,13 @@ class MainMenu extends Menu{
             },
             about(e){origin.about()},
             newSession(e){
+                /* The skeleton goes WITH the session, and the pending autosave is
+                   cancelled first: a timer still waiting would put the pipeline
+                   straight back into the store a moment after the clear, and the
+                   "New session" would not stick. The panel geometry stays - it is
+                   a preference, not a session. */
+                origin.saveSessionSoon?.cancel()
+                clearSession()
                 //replaces the current app with a fresh empty one
                 origin.dispose()
                 globalThis.Attributor=new App()
@@ -4710,8 +4792,8 @@ class Channel{
     }
 }
 
-//mouse zoom: the domain expansion per wheel notch is exp(deltaY × this);
-//0.002 ≈ ±20% for a classic 100px notch, smooth for trackpad deltas
+//mouse zoom: the domain expansion per wheel notch is exp(deltaY Ã— this);
+//0.002 â‰ˆ Â±20% for a classic 100px notch, smooth for trackpad deltas
 const WHEEL_ZOOM_SENSITIVITY=0.002
 //quiet period after the last wheel event before the gesture is committed
 //to the history as a single undoable command
@@ -5073,14 +5155,14 @@ class Plot2D{
         }
     }
     /* -----------------------------------------------------------------
-       Mouse zoom — the wheel rescales both domains around the data point
+       Mouse zoom â€” the wheel rescales both domains around the data point
        under the cursor, computed in the space of each axis scale (identity
        for a linear axis, log10 for a logarithmic one) so the anchored
        point never moves on screen. Zooming out stops at the auto-fit
        bounds a double-click restores. autoDomain is switched off: drawGraph
        then keeps the manual domains, the SVG overlay, the WebGL camera
        (refreshCamera reads these very scales) and the widgets drawn on top
-       (the classifier line …) all follow through the regular redraw path.
+       (the classifier line â€¦) all follow through the regular redraw path.
       ----------------------------------------------------------------- */
     handleWheelZoom(event){
         //a plot can opt out of the wheel zoom (the trimmer frame is a fixed
@@ -5092,7 +5174,7 @@ class Plot2D{
         event.preventDefault()
         const zone=this.graphzone
         if(!(zone.width>0&&zone.height>0)) return
-        //deltaMode: 0 pixels, 1 lines (×16), 2 pages (×plot height)
+        //deltaMode: 0 pixels, 1 lines (Ã—16), 2 pages (Ã—plot height)
         const unit=event.deltaMode===1?16:event.deltaMode===2?zone.height:1
         const factor=Math.exp(event.deltaY*unit*WHEEL_ZOOM_SENSITIVITY)
         if(!Number.isFinite(factor)||factor<=0) return
@@ -5291,7 +5373,7 @@ class Plot2D{
     //translates one axis domain by a pixel shift (the content follows the
     //cursor), through the very scale drawGraph renders with: a log axis
     //then translates in log space and stays strictly positive. The window
-    //is clamped inside the fit bounds — it can slide within them but never
+    //is clamped inside the fit bounds â€” it can slide within them but never
     //past them (a window wider than them snaps onto them, the same stale
     //view rule as the wheel zoom-out)
     panAxisDomain(key,scale,shift){
@@ -5593,7 +5675,7 @@ class Plot2D{
     }
 
     /* -----------------------------------------------------------------
-       Axis dragging — grab an axis and it MOVES: only its position (the
+       Axis dragging â€” grab an axis and it MOVES: only its position (the
        SVG translate) changes, the data domain is left untouched, so the
        plot itself never shifts. A horizontal axis follows the vertical
        pointer, a vertical one the horizontal pointer. The pointer is NOT
@@ -5659,9 +5741,9 @@ class Plot2D{
     }
     /* -----------------------------------------------------------------
        Tick readability. Two independent causes of unreadable axes:
-        • too many ticks for the room available → the count is derived from
+        â€¢ too many ticks for the room available â†’ the count is derived from
           the ACTUAL pixel length of the axis (~1 tick per 80px);
-        • labels too wide (12,345,678.9) → SI shorthand, and a scientific
+        â€¢ labels too wide (12,345,678.9) â†’ SI shorthand, and a scientific
           form on log axes where the span is huge.
        Both are applied to the four axis orientations.
        ---------------------------------------------------------------- */
@@ -5760,7 +5842,7 @@ class Plot2D{
 }
 
 /* =====================================================================
-    Plot2DWebGL — the "sandwich" plot
+    Plot2DWebGL â€” the "sandwich" plot
     ---------------------------------------------------------------------
     Same layout math, same D3/SVG axis pipeline, same ResizeObserver /
     MutationObserver lifecycle as Plot2D; only the trace rendering is
@@ -5824,7 +5906,7 @@ class Plot2DWebGL extends Plot2D{
     }
 
     /* -----------------------------------------------------------------
-       Setup phase — bootstrap the Three.js subsystem ONCE
+       Setup phase â€” bootstrap the Three.js subsystem ONCE
       ----------------------------------------------------------------- */
     ensureTraceCanvas(){
         const renderOptions=this.glRenderOptions??GL_RENDER_DEFAULTS
@@ -5877,7 +5959,7 @@ class Plot2DWebGL extends Plot2D{
     }
 
     /* -----------------------------------------------------------------
-       CPU side of the data path: traces → one descriptor per trace.
+       CPU side of the data path: traces â†’ one descriptor per trace.
        Nothing here is per point, so the cost does not depend on the
        number of samples.
       ----------------------------------------------------------------- */
@@ -5962,10 +6044,10 @@ class Plot2DWebGL extends Plot2D{
 
        Guarantees, in this order (all inside drawGraph, hence AFTER
        dataBounds/autoDomain/plotScales have settled):
-         • the axis transforms (log) and the reference origin are known;
-         • the buffers are refilled as soon as the data, the styling, the
+         â€¢ the axis transforms (log) and the reference origin are known;
+         â€¢ the buffers are refilled as soon as the data, the styling, the
            scales OR the identity of the underlying array changed;
-         • a one frame watch re-checks the sources so a producer that
+         â€¢ a one frame watch re-checks the sources so a producer that
            swaps wave.core right after the draw cannot leave a stale
            partial cloud on screen.
       ----------------------------------------------------------------- */
@@ -6182,7 +6264,7 @@ class Plot2DWebGL extends Plot2D{
         }
         /* per trace routing: massive clouds go to the GPU, the traces that must
            stay interactive (DOM events, hit-testing, per point widgets) stay in
-           the SVG layer — options.layer = "gl" (default) | "svg" */
+           the SVG layer â€” options.layer = "gl" (default) | "svg" */
         const all=this.resolveRenderTraces()
         const glTraces=[]
         const svgTraces=[]
@@ -6208,7 +6290,7 @@ class Plot2DWebGL extends Plot2D{
     /* -----------------------------------------------------------------
        Instantaneous resize, driven by the App ResizeObserver pipeline.
        No data loop, no reallocation: setSize, one projection matrix
-       update, one render — the GPU does the rest.
+       update, one render â€” the GPU does the rest.
       ----------------------------------------------------------------- */
     handleResize(){
         this.resizeTraceLayer()
@@ -6674,9 +6756,9 @@ class Dialog{
             },
             listen:{
                 selected(e){
-                    console.log(e.detail.emitter.title+" a reçu le focus")
+                    console.log(e.detail.emitter.title+" a reÃ§u le focus")
                 },
-                killed(e){console.log("quelqu'un s'est fait tué !\n","il s'appelait ",e.detail.emitter.events.registrationId)},
+                killed(e){console.log("quelqu'un s'est fait tuÃ© !\n","il s'appelait ",e.detail.emitter.events.registrationId)},
                 importDelimitedText(e){console.log(e)}
             }
         }
@@ -6688,7 +6770,7 @@ class Dialog{
         this.DOMelt.folder=CE('div',{className:"accordion handler folder",pilot:this,handleClick:(e)=>e.target.pilot.toggleFolded()},[]);
         this.DOMelt.folder.setAttribute("role","button");
         this.DOMelt.folder.setAttribute("aria-expanded","true");
-        this.DOMelt.folder.setAttribute("aria-label","Replier la fenêtre");
+        this.DOMelt.folder.setAttribute("aria-label","Replier la fenÃªtre");
         this.DOMelt.label=CE('div',{className:"label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggleMaximized(e)},[title.toString()]);
         this.DOMelt.label.handleMouseDown=(e)=>e.target.pilot.drag(e);
         this.DOMelt.label.handleClick=(e)=>this.focus(e)
@@ -6772,7 +6854,7 @@ class Dialog{
     setFolderFoldedState(folded){
         this.DOMelt.folder.style.backgroundColor=folded?"transparent":"rgba(172,255,47,0.18)"
         this.DOMelt.folder.setAttribute("aria-expanded",folded?"false":"true")
-        this.DOMelt.folder.setAttribute("aria-label",folded?"Déplier la fenêtre":"Replier la fenêtre")
+        this.DOMelt.folder.setAttribute("aria-label",folded?"DÃ©plier la fenÃªtre":"Replier la fenÃªtre")
     }
     fold(){
         if(this.folded) return
@@ -6844,7 +6926,7 @@ class Dialog{
             windowStyle.minWidth="0"
             windowStyle.minHeight="0"
             windowStyle.resize="none"
-            this.DOMelt.folder.setAttribute("aria-label","Restaurer la fenêtre")
+            this.DOMelt.folder.setAttribute("aria-label","Restaurer la fenÃªtre")
         }else{
             this.maximized=false
             this.DOMelt.window.classList.remove("maximized")
@@ -7016,6 +7098,7 @@ class Accordion{
         this.DOMelt.content.style.border="0px solid black"
         this.DOMelt.handler.style["margin-bottom"]="0px"
         this.DOMelt.folder.style["background-color"]="transparent"
+        this.announce()
     }
     unfold(){
         this.parameters.folded=false
@@ -7027,6 +7110,15 @@ class Accordion{
         this.DOMelt.content.style.border="1px solid black"
         this.DOMelt.handler.style["margin-bottom"]="1px"
         this.DOMelt.folder.style["background-color"]="rgba(172,255,47,0.18)"
+        this.announce()
+    }
+    /* Folding a widget is not an undoable act, so it records no command and
+       never reaches the history - which means the autosave, which listens to the
+       history, would never hear about it. Left unsaid, the skeleton keeps the
+       fold state from the last structural change and a reload quietly unfolds
+       every panel the user had put away. */
+    announce(){
+        this.origin?.saveSessionSoon?.()
     }
     toggle(){
         if(this.parameters.folded){
@@ -7084,7 +7176,7 @@ class App{
                 loaded=>{this.table=loaded; return loaded},
                 err=>{
                     this.tableError=err.message??String(err)
-                    console.error("[App] le tableau périodique n'a pas pu être chargé:",err)
+                    console.error("[App] le tableau pÃ©riodique n'a pas pu Ãªtre chargÃ©:",err)
                     return null
                 }
             )
@@ -7181,6 +7273,7 @@ class App{
         ])
 
         this.setupOnWindow()
+        this.setupSessionStore()
         /*
         this.channel.register("Data manager",new Accordion("Data manager",this,$(".vertical.left.content")))
         this.channel.get('Data manager').toggle()
@@ -7407,6 +7500,10 @@ class App{
                 observeResizeHandlers(child,obs)
             }
         }
+        //kept on the instance: the autosave registers its own resize listeners
+        //through it, and a second copy of this walker is a second thing to keep
+        //in step with the first
+        this.observeResizeHandlers=observeResizeHandlers
         this.resizeObserver=new ResizeObserver((entries)=>{
             for(const entry of entries){
                 entry.target.handleResize?.(entry)
@@ -7650,6 +7747,85 @@ class App{
         }
         return json
     }
+    /* THE AUTOSAVE, and the two places it listens from.
+
+       It hangs off historyChanged rather than off the nodes: every command
+       already goes through History, so this one event catches a move, a node
+       created or deleted, a link, a trim, an arrangement - everything - without
+       a single node having to remember to announce itself. A node dragged by
+       hand is not a command (it becomes one on mouseup), which is why the drag
+       records its own history entry rather than relying on this. */
+    setupSessionStore(){
+        //read FIRST: a stored panel size is only worth restoring onto a panel
+        //that is about to exist
+        this.applyStoredPreferences()
+        //one debounced writer for the whole app. 400 ms is long enough to
+        //coalesce a drag into a single write, and short enough that closing the
+        //tab right after an edit still keeps it
+        this.saveSessionSoon=debounce(()=>{
+            writeSession(this)
+        },{name:"the session"})
+        globalThis.addEventListener("historyChanged",this.saveSessionSoon)
+        /* Not everything the skeleton remembers is an undoable act: folding a
+           widget, dragging a ruler, a checkbox. None of those record a command,
+           so the writes above would only ever catch up at the NEXT structural
+           change - and anything done in the last moment before the tab closes
+           would be lost outright. One forced write on the way out is what makes
+           "nothing is lost" true instead of nearly true. */
+        globalThis.addEventListener("pagehide",()=>{
+            this.saveSessionSoon?.flush()
+        },{once:true})
+        //the panel geometry is NOT in the history stack: a resize is not an
+        //undoable act, so the septa announce themselves instead
+        this.savePreferencesSoon=debounce(()=>{
+            savePreferences(this)
+        },{name:"the panel layout"})
+        for(const septum of [this.topSeptum,this.botSeptum]){
+            septum.handleResize=()=>this.savePreferencesSoon()
+            this.observeResizeHandlers?.(septum,this.resizeObserver)
+        }
+    }
+    applyStoredPreferences(){
+        const stored=readPreferences()
+        if(!stored){
+            return
+        }
+        for(const key of ["topContent","botContent","leftContent","rightContent"]){
+            const value=stored[key]
+            //a stored value is merged, never replaced: a build that added a
+            //panel must not lose the key it does not know about
+            if(this.parameters[key]&&value&&typeof value==="object"){
+                Object.assign(this.parameters[key],value)
+            }
+        }
+        //the file's layout wins over this: App.importSession calls
+        //applyPanelParameters() after, on the session it just read
+        this.applyPanelParameters()
+    }
+    /* The reload gesture. A skeleton carries no data - the pairs, the inputs and
+       the outputs were all left out on purpose - so restoring the shape is only
+       half the job. The graph is already painted by the time this runs, and the
+       resolve happens behind it: that is what turns "the same picture, empty"
+       into "the same picture, back". */
+    resolveAfterRestore(){
+        const flow=this.channel.get("mainFlow")
+        if(!flow?.nodeSet?.size){
+            return Promise.resolve()
+        }
+        return flow.resolveFlow()
+            .then(()=>{
+                //the statuses just settled: save them, so a second reload
+                //restores a graph that says "resolved" and not one that says
+                //"floating" on every node
+                this.saveSessionSoon?.()
+            })
+            .catch(error=>{
+                //a kernel that fails marks its own node and does not reject the
+                //chain, so reaching here means something else went wrong: the
+                //graph is on screen and usable, which is what matters
+                console.error("[App] the restored flow did not resolve cleanly:",error)
+            })
+    }
     dispose(){
         //idempotent teardown of the whole app (used before replacing it with an
         //imported session): stops the observers, the menus and the channel
@@ -7657,6 +7833,10 @@ class App{
             return
         }
         this.disposed=true
+        //the autosave must not outlive the app it describes: a pending write
+        //would put an app back that is no longer on screen
+        this.saveSessionSoon?.cancel()
+        globalThis.removeEventListener("historyChanged",this.saveSessionSoon)
         this.resizeObserver?.disconnect()
         this.mutObserver?.disconnect()
         this.channel.get("mainMenu")?.dispose?.()
@@ -7702,43 +7882,7 @@ class App{
         this.dispose()
         const importedApp=await importSessionData(json,{
             createApp:()=>new App(),
-            createNode:({data,app,flow})=>{
-                const constructors={
-                    Node,
-                    NodeWithAccordion,
-                    NodeWithAccordionGraph,
-                    NodeWithRightAccordionGraph,
-                    SimpleXYPlotNode,
-                    DelimitedTextNode,
-                    Operation,
-                    //the three names the peak-picker has carried: a session saved
-                    //before the merge names the old nodes, and an unknown type
-                    //would silently become a bare Node with no inputs at all
-                    PeakPickingNode,
-                    PersistentHomology0DNode:PeakPickingNode,
-                    "AntiRadioNode":PeakPickingNode,
-                    TrimmerNode,
-                    FKMDNode
-                }
-                const NodeType=constructors[data.type]??Node
-                //these build their own inputs and outputs (they are not restored
-                //field by field): they take (title, origin, flow, position)
-                const selfShaped=[
-                    DelimitedTextNode,Operation,PeakPickingNode,
-                    TrimmerNode,FKMDNode
-                ]
-                if(selfShaped.includes(NodeType)){
-                    return new NodeType(data.title,app,flow,data.position)
-                }
-                return new NodeType(
-                    data.title,
-                    data.inputs,
-                    data.outputs,
-                    app,
-                    flow,
-                    data.position
-                )
-            },
+            createNode:({data,app,flow})=>buildNode(data,app,flow),
             createLink:({flow,inputNode,inputIndex,outputNode,outputIndex})=>{
                 return flow.createLink(inputNode,inputIndex,outputNode,outputIndex)
             },
@@ -7778,6 +7922,34 @@ class App{
             CE("div",{},[new CycloSpinner(15)]),
             CE("div",{},[new CycloSpinner(15),new CycloSpinner(15)])
         ]))
+    }
+}
+
+/* Restores a skeleton and hands back the App, or null when there is nothing to
+   restore. The node types stay HERE, where the classes are: a boot file that had
+   to import fourteen node classes to name them would be a second list of node
+   types, and two lists drift. */
+function restoreSession(document){
+    let created=null
+    const options=importOptions(document,{
+        createApp:()=>{
+            created=new App()
+            return created
+        },
+        buildNode
+    })
+    if(!options){
+        return null
+    }
+    try{
+        return importSessionData(JSON.stringify(document),options)
+    }catch(error){
+        /* The import builds a WHOLE app before anything can fail: it draws its
+           menus, its field and its panels. Falling back without taking that one
+           down first is what leaves two .app#main in the body, the second one
+           sitting on top of the first. */
+        created?.dispose()
+        throw error
     }
 }
 
@@ -7953,8 +8125,8 @@ class PetitGazParfait {
                 const dvy = b.vy - a.vy;
                 const impact = dvx * nx + dvy * ny;
 
-                if (impact < 0) { // éviter de "recoller" les particules déjà en fuite
-                    const impulse = 2 * impact / 2; // masses égales
+                if (impact < 0) { // Ã©viter de "recoller" les particules dÃ©jÃ  en fuite
+                    const impulse = 2 * impact / 2; // masses Ã©gales
                     a.vx += impulse * nx;
                     a.vy += impulse * ny;
                     b.vx -= impulse * nx;
@@ -7964,7 +8136,7 @@ class PetitGazParfait {
         }
 
         const animate = () => {
-            // Mise à jour des positions
+            // Mise Ã  jour des positions
             for (let b of balls) {
                 b.x += b.vx;
                 b.y += b.vy;
@@ -7981,7 +8153,7 @@ class PetitGazParfait {
                 }
             }
 
-            // Mise à jour de l'affichage
+            // Mise Ã  jour de l'affichage
             circles
                 .attr("cx", d => d.x)
                 .attr("cy", d => d.y);
@@ -8027,7 +8199,7 @@ class PetitGazFusion {
         }));
 
         const update = () => {
-            // Mise à jour des positions
+            // Mise Ã  jour des positions
             for (let b of balls) {
                 b.x += b.vx;
                 b.y += b.vy;
@@ -8069,7 +8241,7 @@ class PetitGazFusion {
                             vx: newVx,
                             vy: newVy,
                             mass: totalMass,
-                            r: this.r * Math.sqrt(totalMass) // rayon ∝ √masse
+                            r: this.r * Math.sqrt(totalMass) // rayon âˆ âˆšmasse
                         });
 
                         merged.add(i);
@@ -8085,7 +8257,7 @@ class PetitGazFusion {
 
             balls = survivors;
 
-            // Mise à jour SVG
+            // Mise Ã  jour SVG
             let sel = svg.selectAll("circle").data(balls);
 
             sel.enter()
@@ -8110,4 +8282,4 @@ class PetitGazFusion {
 
 
 
-export {App, Plot2D, Plot2DWebGL, PeakPickingNode, TrimmerNode, FKMDNode}
+export {App, restoreSession, Plot2D, Plot2DWebGL, PeakPickingNode, TrimmerNode, FKMDNode}
