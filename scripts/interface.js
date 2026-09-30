@@ -136,11 +136,29 @@ class Node{
                 this.registered(e)
             },
             nodeSelected(e){
+                /* ALWAYS focus, and never blur.
+
+                   This used to toggle: "if this node already has the focus,
+                   blur it". That was the selection mechanism of the very first
+                   version, when the browser's focus ring WAS the highlight and
+                   clicking a node twice was how you released it. Since the
+                   selection became a real class, the toggle has had no
+                   purpose except to misbehave:
+
+                     - it made the focus ring blink on and off around the
+                       click, which is the "appears then disappears at once"
+                       symptom;
+                     - and it BROKE Delete. `keydown` only reaches the focused
+                       element, so clicking a selected node a second time
+                       blurred it, and the next Delete went nowhere at all.
+
+                   Focusing unconditionally is what keeps the keyboard alive:
+                   whatever was clicked last is the node Delete acts on, and
+                   `deleteSelection()` then takes everything selected. */
                 if (e.detail.emitter.events.registrationId===this.events.registrationId) {
-                    if(document.activeElement===this.SVGg.select('rect').node()){
-                        this.SVGg.select('rect').node().blur()
-                    }else{
-                        this.SVGg.select('rect').node().focus()
+                    const rect=this.SVGg.select('rect').node()
+                    if(document.activeElement!==rect){
+                        rect.focus()
                     }
                 }
             }
@@ -197,12 +215,65 @@ class Node{
         this.SVGg.attr('transform', 'translate('+`${this.parameters.position.x},${this.parameters.position.y}`+')')
         this.DOMelt=this.SVGg.node()
         this.DOMelt.querySelector('rect').pilot=this
-        this.DOMelt.querySelector('rect').handleClick=(e)=>globalThis.dispatchEvent(e.target.pilot.events.broadcast.nodeSelected)
+        this.DOMelt.querySelector('rect').handleClick=(e)=>{
+            const pilot=e.target.pilot
+            const flow=pilot.destination
+            /* LE CONVENTION DES FICHIERS, ET C'EST CELLE-LÀ.
+
+               Clic nu     : ONLY this node is selected. Whatever else was
+                             selected is dropped.
+               Ctrl / Cmd  : this node is added or removed, the rest is kept.
+
+               This is the explorer's rule and it is the rule that makes
+               everything else work:
+
+                 - deselection is ALWAYS possible, because a plain click on a
+                   selected node leaves only that node — one click, and the
+                   others are gone;
+                 - a multi-selection is still reachable, with the modifier;
+                 - and there is only ONE thing to look at, because "selected"
+                   and "focused" are the same list. The double ring went away
+                   because there was one state to draw, not two.
+
+               The earlier version made a plain click a no-op on an already
+               selected node, to let a group be dragged without being
+               dismantled. That is what made selection unreleasable: the only
+               nodes that could leave were the ones that were not in it. The
+               drag does not need the rule — it needs the nodes to BE
+               selected, and Ctrl is right there. */
+            if(flow){
+                const additive=e.ctrlKey||e.metaKey
+                flow.select(pilot,{additive})
+            }
+            globalThis.dispatchEvent(pilot.events.broadcast.nodeSelected)
+            /* Only a node that ENDED UP selected opens its panels. Clicking one
+               off must not shove its accordion to the top of the panel: that
+               would make releasing a node feel identical to choosing it, and
+               the panel would jump on every click of a multi-selection. */
+            if(flow?.isSelected(pilot)){
+                pilot.reveal()
+            }
+        }
         this.DOMelt.querySelector('rect').handleMouseDown=(e)=>e.target.pilot.drag(e)
         this.DOMelt.querySelector('rect').handleContextmenu=(e)=>{console.log(e)}
         this.DOMelt.querySelector('rect').handleKeyDown=(e)=>{
-            if(e.key==="Delete"){
-                e.target.pilot.suicide()
+            if(e.key==="Delete"||e.key==="Backspace"){
+                e.preventDefault()
+                /* SUPPRIMER EFFACE LA SÉLECTION, PAS LE NŒUD FOCUSÉ.
+
+                   This was `e.target.pilot.suicide()` — the focused node and
+                   nothing else. With three nodes selected, Delete removed the
+                   one under the focus ring and left the other two looking
+                   selected, which is the worst of both: the selection says
+                   "three things are marked" while one thing disappears, and
+                   the two that remain cannot be deleted because the key does
+                   not look at them.
+
+                   The focus ring was not decoration, then: it was quietly
+                   announcing WHICH node the next Delete would take, and the
+                   user had no reason to believe the others were safe. */
+                const flow=e.target.pilot.destination
+                flow?.deleteSelection()
             }
         }
         for(let anchor of this.DOMelt.querySelectorAll('.anchor')){
@@ -224,6 +295,66 @@ class Node{
         this.draw()
     }
     registered(e){
+    }
+    /* OUVRIR CE QUE CE NŒUD A, ET LE RAMENER EN HAUT.
+
+       Cliquer sur un nœud doit répondre à une question qu'on se pose
+       toujours: « où sont ses réglages? ». Un nœud dont l'accordéon est
+       replié, ou enterré sous dix autres dans le panneau, ne répond à rien.
+
+       Donc: on déplie, on remonte, et on fait les DEUX dans cet ordre. Dans
+       l'autre ordre le défilement viserait une place devenue fausse — on
+       aurait mesuré la position d'un accordéon qui n'existait pas encore à
+       l'écran.
+
+       LES DEUX PANNEAUX, ET C'EST NÉCESSAIRE: un nœud peut avoir un accordion
+       à gauche (le trimmers, le pic picker) ET un graphique à droite (le
+       plot). N'ouvrir que le premier laisserait la moitié de la node hors
+       de vue, ce qui est pire que de n'en ouvrir aucune.
+
+       LE SCROLL SE FAIT SUR LE PANNEAU, JAMAIS SUR L'ACCORDÉON. Faire
+       `scrollIntoView` sur l'accordéon ferait défiler la page ENTIÈRE, donc
+       le champ de nœuds remonterait sous la barre de menus: on perdrait le
+       nœud qu'on vient de cliquer. On vise donc le conteneur, et on écrit
+       son `scrollTop` — c'est le seul qui bouge. */
+    reveal(){
+        const panels=[this.accordion,this.accordionRight].filter(Boolean)
+        for(const accordion of panels){
+            /* unfold() d'abord, et seulement si le noeud sait se déplier: un
+               accordéon détruit avec son nœud n'a plus de DOM à déplier, et
+               l'appeler le ferait revenir. */
+            if(accordion.parameters?.folded){
+                accordion.unfold()
+            }
+            this.scrollPanelTo(accordion)
+        }
+    }
+    /* Amène UN accordéon en haut de la zone visible de son panneau.
+
+       On mesure l'écart entre le haut du panneau et celui de l'accordéon, et
+       on l'ajoute au scroll courant. C'est un delta, pas une position
+       absolue: la position absolue ferait sauter le panneau au haut de la
+       liste à chaque clic, ce qui est exactement le contraire de « mettre au
+       premier plan ce que je regarde ». */
+    scrollPanelTo(accordion){
+        const container=accordion.DOMelt?.container
+        if(!container||!container.isConnected){
+            return
+        }
+        //le panneau EST le conteneur qui défile: on remonte jusqu'à lui
+        const panel=container.parentElement
+        if(!panel){
+            return
+        }
+        const containerTop=container.getBoundingClientRect().top
+        const panelTop=panel.getBoundingClientRect().top
+        const delta=containerTop-panelTop
+        //un delta négatif signifie « il est déjà au-dessus de la zone visible»:
+        //on le ressort alors à 0 pour ne pas mettre le panneau en négatif
+        if(Math.abs(delta)<1){
+            return
+        }
+        panel.scrollTop+=delta
     }
     draw(){
         if(!this.drawn){
@@ -252,19 +383,45 @@ class Node{
         let dx=e.clientX;
         let dy=e.clientY;
         const pilot=e.target.pilot
-        const before={...pilot.parameters.position}
-        //no transition while a node is being dragged: a node that lags behind
-        //the cursor feels broken, and the transition is only there to make the
-        //automatic rearrangement readable
-        pilot.DOMelt.classList.add("dragging")
+        const flow=pilot.destination
+        /* UN GLISSEMENT, UN GROUPE.
+
+           If the dragged node is part of a selection of more than one, the
+           WHOLE selection moves, rigidly: the same delta to each, so the group
+           keeps its shape. Dragging one node out of a group would break it,
+           and the user has no way to say "this one alone" other than clicking
+           it empty first — which is the standard gesture everywhere else.
+
+           The snapshot is taken HERE, before any pixel moves, because that is
+           the only moment the "before" is true. Taking it on mouseup would
+           record the position the node was dropped at as the starting point,
+           and the undo would do nothing at all. */
+        const group=[...flow.selectedNodes]
+        const isGroup=group.length>1&&group.includes(pilot)
+        const moved=isGroup?group:[pilot]
+        const before=flow.selectionPositions()
+        /* One fallback for the single-node case, which is the shape the rest of
+           the file already speaks: a plain {x,y}. A group needs a Map, and a
+           one-entry Map would force every reader to go through it. */
+        const singleBefore={...pilot.parameters.position}
+        for(const node of moved){
+            //no transition while a node is dragged: a node that lags behind
+            //the cursor feels broken, and the transition is only there to make
+            //the automatic rearrangement readable
+            node.DOMelt.classList.add("dragging")
+        }
         document.onmousemove=(e)=>{
             e.preventDefault();
             dx-=e.clientX;
             dy-=e.clientY;
-            pilot.parameters.position.x-=dx
-            pilot.parameters.position.y-=dy
-            window.dispatchEvent(pilot.events.broadcast.nodeMove)
-            pilot.SVGg.attr('transform', 'translate('+`${pilot.parameters.position.x},${pilot.parameters.position.y}`+')')
+            if(isGroup){
+                flow.moveSelectionBy(-dx,-dy)
+            }else{
+                pilot.parameters.position.x-=dx
+                pilot.parameters.position.y-=dy
+                window.dispatchEvent(pilot.events.broadcast.nodeMove)
+                pilot.SVGg.attr('transform', 'translate('+`${pilot.parameters.position.x},${pilot.parameters.position.y}`+')')
+            }
             dx=e.clientX;
             dy=e.clientY;
         }
@@ -272,28 +429,68 @@ class Node{
             e.preventDefault();
             document.onmousemove=null;
             document.onmouseup=null;
-            pilot.DOMelt.classList.remove("dragging")
-            //hand-placed: the automatic rearrangement now flows AROUND this
-            //node instead of moving it. Only "Arrange nodes" takes the pin off.
-            pilot.parameters.pinned=true
-            const after={...pilot.parameters.position}
-            if(before.x!==after.x||before.y!==after.y){
-                //the command resolves the live node at execution time: the pilot
-                //may have been deleted then restored by an undo in between
-                const resolveLive=()=>{
-                    const flow=pilot.destination
-                    if(flow.nodeSet.has(pilot)){
-                        return pilot
-                    }
-                    const replacement=flow.replacements?.get(pilot)
-                    return replacement&&flow.nodeSet.has(replacement)?replacement:null
-                }
-                pilot.origin.history.record(new Command({
-                    label:`Move ${pilot.title}`,
-                    undo:()=>resolveLive()?.setPosition(before),
-                    redo:()=>resolveLive()?.setPosition(after)
-                }))
+            for(const node of moved){
+                node.DOMelt.classList.remove("dragging")
             }
+            const after=flow.selectionPositions()
+            /* A GROUP is only pinned if it really moved. Pinning a selection
+               the user merely clicked would freeze a graph they were still
+               arranging, and the next autoLayout would flow around nodes the
+               user never placed. */
+            let changed=false
+            for(const [node,position] of before){
+                const now=after.get(node)
+                if(now&&(now.x!==position.x||now.y!==position.y)){
+                    changed=true
+                }
+            }
+            if(!changed){
+                return
+            }
+            for(const node of moved){
+                //hand-placed: the automatic rearrangement now flows AROUND
+                //this node. Only "Arrange nodes" takes the pins off.
+                node.parameters.pinned=true
+            }
+            if(isGroup){
+                /* ONE command for the whole group. One undo puts back the ten
+                   nodes that moved together — which is the only definition of
+                   "together" that an undo stack can express, and splitting it
+                   would make Ctrl+Z take ten presses to undo one gesture. */
+                const restore=(snapshot)=>{
+                    for(const [node,position] of snapshot){
+                        if(flow.nodeSet.has(node)){
+                            node.parameters.pinned=position.pinned
+                            node.applyPosition(position)
+                        }
+                    }
+                    flow.updateLinks()
+                }
+                flow.origin.history.record(new Command({
+                    label:`Move ${moved.length} nodes`,
+                    undo:()=>restore(before),
+                    redo:()=>restore(after)
+                }))
+                return
+            }
+            //the command resolves the live node at execution time: the pilot
+            //may have been deleted then restored by an undo in between
+            const singleAfter={...pilot.parameters.position}
+            const resolveLive=()=>{
+                if(flow.nodeSet.has(pilot)){
+                    return pilot
+                }
+                const replacement=flow.replacements?.get(pilot)
+                return replacement&&flow.nodeSet.has(replacement)?replacement:null
+            }
+            flow.origin.history.record(new Command({
+                label:`Move ${pilot.title}`,
+                undo:()=>resolveLive()?.setPosition(singleBefore),
+                //the "after" is COPIED here rather than read back from the node
+                //at replay time: after an undo the node sits at `singleBefore`,
+                //so reading it would make the redo a no-op
+                redo:()=>resolveLive()?.setPosition(singleAfter)
+            }))
         }
     }
     /* Moves the node and nothing else. The batch version: an arrangement moves
@@ -318,9 +515,14 @@ class Node{
     }
     set status(value){
         const possible=['resolved','error','pending','floating']
-        this.DOMelt.querySelector("rect").classList.remove(...possible)
+        const rect=this.DOMelt.querySelector("rect")
+        //`selected` is NOT in the list on purpose: it is orthogonal to the
+        //status, and dropping it here would make a node blink out of the
+        //selection every time it resolved — which is exactly when the user is
+        //most likely to be looking at it.
+        rect.classList.remove(...possible)
         if(possible.includes(value)){
-            this.DOMelt.querySelector("rect").classList.add(value)
+            rect.classList.add(value)
         }else{
             value='floating'
         }
@@ -353,6 +555,19 @@ class Node{
             }
         }
         flow.nodeSet.delete(this)
+        /* A deleted node cannot stay selected: the outline would sit on a
+           detached element and dragging the group would move a node that is
+           not in the flow. The rest of the selection SURVIVES, because
+           deleting one node out of ten is not a reason to lose the other nine.
+           An undo brings back a NEW instance, which is deliberately not
+           reselected: the user deleted it, and having it come back already
+           selected would be the app deciding on their behalf. */
+        flow.selection.delete(this)
+        //a deleted node cannot stay the current one either: the panel would
+        //keep pointing at an accordion that no longer exists
+        if(flow.lastSelected===this){
+            flow.lastSelected=[...flow.selectedNodes].pop()??null
+        }
         dispatchEvent(this.events.broadcast.nodeKilled)
         this.SVGg.node().remove()
         if(!skipHistory&&!this.origin.history.replaying){
@@ -2624,6 +2839,13 @@ class PeakPickingNode extends NodeWithAccordion{
             this.persistencePointsX=analysis.pointsX
             this.persistencePointsY=analysis.pointsY
             this.persistenceBirthIndices=analysis.birthIndices
+            /* The integrated mass and its centroid, kept beside the births.
+               NOT thrown away here: `pointsY` is the intensity of the single
+               point that BORN each component — its chief — so it is what the
+               output used to carry, and it is exactly the number the union-find
+               integration exists to replace. */
+            this.persistenceIntegratedMass=analysis.integratedMass
+            this.persistenceCentroidX=analysis.centroidX
             this.pairsData={count:this.persistenceBirths.length}
             if(!Number.isFinite(this.parameters.slope) && Number.isFinite(analysis.slope)){
                 this.parameters.slope=analysis.slope
@@ -2651,6 +2873,10 @@ class PeakPickingNode extends NodeWithAccordion{
             //the point's own position in the input wave, carried through the
             //classifier untouched so the second output can be published
             pointsIndex:this.persistenceBirthIndices,
+            //and so is the mass: the classifier decides WHICH points survive,
+            //and the area belongs to the one it keeps
+            integratedMass:this.persistenceIntegratedMass,
+            centroidX:this.persistenceCentroidX,
             params:{slope}
         })
         const pairCount=this.persistenceBirths.length
@@ -2661,6 +2887,24 @@ class PeakPickingNode extends NodeWithAccordion{
         this.persistenceKeptPointsY=classification.keptPointsY
         this.persistenceKeptIndices=classification.keptIndices
         this.persistenceKeptCount=classification.keptCount
+        /* THE MASS BECOMES THE PEAK'S INTENSITY, and this is the line the whole
+           integration turned on.
+
+           `keptPointsY` is the intensity of the point that BORN each component
+           — its chief. It was the node's output Y, which is why the union-find
+           could sum intensities forever and nothing would change on screen: the
+           sum was computed, carried, and then the chief was published instead.
+
+           So the published Y is the integrated mass, falling back to the chief
+           only when the kernel did not supply one (a stale pkg build). The
+           fallback is explicit rather than silent, because "the area is missing"
+           and "the area is zero" must not look alike. */
+        this.persistenceKeptMass=classification.keptIntegratedMass
+        this.persistenceKeptCentroidX=classification.keptCentroidX
+        const keptMass=this.persistenceKeptMass
+        const hasMass=keptMass&&keptMass.length===classification.keptPointsX.length
+            &&keptMass.every(v=>Number.isFinite(v))
+        this.persistencePublishedY=hasMass?keptMass:classification.keptPointsY
 
         //The auto z runs HERE, between the classification and the filter: the
         //guess measures the CLASSIFIED peaks at their input indices, so those
@@ -2706,12 +2950,18 @@ class PeakPickingNode extends NodeWithAccordion{
     async applyAntiRadio(){
         const profile=this.lastInputWave
         const px=this.persistenceKeptPointsX
+        /* anti-radio is given the CHIEF (`py`), because the width it measures is
+           the height at half maximum of the profile, and the chief is the point
+           standing at that peak. The integrated mass is an AREA over several
+           points and would report a width that is not the peak's width. */
         const py=this.persistenceKeptPointsY
+        /* What gets PUBLISHED is different: the area, if the kernel gave us one. */
+        const publishedY=this.persistencePublishedY??py
         const indices=this.persistenceKeptIndices
-        if(!profile||!px?.length){ this.publishOutput(px,py,0); return }
+        if(!profile||!px?.length){ this.publishOutput(px,publishedY,0); return }
         if(!(profile.degree===2&&profile.dims[1]===2)){
             this.radioResult=null
-            this.publishOutput(px,py,px.length)
+            this.publishOutput(px,publishedY,px.length)
             this.renderRadioReadout(null,px.length)
             return
         }
@@ -2722,14 +2972,37 @@ class PeakPickingNode extends NodeWithAccordion{
                 params:{stride:2,z:this.parameters.z}
             })
             this.radioResult=result
-            this.publishOutput(result.pointsX,result.pointsY,result.keptCount)
+            /* The filter DROPS peaks, so `result.pointsX` is SHORTER than the
+               array it was given, and the mass has to be filtered by the SAME
+               mask or the two columns would no longer line up — the mass of one
+               peak sitting under the name of another, which is worse than no
+               mass at all.
+
+               `isRadio` is that mask: 1 means dropped, 0 means kept, and it is
+               aligned with the INPUT arrays, so it walks the mass in step with
+               the peaks. */
+            const keptMass=this.persistenceKeptMass
+            const mask=result.isRadio
+            const filteredMass=(keptMass&&mask&&keptMass.length===px.length)
+                ?Float64Array.from(mask.reduce((acc,dropped,i)=>{
+                    if(!dropped) acc.push(keptMass[i])
+                    return acc
+                },[]))
+                :null
+            this.publishOutput(
+                result.pointsX,
+                filteredMass&&filteredMass.length===result.pointsX.length
+                    ?filteredMass
+                    :result.pointsY,
+                result.keptCount
+            )
             this.renderRadioReadout(result,px.length)
         }catch(err){
             //a failing filter must not take the peaks with it: the classified
             //result is still valid, and hiding it would lose real work
             console.error("[PeakPickingNode] anti-radio failed, publishing the classified peaks:",err)
             this.radioResult=null
-            this.publishOutput(px,py,px.length)
+            this.publishOutput(px,publishedY,px.length)
             this.renderRadioReadout(null,px.length)
         }
     }
@@ -2913,6 +3186,367 @@ class PeakPickingNode extends NodeWithAccordion{
     suicide(options={}){
         this.graph?.dispose?.()
         this.accordion?.suicide()
+        super.suicide(options)
+    }
+}
+
+/* ChatNode — the first node of the "tools" category, and the first one with
+   nothing to do with a spectrum.
+
+   WHY A NODE AT ALL. A chat is a tool, not data: it computes nothing, it has
+   no wave in and no wave out. But it is per-WORKSPACE — you want a different
+   room while you work on a different file — and the workspace IS a node on
+   the graph. Making the chat a node is what ties it to the session it was set
+   up in, instead of floating in a global corner that outlives everything.
+
+   CE QUE CE NŒUD NE FAIT PAS, ET C'EST IMPORTANT
+   It carries NO data: no inputs, no outputs, and startResolve does nothing. A
+   node that resolved to something would be auto-wired into somebody's pipeline
+   and given a column of its own, as if it belonged between two filters. Being
+   inert is what keeps it at the edge of the graph where it belongs. */
+class ChatNode extends Node{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        super(title,[],[],origin,destinationFlow,position)
+        this.status="floating"
+        /* What the user typed, kept apart from the live connection:
+           `parameters` is what a session stores, and this.socket is what this
+           visit owns. Serialising a live WebSocket would put a connection
+           object in the session file. */
+        this.parameters.url=""
+        this.parameters.nick=""
+        this.parameters.room=""
+        this.socket=null
+        /* The backoff is exponential, as in the prototype, and CAPPED: a server
+           that is down must not leave a retry loop running in a background tab
+           for the rest of the session. */
+        this.reconnectAttempt=0
+        this.maxReconnectAttempts=10
+        this.reconnectTimer=null
+        this.dialog=null
+    }
+    /* The URL to dial: what the user typed, or the page's own host.
+
+       Deriving it from the page is what makes the prototype work with no setup
+       on the same host, and the choice of wss on https is not cosmetic — a
+       secure page may not open an insecure socket, and the browser refuses it
+       with an error nobody reads. The field stays editable for every other
+       case, rather than the host being hard-coded and working on exactly one
+       machine. */
+    effectiveUrl(){
+        if(this.parameters.url?.trim()){
+            return this.parameters.url.trim()
+        }
+        const protocol=location.protocol==="https:"?"wss:":"ws:"
+        return `${protocol}//${location.host}`
+    }
+    registered(e){
+        const {channel,registrationName,label,caster}=e.detail.msg
+        if(caster!==this||this.dialog){
+            return
+        }
+        /* A Dialog, like every graph: the chat can be dragged, folded and
+           closed with the same gestures as the rest. It is NOT an Accordion —
+           a chat that collapsed when the panel scrolled past would be
+           unusable, and the side panels are where the field toggles live. */
+        this.dialog=new Dialog(label,this.origin,this.origin.midCentralContent)
+        stylize(this.dialog.DOMelt.window,{
+            top:"8%",
+            left:"8%",
+            width:"84%",
+            height:"70%"
+        })
+        channel.register(`${registrationName}:chat`,this.dialog,`${label} chat`)
+        this.render()
+        this.connect()
+    }
+    render(){
+        const content=this.dialog.DOMelt.content
+        content.replaceChildren()
+        stylize(content,{
+            display:"grid",
+            //a row for the connection bar, one for the log, one for the input
+            "grid-template-rows":"auto minmax(0,1fr) auto",
+            height:"100%",
+            minHeight:"0",
+            overflow:"hidden",
+            padding:"4px",
+            gap:"4px"
+        })
+        /* --- the bar: where we are, and whether we are connected ---------- */
+        this.statusLabel=CE("div",{className:"chat-status"},["Not connected"])
+        //a field per setting, each writing straight to `parameters`: no apply
+        //button, because a chat that needs confirming before it remembers your
+        //nick is a chat you use twice
+        const urlField=CE("input",{
+            type:"text",
+            value:this.parameters.url,
+            placeholder:"ws://host — empty means this page",
+            title:"WebSocket URL of the chat server. Leave empty to use this page's own host."
+        },[])
+        urlField.addEventListener("change",()=>{
+            this.parameters.url=urlField.value.trim()
+        })
+        const nickField=CE("input",{
+            type:"text",size:8,
+            value:this.parameters.nick,
+            placeholder:"nick",
+            title:"The name you post under"
+        },[])
+        nickField.addEventListener("change",()=>{
+            this.parameters.nick=nickField.value.trim()
+        })
+        const roomField=CE("input",{
+            type:"text",size:8,
+            value:this.parameters.room,
+            placeholder:"room",
+            title:"The room to join. Leave empty to see the list of rooms."
+        },[])
+        roomField.addEventListener("change",()=>{
+            this.parameters.room=roomField.value.trim()
+        })
+        const joinButton=CE("button",{type:"button"},["Join"])
+        joinButton.addEventListener("click",()=>{
+            //a full reconnect, not a re-join: the URL or the nick may have
+            //changed, and the old socket is pointed at the wrong place
+            this.disconnect()
+            this.reconnectAttempt=0
+            this.connect()
+        })
+        const bar=CE("div",{className:"chat-bar"},[
+            this.statusLabel,urlField,nickField,roomField,joinButton
+        ])
+        /* --- the log ------------------------------------------------------- */
+        this.log=CE("div",{className:"chat-log"},[])
+        /* --- the input ----------------------------------------------------- */
+        this.inputField=CE("input",{
+            type:"text",
+            placeholder:"Your message...   (Enter to send)",
+            maxLength:500
+        },[])
+        this.inputField.addEventListener("keydown",(event)=>{
+            if(event.key!=="Enter"){
+                return
+            }
+            /* Enter POSTS and never inserts a newline: the box is one line
+               tall and Enter is the only way to send. Without preventDefault
+               the key would also reach whatever form encloses the dialog. */
+            event.preventDefault()
+            this.send()
+        })
+        content.append(bar,this.log,this.inputField)
+    }
+    append(text,className=""){
+        if(!this.log){
+            return
+        }
+        const line=CE("div",{className:`chat-line ${className}`},[])
+        /* The prototype builds its lines with innerHTML, which would let
+           anyone in the room inject markup into this page. Here the text goes
+           in as TEXT, always: a chat room is untrusted input, and the only
+           thing that changes is a CSS class we chose ourselves. */
+        line.textContent=text
+        this.log.appendChild(line)
+        //stick to the bottom, the way a log reads
+        this.log.scrollTop=this.log.scrollHeight
+    }
+    setStatus(text,connected){
+        if(this.statusLabel){
+            this.statusLabel.textContent=text
+        }
+        /* The node's own colour follows the connection, so the FIELD says the
+           chat is down even when the chat window is hidden behind something
+           else. */
+        this.status=connected?"resolved":"floating"
+    }
+    connect(){
+        const nick=this.parameters.nick.trim()
+        if(!nick){
+            /* No nick, no connection. Asking is better than posting as
+               "Anonyme", which is what the server would default to: a room
+               full of anonymes is a room where nobody can tell who said what. */
+            this.setStatus("A nick is required",false)
+            return
+        }
+        const url=this.effectiveUrl()
+        let socket
+        try{
+            socket=new WebSocket(url)
+        }catch(error){
+            /* A malformed URL THROWS here rather than firing onerror, and an
+               uncaught throw would leave the node claiming to be connecting to
+               a URL that does not exist. */
+            this.setStatus(`Cannot open ${url}`,false)
+            return
+        }
+        this.socket=socket
+        this.setStatus("Connecting...",false)
+        socket.addEventListener("open",()=>{
+            this.reconnectAttempt=0
+            /* A named room is joined straight away; with no room, the server
+               sends its list, which is exactly what an empty field asks for.
+               Joining on open rather than on submit is what makes a restored
+               session rejoin the room it was in. */
+            if(this.parameters.room.trim()){
+                this.transmit({type:"join_room",room:this.parameters.room.trim(),name:nick})
+            }
+        })
+        socket.addEventListener("message",(event)=>{
+            let data
+            try{
+                data=JSON.parse(event.data)
+            }catch{
+                //a server speaking another protocol is not a crash
+                return
+            }
+            this.onServerMessage(data)
+        })
+        socket.addEventListener("close",()=>{
+            this.socket=null
+            this.setStatus("Disconnected",false)
+            this.scheduleReconnect()
+        })
+        socket.addEventListener("error",()=>{
+            /* `error` is ALWAYS followed by `close`, so the retry is scheduled
+               there. Handling it here as well would double the attempts and
+               make the backoff mean nothing. */
+            this.setStatus("Connection failed",false)
+        })
+    }
+    /* The backoff lives here rather than inside the socket, because a server
+       that REFUSES every connection still fires `close`. With no schedule of
+       its own, one refused connection leaves the node dead until a reload. */
+    scheduleReconnect(){
+        if(this.reconnectTimer||this.reconnectAttempt>=this.maxReconnectAttempts){
+            return
+        }
+        const delay=Math.min(1000*2**this.reconnectAttempt,30000)+Math.random()*1000
+        this.reconnectAttempt++
+        this.setStatus(
+            `Reconnecting in ${Math.round(delay/1000)}s (${this.reconnectAttempt}/${this.maxReconnectAttempts})`,
+            false
+        )
+        this.reconnectTimer=setTimeout(()=>{
+            this.reconnectTimer=null
+            this.connect()
+        },delay)
+    }
+    onServerMessage(data){
+        if(data.type==="rooms"){
+            this.renderRoomList(data.rooms??[])
+            return
+        }
+        if(data.type==="room_created"){
+            this.parameters.room=data.room
+            this.transmit({type:"join_room",room:data.room,name:this.parameters.nick.trim()})
+            return
+        }
+        if(data.type==="room_joined"){
+            this.parameters.room=data.room
+            this.log?.replaceChildren()
+            for(const message of data.messages??[]){
+                this.append(`${message.user} : ${message.text}`)
+            }
+            this.setStatus(`#${data.room}`,true)
+            return
+        }
+        if(data.type==="users"){
+            this.setStatus(`#${this.parameters.room} — ${(data.users??[]).length} connected`,true)
+            return
+        }
+        if(data.type==="message"){
+            this.append(`${data.message.user} : ${data.message.text}`)
+            return
+        }
+        if(data.type==="system"){
+            this.append(data.text,"system")
+            return
+        }
+        if(data.type==="error"){
+            /* The server's own complaints go in the log: it is the only way a
+               user learns that their nick was taken or the room is full. */
+            this.append(data.text,"system")
+        }
+    }
+    renderRoomList(rooms){
+        if(this.parameters.room.trim()||rooms.length===0){
+            return
+        }
+        /* Only while there is no room yet: once one is joined, the panel is a
+           conversation, not a directory. */
+        const list=CE("div",{className:"chat-rooms"},[])
+        for(const room of rooms){
+            const button=CE("button",{type:"button"},[
+                `#${room.name} — ${room.users} connected`
+            ])
+            button.addEventListener("click",()=>{
+                this.parameters.room=room.id
+                this.transmit({type:"join_room",room:room.id,name:this.parameters.nick.trim()})
+            })
+            list.appendChild(button)
+        }
+        this.log?.replaceChildren(list)
+    }
+    /* The one place a frame is written, so the "am I connected" test cannot be
+       forgotten at one call site and honoured at another. */
+    transmit(payload){
+        if(!this.socket||this.socket.readyState!==WebSocket.OPEN){
+            this.append("Not connected.","system")
+            return false
+        }
+        this.socket.send(JSON.stringify(payload))
+        return true
+    }
+    send(){
+        const text=this.inputField.value.trim()
+        if(!text){
+            return
+        }
+        if(this.transmit({type:"message",text})){
+            /* Cleared ONLY on a successful send: wiping the box on a dead
+               socket would throw away what the user just typed. */
+            this.inputField.value=""
+        }
+    }
+    disconnect(){
+        if(this.reconnectTimer){
+            clearTimeout(this.reconnectTimer)
+            this.reconnectTimer=null
+        }
+        if(this.socket){
+            /* close(), not a terminate: the server needs the close frame to
+               drop the user from its room list and to tell everyone else. */
+            this.socket.close()
+            this.socket=null
+        }
+    }
+    serializeState(){
+        /* Only the three fields the user typed. The socket, the log and the
+           retry counter belong to THIS visit: storing them would make the
+           session file large, unserialisable, and meaningless on reload. */
+        return {
+            url:this.parameters.url,
+            nick:this.parameters.nick,
+            room:this.parameters.room
+        }
+    }
+    restoreState(state){
+        if(!state){
+            return
+        }
+        this.parameters.url=state.url??""
+        this.parameters.nick=state.nick??""
+        this.parameters.room=state.room??""
+        /* The chat is NOT reopened on a reload: a page that starts talking to a
+           server on its own is a page that cannot be opened quietly. The node
+           returns with its room and nick filled in, and the user presses
+           Join — which is also the only moment a nick is really theirs. */
+        this.status="floating"
+    }
+    suicide(options={}){
+        /* The pending retry MUST be cleared: a node deleted with a reconnect
+           scheduled would come back as a socket nobody can see or close. */
+        this.disconnect()
+        this.dialog?.suicide()
         super.suicide(options)
     }
 }
@@ -3647,7 +4281,10 @@ const NODE_CONSTRUCTORS={
     PersistentHomology0DNode:PeakPickingNode,
     "AntiRadioNode":PeakPickingNode,
     TrimmerNode,
-    FKMDNode
+    FKMDNode,
+    //the first tools-category node: it has no data, but a session must be able
+    //to name it, or a reload would turn it into a bare Node with no dialog
+    ChatNode
 }
 
 function nodeRestoreData(node){
@@ -3713,7 +4350,11 @@ function createNodeForHistory(origin,flow,data){
    the file import and the reload all come through here rather than each picking
    its own spelling. */
 const SELF_SHAPED_NODES=new Set([
-    DelimitedTextNode,Operation,PeakPickingNode,TrimmerNode,FKMDNode
+    DelimitedTextNode,Operation,PeakPickingNode,TrimmerNode,FKMDNode,
+    //ChatNode builds its own (empty) inputs and outputs, so it takes the
+    //(title, app, flow, position) signature. Left out of this set, a reload
+    //would call it with five arguments and its slots would be the App.
+    ChatNode
 ])
 /* A file spells a node's shape out. A skeleton only knows how many slots the node
    HAD: what was in them was data, and data is rebuilt by the resolve. A link is
@@ -3759,6 +4400,36 @@ class Flow{
         }}
         this.nodeSet=new Set()
         this.linkList=[]
+        /* THE SELECTION, and it lives on the Flow because that is where the
+           geometry is: "is this node selected" is a property of the field, not
+           of the node, and a node that did not know it was selected could not
+           draw its own outline.
+
+           It is a Set of node instances, NOT of node ids. A node deleted and
+           restored by an undo is a DIFFERENT instance with the same id, and a
+           selection that outlived the delete would then point at a dead
+           object: the outline would stay on nothing, and dragging it would
+           move a node that is no longer there. The entries are therefore
+           pruned against nodeSet on every read (see selection()). */
+        this.selection=new Set()
+        /* The node whose panels are on screen — the LAST one clicked into the
+           selection. A Set cannot remember an order, so "last" has to be
+           carried, and it is carried here rather than recomputed. */
+        this.lastSelected=null
+        /* Clicking the BACKGROUND empties the selection. Without this, two
+           selected nodes could only be emptied one click at a time, which is
+           the other half of "I can never deselect". The check is on the event
+           TARGET, not the currentTarget: a click that landed on a node must
+           not be mistaken for a click on the field behind it, which would
+           clear the selection the very moment a node was added to it. */
+        this.container.addEventListener("click",(event)=>{
+            //a click on a node's own box, on a cable, or on an anchor is the
+            //node's business and leaves the selection alone
+            if(event.target.closest(".node, .link, .anchor")){
+                return
+            }
+            this.clearSelection()
+        })
         //tracks the live instance that replaced a deleted node (undo of "Delete
         //node"), so older commands recorded against the dead instance stay effective
         this.replacements=new Map()
@@ -4023,6 +4694,282 @@ class Flow{
         }
         const margin=this.layoutOptions().margin
         return {width:maxX+margin,height:maxY+margin}
+    }
+    /* ===================================================================
+       LA SÉLECTION.
+
+       Une seule règle gouverne tout: la sélection est un ensemble de nœuds
+       que l'utilisateur a désignés, jamais un ensemble qu'on devine. Donc
+       on ne touche PAS à la sélection quand un nœud disparaît tout seul —
+       arrangeNodes, un resolve, un import: un graphe qui se réorganise ne doit
+       pas décider de votre sélection. Seul un DELETE explicite la nettoie,
+       parce qu'un nœud supprimé ne peut pas rester sélectionné.
+
+       Les nœuds morts sont ÉLAGUÉS à la lecture, jamais sur un timer: un undo
+       peut ramener un nœud entre deux clics, et un élagage programmé aurait
+       déjà jeté la sélection. */
+    get selectedNodes(){
+        for(const node of [...this.selection]){
+            if(!this.nodeSet.has(node)){
+                this.selection.delete(node)
+            }
+        }
+        return this.selection
+    }
+    isSelected(node){
+        return this.selection.has(node)
+    }
+    /* THE ONE CLICK RULE, in one place, so it cannot be read two ways.
+
+       additive=false (a plain click) leaves ONLY this node selected.
+       additive=true  (ctrl/cmd) toggles this node and keeps the others.
+
+       The plain click NARROWS rather than toggles, which is what makes
+       deselection possible: with three nodes selected, a plain click on one of
+       them leaves that one and drops the other two. There is always a way out,
+       and it is the gesture people already have in their hand. */
+    select(node,{additive=false}={}){
+        if(!this.nodeSet.has(node)){
+            return
+        }
+        if(!additive){
+            this.selection.clear()
+            this.selection.add(node)
+            this.lastSelected=node
+        }else if(this.selection.has(node)){
+            this.selection.delete(node)
+            //the released node hands the "current" role to a remaining one, so
+            //the panel never points at a node that is no longer selected
+            if(this.lastSelected===node){
+                this.lastSelected=[...this.selection].pop()??null
+            }
+        }else{
+            this.selection.add(node)
+            this.lastSelected=node
+        }
+        this.paintSelection()
+    }
+    /* Adds or removes a node with NO reference to the rest: `additive=false`
+       clears the others, exactly as a plain click does. Kept as its own method
+       because "toggle this one, whatever else" is a real thing to want (a
+       pattern menu, a test), and having it spelled out stops the next reader
+       from assuming it is the same gesture as a plain click. */
+    toggleSelection(node){
+        this.select(node,{additive:true})
+    }
+    /* EFFACE TOUT CE QUI EST SÉLECTIONNÉ, and it is ONE undo step.
+
+       The alternative — letting each node's own suicide() record its own
+       command — produces N commands for N nodes, so one Ctrl+Z brings back
+       one of them and the user has to press it N times to undo one gesture.
+       Every node's own suicide() stays exactly as it was: this walks the
+       selection, and calls them one at a time, so all the bookkeeping each of
+       them already does (links, replacements, the record flag) still happens.
+
+       The order is irrelevant to the result and is left to the Set: the nodes
+       do not know about each other. */
+    deleteSelection(){
+        const nodes=[...this.selectedNodes]
+        if(nodes.length===0){
+            return
+        }
+        const flow=this
+        /* The whole batch as ONE command. Each suicide() below runs with
+           `skipHistory`, so none of them pushes its own entry; this one stands
+           for all of them. */
+        if(!this.origin.history.replaying){
+            this.origin.history.record(new Command({
+                label:nodes.length===1
+                    ?`Delete node ${nodes[0].title}`
+                    :`Delete ${nodes.length} nodes`,
+                undo:()=>{
+                    const restored=nodes.map(node=>createNodeForHistory(node.origin,flow,nodeRestoreData(node)))
+                    flow.selectOnly(restored[restored.length-1]??null)
+                }
+            }))
+        }
+        for(const node of nodes){
+            //each node's own suicide removes its links and its stale entries
+            node.suicide({skipHistory:true})
+        }
+        this.clearSelection()
+    }
+    /* The node the user is working on RIGHT NOW: the last one they clicked into
+       the selection. Kept as its own field rather than inferred from the Set,
+       because a Set has no order and "last" is the whole point. */
+    selectOnly(node){
+        this.selection.clear()
+        this.lastSelected=null
+        if(node&&this.nodeSet.has(node)){
+            this.selection.add(node)
+            this.lastSelected=node
+        }
+        this.paintSelection()
+    }
+    clearSelection(){
+        this.selection.clear()
+        //the current node goes with the set: leaving it pointing at nothing
+        //would let a later action scroll to a panel nobody chose
+        this.lastSelected=null
+        this.paintSelection()
+    }
+    selectAll(){
+        this.selection=new Set(this.nodeSet)
+        //nothing was clicked, so there is no "last": the field itself is the
+        //current thing, and a panel scroll would have nowhere to go
+        this.lastSelected=null
+        this.paintSelection()
+    }
+    /* L'apparence est la SEULE chose qui distingue un nœud sélectionné. On ne
+       touche pas à `status` — un nœud en attente reste en attente, il n'est
+       pas « résolu » parce qu'on l'a cliqué. La classe est retirée à la
+       peinture ET à chaque lecture du statut, donc un nœud qui change de
+       statut ne garde pas une Selected fantôme. */
+    paintSelection(){
+        for(const node of this.nodeSet){
+            const rect=node.DOMelt?.querySelector("rect")
+            if(!rect){
+                continue
+            }
+            rect.classList.toggle("selected",this.selection.has(node))
+        }
+    }
+    /* Les positions de tous les nœuds sélectionnés, indexées par nœud. C'est
+       la photo AVANT un déplacement de groupe, celle que l'undo remit en
+       place. Une Map et non un tableau: deux nœuds ne peuvent pas être au
+       même endroit, alors qu'une liste les confondrait dès qu'on les relit. */
+    selectionPositions(){
+        const snapshot=new Map()
+        for(const node of this.selectedNodes){
+            snapshot.set(node,{...node.parameters.position,pinned:!!node.parameters.pinned})
+        }
+        return snapshot
+    }
+    /* Déplace TOUS les nœuds sélectionnés, et rien d'autre.
+
+       Le même décalage est appliqué à chacun, donc le groupe garde sa forme
+       exacte: c'est ce qui distingue un déplacement d'un réagencement, et
+       c'est pourquoi on ne passe pas par layoutFlow ici. Les câbles sont
+       redessinés UNE fois à la fin, pas une fois par nœud. */
+    moveSelectionBy(dx,dy){
+        for(const node of this.selectedNodes){
+            node.parameters.position.x+=dx
+            node.parameters.position.y+=dy
+            node.SVGg.attr('transform',`translate(${node.parameters.position.x},${node.parameters.position.y})`)
+        }
+        this.updateLinks()
+    }
+    /* ===================================================================
+       LE PATTERN: une sélection devient un patron RÉUTILISABLE.
+
+       "Déplacer plusieurs nœuds" et "les sauvegarder comme un pattern" sont
+       deux besoins distincts: on veut garder un enchaînement — « filtre +
+       plot » — pour le remettre ailleurs, dans un autre fichier, pas seulement
+       le déplacer.
+
+       CE QUI EST COPIÉ, ET CE QUI NE L'EST PAS.
+       Les nœuds sont copiés par nodeRestoreData, donc AVEC leur état (bornes
+       de trim, pente du classifieur…), mais SANS leurs données dérivées. C'est
+       la même règle que le squelette de session: un patron décrit une FORME,
+       pas un résultat. Un patron qui embarquerait le spectre d'origine ferait
+       exploser le fichier dès qu'il serait inséré plus d'une fois.
+
+       LA GÉOMÉTRIE EST NORMALISÉE, ET C'EST CE QUI REND LE PATTERN PORTABLE.
+       Un patron enregistré à (400, 250) et un autre à (10, 10) se
+       chevaucheraient. On ramène donc le coin haut-gauche du groupe à
+       l'origine, et c'est ce qui permet de le poser n'importe où.
+
+       LES LIENS SONT RELATIFS, PAR LEUR INDEX D'ANCRE — jamais par l'objet.
+       Un lien vers un nœud extérieur au patron est ABANDONNÉ: le patron serait
+       incomplet, et un demi-câble produirait une connexion fantôme au moment
+       de l'instanciation. */
+    patternFromSelection(name="pattern"){
+        const nodes=[...this.selectedNodes]
+        if(nodes.length===0){
+            return null
+        }
+        const inside=new Set(nodes)
+        //the group's own top-left corner, which becomes the pattern's origin
+        let minX=Infinity,minY=Infinity
+        for(const node of nodes){
+            minX=Math.min(minX,node.parameters.position.x)
+            minY=Math.min(minY,node.parameters.position.y)
+        }
+        const links=[]
+        for(const link of this.linkList){
+            if(!inside.has(link.inputNode)||!inside.has(link.outputNode)){
+                //half a cable: the far end is not part of the pattern
+                continue
+            }
+            links.push({
+                from:nodes.indexOf(link.inputNode),
+                fromIndex:Number(link.inputAnchor.id),
+                to:nodes.indexOf(link.outputNode),
+                toIndex:Number(link.outputAnchor.id)
+            })
+        }
+        return {
+            name:String(name),
+            nodes:nodes.map(node=>({
+                ...nodeRestoreData(node),
+                position:{
+                    x:node.parameters.position.x-minX,
+                    y:node.parameters.position.y-minY
+                }
+            })),
+            links,
+            version:1
+        }
+    }
+    /* Instancie un patron à `at`, et renvoie les nœuds créés.
+
+       Les positions sont décalées par `at` et non posées en absolu: c'est
+       l'appelant qui décide où le patron atterrit, ce qui est tout le sens
+       d'un patron — une chose que l'on place, et non une chose qui choisit
+       sa place. */
+    instantiatePattern(pattern,at={x:20,y:20}){
+        if(!pattern?.nodes?.length){
+            return []
+        }
+        const created=pattern.nodes.map(data=>{
+            const node=buildNode(
+                {
+                    ...data,
+                    position:{
+                        x:at.x+(data.position?.x??0),
+                        y:at.y+(data.position?.y??0)
+                    }
+                },
+                this.origin,
+                this
+            )
+            this.origin.channel.register(data.registrationName??"node",node,node.title)
+            /* Un nœud posé n'est PAS épinglé. Les épingles voyagent avec les
+               nœuds placés à la main, mais un patron est une forme qu'on pose
+               pour la première fois: l'épingler gèlerait le réagencement
+               autour d'une position que l'utilisateur n'a pas choisie. */
+            node.parameters.pinned=false
+            if(data.state&&typeof node.restoreState==="function"){
+                node.restoreState(data.state)
+            }
+            if(data.status){
+                node.status=data.status
+            }
+            return node
+        })
+        for(const link of pattern.links??[]){
+            const from=created[link.from]
+            const to=created[link.to]
+            if(from&&to){
+                this.linkNodes({
+                    source:from,sourceIndex:link.fromIndex,
+                    target:to,targetIndex:link.toIndex,
+                    record:true,relayout:false
+                })
+            }
+        }
+        this.autoLayout()
+        return created
     }
     revealNode(node){
         if(!this.container||!node){
@@ -4372,6 +5319,13 @@ class Menu{
         this.windowClickHandler=(e)=>{
             if(!e.target.closest('.menu .container')){
                 this.container.querySelectorAll('.parent.open').forEach(elt=>elt.classList.remove('open'))
+                /* A click OUTSIDE closes the menu without going through
+                   afterToggle, so the panel and the body class would stay as
+                   they were: the top panel stretched, the graph clipped, for a
+                   menu that is no longer open. Every path that closes a menu
+                   must therefore undo what opening one did. */
+                document.body.classList.remove("menu-open")
+                this.afterToggle()
             }
         }
         window.addEventListener('click',this.windowClickHandler)
@@ -4409,6 +5363,7 @@ class Menu{
                         if(isAction){
                             object[k]()
                             this.container.querySelectorAll('.parent.open').forEach(elt=>elt.classList.remove('open'))
+                            this.afterToggle()
                         }else{
                             for(const sibling of e.target.parentNode.children){
                                 if(sibling!=e.target){
@@ -4416,6 +5371,7 @@ class Menu{
                                 }
                             }
                             e.target.classList.toggle('open')
+                            this.afterToggle()
                         }
                     },
                 }
@@ -4432,6 +5388,26 @@ class Menu{
             this.container.remove()
             this.destination.appendChild(this.container);
         }
+    }
+    /* Called every time a submenu opens or closes.
+
+       WHY IT EXISTS. The flow menu lives in the top panel, which is a row of
+       a CSS grid with a fixed height. A submenu is `position:absolute` (see
+       .parent.open>.child), so it does not take part in the layout: it simply
+       hangs BELOW its item and is clipped by whatever says `overflow:hidden`.
+       With enough entries — which is exactly what "lots of nodes" produces —
+       the list is taller than the panel, and the entries at the bottom are
+       simply not there.
+
+       The fix is not to make the panel enormous: it is to let the panel GROW
+       to whatever the open menu needs, and to give it back when the menu
+       closes. The panel keeps its own height for the graph underneath, and
+       only the menu's own overflow is accommodated.
+
+       Overridable, and a no-op by default: the top menu has all the room it
+       needs, so only the flow menu — the one that grows with the number of
+       node types — needs this. */
+    afterToggle(){
     }
 }
 
@@ -4549,6 +5525,53 @@ class MainFlowMenu extends Menu{
                 arrangeFlow(e){
                     origin.channel.get("mainFlow")?.arrangeNodes()
                 },
+                selectAllNodes(e){
+                    origin.channel.get("mainFlow")?.selectAll()
+                },
+                clearNodeSelection(e){
+                    origin.channel.get("mainFlow")?.clearSelection()
+                },
+                /* The clipboard is the App's, not the Flow's: a pattern
+                   outlives the flow it was cut from — that is the whole point
+                   of saving one — so it cannot live on the Flow instance that
+                   an import is about to replace. */
+                copySelectionAsPattern(e){
+                    const flow=origin.channel.get("mainFlow")
+                    const pattern=flow?.patternFromSelection(e.detail.msg?.name)
+                    if(!pattern){
+                        origin.notice?.("Nothing to save","Select one or more nodes first.")
+                        return
+                    }
+                    origin.patterns.set(pattern.name,pattern)
+                    origin.savePreferencesSoon?.()
+                    origin.notice?.(
+                        "Pattern saved",
+                        `"${pattern.name}" holds ${pattern.nodes.length} node(s). `+
+                        "Paste it from the Flow menu, in this session or another one."
+                    )
+                },
+                pastePattern(e){
+                    const name=e.detail.msg?.name
+                    const pattern=origin.patterns.get(name)
+                    if(!pattern){
+                        origin.notice?.("No such pattern",`"${name}" was never saved.`)
+                        return
+                    }
+                    const flow=origin.channel.get("mainFlow")
+                    const created=flow?.instantiatePattern(pattern,{
+                        x:40,y:40
+                    })??[]
+                    if(created.length){
+                        flow.selectOnly(created[0])
+                        flow.revealNode(created[0])
+                    }
+                },
+                deletePattern(e){
+                    const name=e.detail.msg?.name
+                    if(origin.patterns.delete(name)){
+                        origin.savePreferencesSoon?.()
+                    }
+                },
                 createNode(e){
                     const {title,type,source} = e.detail.msg
                     let node
@@ -4559,6 +5582,11 @@ class MainFlowMenu extends Menu{
                         }
                         case "fkmd": {
                             node = new FKMDNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
+                            break
+                        }
+                        case "chat": {
+                            //self-shaped: a tool node, with no data to rebuild
+                            node = new ChatNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
                             break
                         }
                         case "delimitedText":
@@ -4716,6 +5744,32 @@ class MainFlowMenu extends Menu{
                 }
             }
         }
+    }
+    /* LET AN OPEN SUBMENU FLOAT OVER THE PAGE, WITHOUT MOVING ANYTHING.
+
+       WHAT THIS USED TO DO, AND WHY IT WAS WRONG. The first version grew the
+       top panel to the height of the open list and gave the room back on
+       close. That was answering the wrong question: the panel is a fixed row
+       of a grid, and resizing it pushes the ENTIRE workspace down — the graph,
+       the side panels, everything below. A menu that rearranges the window when
+       you open it is far more disruptive than one that overlaps it, and the
+       overlap is what every other menu on every other platform already does.
+
+       So the panel is left strictly alone, and only two things happen:
+
+         - a `menu-open` class on the BODY, which stops #top and the workspace
+           from clipping the dropdown (both are overflow:hidden, and an
+           absolutely-positioned list hangs outside the panel's own box);
+         - a scroll cap on the list itself, so a submenu with sixty entries
+           scrolls instead of running off the bottom of the screen.
+
+       NOTHING HERE MEASURES AND SETS A HEIGHT. That is the whole point, and
+       it is why the method is now this short. */
+    afterToggle(){
+        const open=[...this.container.querySelectorAll(".parent.open")]
+        /* On the BODY, not on the menu: #top — the panel that also clips — is
+           an ANCESTOR of this menu, so a class set here could never relax it. */
+        document.body.classList.toggle("menu-open",open.length>0)
     }
 }
 
@@ -6805,7 +7859,46 @@ class Dialog{
         this.DOMelt.label=CE('div',{className:"label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggleMaximized(e)},[title.toString()]);
         this.DOMelt.label.handleMouseDown=(e)=>e.target.pilot.drag(e);
         this.DOMelt.label.handleClick=(e)=>this.focus(e)
-        this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.folder,this.DOMelt.dismisser]);
+        /* LE BOUTON JAUNE, entre le repli (vert) et la fermeture (rouge).
+
+           Il ne range que LES FENÊTRES DU MÊME PANEAU. Deux fenêtres qui
+           vivent dans deux conteneurs différents ne se disputent pas la même
+           place, donc les quadriller ensemble les écraserait l'une sur
+           l'autre. La destination est donc ce qui décide du groupe, et c'est
+           pourquoi elle est comparée et non supposée. */
+        this.DOMelt.tiler=CE('div',{className:"tiler",pilot:this},[]);
+        this.DOMelt.tiler.handleClick=(e)=>{
+            //the clic ne doit pas ALSOUMER la fenêtre qu'il vient de ranger:
+            //sans ça, l'ordre des z passe devant la disposition
+            e.stopPropagation()
+            if(this.DOMelt.tiler.classList.contains("disabled")){
+                return
+            }
+            e.target.pilot.gridSiblings()
+        };
+        this.DOMelt.tiler.setAttribute("role","button");
+        this.DOMelt.tiler.setAttribute("aria-label","Ranger les fenêtres du panneau en grille");
+        this.DOMelt.tiler.title="Disposer toutes les fenêtres de ce panneau en grille";
+        /* UNE FENÊTRE HORS DU PANNEAU CENTRAL N'A PAS DE GRILLE.
+
+           The tiler arranges the windows that SHARE this destination, and most
+           destinations are not the central panel: the "About" box opens on
+           `main`, and a graph opens on `midCentralContent`. Tiling the About
+           box means tiling it against every other window of the whole
+           application — which is not what the button promises and, since those
+           windows live at wildly different sizes, looked like the button
+           having a mind of its own.
+
+           So the button is greyed and inert outside the central panel, rather
+           than hidden: a control that vanishes between two panels is harder to
+           learn than one that is visibly not applicable. The same `disabled`
+           class the dismisser already uses for the non-closable graphs. */
+        if(!destination?.classList?.contains("center")){
+            this.DOMelt.tiler.classList.add("disabled")
+            this.DOMelt.tiler.setAttribute("aria-disabled","true")
+            this.DOMelt.tiler.title="Seul le panneau central peut être rangé en grille"
+        }
+        this.DOMelt.handler=CE('div',{},[this.DOMelt.label,this.DOMelt.folder,this.DOMelt.tiler,this.DOMelt.dismisser]);
         this.DOMelt.content=CE('div',{className:"popup content"},[]);
         this.DOMelt.window=CE('div',{className:"popup container",pilot:this},[
             this.DOMelt.handler,
@@ -6829,7 +7922,9 @@ class Dialog{
         });
         stylize(this.DOMelt.handler,{
             display:"grid",
-            "grid-template-columns":"1fr 1em 1em",
+            //label + repli + grille + fermer: quatre colonnes, pas trois. Une
+            //colonne de trop et le titre mangerait la place des boutons.
+            "grid-template-columns":"1fr 1em 1em 1em",
             "border-radius":"10px",
             padding:"0em"
         })
@@ -6853,6 +7948,11 @@ class Dialog{
             "align-self":"center"
         })
         stylize(this.DOMelt.folder,{
+            height:"1em",
+            width:"1em",
+            "align-self":"center"
+        })
+        stylize(this.DOMelt.tiler,{
             height:"1em",
             width:"1em",
             "align-self":"center"
@@ -6979,6 +8079,72 @@ class Dialog{
     suicide(){
         this.DOMelt.window.remove()
         dispatchEvent(this.events.broadcast.killed)
+    }
+    /* RANGE LES FENÊTRES DU MÊME PANNEAU SUR UNE GRILLE.
+
+       L'ordre de remplissage est celui demandé: la DROITE d'abord, puis le
+       HAUT. Donc on remplit une rangée entière avant de descendre — c'est ce
+       que fait le premier index, qui avance de 0 à columns-1 sur la première
+       ligne avant de passer à la suivante.
+
+       LA GRILLE EST LA PLUS PROCHE D'UN CARRÉ, ET C'EST LE BON CHOIX ICI.
+       Deux fenêtres donnent 2×1, trois donnent 2×2, cinq donnent 3×2. On
+       aurait pu faire 1×N ou N×1 selon le nombre, mais une fenêtre unique
+       étirée sur toute la hauteur serait absurde, et trois fenêtres en
+       colonne ne se compareraient pas. La racine carrée donne le rectangle le
+       plus proche d'un carré qui contient tout le monde.
+
+       AUCUNE FENÊTRE N'EST IGNORÉE, ET AUCUNE N'EST ÉCRASÉE: la dernière case
+       d'une grille incomplète reste VIDE. C'est très différent d'étirer la
+       dernière fenêtre sur deux cases pour meubler le vide — ce qui est
+       exactement ce que ferait une division en pourcentage. */
+    gridSiblings(){
+        const destination=this.destination
+        if(!destination){
+            return
+        }
+        /* On ne range que les fenêtres RÉELLEMENT montées dans ce panneau, et
+           dans l'ordre du DOM. Une fenêtre détruite reste dans le channel mais
+           plus dans la page: la ranger produirait une case fantôme. */
+        const siblings=[...destination.querySelectorAll(".popup.container")]
+            .filter(window=>window.isConnected)
+        if(siblings.length===0){
+            return
+        }
+        const columns=Math.ceil(Math.sqrt(siblings.length))
+        const rows=Math.ceil(siblings.length/columns)
+        const width=100/columns
+        const height=100/rows
+        siblings.forEach((window,index)=>{
+            const pilot=window.pilot
+            if(!pilot){
+                return
+            }
+            //gauche->droite PUIS haut->bas: l'index avance dans la rangée
+            const column=index%columns
+            const row=Math.floor(index/columns)
+            /* Une fenêtre MAXIMISÉE occupe toute la page et n'occupe aucune
+               case: on la sort donc du mode maximum avant de la poser, sinon
+               `maximized` resterait vrai et le prochain classement repartirait
+               d'une fenêtre 100%×100% posée sur une case. */
+            if(pilot.maximized){
+                pilot.toggleMaximized({preventDefault(){},stopPropagation(){}})
+            }
+            /* On écrit les quatre côtés, pas width/height en pourcentage
+               SEULEMENT: une fenêtre déjà glissée a un `right` ou un `bottom`
+               écrit, et un `left` sans `right` se retrouve étirée entre les
+               deux. Les quatre ensemble, c'est une position. */
+            const style=window.style
+            style.left=`${column*width}%`
+            style.top=`${row*height}%`
+            style.width=`${width}%`
+            style.height=`${height}%`
+            style.right="auto"
+            style.bottom="auto"
+        })
+        /* La fenêtre sur laquelle on a cliqué passe devant: elle est la plus
+           récente, c'est donc elle qu'on veut voir. */
+        this.focus()
     }
     drag(e){
         const boundary={
@@ -7213,6 +8379,17 @@ class App{
             )
         this.channel=new Channel(this)
         this.history=new History()
+        /* THE PATTERNS, and they are on the App on purpose.
+
+           A pattern is a shape the user cut out of a flow and expects to
+           paste LATER — possibly after the session that produced it has been
+           closed. So it cannot belong to the Flow (an import replaces that
+           instance) nor to a node (a deleted node would take it down). The App
+           is the only thing that outlives both.
+
+           A Map, not an array: patterns are pasted by name, and a list would
+           make every paste a scan for a string the user typed. */
+        this.patterns=new Map()
         this.parameters={
             topContent:{
                 folded: false,

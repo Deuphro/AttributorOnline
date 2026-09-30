@@ -321,6 +321,44 @@ div{
     border-color: rgba(143, 160, 179, 0.45);
 }
 
+/* Le bouton de grille, entre le vert du repli et le rouge de la fermeture.
+   Le jaune est le seul qui n'était pas pris: le rouge ferme, le vert replie,
+   et un troisième « fermer » serait illisible. */
+.tiler{
+    border:1px solid var(--border-strong);
+    border-radius: 5px;
+    background-color: rgba(172, 140, 34, 0.55);
+    cursor: pointer;
+    transition: 150ms ease;
+}
+.tiler:hover{
+    background-color: rgba(214, 176, 42, 0.8);
+    box-shadow: 0px 0px 20px 1px rgba(214, 176, 42, 0.35);
+    outline: 1px solid var(--accent);
+}
+/* A tiler that does not apply: greyed, no hover, no cursor.
+
+   The Dialog constructor adds `disabled` when the window does not live in the
+   central panel, because that is the only panel whose windows can be tiled
+   together. It is styled like the dismisser's disabled state rather than
+   hidden, because a control that disappears from one panel and reappears in
+   another is harder to learn than one that is visibly not applicable.
+
+   The hover rule above is cancelled explicitly: a greyed button that still lit
+   up on hover would be lying about being usable. */
+.tiler.disabled{
+    background-color: rgba(143, 160, 179, 0.18);
+    border-color: rgba(143, 160, 179, 0.45);
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+.tiler.disabled:hover{
+    background-color: rgba(143, 160, 179, 0.18);
+    border-color: rgba(143, 160, 179, 0.45);
+    box-shadow: none;
+    outline: none;
+}
+
 .selected{
     outline: 1px solid var(--text);
     box-shadow: 0px 0px 20px 1px var(--accent-soft);
@@ -555,6 +593,53 @@ input[type=checkbox]{
     accent-color:var(--accent-soft);
 }
 
+/* ---- Chat (the first tools node) ---- */
+.chat-bar{
+    display:flex;
+    gap:4px;
+    align-items:center;
+    flex-wrap:wrap;
+}
+.chat-bar input[type=text]{
+    /* the URL is the long one and the nick and room are short: giving them
+       all `1fr` would squeeze the URL down to nothing on a narrow window */
+    min-width:0;
+    flex:1 1 14em;
+}
+.chat-bar input[size="8"]{
+    flex:0 1 8em;
+}
+.chat-status{
+    flex:0 0 auto;
+    color:var(--text-muted);
+    font-size:0.85em;
+    white-space:nowrap;
+}
+.chat-log{
+    overflow-y:auto;
+    overflow-anchor:none;
+    min-height:0;
+    border:1px solid var(--border);
+    border-radius:5px;
+    padding:4px;
+    background:var(--code-bg);
+}
+.chat-line{
+    padding:2px 4px;
+    line-height:1.45;
+    word-wrap:break-word;
+}
+.chat-line.system{
+    color:var(--text-dim);
+    font-style:italic;
+    text-align:center;
+    font-size:0.85em;
+}
+.chat-rooms{
+    display:grid;
+    gap:4px;
+}
+
 /* ---- Quadrillage du flux ---- */
 .flow.container{
     background: url('../resources/pattern.svg');
@@ -576,10 +661,55 @@ input[type=checkbox]{
 .flow.workspace>.menu.container{
     display:flow-root;
     position:relative;
-    z-index:100;
+    /* BELOW #mainMenu (200), and that is the whole point of the number.
+
+       The first version put this at 300 to lift it over the graph dialogs. It
+       did lift it — over the MAIN MENU too, which is a sibling in the same
+       root stacking context (neither #mainMenu nor #mainInterface establishes
+       one for its children). The main bar became unclickable: you could open a
+       menu but not choose an item, because this menu's box sat on top of it.
+
+       What it actually needs to beat is the GRAPH, whose windows start at
+       z-index 1 and climb as they are focused. 150 is above all of that and
+       below the main bar, so neither menu has to move when the other opens. */
+    z-index:150;
 }
 .flow.workspace>.flow.container{
     min-height:0;
+}
+
+/* An open submenu hangs BELOW its item and is `position:absolute`, so it takes
+   no part in any layout and simply floats outside the boxes it belongs to.
+   Every one of those boxes says `overflow:hidden`, and each one clips in turn:
+
+     #mainInterface   overflow:hidden   the whole workspace grid
+     #top .panel      overflow:auto    the top row
+     #topContent      .content, overflow:auto   the div that HOLDS the workspace
+     .flow.workspace overflow:hidden   the menu bar and the field
+
+   Relaxing only the outer one achieves nothing, because the next one down
+   still cuts. That is what made this look like a z-index problem when it was
+   a clipping one: the dropdown WAS being given a z-index, and it was still cut
+   off one row under the menu bar, which reads exactly like "it is behind the
+   other divs".
+
+   So all four are relaxed together, by one class on the BODY — the only common
+   ancestor of #topContent and .flow.workspace, which are not related to each
+   other in the DOM.
+
+   `#botContent` is deliberately NOT here: the bottom panel has no menu, and
+   relaxing it would only risk letting something escape the window. */
+body.menu-open #mainInterface,
+body.menu-open #top,
+body.menu-open #topContent,
+body.menu-open .flow.workspace{
+    overflow:visible;
+}
+/* And the list scrolls rather than running off the bottom of the window, so a
+   category with many entries stays reachable without a scrollbar on the page. */
+body.menu-open .flow.workspace .child{
+    max-height:calc(100vh - 120px);
+    overflow-y:auto;
 }
 
 .nodeContainer{
@@ -610,17 +740,59 @@ input[type=checkbox]{
 .node.error{
     fill:rgb(240, 140, 140);
 }
+/* There was a SECOND selection look here: `:focus` painted a solid tomato
+   stroke, while `.selected` paints a dashed accent one. Two indicators for one
+   state, and they disagreed — a node you had just deselected kept the focus
+   ring, so "selected" and "has focus" looked like different things and neither
+   matched the selection.
+
+   Focus is now carried by the SELECTED class alone. The rect is still focused
+   in the DOM (Delete and the keyboard still work on it), it just does not paint
+   a ring of its own. */
 .node:focus{
     outline:none;
-    stroke:tomato;
-    stroke-width: 3px;
-    transition:300ms
 }
 
 .node:hover{
     cursor:move;
     fill-opacity: 75%;
     transition:300ms
+}
+
+/* A selected node, and there is now only ONE indication of it: this class.
+
+   There used to be two — a solid tomato `:focus` ring and this dashed accent
+   one — and the two disagreed, which is worse than either alone. A node you
+   had just released kept the focus ring, so it still looked marked; a node you
+   had just selected looked different from one that merely had the keyboard
+   focus. With the ring gone there is a single state and a single look.
+
+   SOLID accent stroke, not dashed: dashes read as "pending" or "not quite",
+   and this is a definite, current, actionable state — Delete will take
+   exactly these. */
+/* THE GLOBAL `selected` RULE IS FOR HTML PANELS, NOT FOR NODES.
+
+   `.selected` above draws a white CSS outline, which is right for a Dialog
+   window (an HTML box) and completely wrong for a node. A node's rect is an
+   SVG element: the browser draws that outline as a RECTANGLE AROUND the box,
+   in white, on top of the accent stroke. Every selected node therefore wore
+   two rings — a white one and a green one — which is exactly the "double
+   level of selection" it looked like.
+
+   It also explained the two other symptoms: the white ring showed up on nodes
+   that were merely FOCUSED-and-selected rather than last-clicked, because
+   `:focus` and `.selected` were two different truths; and it flashed on
+   release, because the class was removed a frame before the outline repainted.
+
+   So the outline is cancelled here and the accent STROKE is the single
+   indicator. `outline:none` on an SVG rect removes the white box without
+   touching the stroke, which is what we want to keep. */
+.node.selected{
+    outline: none;
+    box-shadow: none;
+    stroke: var(--accent);
+    stroke-width: 3px;
+    fill-opacity: 100%;
 }
 
 .anchor{

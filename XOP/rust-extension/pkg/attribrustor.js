@@ -157,9 +157,11 @@ export function persistent_homology_0d_waves(core, stride, mode) {
 * @param {Float64Array} points_y
 * @param {Float64Array} points_index
 * @param {number} slope
+* @param {Float64Array} integrated_mass
+* @param {Float64Array} centroid_x
 * @returns {PersistenceClassification}
 */
-export function classify_persistence_0d(births, deaths, points_x, points_y, points_index, slope) {
+export function classify_persistence_0d(births, deaths, points_x, points_y, points_index, slope, integrated_mass, centroid_x) {
     const ptr0 = passArrayF64ToWasm0(births, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF64ToWasm0(deaths, wasm.__wbindgen_malloc);
@@ -170,7 +172,11 @@ export function classify_persistence_0d(births, deaths, points_x, points_y, poin
     const len3 = WASM_VECTOR_LEN;
     const ptr4 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
     const len4 = WASM_VECTOR_LEN;
-    const ret = wasm.classify_persistence_0d(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, slope);
+    const ptr5 = passArrayF64ToWasm0(integrated_mass, wasm.__wbindgen_malloc);
+    const len5 = WASM_VECTOR_LEN;
+    const ptr6 = passArrayF64ToWasm0(centroid_x, wasm.__wbindgen_malloc);
+    const len6 = WASM_VECTOR_LEN;
+    const ret = wasm.classify_persistence_0d(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, slope, ptr5, len5, ptr6, len6);
     return PersistenceClassification.__wrap(ret);
 }
 
@@ -577,6 +583,38 @@ export class PersistenceAnalysis {
         const ret = wasm.persistenceanalysis_slope(this.__wbg_ptr);
         return ret;
     }
+    /**
+    * @returns {Float64Array}
+    */
+    get integrated_mass() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.persistenceanalysis_integrated_mass(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get centroid_x() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.persistenceanalysis_centroid_x(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
 }
 
 const PersistenceClassificationFinalization = (typeof FinalizationRegistry === 'undefined')
@@ -688,10 +726,42 @@ export class PersistenceClassification {
     /**
     * @returns {Float64Array}
     */
-    get discarded_births() {
+    get kept_integrated_mass() {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             wasm.persistenceanalysis_birth_indices(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get kept_centroid_x() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.persistenceanalysis_integrated_mass(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get discarded_births() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.persistenceanalysis_centroid_x(retptr, this.__wbg_ptr);
             var r0 = getInt32Memory0()[retptr / 4 + 0];
             var r1 = getInt32Memory0()[retptr / 4 + 1];
             var v1 = getArrayF64FromWasm0(r0, r1).slice();

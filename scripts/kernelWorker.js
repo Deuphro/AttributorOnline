@@ -46,7 +46,12 @@ const kernels={
                 pointsX:toFloat64(analysis.points_x),
                 pointsY:toFloat64(analysis.points_y),
                 birthIndices:toFloat64(analysis.birth_indices),
-                slope:analysis.slope
+                slope:analysis.slope,
+                //the area and the centroid the union-find integrated on the
+                //way through. A stale pkg build simply lacks them, and the
+                //fields come back undefined rather than throwing
+                integratedMass:toFloat64(analysis.integrated_mass),
+                centroidX:toFloat64(analysis.centroid_x),
             }
         }catch(err){
             console.warn("[kernelWorker] rust H0 unavailable, JS fallback:",err)
@@ -54,33 +59,40 @@ const kernels={
         }
         return result
     },
-    async classifyPersistence0D({births,deaths,pointsX,pointsY,pointsIndex,params}){
+    async classifyPersistence0D({births,deaths,pointsX,pointsY,pointsIndex,integratedMass,centroidX,params}){
         const slope=params?.slope
         if(!Number.isFinite(slope)) throw new Error("classification requires a finite slope")
         //pointsIndex travels with the points and is returned untouched: it is
         //the only route from a kept point back to the profile it was read from,
         //which is what a width-based filter (anti_radio) needs.
         const indices=pointsIndex??new Float64Array(births.length)
+        //and so does the integrated mass, for the same reason — see the note in
+        //persistence.rs. Without it the only surviving intensity is the
+        //chief's, which is exactly what the integration replaced.
+        const masses=integratedMass??new Float64Array(births.length).fill(NaN)
+        const centroids=centroidX??new Float64Array(births.length).fill(NaN)
         let result
         try{
             await ensureWasm()
             if(typeof rust.classify_persistence_0d!=="function"){
                 throw new Error("rust classify_persistence_0d is missing (stale pkg build?)")
             }
-            const classification=rust.classify_persistence_0d(births,deaths,pointsX,pointsY,indices,slope)
+            const classification=rust.classify_persistence_0d(births,deaths,pointsX,pointsY,indices,slope,masses,centroids)
             result={
                 keptBirths:toFloat64(classification.kept_births),
                 keptDeaths:toFloat64(classification.kept_deaths),
                 keptPointsX:toFloat64(classification.kept_points_x),
                 keptPointsY:toFloat64(classification.kept_points_y),
                 keptIndices:toFloat64(classification.kept_indices),
+                keptIntegratedMass:toFloat64(classification.kept_integrated_mass),
+                keptCentroidX:toFloat64(classification.kept_centroid_x),
                 discardedBirths:toFloat64(classification.discarded_births),
                 discardedDeaths:toFloat64(classification.discarded_deaths),
                 keptCount:classification.kept_count
             }
         }catch(err){
             console.warn("[kernelWorker] rust classification unavailable, JS fallback:",err)
-            result=classifyPersistence0DJS(births,deaths,pointsX,pointsY,indices,slope)
+            result=classifyPersistence0DJS(births,deaths,pointsX,pointsY,indices,slope,masses,centroids)
         }
         return result
     },
@@ -383,27 +395,90 @@ function analysePersistence0DJS(core,stride=1,mode="sublevel"){
     const n=Math.floor(core.length/stride), offset=stride===2?n:0
     const y=stride===2?core.subarray(offset):core
     const raw=computePersistentHomology0D_JS(y,mode),count=raw.length/4
-    const rows=Array.from({length:count},(_,i)=>{const idx=Math.round(raw[count*2+i]);return{x:stride===2?core[idx]:idx,birth:raw[i],death:raw[count+i],idx}})
+    //the same integration the Rust sweep does, so a stale wasm build and this
+    //fallback report the SAME numbers - see persistence.rs
+    const masses=integrateComponentMassJS(core,stride,mode)
+    const rows=Array.from({length:count},(_,i)=>{const idx=Math.round(raw[count*2+i]);return{x:stride===2?core[idx]:idx,birth:raw[i],death:raw[count+i],idx,mass:masses.mass[idx]??0,centroid:masses.centroid[idx]??NaN}})
     rows.sort((a,b)=>a.x-b.x||a.idx-b.idx)
-    const births=new Float64Array(count),deaths=new Float64Array(count),pointsX=new Float64Array(count),pointsY=new Float64Array(count),birthIndices=new Float64Array(count)
+    const births=new Float64Array(count),deaths=new Float64Array(count),pointsX=new Float64Array(count),pointsY=new Float64Array(count),birthIndices=new Float64Array(count),integratedMass=new Float64Array(count),centroidX=new Float64Array(count)
     let sumBirth=0,sumDeath=0
-    rows.forEach((p,i)=>{births[i]=p.birth;deaths[i]=p.death;pointsX[i]=p.x;pointsY[i]=y[p.idx];birthIndices[i]=p.idx;sumBirth+=p.birth;sumDeath+=p.death})
+    rows.forEach((p,i)=>{births[i]=p.birth;deaths[i]=p.death;pointsX[i]=p.x;pointsY[i]=y[p.idx];birthIndices[i]=p.idx;integratedMass[i]=p.mass;centroidX[i]=p.centroid;sumBirth+=p.birth;sumDeath+=p.death})
     const slope=sumBirth>0&&Number.isFinite(sumDeath/sumBirth)?clampJS(sumDeath/sumBirth):clampJS(keepAllSlopeJS(births,deaths))
-    return {births,deaths,pointsX,pointsY,birthIndices,slope}
+    return {births,deaths,pointsX,pointsY,birthIndices,slope,integratedMass,centroidX}
 }
-function classifyPersistence0DJS(births,deaths,pointsX,pointsY,pointsIndex,slope){
+/* The union-find integration, mirrored from persistent_homology_0d_waves.
+
+   Same three rules, because three of them are the whole algorithm:
+     - the accumulators live on the ROOTS, not on the points
+     - a DYING component is stamped with its own total BEFORE it is folded
+       into the survivor, because after the fold that total is gone
+     - a component that never dies still has a mass, and is not an exception
+
+   The tie rule matters as much as the rest and is easy to get wrong: the side
+   the parent pointer KEEPS is the survivor, so on a tie the survivor is the
+   first argument. Deriving the dying side from the birth values instead picks
+   the survivor on a tie, and the surviving peak then reports a partial area. */
+function integrateComponentMassJS(core,stride,mode){
+    const n=Math.floor(core.length/stride), offset=stride===2?n:0
+    const y=stride===2?core.subarray(offset):core
+    const superlevel=mode==="superlevel"
+    const xOf=(i)=>stride===2?core[i]:i
+    const mass=new Float64Array(n), xmass=new Float64Array(n)
+    for(let i=0;i<n;i++){
+        const v=y[i]
+        mass[i]=Number.isFinite(v)?v:0
+        const xv=xOf(i)
+        xmass[i]=Number.isFinite(xv)&&Number.isFinite(v)?xv*v:0
+    }
+    const parent=new Uint32Array(n)
+    for(let i=0;i<n;i++) parent[i]=i
+    function find(i){let root=i;while(root!==parent[root]) root=parent[root];while(i!==root){const next=parent[i];parent[i]=root;i=next}return root}
+    const order=Array.from({length:n},(_,i)=>i)
+    order.sort((a,b)=>{const cmp=y[a]-y[b];return (superlevel?-cmp:cmp)||(xOf(a)-xOf(b))})
+    const active=new Uint8Array(n)
+    const outMass=new Float64Array(n), outCentroid=new Float64Array(n)
+    const died=new Uint8Array(n)
+    for(const idx of order){
+        active[idx]=1
+        for(const nb of [idx>0?idx-1:-1, idx+1<n?idx+1:-1]){
+            if(nb<0||!active[nb]) continue
+            const ra=find(idx), rb=find(nb)
+            if(ra===rb) continue
+            const raIsOld=superlevel?y[ra]>=y[rb]:y[ra]<=y[rb]
+            const survivor=raIsOld?ra:rb, dying=raIsOld?rb:ra
+            outMass[dying]=mass[dying]
+            outCentroid[dying]=mass[dying]!==0?xmass[dying]/mass[dying]:NaN
+            died[dying]=1
+            mass[survivor]+=mass[dying]
+            xmass[survivor]+=xmass[dying]
+            if(raIsOld) parent[rb]=ra; else parent[ra]=rb
+        }
+    }
+    for(let i=0;i<n;i++){
+        if(!died[i]){
+            outMass[i]=mass[i]
+            outCentroid[i]=mass[i]!==0?xmass[i]/mass[i]:NaN
+        }
+    }
+    return {mass:outMass,centroid:outCentroid}
+}
+function classifyPersistence0DJS(births,deaths,pointsX,pointsY,pointsIndex,slope,integratedMass,centroidX){
     const count=births.length
-    const keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),keptIndices=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count)
+    const keptBirths=new Float64Array(count),keptDeaths=new Float64Array(count),keptPointsX=new Float64Array(count),keptPointsY=new Float64Array(count),keptIndices=new Float64Array(count),keptMass=new Float64Array(count),keptCentroid=new Float64Array(count),discardedBirths=new Float64Array(count),discardedDeaths=new Float64Array(count)
     let kept=0,discarded=0
     for(let i=0;i<count;i++){
         if(deaths[i]<=slope*births[i]||deaths[i]<=slope*births[i]+1e-9*Math.max(1,Math.abs(births[i]))){
             keptBirths[kept]=births[i];keptDeaths[kept]=deaths[i];keptPointsX[kept]=pointsX[i];keptPointsY[kept]=pointsY[i]
             //NaN, never a guess: see the note on the Rust side
             keptIndices[kept]=pointsIndex?.[i]??NaN
+            //and the same for the integrated mass, which is carried rather than
+            //recomputed: the classifier has no profile to recompute it from
+            keptMass[kept]=integratedMass?.[i]??NaN
+            keptCentroid[kept]=centroidX?.[i]??NaN
             kept++
         }else{discardedBirths[discarded]=births[i];discardedDeaths[discarded]=deaths[i];discarded++}
     }
-    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),keptIndices:keptIndices.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
+    return {keptBirths:keptBirths.subarray(0,kept),keptDeaths:keptDeaths.subarray(0,kept),keptPointsX:keptPointsX.subarray(0,kept),keptPointsY:keptPointsY.subarray(0,kept),keptIndices:keptIndices.subarray(0,kept),keptIntegratedMass:keptMass.subarray(0,kept),keptCentroidX:keptCentroid.subarray(0,kept),discardedBirths:discardedBirths.subarray(0,discarded),discardedDeaths:discardedDeaths.subarray(0,discarded),keptCount:kept}
 }
 //Same semantics as antiradio.rs: a self-limiting half-height scan, then a
 //robust (median + MAD) reference built from the spectrum's own widths. The

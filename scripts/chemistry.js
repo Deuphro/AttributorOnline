@@ -1,17 +1,24 @@
 /* =========================================================================
-   chemistry.js — deux classes, et rien d'autre pour l'instant.
+   chemistry.js — trois classes.
 
-     Element   un atome et ses isotopes. Vient de data/elements.json.
-     Formula   une composition d'isotopes + une charge. Ce qu'on MESURE.
+     Element       un atome et ses isotopes. Vient de data/elements.json.
+     Stoichiometry la RACINE d'une famille de formules: les comptes, la
+                   charge, la filiation. Ne fige aucun isotope.
+     Formula       une FEUILLE: une composition d'isotopes + une charge.
+                   Ce qu'on MESURE, et ce qui sait se dériver elle-même.
 
    Exemple, qui est toute la distinction :
      C6H12O6                      une recette, pas de masse
      12C6 1H12 16O6 [H+]          une formule, m/z 181.0707
      12C5 13C1 1H12 16O6 [H+]     une AUTRE formule, +1.003355
 
-   Ce qu'il y a AU-DESSUS de Formula n'est pas encore écrit: ce qui regroupe
-   plusieurs formules en une seule entité. Rien n'en est décidé ici, alors
-   rien n'en est codé.
+   Et le graphe qui relie les trois :
+     12C6 1H12 16O6 [H+].isotopologue("C",13)  ->  12C5 13C1 1H12 16O6 [H+]
+
+   Formula ESTEND Stoichiometry: une feuille est un noeud du graphe, elle a
+   donc besoin des mêmes méthodes que la racine. C'est ce qui rend
+   `isotopologue` naturel, et ce qui permet à une feuille de remonter jusqu'à
+   sa racine sans qu'on la lui ait passée à la construction.
 
    Rappel de l'existant, pour ne pas le refaire :
      - les masses sont dans data/elements.json, PAS dans ce fichier
@@ -180,22 +187,65 @@ class Element{
    Un nom libre reste ACCEPTÉ s'il est une formule lisible; ce qui ne l'est pas
    est nommé, comme n'importe quel élément inconnu. */
 
-class Formula{
+/* -------------------------------------------------------------------------
+   Stoichiometry — la RACINE, et ce dont une formule se suspend.
+
+   POURQUOI ELLE EXISTE
+   Une formule est une feuille. Ce qui la relit à ses voisines — « le même
+   ¹²C₆, mais avec un ¹³C » — n'était écrit nulle part: il fallait reparcourir
+   la composition à la main à chaque fois, et rien ne gardait la filiation.
+
+   Donc Stoichiometry est la RACINE d'un graphe, et Formula en est une
+   FEUILLE qui peut à son tour donner naissance à d'autres:
+
+     new Stoichiometry(...)          la recette: C6H12O6, aucun isotope
+       └─ 12C6 1H12 16O6              une formule
+            └─ 12C5 13C1 1H12 16O6     son isotopologue, né de la précédente
+
+   C'est pourquoi Formula ÉTEND Stoichiometry au lieu de la contenir: une
+   feuille EST un noeud du graphe, elle a donc besoin des mêmes méthodes. La
+   hiérarchie est ici l'inverse de l'intuition, et c'est délibéré — cela rend
+   `formula.isotopologue(...)` naturel au lieu d'obliger la méthode à
+   remonter jusqu'à sa racine.
+
+   CE QUE LA RACINE GARDE, CE QUE LA FEUILLE GARDE
+   La racine ne fige aucun isotope: elle garde les COMPTES (C6, H12, O6) et la
+   charge. La feuille fige des A. C'est la seule différence, et c'est
+   exactement la différence entre une recette et une mesure.
+   ------------------------------------------------------------------------- */
+class Stoichiometry{
     /* La masse de l'électron, en unités de masse atomique.
 
        Elle est une DONNÉE (CODATA, dans elements.json), pas une constante du
        langage: la lire dans le fichier plutôt que la graver ici, c'est ce qui
        permet de la corriger un jour sans réécrire la physique. Element.load la
        pose; en son absence on garde la valeur CODATA 2018 du fichier, qui est
-       ce qu'il contient. */
+       ce qu'il contient.
+
+       Elle vit ici et non sur Formula, mais les DEUX la voient: c'est une
+       propriété statique, donc Formula l'hérite. `mass` la lit par
+       `this.constructor.electronMass` et jamais par un nom en dur, pour que
+       la classe réellement construite soit celle qui décide. */
     static electronMass=0.000548579909065
 
     /* composition: Map<Element, Map<A,count>>  ce qui est RÉELLEMENT mesuré
        ionisation:   la LISTE des termes d'ionisation, dans l'ordre saisi
        charge:       la somme de leurs charges
        rule:         la règle qui a tranché les A inconnus ("mostProbable"…)
-       path:         la provenance, {"iso":k,"ionisation":n} — HORS de la clé   */
-    constructor({composition,ionisation=[],charge=undefined,rule="mostProbable",path=undefined}={}){
+       path:         la provenance, {"iso":k,"ionisation":n} — HORS de la clé
+
+       LE GRAPHE, ajouté ici et nulle part ailleurs:
+         parent   le noeud dont celui-ci est né (null pour une racine)
+         children les feuilles qu'il a lui-même engendrées
+         table    la table des masses, pour engendrer sans la repasser
+                  à chaque appel
+
+       `table` est la seule entorse à la pureté du module, et elle est
+       assumée: sans elle `isotopologue` exigerait un second argument que
+       personne n'a sous la main au moment où l'on tient une feuille. Une
+       racine sans table dit donc pourquoi elle refuse, au lieu de choisir un
+       isotope en silence. */
+    constructor({composition,ionisation=[],charge=undefined,rule="mostProbable",path=undefined,parent=null,table=null}={}){
         this.composition=composition
         this.ionisation=ionisation
         /* Les charges s'ADDITIONNENT, elles ne se multiplient pas.
@@ -209,6 +259,19 @@ class Formula{
         //nombre de masse de l'isotope que CETTE règle aurait choisi
         this.rule=rule
         this.path=path??null
+        /* --- le graphe ---------------------------------------------------
+           Un enfant se rattache à son parent AU MOMENT DE SA NAISSANCE, et
+           jamais plus tard: une feuille non accrochée à la construction
+           serait invisible du graphe, et le graphe sert justement à ne rien
+           perdre. */
+        this.parent=parent
+        this.children=new Set()
+        //la table se transmet de proche en proche: une feuille connaît celle
+        //de sa racine, donc son arrière-plan, sans qu'on le redonne
+        this.table=table??parent?.table??null
+        if(parent){
+            parent.children.add(this)
+        }
     }
 
     /* Les COMPTES, isotopes effacés: C6H12O6 quel que soit le 13C choisi.
@@ -234,7 +297,7 @@ class Formula{
         for(let [el,byA] of this.composition){
             for(let [A,n] of byA) m+=el.isotope(A).mass*n
         }
-        return m-this.charge*Formula.electronMass
+        return m-this.charge*this.constructor.electronMass
     }
 
     //m/z: on ne mesure jamais qu'un rapport masse/charge, jamais une masse seule
@@ -249,7 +312,13 @@ class Formula{
        avec la règle par défaut, alors qu'il pouvait être du ⁵⁴Fe.
 
        Deux formules sont les mêmes si et seulement si ces chaînes sont
-       identiques. La provenance n'y entre pas. */
+       identiques. La provenance n'y entre pas.
+
+       `Formula.compositionToString` est nommé EN DUR, et non résolu par
+       `this.constructor`: c'est de la GRAMMAIRE, elle appartient à Formula,
+       et Stoichiometry n'en a pas. L'indirection serait plus élégante et
+       donnerait `undefined` sur une racine nue — le genre de bug qui
+       n'apparaît que sur l'objet que personne n'a pensé à tester. */
     get key(){
         return Formula.compositionToString(this.composition,null)
             +this.brackets
@@ -288,6 +357,245 @@ class Formula{
             const head=Formula.compositionToString(t.group,this.rule)
             return `[${head}${sign}${n>1?n:""}]`
         }).join("")
+    }
+
+    /* ===================================================================
+       LE GRAPHE.
+
+       Ces méthodes vivent sur la RACINE et sont donc disponibles partout,
+       feuille comprise: une feuille doit pouvoir répondre à « où est ma
+       racine ? » en remontant, sans que personne ait eu à lui passer la
+       racine à la construction.
+       =================================================================== */
+
+    /* La racine, en remontant d'un cran à la fois.
+
+       Une feuille connaît ainsi tout son lignage sans référence directe, donc
+       sans risque de cycle à la construction. */
+    get root(){
+        let node=this
+        /* Le `seen` n'est pas une défense contre un bug impossible: `parent`
+           est une propriété PUBLIQUE, donc assignable. Une boucle posée à la
+           main ne planterait pas, elle ne finirait jamais. */
+        const seen=new Set()
+        while(node.parent&&!seen.has(node)){
+            seen.add(node)
+            node=node.parent
+        }
+        return node
+    }
+
+    get isRoot(){ return this.parent===null }
+
+    /* Toutes les feuilles, celle-ci comprise.
+
+       L'ordre est celui de la naissance et non un tri: l'ordre d'apparition
+       est ce que l'utilisateur a fait, et le mélanger le rendrait illisible. */
+    *leaves(){
+        yield this
+        for(const child of this.children){
+            yield* child.leaves()
+        }
+    }
+
+    /* La feuille dont la clé vaut `key`, ou null.
+
+       La clé est celle de Formula.key: elle n'abrège rien, donc deux
+       formules ne se confondent jamais sur un isotope oublié. */
+    findLeaf(key){
+        for(const leaf of this.leaves()){
+            if(leaf.key===key) return leaf
+        }
+        return null
+    }
+
+    /* L'écart en ppm entre CETTE feuille et `leaf`, ou null.
+
+       C'est LA question que pose un spectre: « de combien cette formule
+       s'écarte-t-elle de ce que je vois ? ». Le calcul est fait sur le m/z et
+       JAMAIS sur une somme de masses, qui n'est pas un m/z. */
+    ppmTo(leaf){
+        if(!leaf||!Number.isFinite(leaf.mz)||!Number.isFinite(this.mz)||this.mz===0){
+            return null
+        }
+        return (leaf.mz-this.mz)/this.mz*1e6
+    }
+}
+
+/* Formula EST une Stoichiometry: une feuille du graphe, qui peut elle-même
+   donner naissance à d'autres feuilles. Tout ce qui est au-dessus — la
+   composition, la charge, la masse, la clé, l'affichage — est donc hérité tel
+   quel et n'est pas réécrit ici. Ce qui reste, et rien d'autre, c'est la
+   GRAMMAIRE: tout ce qui LIT une chaîne, et la fabrication des isotopologues,
+   qui a besoin de la grammaire pour s'écrire.
+
+   `electronMass` est redéclaré pour que `Formula.electronMass` continue de
+   dire ce qu'il a toujours dit: c'est là que Element.load pose la valeur du
+   fichier, et `mass` la lit par `this.constructor`, donc la trouve. */
+class Formula extends Stoichiometry{
+    static electronMass=0.000548579909065
+
+    /* composition: Map<Element, Map<A,count>>  ce qui est RÉELLEMENT mesuré
+       ionisation:   la LISTE des termes d'ionisation, dans l'ordre saisi
+       charge:       la somme de leurs charges
+       rule:         la règle qui a tranché les A inconnus ("mostProbable"…)
+       path:         la provenance, {"iso":k,"ionisation":n} — HORS de la clé   */
+    constructor({composition,ionisation=[],charge=undefined,rule="mostProbable",path=undefined,parent=null,table=null}={}){
+        super({composition,ionisation,charge,rule,path,parent,table})
+    }
+
+    /* ===================================================================
+       L'ISOTOPOLOGUE — le nœud suivant du graphe.
+
+       C'est LA méthode que la classe rend possible: une formule sait se
+       dériver elle-même, donc il n'y a aucun registre à tenir, aucun index à
+       maintenir, et deux leaves qui dérivent la même chose sont le MÊME objet.
+
+         12C6 1H12 16O6 .isotopologue("C",13)   -> 12C5 13C1 1H12 16O6
+         12C5 13C1 ...    .isotopologue("C",12)  -> 12C6 ...       (dchargé)
+
+       L'ARGUMENT EST UN NOMBRE DE MASSE, ET JAMAIS UN ISOTOPE AU HASARD.
+       « Mets un 13C » n'a pas de sens: il y a six places possibles, et le
+       résultat n'en est pas un. « Mets le PREMIER 12C en 13C » en a un.
+       C'est pourquoi `count` existe et vaut 1: la plupart du temps on change
+       UNE place, et la première est la réponse.
+
+       D'OÙ PART LE DÉPLACEMENT — ET C'EST LA QUESTION QUI COMPTE.
+       Le déplacement part de l'ISOTOPE DEMANDÉ LUI-MÊME, et non du plus petit
+       A présent. C'est contre-intuitif, donc voici pourquoi:
+
+         12C5 13C1 .isotopologue("C",12)   doit rendre 12C6, pas 12C4 13C2
+
+       En partant du plus petit A, on prendrait un 12C — donc un 12C de plus,
+       donc 13C reste, et le "dchargé" ne le serait pas. C'est le geste même
+       demandé (« j'ai le 13C1, je peux avoir le full 12C »), donc il doit
+       marcher du premier coup.
+
+       Donc: si l'isotope demandé est DÉJÀ là, c'est lui qu'on convertit en
+       `target`. Sinon on convertit le plus petit A, qui est alors un A
+       différent par construction.
+
+       `target` est ce qui manque au mode « mets un 13C »: « Mets un 13C »
+       n'a pas de sens, il y a six places possibles. « Mets le 12C EN 13C »,
+       ou « le 13C en 12C », en a une seule. C'est ce que le paramètre
+       `target` rend explicite, et il est calculé ici plutôt que demandé,
+       parce que l'appelant écrit l'intention, pas l'isotope source. */
+    isotopologue(symbol,A,{count=1,rule=this.rule,target=null}={}){
+        const table=this.table
+        if(!table){
+            /* Une racine sans table ne SAIT pas quelles masses existent.
+               Deviner un A en silence produirait une formule fausse avec une
+               clé fausse — le pire des deux, et invisible. */
+            throw new Error("isotopologue needs the periodic table: this node was built without one")
+        }
+        const el=table.find(symbol)
+        if(!el){
+            throw new Error(`unknown element "${symbol}"`)
+        }
+        const massNumber=Number(A)
+        if(!Number.isInteger(massNumber)){
+            throw new Error(`"${A}" is not a mass number`)
+        }
+        if(!el.isotope(massNumber)){
+            throw new Error(`${el.symbol} has no isotope ${massNumber}`)
+        }
+        if(target!==null&&!Number.isInteger(Number(target))){
+            throw new Error(`"${target}" is not a mass number`)
+        }
+        /* La composition est COPIÉE, jamais partagée: une feuille et sa fille
+           ne peuvent pas écrire dans la même Map, sinon la mère se modifierait
+           sous les pieds de celui qui la regarde. */
+        const composition=new Map()
+        for(const [element,byA] of this.composition){
+            composition.set(element,new Map(byA))
+        }
+        const byA=composition.get(el)
+        if(!byA||byA.size===0){
+            throw new Error(`${el.symbol} is not part of this formula`)
+        }
+        if(!Number.isInteger(count)||count<1){
+            throw new Error(`count must be a positive whole number, got ${count}`)
+        }
+        /* QUEL isotope on convertit. Trois cas, dans cet ordre:
+             - `target` nommé: lui, sans discussion — c'est l'appelant qui a
+               tranché, et son choix prime sur toute déduction;
+             - sinon, une seule façon de lire la demande: on MONTE ou on
+               DESCEND, et le geste n'a de sens que dans un sens.
+
+               MONTER (12 -> 13): on convertit le plus LÉGER, parce qu'on
+               cherche à alourdir un atome. 12C6 -> 12C5 13C1.
+
+               DESCENDRE (13 -> 12): on convertit le plus LOURD, parce qu'on
+               cherche à décharger. C'est ce qui rend la décharge correcte:
+               dans 12C5 13C1, demander 12C donne 12C6 — et non 12C4 13C2,
+               où l'on aurait FABRIQUÉ un 12C de plus en gardant le 13C.
+
+               Si l'isotope demandé est déjà celui qu'on convertirait, alors
+               from === massNumber et rien ne bouge: c'est la formule
+               elle-même. */
+        const present=[...byA.keys()].sort((a,b)=>a-b)
+        let from
+        if(target!==null){
+            from=Number(target)
+            if(!byA.has(from)){
+                throw new Error(`${el.symbol} has no atom of mass ${from} to convert`)
+            }
+        }else if(present.length===1){
+            //un seul isotope présent: il n'y a rien d'autre à convertir
+            from=present[0]
+        }else if(massNumber>present[0]){
+            //on MONTE: on prend le plus léger
+            from=present[0]
+        }else{
+            //on DESCEND: on prend le plus lourd
+            from=present[present.length-1]
+        }
+        const fromCount=byA.get(from)
+        if(from===massNumber){
+            /* Même isotope: c'est la formule elle-même. Renvoyer `this` et non
+               une copie identique garde le graphe honest — un nœud qui ne
+               change rien n'est pas un nœud. */
+            return this
+        }
+        if(fromCount<count){
+            /* Le refus est EXPLICITE, et il dit ce qui existe. Retirer ce qui
+               manque produirait une formule à trous, dont la masse ne
+               correspondrait plus au compte affiché. */
+            throw new Error(
+                `${el.symbol}: only ${fromCount} atom(s) of mass ${from}, ${count} requested`
+            )
+        }
+        byA.set(from,fromCount-count)
+        byA.set(massNumber,(byA.get(massNumber)??0)+count)
+        /* Une Map qui porte un compte nul est une entrée FANTÔME: elle compte
+           dans `counts`, dans l'affichage et dans la clé, alors qu'il n'y a
+           plus rien. Sinon "12C5 13C1" deviendrait "12C5 13C1 14C0". */
+        for(const [otherA,n] of [...byA]){
+            if(n===0) byA.delete(otherA)
+        }
+        if(byA.size===0){
+            composition.delete(el)
+        }
+        /* path porte la PROVENANCE, HORS de la clé: deux formules qui
+           descendent du même parent par deux chemins sont le même noeud, et la
+           filiation est une information de lecture, pas d'identité. C'est
+           exactement la règle que Formula.key applique déjà. */
+        return new Formula({
+            composition,
+            //l'ionisation est RECOPIÉE, pas partagée: le même tableau entre la
+            //mère et la fille ferait qu'une retouche de l'une se voie sur
+            //l'autre
+            ionisation:this.ionisation.map(t=>({...t})),
+            charge:this.charge,
+            rule,
+            path:{parentKey:this.key,iso:{symbol:el.symbol,A:massNumber,count}},
+            /* Le parent est `this` SAUF si `this` est déjà une feuille
+               d'une AUTRE famille: on se rattache alors à sa racine, pour que
+               toute la famille reste sous une seule racine et que
+               `root.leaves()` trouve tout le lignage. */
+            parent:this.parent??this,
+            table
+        })
     }
 
 
@@ -367,7 +675,7 @@ class Formula{
         const trailing=orphan||composition.trailingSign||0
         if(composition.trailingSign) delete composition.trailingSign
         if(trailing) terms.unshift(trailing>0?`+${trailing}`:`${trailing}`)
-        if(terms.length===0) return new Formula({composition,ionisation:[],rule})
+        if(terms.length===0) return new Formula({composition,ionisation:[],rule,table})
         //chaque crochet est un terme; les charges s'additionnent
         const ionisation=terms.map(t=>Formula.parseIonisation(t,table,rule).ionisation)
         /* Les coefficients sont DÉJÀ signés dans la Map: parseComposition a lu
@@ -377,7 +685,7 @@ class Formula{
         for(const {group} of ionisation){
             if(group) Formula.applyGroup(composition,group,1,false,table,rule)
         }
-        return new Formula({composition,ionisation,rule})
+        return new Formula({composition,ionisation,rule,table})
     }
 
     /* "C6H12O6" ou "12C5 13C1 1H12 16O6" -> Map<Element, Map<A,count>>
@@ -978,4 +1286,4 @@ async function loadTable(url="../data/elements.json"){
     return Element.load(await response.json())
 }
 
-export {Element,Formula,loadTable}
+export {Element,Formula,Stoichiometry,loadTable}

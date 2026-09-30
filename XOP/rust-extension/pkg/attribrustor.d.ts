@@ -21,9 +21,11 @@ export function persistent_homology_0d_waves(core: Float64Array, stride: number,
 * @param {Float64Array} points_y
 * @param {Float64Array} points_index
 * @param {number} slope
+* @param {Float64Array} integrated_mass
+* @param {Float64Array} centroid_x
 * @returns {PersistenceClassification}
 */
-export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number): PersistenceClassification;
+export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number, integrated_mass: Float64Array, centroid_x: Float64Array): PersistenceClassification;
 /**
 * Where the SELECTED method wants the low cursor to sit, as a single number.
 *
@@ -189,7 +191,13 @@ export class PersistenceAnalysis {
   readonly births: Float64Array;
 /**
 */
+  readonly centroid_x: Float64Array;
+/**
+*/
   readonly deaths: Float64Array;
+/**
+*/
+  readonly integrated_mass: Float64Array;
 /**
 */
   readonly points_x: Float64Array;
@@ -215,6 +223,9 @@ export class PersistenceClassification {
   readonly kept_births: Float64Array;
 /**
 */
+  readonly kept_centroid_x: Float64Array;
+/**
+*/
   readonly kept_count: number;
 /**
 */
@@ -222,6 +233,9 @@ export class PersistenceClassification {
 /**
 */
   readonly kept_indices: Float64Array;
+/**
+*/
+  readonly kept_integrated_mass: Float64Array;
 /**
 */
   readonly kept_points_x: Float64Array;
@@ -321,16 +335,20 @@ export interface InitOutput {
   readonly persistenceanalysis_points_y: (a: number, b: number) => void;
   readonly persistenceanalysis_birth_indices: (a: number, b: number) => void;
   readonly persistenceanalysis_slope: (a: number) => number;
+  readonly persistenceanalysis_integrated_mass: (a: number, b: number) => void;
+  readonly persistenceanalysis_centroid_x: (a: number, b: number) => void;
   readonly __wbg_persistenceclassification_free: (a: number) => void;
   readonly persistenceclassification_kept_births: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_deaths: (a: number, b: number) => void;
   readonly persistenceclassification_kept_count: (a: number) => number;
   readonly persistent_homology_0d_waves: (a: number, b: number, c: number, d: number, e: number) => number;
-  readonly classify_persistence_0d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => number;
+  readonly classify_persistence_0d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => number;
   readonly persistenceclassification_kept_deaths: (a: number, b: number) => void;
   readonly persistenceclassification_kept_points_x: (a: number, b: number) => void;
   readonly persistenceclassification_kept_points_y: (a: number, b: number) => void;
   readonly persistenceclassification_kept_indices: (a: number, b: number) => void;
+  readonly persistenceclassification_kept_integrated_mass: (a: number, b: number) => void;
+  readonly persistenceclassification_kept_centroid_x: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_births: (a: number, b: number) => void;
   readonly __wbg_trimresult_free: (a: number) => void;
   readonly trimresult_points_x: (a: number, b: number) => void;
