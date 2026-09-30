@@ -3904,6 +3904,21 @@ const TRACE_COLORS=["#e74c3c","#3498db","#2ecc71","#f39c12","#9b59b6","#1abc9c",
 function traceColor(index){
     return TRACE_COLORS[((index%TRACE_COLORS.length)+TRACE_COLORS.length)%TRACE_COLORS.length]
 }
+/* Delete and Backspace, as ONE predicate.
+
+   Two keys for one verb is not redundancy, it is the two keyboards: the Delete
+   key of a PC sits far from the home position, and on a Mac there is no forward
+   Delete at all — Backspace is what is under the right hand. The nodes of the
+   flow have accepted both since the beginning (Node's key handler), and a panel
+   that answered only one of them would feel like a different application.
+
+   It also has to IGNORE the keystrokes that only LOOK like deletion, which is
+   why the callers pair it with a check on what has the focus: Backspace inside
+   the formula field, the filter or the note is an edit, and a panel that
+   swallowed it would make those three fields unusable. */
+function isDeleteKey(event){
+    return event.key==="Delete"||event.key==="Backspace"
+}
 //The orders the list accepts. Each one returns 0 for "equal": the caller adds
 //the m/z and the key as tie-breakers, because a list whose order changes
 //between two identical paints is a list that moves the row under the cursor.
@@ -4079,7 +4094,19 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         else if(event.key==="ArrowUp") next=current<0?rows.length-1:Math.max(0,current-1)
         else if(event.key==="Home") next=0
         else if(event.key==="End") next=rows.length-1
-        else if(event.key==="Enter"||event.key===" "){
+        else if(isDeleteKey(event)){
+            /* No selection means nothing to remove, and SAYING so beats eating
+               the keystroke: the alternative is a user who pressed Delete on a
+               list, saw nothing happen, and pressed it harder. */
+            if(current<0){
+                event.preventDefault()
+                this.reportDeletion("select a formula first — the arrows move, Delete removes")
+                return
+            }
+            event.preventDefault()
+            this.deleteVisibleRow(rows[current])
+            return
+        }else if(event.key==="Enter"||event.key===" "){
             if(current>=0){
                 event.preventDefault()
                 this.activateRow(rows[current])
@@ -4094,6 +4121,53 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.list?.scrollToRow(next)
         this.renderRows()
         this.renderSelection()
+    }
+    /* Remove whatever the given row stands for, and say what happened.
+
+       The row is not always ONE formula. In the stoichiometry view a row is a
+       MOLECULE — a group of isotopologues folded under one line — and Delete on
+       it has to mean the whole group, because that is the object the user sees
+       and picked. Anything else would be a lie about what the list is showing:
+       the row disappears, three of its five formulae come back on the next
+       resolve, and the key looks broken in the one view built to be tidy.
+
+       It is therefore sequential and not parallel. The removals each end in a
+       full resolve, and a hundred resolves fired at once would interleave their
+       rebuilds against one shared `this.collections` — the last one to land
+       would win, and the list would show a state no single request ever asked
+       for. One at a time is the price of the list and the graph agreeing, and a
+       molecule is a handful of rows, not a hundred thousand. */
+    async deleteVisibleRow(row){
+        const collection=this.currentCollection
+        if(!collection) return
+        const keys=row.kind==="molecule"
+            ?row.entries.map(entry=>entry.key)
+            :[row.key]
+        /* Every key goes, or none does. Half a molecule is not a molecule, and a
+           partial removal is the one outcome that would have to be explained. */
+        for(const key of keys){
+            const result=await this.deleteFormula(collection.name,key)
+            if(!result.ok){
+                this.reportDeletion(result.message,true)
+                return
+            }
+        }
+        this.reportDeletion(
+            row.kind==="molecule"
+                ?`removed ${formatCount(keys.length)} formulae of ${collection.name}`
+                :`removed from ${collection.name}`
+        )
+    }
+    /* What a refusal or a success looks like, on the line under the field.
+
+       The add row is where the user already looks after pressing Enter, so it is
+       where a verdict belongs — and it is the only piece of the panel that is
+       guaranteed to be on screen whatever state the list is in. A Dialog would
+       be heavier than the event and would have to be dismissed. */
+    reportDeletion(message,bad=false){
+        if(!this.addHint) return
+        this.addHint.textContent=message
+        this.addHint.className=bad?"fc-addrow-note fc-addrow-bad":"fc-addrow-note fc-addrow-ok"
     }
     /* --- creating things, as opposed to reading them ------------------- */
     /* A READER that can only read is half a tool: the collections a user
@@ -4158,10 +4232,30 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         const index=this.parameters.localCollections.findIndex(local=>local.name===name)
         /* A collection a parent made is NOT deletable: it would come back at the
            next resolve and the list would flicker. The verb is greyed out in
-           the menu for the same reason. */
-        if(index<0) return false
+           the menu for the same reason.
+
+           From the KEYBOARD it says so out loud instead of returning false in
+           silence: Delete is not a button the user aimed at, it is a key they
+           pressed, and a key that does nothing at all reads as a broken panel
+           rather than as a refusal that has a reason. */
+        if(index<0){
+            this.origin?.notice?.(
+                "Not yours to delete",
+                `"${name}" was made by another node. It is rebuilt from that node at every resolve, so deleting it here would only make it disappear for a moment.`
+            )
+            return false
+        }
         this.parameters.localCollections.splice(index,1)
         delete this.parameters.collectionState[name]
+        /* The name is gone, so anything still pointing at it now points at
+           nothing. syncCurrentCollection falls back to the first collection on
+           the next resolve, but the SELECTION is a formula key and is not
+           re-derived there: left alone, it would keep the detail panel
+           describing a formula this node no longer holds. */
+        this.parameters.selection=null
+        this.selectedEntry=null
+        this.openEntries.clear()
+        this.openMolecules.clear()
         this.origin?.saveSessionSoon?.()
         await this.startResolve()
         this.resolveChildren()
@@ -4210,6 +4304,63 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         await this.startResolve()
         this.resolveChildren()
         return {ok:true,message:`added to ${collection.name}`}
+    }
+    /* The mirror of addFormulaToLocal: take ONE formula out of a collection of
+       this node, and only of this node.
+
+       THE LOOKUP IS THE WHOLE PROBLEM. The list shows `entry.key`, the canonical
+       identity — "C6H12O6" is stored as "12C6 1H12 16O6" — while
+       `localCollections[].keys` holds the TEXT the user typed. Those two strings
+       are not equal and must never be compared as if they were: splicing the key
+       out of a list of texts removes nothing, the formula survives the next
+       resolve, and Delete looks broken in the one case where the user is most
+       certain it should have worked.
+
+       So the stored text is what is removed, and the row is located by RE-READING
+       each stored text and asking for its canonical key. It costs one parse per
+       formula in the collection, which is why it is done here and not in the
+       render path: deletion is a deliberate act, a repaint is not.
+
+       `collection.sources` would have answered this in O(1), and does not: the
+       local collections are rebuilt from Formula OBJECTS, and asFormula only
+       records a source for a STRING — so that map holds key→key for them, which
+       is the very equality that must not be relied on. */
+    async deleteFormula(collectionName,canonicalKey){
+        const collection=this.collections.find(c=>c.name===collectionName)
+        if(!collection) return {ok:false,message:"that collection is not on screen"}
+        /* Only a collection this node OWNS can be written to. A parent's
+           collection is rebuilt from the link at every resolve, so the formula
+           would come straight back — and a Delete that undoes itself is worse
+           than one that refuses and says why. */
+        if(!collection.local){
+            return {ok:false,message:`"${collectionName}" belongs to a parent — it comes back on the next resolve`}
+        }
+        const local=this.parameters.localCollections.find(l=>l.name===collectionName)
+        if(!local) return {ok:false,message:`"${collectionName}" is not a collection of this node`}
+        const table=this.loadedTable??await this.table()
+        if(!table) return {ok:false,message:"the periodic table is not available yet, try again"}
+        const stored=local.keys.findIndex(text=>{
+            try{ return Formula.parse(text,table).key===canonicalKey }
+            /* A text that no longer reads is NOT a reason to refuse the deletion:
+               it is already dead weight in the list, and the one thing the user
+               asked for is that the formula they clicked goes away. */
+            catch(error){ return false }
+        })
+        if(stored<0) return {ok:false,message:`${prettyNotation(collection.find(canonicalKey)?.notation??canonicalKey)} is not stored here`}
+        local.keys.splice(stored,1)
+        /* The annotation goes with the formula. It is keyed by the canonical key
+           and nothing else would ever read it again, so keeping it would grow
+           every deleted formula's note forever in the session file. */
+        delete this.collectionState(collectionName).notes[canonicalKey]
+        if(this.parameters.selection===canonicalKey){
+            this.parameters.selection=null
+            this.selectedEntry=null
+        }
+        this.openEntries.delete(canonicalKey)
+        this.origin?.saveSessionSoon?.()
+        await this.startResolve()
+        this.resolveChildren()
+        return {ok:true,message:`removed from ${collectionName}`}
     }
     setView(view){
         if(this.parameters.view===view) return
@@ -4572,14 +4723,33 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
     buildCollectionRow(collection){
         const state=this.collectionState(collection.name)
         const isCurrent=this.currentCollection?.name===collection.name
-        const row=CE("div",{className:`fc-collection${isCurrent?" current":""}`},[])
+        const row=CE("div",{
+            className:`fc-collection${isCurrent?" current":""}`,
+            tabIndex:0,
+            title:`${collection.name} — ${formatCount(collection.entries.length)} formulas. Delete removes it when it is yours.`
+        },[])
+        /* The dot is rendered on EVERY row, empty or not. It is the first cell,
+           which is why it is also the first column of the grid: leaving it out
+           on the rows that do not own a collection would push every other cell
+           one column to the left, and a list whose controls are in a staircase
+           is a list nobody trusts. */
+        row.append(CE("span",{
+            className:collection.local?"fc-collection-local":"fc-collection-local off",
+            title:collection.local
+                ?"Made in this node: it can be written to and deleted"
+                :"A collection a parent made: it comes back on the next resolve"
+        },[collection.local?"●":""]))
         const open=CE("button",{
             type:"button",
             className:"fc-collection-open",
             title:isCurrent?"Hide the formulas of this collection":"Show the formulas of this collection",
-            style:{cursor:"pointer",padding:"0 3px",minWidth:"0",flex:"none"}
+            /* the inline `flex` here used to do nothing at all — the row is a
+               GRID, so the widths come from the template and the cells only
+               need to be told not to overflow their track */
+            style:{cursor:"pointer",minWidth:"0"}
         },[state.open&&isCurrent?"▾":"▸"])
-        open.addEventListener("click",()=>{
+        open.addEventListener("click",(event)=>{
+            event.stopPropagation()
             if(this.currentCollection?.name===collection.name){
                 //already on it: the caret only folds, and the list stays put
                 state.open=!state.open
@@ -4593,27 +4763,13 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             type:"button",
             className:"fc-collection-name",
             title:`${collection.name} — click to read its formulas`,
-            style:{cursor:"pointer",textAlign:"left",minWidth:"0",flex:"1 1 auto",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}
+            style:{cursor:"pointer",textAlign:"left",minWidth:"0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}
         },[collection.name])
         name.addEventListener("click",()=>this.selectCollection(collection.name))
         const count=CE("span",{
             className:"fc-collection-count",
             title:`${formatCount(collection.entries.length)} formulas, ${formatCount(collection.entries.reduce((n,e)=>n+e.targets.length,0))} measured points`
         },[formatCount(collection.entries.length)])
-        /* A local collection wears a dot. One glyph, not a word: the name column
-           is short, and "local" written out on every row would be read zero
-           times. The title says what it means.
-
-           The cell is ALWAYS rendered, empty or not: it is the fourth column of
-           a fixed grid, and leaving it out on the rows that do not own a
-           collection would push their two checkboxes one column to the left —
-           a list whose controls are in a staircase. */
-        row.append(CE("span",{
-            className:collection.local?"fc-collection-local":"fc-collection-local off",
-            title:collection.local
-                ?"Made in this node: it can be written to and deleted"
-                :""
-        },[collection.local?"●":""]))
         /* The two checkboxes, and they mean two DIFFERENT things, which is why
            they are two boxes and not one tristate: "output" is what leaves this
            node, "graph" is what is drawn in the central dialog. A user who
@@ -4623,6 +4779,35 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         const inGraphs=this.collectionCheck(state,"inGraphs","Draw this collection in the central dialog")
         const handle=this.collectionHandle(collection,state)
         row.append(open,name,count,inOutput,inGraphs,handle)
+        /* DELETE / BACKSPACE on the row itself.
+
+           The row is focusable (tabIndex above) and this is its key handler.
+           Without it the user has to aim at a ⋮ and then hunt the verb in a
+           floating menu to throw away a collection they just made by accident —
+           which is the one moment deletion is most likely to be what they want.
+
+           Both keys do the same thing, like they do on the nodes of the flow:
+           Mac keyboards have no Delete, and Backspace is what sits under the
+           right hand there. */
+        row.addEventListener("keydown",(event)=>{
+            if(!isDeleteKey(event)) return
+            /* a checkbox that has the focus must keep Space and Enter for
+               itself, and Backspace on one is not "delete the collection" —
+               the row's own handler must not answer for its children */
+            if(event.target!==row) return
+            event.preventDefault()
+            event.stopPropagation()
+            this.deleteCollection(collection.name)
+        })
+        /* NO "focus selects" handler, and that is deliberate.
+
+           `selectCollection` calls renderAll, which rebuilds every row of the
+           band — so selecting from `focus` would destroy the very element that
+           had just taken the focus, the ring would go back to the body, and the
+           Delete that follows would reach nothing. The row is its own delete
+           target, so it needs no state change to be deletable, and the focus
+           ring alone already shows which collection the key is about to throw
+           away. Selecting a collection to READ it stays a click. */
         return row
     }
     collectionCheck(state,key,title){
@@ -4664,14 +4849,20 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
     }
     buildToolbar(){
         const bar=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em"}},[])
-        /* The Formula / Stoichiometry switch, and the Fold button that does
-           the same thing in one gesture for the collection on screen. Two
-           names for one idea, because the toggle is a MODE and the button is
-           an ACTION, and a user who has just been handed a list of ten
-           thousand isotopologues wants the second one. */
+        /* The Formula / Stoichiometry switch, and the ONLY control of the view: the wide
+           Fold button that used to sit under this row is gone, and this took its
+           place. Two names for one idea is a cost, and with the action gone there
+           is nothing left to pay it. */
         this.viewToggle=scaleToggle({
-            get:()=>this.parameters.view==="formula",
-            set:(on)=>this.setView(on?"formula":"stoichiometry"),
+            /* `get` answers for the RIGHT label, which is the convention of every
+               other scaleToggle in this file: Lin/Log asks `logY`, so `true` means
+               the right-hand state. It used to answer for the LEFT one, and both
+               halves were wrong together — the accent lit "Stoichiometry" while
+               the list was still showing formulae, and clicking "Stoichiometry"
+               called setView("formula"). One line, and the switch was exactly
+               backwards in the one place a reader checks it: under the cursor. */
+            get:()=>this.parameters.view==="stoichiometry",
+            set:(on)=>this.setView(on?"stoichiometry":"formula"),
             leftLabel:"Formula",
             rightLabel:"Stoichiometry",
             title:"One row per formula, or one row per molecule with its isotopologues folded under it"
@@ -4701,19 +4892,17 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.sortField=CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},[this.sortSelect])
         this.sortField.title="Order of the list"
         bar.append(this.viewToggle,this.filterInput,CE("div",{style:{display:"flex",alignItems:"center",gap:"4px"}},[this.sortField,this.countLabel]))
-        const fold=CE("button",{
-            type:"button",
-            title:"Fold every isotopologue of this collection under its molecule",
-            style:{cursor:"pointer",padding:"3px 6px",fontSize:"0.95em",width:"100%"}
-        },["Fold to stoichiometry"])
-        fold.addEventListener("click",()=>{
-            this.setView("stoichiometry")
-            //unfolding nothing is the point: the whole collection folds at once
-            this.openMolecules.clear()
-            this.openEntries.clear()
-            this.renderRows()
-        })
-        return CE("div",{style:{display:"grid",gap:"3px",minWidth:"0"}},[bar,fold])
+        /* The wide "Fold to stoichiometry" button that used to sit under this row
+           is GONE, and the toggle above takes its place.
+
+           They were the same verb twice: the button called setView("stoichiometry")
+           and cleared the open sets, which is what the toggle does too when it is
+           moved to the right. What it cost was a full-width button under the
+           toolbar — the loudest object on a panel whose whole job is a quiet
+           column of formulae — to say something the first control already said.
+
+           So the toolbar is ONE row again: view, filter, order, count. */
+        return bar
     }
 
     /* --- the three panels ------------------------------------------------ */
