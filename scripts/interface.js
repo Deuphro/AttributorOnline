@@ -5027,7 +5027,25 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                 molecule:group.molecule,
                 entries:group.entries,
                 key:group.entries[0].key,
-                notation:group.entries[0].root?String(group.entries[0].root):group.entries[0].notation,
+                /* The group is LABELLED with the key that grouped it, not with
+                   the notation of whichever leaf happened to come first.
+
+                   `String(root)` is what this used to print, and it is wrong for
+                   every protonated or adducted species: toString writes from
+                   `written` — the core — while the grouping reads `counts`, which
+                   carries the absorbed group. So CH4;H+ is grouped as CH5+ and then
+                   LABELLED "CH4[H+]", a formula with five hydrogens written as
+                   four plus a bracket. The row said one thing and the count in
+                   front of it (×2, both spellings) said another.
+
+                   moleculeKey is the one string guaranteed to describe the whole
+                   group: it is what put these leaves in this box, and it is
+                   already a display form — Hill order, no isotope mass numbers.
+                   Printing it also makes the label independent of the ORDER of
+                   the entries, which "the first leaf" never was: the same
+                   collection could show CH4[H+] or CH5[+] on two machines that
+                   enumerated their parents differently. */
+                notation:group.molecule,
                 mz:group.entries.reduce((n,e)=>n+e.mz,0)/group.entries.length,
                 count:group.entries.length
             }))
