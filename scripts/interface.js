@@ -8,7 +8,7 @@ import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 //the chemistry engine. The CLASSES are imported directly; the periodic table
 //is DATA and is fetched by the App that needs it (see App), never at module
 //load: importing a node graph must not drag a 72 Ko download with it.
-import {Formula,loadTable} from "./chemistry.js"
+import {Formula,Stoichiometry,FormulaCollection,loadTable} from "./chemistry.js"
 //where the nodes go, and which two of them get wired together by themselves.
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
@@ -3696,6 +3696,1768 @@ class NodeWithRightAccordionGraph extends Node{
     }
 }
 
+/* ---- VirtualRowList: a scroll of identical rows, made affordable --------
+
+   The list of a collection can hold tens of thousands of formulas, and a DOM
+   row per formula is not a slow list, it is a dead tab: the browser lays out
+   and paints every one of them on the first frame, then again on every scroll.
+
+   So the rows are a POOL. Only the rows the viewport can show exist, plus a
+   small overscan; the rest is a spacer of the right total height, and the
+   scrollbar is honest because that spacer is what it measures. Scrolling does
+   not create anything, it re-fills elements that already exist.
+
+   The price is stated rather than hidden: only what fits is in the DOM, so a
+   row's state must live in the DATA (this.rows) and not in the element. That
+   is why onRow returns nothing and is handed the row every time. */
+class VirtualRowList{
+    //rows drawn beyond the viewport, top and bottom. A screenful is plenty on
+    //a fast wheel and not enough on a slow drag; 8 rows is the compromise.
+    static OVERSCAN=8
+    constructor({rowHeight,onRow,onActivate=null}={}){
+        this.rowHeight=rowHeight
+        this.onRow=onRow
+        this.onActivate=onActivate
+        this.rows=[]
+        this.pool=[]
+        this.first=0
+        this.last=0
+        this.paintFrame=null
+        this.spacer=CE("div",{className:"fc-spacer"},[])
+        this.layer=CE("div",{className:"fc-layer"},[])
+        this.element=CE("div",{className:"fc-viewport"},[this.spacer,this.layer])
+        this.spacer.addEventListener("click",()=>{})
+        this.observer=new ResizeObserver(()=>this.paint())
+        this.observer.observe(this.element)
+    }
+    setRows(rows){
+        this.rows=rows
+        //the spacer IS the scrollbar: without its full height the list would
+        //be a dozen rows tall no matter how many formulas it holds
+        this.spacer.style.height=`${rows.length*this.rowHeight}px`
+        this.paint()
+        /* AND ONCE MORE, on the next frame.
+
+           A paint measures `clientHeight`, and right after a re-render that
+           number is the one the layout WILL have, not the one it has: the
+           collections above have just been rebuilt, the write line has just
+           been rebuilt, the browser has not reflowed. Painting on a stale zero
+           fills a single row — or none — and the list then stays wrong until
+           the user scrolls, which is exactly what "the formulas disappear when
+           I pick another collection" looks like.
+
+           The ResizeObserver catches the size changing, but it fires for SIZE,
+           not for "the rows in it are different": a list that was already the
+           right height and merely got new content is never resized. So the
+           repaint is asked for explicitly, here, where the rows changed. */
+        this.paintLater()
+    }
+    paintLater(){
+        if(this.paintFrame) return
+        this.paintFrame=requestAnimationFrame(()=>{
+            this.paintFrame=null
+            this.paint()
+        })
+    }
+    /* The visible window, as row indices. A binary search over the offsets,
+       because the list may hold a hundred thousand rows and a linear scan on
+       every scroll frame is what virtualization was supposed to remove. */
+    visibleRange(){
+        const scrollTop=this.element.scrollTop
+        /* One screenful when the box has not been laid out yet. A zero here
+           would make `needed` zero, which hides every pooled row — and the list
+           would then be blank for a reason that has nothing to do with how many
+           formulas it holds. */
+        const height=this.element.clientHeight||this.rowHeight*8
+        const first=Math.max(0,Math.floor(scrollTop/this.rowHeight)-VirtualRowList.OVERSCAN)
+        const last=Math.min(this.rows.length,Math.ceil((scrollTop+height)/this.rowHeight)+VirtualRowList.OVERSCAN)
+        return {first,last}
+    }
+    paint(){
+        const {first,last}=this.visibleRange()
+        const needed=last-first
+        while(this.pool.length<needed){
+            //a null row means "BUILD": the callback returns a fresh element,
+            //and from then on the pool re-fills the same ones forever
+            const element=this.onRow(null,null,this.pool.length)
+            element.style.position="absolute"
+            element.style.left="0px"
+            element.style.right="0px"
+            this.layer.appendChild(element)
+            this.pool.push(element)
+        }
+        for(let i=0;i<this.pool.length;i++){
+            const element=this.pool[i]
+            if(i>=needed){
+                element.style.display="none"
+                continue
+            }
+            element.style.display=""
+            element.style.transform=`translateY(${(first+i)*this.rowHeight}px)`
+            //the row is attached to its element here, so the click handler
+            //installed once at build time always finds the CURRENT row
+            this.onRow(element,this.rows[first+i],first+i)
+        }
+        this.first=first
+        this.last=last
+    }
+    scrollToRow(index){
+        if(!this.rows.length) return
+        const clamped=Math.max(0,Math.min(this.rows.length-1,index))
+        const top=clamped*this.rowHeight
+        const height=this.element.clientHeight||this.rowHeight
+        if(top<this.element.scrollTop){
+            this.element.scrollTop=top
+        }else if(top+this.rowHeight>this.element.scrollTop+height){
+            this.element.scrollTop=top+this.rowHeight-height
+        }
+        this.paint()
+    }
+    dispose(){
+        this.observer.disconnect()
+        if(this.paintFrame) cancelAnimationFrame(this.paintFrame)
+        this.element.remove()
+        this.pool.length=0
+        this.rows=[]
+    }
+}
+
+/* ---- small pure helpers for the collection reader ----------------------
+   They live out of the class because none of them touches the DOM, and a
+   number format is exactly the thing that must be testable on its own. */
+
+//"1 234 567" — the counts here reach six digits per collection, and a column
+//of "1234567" is a column nobody can compare down
+function formatCount(value){
+    const n=Math.trunc(Number(value))
+    if(!Number.isFinite(n)) return "—"
+    return Math.abs(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g," ")
+}
+function formatMz(mz){
+    return Number.isFinite(mz)?mz.toFixed(4):"—"
+}
+//six significant figures: enough to tell two isotopologues apart in ppm,
+//short enough to fit a 60 px cell
+function formatValue(value){
+    if(!Number.isFinite(value)) return "—"
+    if(value===0) return "0"
+    const magnitude=Math.abs(value)
+    if(magnitude>=1e6||magnitude<1e-3) return value.toExponential(2)
+    return value.toPrecision(6).replace(/0+$/,"").replace(/\.$/,"")
+}
+const SUBSCRIPTS={"0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉"}
+const SUPERSCRIPTS={"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹","+":"⁺","-":"⁻"}
+/* The notation, made readable: the COUNTS go down (C₆H₁₂O₆) and the charge
+   goes up (H⁺). The digits of a MASS NUMBER stay on the baseline and are not
+   subscripted — ¹²C₆ and ₁₂C₆ are not the same writing of the same thing, and
+   a subscripted 12 would read as twelve atoms of a mass number nobody wrote.
+
+   The key itself is NEVER touched: it is the identity, it never abbreviates,
+   and it is what a downstream node re-parses. This is a display of it. */
+function prettyNotation(notation){
+    const text=String(notation)
+    let out=""
+    let i=0
+    while(i<text.length){
+        const ch=text[i]
+        if(/[0-9]/.test(ch)){
+            /* One pass, and ONE order: a loop that handled the digits first
+               and the letters afterwards printed "₆₁₂₆CHO", which is not a
+               formula in any language. */
+            const before=text[i-1]??""
+            let digits=""
+            while(i<text.length&&/[0-9]/.test(text[i])) digits+=text[i++]
+            const rest=text.slice(i)
+            //what decides a mass number is that a LETTER follows it; what
+            //decides a charge magnitude is that a SIGN does
+            const sign=/^[^\+\-]*?([\+\-])/.exec(rest)
+            if(/[A-Za-z\]]/.test(before)){
+                //a COUNT, and it goes down
+                out+=[...digits].map(d=>SUBSCRIPTS[d]).join("")
+            }else if(sign&&!/^[A-Za-z]/.test(rest)){
+                //the MAGNITUDE of a charge, and it goes up with its sign:
+                //SO4[2-] is SO₄²⁻, never SO₄₂⁻
+                out+=[...digits].map(d=>SUPERSCRIPTS[d]).join("")+SUPERSCRIPTS[sign[1]]
+                //the sign is consumed here, so the main loop must not see it
+                i+=sign.index+sign[0].length
+            }else{
+                //a MASS NUMBER, left on the baseline where it is read
+                out+=digits
+            }
+            continue
+        }
+        if(ch==="+"||ch==="-"){
+            out+=SUPERSCRIPTS[ch]
+            i++
+            continue
+        }
+        //the brackets of an ionisation are structure, not content: what they
+        //contain is written out, and they are not drawn
+        if(ch!=="["&&ch!=="]") out+=ch
+        i++
+    }
+    return out
+}
+//the colour of a trace, taken from the palette the inspector already uses so
+//a collection keeps the same colour in the graph as in the list
+const TRACE_COLORS=["#e74c3c","#3498db","#2ecc71","#f39c12","#9b59b6","#1abc9c","#e67e22","#16a085"]
+function traceColor(index){
+    return TRACE_COLORS[((index%TRACE_COLORS.length)+TRACE_COLORS.length)%TRACE_COLORS.length]
+}
+//The orders the list accepts. Each one returns 0 for "equal": the caller adds
+//the m/z and the key as tie-breakers, because a list whose order changes
+//between two identical paints is a list that moves the row under the cursor.
+const FORMULA_SORTS={
+    mz:{label:"m/z",compare:(a,b)=>a.mz-b.mz},
+    intensity:{label:"intensity",compare:(a,b)=>(b.intensity??-1)-(a.intensity??-1)},
+    error:{label:"error",compare:(a,b)=>Math.abs(a.errorPpm??Infinity)-Math.abs(b.errorPpm??Infinity)},
+    notation:{label:"notation",compare:(a,b)=>(a.notation<b.notation?-1:a.notation>b.notation?1:0)}
+}
+/* THE COMPARATOR, as a function — never as a table entry.
+
+   `FORMULA_SORTS[name]` is an OBJECT ({label, compare}), and calling it threw
+   "sort is not a function" the first time a row was clicked: the list was
+   silently empty from the start and the exception only surfaced when a stale
+   row was activated. So the lookup, the fallback and the tie-breakers all live
+   here, and the caller does `rows.sort(formulaComparator(...))` — there is no
+   longer a shape to get wrong.
+
+   `hasOwnProperty` and not a plain read, so a name like "constructor" or
+   "toString" resolves to nothing rather than to something inherited from
+   Object.prototype that happens to be callable.
+
+   An UNKNOWN order falls back to m/z instead of throwing: the order is a
+   display choice stored in a session file, and a file this build did not write
+   must not be able to blank the list. */
+function formulaComparator(name){
+    const sort=Object.prototype.hasOwnProperty.call(FORMULA_SORTS,name)?FORMULA_SORTS[name]:null
+    const compare=sort?.compare??FORMULA_SORTS.mz.compare
+    return (a,b)=>compare(a,b)||a.mz-b.mz||(a.key<b.key?-1:1)
+}
+/* -------------------------------------------------------------------------
+   FormulaCollectionNode — a READER for collections of Formula.
+
+   ONE input, multiplexed: Flow.parentSynapse already gathers every link that
+   lands on a single anchor into one Map, so a hundred collections of molecules
+   arrive on one socket. Nothing here invents a second mechanism for it.
+
+   THREE panels, and each answers a different question:
+     - LEFT  : WHAT there is. Level 1 the collections (name, size, two
+               checkboxes, a handle); level 2 the formulas of the collection on
+               screen, virtualized, filterable, sortable.
+     - CENTER: what it LOOKS like. One stick trace per collection ticked for
+               the graphs, drawn in the node's own dialog.
+     - RIGHT : what a given formula IS. The unabridged key, the mass, every
+               measured target with its error, and a free-text annotation.
+
+   The Formula / Stoichiometry switch is a VIEW and never a transformation.
+   "Fold to stoichiometry" groups the leaves of a graph under their root — the
+   engine already knows that lineage, so the grouping is a grouping and not a
+   guess — and unfolding hands back every key, m/z and target untouched.
+   ------------------------------------------------------------------------- */
+class FormulaCollectionNode extends NodeWithAccordionGraph{
+    //how many sticks the central graph will take before it says "capped"
+    static GRAPH_POINT_BUDGET=200000
+    //one line of the list. Fixed, and the reason the windowing is cheap. It
+    //MUST equal the height of .fc-row in main.css: the offsets the list
+    //computes are multiples of this, and a one-pixel disagreement puts the row
+    //the user clicked somewhere else than the row they clicked on.
+    static ROW_HEIGHT=22
+
+
+    /* LEVEL 2 — the formulas of the collection on screen.
+
+       The list is VIRTUALIZED and it has to be: the brief is tens of thousands
+       of formulas per collection, and ten thousand DOM rows is ten thousand
+       layout boxes the browser will rebuild on every scroll. The rows are a
+       recycled pool — only the visible window exists, and scrolling re-fills
+       the same elements instead of appending new ones.
+
+       One deliberate consequence: a row of fixed height, and the targets of a
+       formula are NOT expanded in place. They are in the detail panel on the
+       right, one click away, and the row shows their NUMBER. Variable heights
+       would break the offset arithmetic that makes the windowing cheap, and
+       the alternative — a nested scrollable block inside a virtualized row —
+       is worse to use than a panel that is already there. */
+    buildFormulaBand(){
+        const band=CE("div",{
+            className:"fc-formulas",
+            /* NO overflow and NO contain here. This band became a GRID when the
+               write line was added above the list, and the scrolling and the
+               containment belong to the middle row — `.fc-viewport-wrap`. Left
+               on the band, `contain:strict` also brings SIZE containment: the
+               grid is then laid out as if it were empty, the row collapses, and
+               the list below it has nothing to show. */
+            style:{minHeight:"0",display:"grid","grid-template-rows":"auto minmax(0,1fr) auto"}
+        },[])
+        /* The write line, and it is ABOVE the list: what you are adding goes at
+           the top of a list you are reading downward, not at the bottom where
+           you would have to scroll past fifty thousand rows to see it land.
+
+           It is shown only for a collection this node owns. On a collection a
+           parent made it is not disabled but REPLACED by a line of text saying
+           why — a control that is visibly not applicable teaches, and one that
+           silently does nothing does not. */
+        this.addRow=CE("div",{className:"fc-addrow-wrap"},[])
+        this.list=new VirtualRowList({
+            rowHeight:FormulaCollectionNode.ROW_HEIGHT,
+            onRow:(element,row)=>this.drawRow(element,row)
+        })
+        const viewport=CE("div",{className:"fc-viewport-wrap"},[])
+        viewport.appendChild(this.list.element)
+        viewport.addEventListener("scroll",()=>this.list?.paint())
+        /* The band is focusable so the arrow keys have somewhere to arrive:
+           without a tabindex the browser sends them to the next control, and a
+           list of formulas is not readable with the mouse alone. */
+        viewport.tabIndex=0
+        viewport.addEventListener("keydown",(event)=>this.onListKeyDown(event))
+        this.diagnosticsBand=CE("div",{style:{maxHeight:"5.5em",overflow:"auto",minHeight:"0"}},[])
+        band.append(this.addRow,viewport,this.diagnosticsBand)
+        this.formulaBand=band
+        this.renderAddRow()
+        return band
+    }
+    /* The write line, and it is ALWAYS there.
+
+       It was conditional on the collection being local, which left a field that
+       simply did not exist in most states — and a user who types "C" into the
+       only other text field on the panel (the filter) sees nothing happen and
+       concludes the node is broken. So: always visible, always writable, and
+       every refusal SAYS WHY on the line itself.
+
+       The input is built ONCE and reused. Rebuilding it on every render — which
+       is what a naive renderAll does — throws away the caret, the focus and
+       whatever is half-typed, so a field meant for entering a dozen formulas in
+       a row would lose the user after the first one. */
+    renderAddRow(){
+        if(!this.addRow) return
+        if(!this.formulaInput){
+            this.addRow.append(this.buildFormulaInput())
+        }
+        const collection=this.currentCollection
+        this.formulaInput.placeholder=collection?.local
+            ?"C6H12O6 [H+]   then Enter"
+            :"C6H12O6 [H+]   then Enter — will be added to a collection of yours"
+        this.formulaInput.title=collection?.local
+            ?`Formula to add to "${collection.name}". Enter adds it, Escape clears.`
+            :"Enter adds this formula to a collection of this node"
+        if(this.addHint){
+            this.addHint.textContent=collection?.local
+                ?""
+                :"no collection of yours is on screen — Enter will use your first one, or create one"
+        }
+    }
+    /* A row is selected by being READ, and read by being the selection: one
+       gesture, no "details" button to find. */
+    activateRow(row){
+        if(row.kind==="molecule"){
+            if(this.openMolecules.has(row.molecule)) this.openMolecules.delete(row.molecule)
+            else this.openMolecules.add(row.molecule)
+            this.parameters.selection=this.parameters.selection
+        }else{
+            const entry=row.entry
+            if(this.openEntries.has(row.key)) this.openEntries.delete(row.key)
+            else this.openEntries.add(row.key)
+            this.parameters.selection=row.key
+            this.selectedEntry=entry
+        }
+        this.origin?.saveSessionSoon?.()
+        this.renderRows()
+        this.renderSelection()
+    }
+    /* The keyboard path. The list is a scroll box, so a page-down there is the
+       list's own business — but the ARROWS are this node's, because moving
+       along a list of formulas is reading it, and a user with both hands on
+       the keyboard should never have to reach for the mouse to move down one
+       row. */
+    onListKeyDown(event){
+        const rows=this.rows??[]
+        if(!rows.length) return
+        const current=rows.findIndex(row=>row.key===this.parameters.selection)
+        let next=current
+        if(event.key==="ArrowDown") next=current<0?0:Math.min(rows.length-1,current+1)
+        else if(event.key==="ArrowUp") next=current<0?rows.length-1:Math.max(0,current-1)
+        else if(event.key==="Home") next=0
+        else if(event.key==="End") next=rows.length-1
+        else if(event.key==="Enter"||event.key===" "){
+            if(current>=0){
+                event.preventDefault()
+                this.activateRow(rows[current])
+            }
+            return
+        }else{
+            return
+        }
+        event.preventDefault()
+        this.parameters.selection=rows[next].key
+        this.selectedEntry=rows[next].kind==="formula"?rows[next].entry:null
+        this.list?.scrollToRow(next)
+        this.renderRows()
+        this.renderSelection()
+    }
+    /* --- creating things, as opposed to reading them ------------------- */
+    /* A READER that can only read is half a tool: the collections a user
+       accumulates by hand have to live somewhere, and the answer cannot be
+       "type them into a node upstream" — that node does not exist yet, and the
+       user should not have to wait for it to write down a formula.
+
+       A collection made here is LOCAL, and the difference is not cosmetic: it
+       is rebuilt from the session at every resolve, so it can be added to and
+       deleted, where a collection a parent made would swallow both silently
+       and put the formula back on the next resolve. */
+    /* The collection a typed formula belongs to, and the rule is deliberately
+       forgiving because the alternative is a field that silently does nothing.
+
+       In order: the collection on screen if this node owns it; else the first
+       collection this node owns; else a new one. So a user who has never
+       pressed "+ New collection" can still type a formula and press Enter, and
+       it lands somewhere they can see. The stricter rule — "only into a local
+       collection, and say so if there is none" — reads well and behaves like a
+       form that refuses to submit, which is not what a field in a node is. */
+    async targetLocalCollection(){
+        if(this.currentCollection?.local) return this.currentCollection
+        const first=this.parameters.localCollections[0]
+        if(first){
+            return this.collections.find(c=>c.name===first.name)??null
+        }
+        /* No collection of ours at all: one is made, and QUIETLY.
+
+           A prompt here would be a modal popping out of a keystroke the user
+           thought was a simple one, and Escape would then look like "Enter did
+           nothing" all over again. The name is provisional and the handle menu
+           renames it; the hint line says which collection it landed in.
+
+           It is AWAITED: createCollection ends in a resolve, and reading
+           `currentCollection` one microtask before that resolve finished would
+           hand back a half-built collection — or null. */
+        await this.createCollection("Formules",{ask:false})
+        return this.currentCollection
+    }
+    async createCollection(defaultName="collection",{ask=true}={}){
+        const name=ask
+            ?prompt("Name of the new collection:",defaultName)?.trim()
+            :defaultName
+        if(!name) return null
+        if(this.parameters.localCollections.some(local=>local.name===name)){
+            //two collections under one name would SHARE their state record, so
+            //unticking one would untick the other
+            this.origin?.notice?.("Name already used",`"${name}" is already a collection here.`)
+            return null
+        }
+        this.parameters.localCollections.push({name,keys:[]})
+        this.parameters.current=name
+        this.parameters.selection=null
+        this.origin?.saveSessionSoon?.()
+        //a resolve, like everywhere else: the new collection has to reach the
+        //graph and the output without the user having to remember to ask
+        await this.startResolve()
+        this.resolveChildren()
+        return this.currentCollection
+    }
+    async deleteCollection(name){
+        const index=this.parameters.localCollections.findIndex(local=>local.name===name)
+        /* A collection a parent made is NOT deletable: it would come back at the
+           next resolve and the list would flicker. The verb is greyed out in
+           the menu for the same reason. */
+        if(index<0) return false
+        this.parameters.localCollections.splice(index,1)
+        delete this.parameters.collectionState[name]
+        this.origin?.saveSessionSoon?.()
+        await this.startResolve()
+        this.resolveChildren()
+        return true
+    }
+    /* The formula written into a local collection, as the text the user typed.
+
+       The text and not the Formula, for the same reason as everywhere else: a
+       session carrying formulas would carry a periodic table with them. The KEY
+       would be wrong twice over — it is an identity, not a spelling, and for a
+       group adduct it does not read back to the same formula. */
+    async addFormulaToLocal(text){
+        const typed=text.trim()
+        if(!typed) return {ok:false,message:""}
+        /* The table is fetched HERE, not at resolve time: the user is typing,
+           and a field that answers "table…" to someone who has not pressed
+           Resolve yet is a field that looks broken. Waiting here is invisible,
+           because they are still holding the keyboard. */
+        const table=await this.table()
+        const collection=await this.targetLocalCollection()
+        if(!collection){
+            //the user dismissed the name prompt, or the name was taken
+            return {ok:false,message:"no collection to add to"}
+        }
+        const local=this.parameters.localCollections.find(l=>l.name===collection.name)
+        if(!local) return {ok:false,message:`"${collection.name}" is not a collection of this node`}
+        /* Already there is a SUCCESS, not a refusal: the user asked for this
+           formula to be in the list, and it is. Answering "no" would light the
+           field red for doing exactly what they wanted. */
+        if(local.keys.includes(typed)) return {ok:true,message:"already in the list"}
+        //read it FIRST: a formula that does not parse must not be stored, or it
+        //would come back as a diagnostic on every single resolve
+        const problems=[]
+        if(!table){
+            return {ok:false,message:"the periodic table is not available yet, try again"}
+        }
+        if(!this.localFormula(typed,collection.name,problems)){
+            return {ok:false,message:problems[0]??`"${typed}" is not a formula`}
+        }
+        local.keys.push(typed)
+        /* The collection the user is looking at is DISCARDED and rebuilt from
+           the texts, rather than patched. The patch would be faster; the rebuild
+           is the one that cannot leave the list, the graph, the output and the
+           session disagreeing — and it is also what re-resolves, which is what
+           the user is entitled to expect after typing a formula in. */
+        await this.startResolve()
+        this.resolveChildren()
+        return {ok:true,message:`added to ${collection.name}`}
+    }
+    setView(view){
+        if(this.parameters.view===view) return
+        this.parameters.view=view
+        this.openMolecules.clear()
+        this.openEntries.clear()
+        this.viewToggle?.paint()
+        this.renderRows()
+        this.origin?.saveSessionSoon?.()
+    }
+    /* The FKMD gesture, on ONE line: what you type is READ as you type, and
+       ENTER commits it into the list.
+
+       Same split as FKMDNode and for the same reason — a live reading is cheap
+       and catches a typo on the spot, while adding to a collection is not a
+       thing you want to do by accident. The readout sits BESIDE the field on
+       the same line, so "write, check, commit" is one glance at one row and
+       never a second place to look. */
+    buildFormulaInput(){
+        const input=CE("input",{
+            type:"text",
+            spellcheck:false,
+            placeholder:"C6H12O6 [H+]   then Enter",
+            title:"Formula to add to a collection of this node. Enter adds it, Escape clears.",
+            style:{width:"100%",minWidth:"0",padding:"2px 4px"}
+        },[])
+        this.formulaInput=input
+        this.formulaReadout=CE("span",{className:"fc-readout"},[""])
+        /* The RESULT of the last Enter, on the same line. Without it a refusal
+           is invisible — the field would simply stay full and the list would
+           not move, which is the "nothing happened" the user cannot debug. */
+        this.addHint=CE("span",{className:"fc-addrow-note"},[""])
+        input.addEventListener("input",()=>this.readTypedFormula(input.value))
+        input.addEventListener("keydown",(event)=>{
+            if(event.key==="Enter"){
+                event.preventDefault()
+                this.commitTypedFormula()
+            }else if(event.key==="Escape"){
+                input.value=""
+                this.formulaReadout.textContent=""
+                this.addHint.textContent=""
+                input.blur()
+            }
+        })
+        const commit=CE("button",{
+            type:"button",
+            title:"Add this formula to a collection of this node",
+            style:{cursor:"pointer",padding:"1px 6px",flex:"none"}
+        },["↵"])
+        commit.addEventListener("click",()=>this.commitTypedFormula())
+        return CE("div",{className:"fc-addrow"},[input,this.formulaReadout,commit,this.addHint])
+    }
+    /* Enter, and the ↵ button, are ONE function.
+
+       The field is emptied only when the formula really landed, and the reason
+       is written on the line either way: a formula that did not parse stays on
+       screen with its error, because wiping it would throw the user's typing
+       away along with the message. */
+    async commitTypedFormula(){
+        const input=this.formulaInput
+        if(!input) return
+        /* A resolve is a full re-read, and that is the POINT: the collection is
+           rebuilt from the texts that were typed, so what the list shows and
+           what the session holds cannot drift apart. It is also what removes
+           the need to remember to press Resolve — a collection that changed and
+           did not re-resolve would leave the graph and the output describing
+           the collection as it was a minute ago.
+
+           The typed text is read ONCE, before the await, because the user may
+           keep typing while the table downloads. */
+        const text=input.value
+        const result=await this.addFormulaToLocal(text)
+        //a newer keystroke may have replaced what we committed
+        if(this.formulaInput!==input) return
+        this.formulaReadout.textContent=""
+        this.formulaReadout.className="fc-readout"
+        if(result.ok){
+            if(input.value===text) input.value=""
+            this.addHint.textContent=result.message
+            this.addHint.className="fc-addrow-note fc-addrow-ok"
+            input.focus()
+        }else{
+            this.addHint.textContent=result.message||"nothing to add"
+            this.addHint.className="fc-addrow-note fc-addrow-bad"
+        }
+    }
+    /* The live reading. It NEVER throws: a typing mistake is a result, not an
+       exception, and a resolve in flight must not die on a half-typed symbol.
+
+       When the table is not in yet it says so and ASKS FOR IT, then re-reads
+       itself once it lands. Without the second half the field would keep
+       saying "table…" for ever on a node that has simply never been resolved,
+       which is the state the user meets first. */
+    readTypedFormula(text){
+        if(!this.formulaReadout) return
+        const typed=text.trim()
+        if(!typed){
+            this.formulaReadout.textContent=""
+            this.formulaReadout.className="fc-readout"
+            return
+        }
+        if(!this.loadedTable){
+            this.formulaReadout.textContent="loading the table…"
+            this.formulaReadout.className="fc-readout fc-readout-warn"
+            const asked=text
+            this.table().then(()=>{
+                //only if the field still holds what we read for it
+                if(this.formulaInput?.value===asked) this.readTypedFormula(asked)
+            })
+            return
+        }
+        try{
+            const formula=Formula.parse(typed,this.loadedTable)
+            this.formulaReadout.textContent=
+                `${formatMz(formula.mz)} · ${prettyNotation(String(formula))}`
+            this.formulaReadout.className="fc-readout"
+        }catch(error){
+            this.formulaReadout.textContent=error.message
+            this.formulaReadout.className="fc-readout fc-readout-error"
+        }
+    }
+    setupRightPanel(){
+        const content=this.accordionRight.DOMelt.content
+        content.replaceChildren()
+        this.accordionRight.setSizingMode("content")
+        stylize(content,{
+            display:"grid",
+            "grid-template-rows":"minmax(0, 1fr) auto",
+            minHeight:"0",
+            height:"100%",
+            overflow:"hidden",
+            padding:"3px",
+            gap:"3px"
+        })
+        this.detail=CE("div",{
+            style:{overflow:"auto",minHeight:"0",display:"grid",gap:"2px",alignContent:"start",fontSize:"0.95em"}
+        },[])
+        this.graphOptions=CE("div",{style:{borderTop:"1px solid var(--border)",paddingTop:"3px"}},[])
+        content.append(this.detail,this.graphOptions)
+        this.renderGraphOptions()
+    }
+    renderDiagnostics(){
+        if(!this.diagnosticsBand) return
+        this.diagnosticsBand.replaceChildren()
+        if(!this.diagnostics?.length) return
+        const block=CE("div",{className:"fc-diagnostics"},[])
+        block.append(CE("div",{className:"pp-caption"},["Diagnostics"]))
+        for(const line of this.diagnostics.slice(0,40)){
+            block.append(CE("div",{style:{opacity:"0.8"}},[line]))
+        }
+        if(this.diagnostics.length>40){
+            block.append(CE("div",{style:{opacity:"0.6"}},[`… and ${this.diagnostics.length-40} more`]))
+        }
+        this.diagnosticsBand.append(block)
+    }
+
+    /* The HANDLE: the small grip under the row that opens a menu.
+
+       A menu and not a third checkbox, because what a collection needs is a
+       handful of verbs — isolate it, fold it, forget it, retitle it — and a
+       panel of little boxes for verbs is a worse panel than one grip. */
+    collectionHandle(collection,state){
+        const handle=CE("button",{
+            type:"button",
+            className:"fc-handle",
+            title:"Menu of this collection",
+            style:{cursor:"pointer",padding:"0 3px",flex:"none"}
+        },["⋮"])
+        handle.addEventListener("click",(event)=>{
+            event.stopPropagation()
+            this.openCollectionMenu(collection,state,handle)
+        })
+        return handle
+    }
+    openCollectionMenu(collection,state,anchor){
+        const others=this.collections.filter(c=>c.name!==collection.name)
+        this.closeCollectionMenu()
+        const items=[
+            {
+                label:"Isolate: graphs",
+                hint:"only this collection is drawn",
+                run:()=>{
+                    for(const other of this.collections) this.collectionState(other.name).inGraphs=other.name===collection.name
+                }
+            },
+            {
+                label:"Isolate: output",
+                hint:"only this collection leaves the node",
+                run:()=>{
+                    for(const other of this.collections) this.collectionState(other.name).inOutput=other.name===collection.name
+                }
+            },
+            {
+                label:this.parameters.view==="stoichiometry"?"Unfold the molecules":"Fold to stoichiometry",
+                hint:"one row per molecule instead of per formula",
+                run:()=>{
+                    this.setView(this.parameters.view==="stoichiometry"?"formula":"stoichiometry")
+                    if(this.parameters.view==="stoichiometry"){
+                        this.openMolecules.clear()
+                        this.openEntries.clear()
+                    }
+                }
+            },
+            {
+                label:state.open?"Hide the formulas":"Show the formulas",
+                run:()=>{
+                    state.open=!state.open
+                    if(state.open) this.parameters.current=collection.name
+                }
+            },
+            {
+                label:"Rename…",
+                hint:"the name is how the state remembers this collection",
+                run:()=>{
+                    const typed=prompt("Name of this collection:",collection.name)
+                    if(!typed||typed.trim()===collection.name) return
+                    const next=typed.trim()
+                    //the notes and the checkboxes follow the name, or renaming
+                    //would silently discard everything the user had said here
+                    const previousName=collection.name
+                    this.parameters.collectionState[next]=state
+                    delete this.parameters.collectionState[previousName]
+                    collection.name=next
+                    if(this.parameters.current===previousName) this.parameters.current=next
+                }
+            },
+            {
+                label:"Forget its information",
+                hint:"drops the annotations, keeps the formulas",
+                disabled:Object.keys(state.notes).length===0,
+                run:()=>{
+                    state.notes={}
+                    this.renderAll()
+                }
+            },
+            {
+                label:"Delete this collection",
+                /* Only for a collection this node owns. Deleting one that a
+                   parent made would put it back on the next resolve, and the
+                   list would flicker — so the verb is shown greyed with its
+                   reason rather than hidden, which teaches where the boundary
+                   is. */
+                hint:collection.local?"and its annotations with it":"only for a collection made here",
+                disabled:!collection.local,
+                run:()=>this.deleteCollection(collection.name)
+            }
+        ]
+        const menu=CE("div",{className:"fc-menu"},[])
+        for(const item of items){
+            if(!item) continue
+            const button=CE("button",{type:"button",title:item.hint??""},[
+                CE("span",{className:"fc-menu-label"},[item.label]),
+                item.hint?CE("span",{className:"fc-menu-hint"},[item.hint]):null
+            ])
+            if(item.disabled) button.disabled=true
+            button.addEventListener("click",()=>{
+                this.closeCollectionMenu()
+                item.run()
+                this.origin?.saveSessionSoon?.()
+                this.renderAll()
+                this.refreshGraph()
+                this.publishOutput()
+                this.resolveChildren()
+            })
+            menu.appendChild(button)
+        }
+        document.body.appendChild(menu)
+        this.collectionMenu=menu
+        const box=anchor.getBoundingClientRect()
+        //clamped to the window: a menu that opens off-screen is a menu that
+        //cannot be dismissed, because the button that closes it is not visible
+        const height=menu.getBoundingClientRect().height
+        menu.style.left=`${Math.max(4,Math.min(box.left,window.innerWidth-menu.offsetWidth-4))}px`
+        menu.style.top=`${Math.max(4,Math.min(box.bottom+2,window.innerHeight-height-4))}px`
+        this.menuCloser=(event)=>{
+            if(!menu.contains(event.target)) this.closeCollectionMenu()
+        }
+        /* Escape closes it too. Without this the only ways out are a click
+           elsewhere and a choice from the menu — and `addEventListener` with an
+           undefined handler is a no-op that fails silently, so the listener
+           below looked installed and was not. */
+        this.menuEscape=(event)=>{
+            if(event.key==="Escape"){
+                event.stopPropagation()
+                this.closeCollectionMenu()
+            }
+        }
+        setTimeout(()=>{
+            globalThis.addEventListener("mousedown",this.menuCloser,true)
+            globalThis.addEventListener("keydown",this.menuEscape,true)
+        },0)
+    }
+    closeCollectionMenu(){
+        if(!this.collectionMenu) return
+        this.collectionMenu.remove()
+        this.collectionMenu=null
+        globalThis.removeEventListener("mousedown",this.menuCloser,true)
+        globalThis.removeEventListener("keydown",this.menuEscape,true)
+    }
+
+    /* LEVEL 1 — the collections. One row each: name, how many formulas it
+       holds, the two checkboxes, and a handle that opens a menu.
+
+       The name is a BUTTON, not a label. It is what puts that collection on
+       screen underneath, and a name you cannot click is a name you read twice
+       to work out which of the four rows you are already looking at. */
+    buildCollectionBand(){
+        this.collectionBand=CE("div",{
+            className:"fc-collections",
+            style:{overflow:"auto",minHeight:"0",display:"grid",gap:"2px",alignContent:"start"}
+        },[])
+        /* "New collection" sits at the TOP of the band, not at the bottom of
+           the node: it is a verb, and a verb that scrolls away under a hundred
+           collections is a verb nobody finds twice. The rows go in their own
+           container so that re-rendering the list does not destroy the button
+           and its handler along with it. */
+        const create=CE("button",{
+            type:"button",
+            className:"fc-newcollection",
+            title:"Create a collection here, and type formulas into it",
+            style:{cursor:"pointer",padding:"2px 6px",justifySelf:"start",marginBottom:"2px"}
+        },["+ New collection"])
+        create.addEventListener("click",()=>this.createCollection())
+        this.collectionRows=CE("div",{style:{display:"grid",gap:"2px",alignContent:"start"}},[])
+        this.collectionBand.append(create,this.collectionRows)
+        return this.collectionBand
+    }
+    renderCollections(){
+        if(!this.collectionRows) return
+        this.collectionRows.replaceChildren()
+        if(!this.collections.length){
+            this.collectionRows.append(CE("div",{
+                style:{opacity:"0.7",fontSize:"0.85em",padding:"4px"}
+            },["No collection yet. Create one, or connect a node that publishes Formula."]))
+            return
+        }
+        for(const collection of this.collections){
+            this.collectionRows.append(this.buildCollectionRow(collection))
+        }
+    }
+    /* Selecting a collection is ONE function, and every control on the row calls
+       it. There were two handlers — the caret and the name — each repeating the
+       same five lines, and the caret's version additionally TOGGLED `open`. Two
+       copies of "what happens when you pick this" is how a row ends up looking
+       selected while the list under it shows something else. */
+    selectCollection(name){
+        if(!this.collections.some(collection=>collection.name===name)) return false
+        this.parameters.current=name
+        this.parameters.selection=null
+        this.selectedEntry=null
+        this.collectionState(name).open=true
+        this.syncCurrentCollection()
+        this.origin?.saveSessionSoon?.()
+        this.renderAll()
+        //belt and braces: the list measures its box at paint time, and a paint
+        //that happened before the panel settled would leave it stale
+        this.list?.paintLater()
+        return true
+    }
+    buildCollectionRow(collection){
+        const state=this.collectionState(collection.name)
+        const isCurrent=this.currentCollection?.name===collection.name
+        const row=CE("div",{className:`fc-collection${isCurrent?" current":""}`},[])
+        const open=CE("button",{
+            type:"button",
+            className:"fc-collection-open",
+            title:isCurrent?"Hide the formulas of this collection":"Show the formulas of this collection",
+            style:{cursor:"pointer",padding:"0 3px",minWidth:"0",flex:"none"}
+        },[state.open&&isCurrent?"▾":"▸"])
+        open.addEventListener("click",()=>{
+            if(this.currentCollection?.name===collection.name){
+                //already on it: the caret only folds, and the list stays put
+                state.open=!state.open
+                this.origin?.saveSessionSoon?.()
+                this.renderAll()
+            }else{
+                this.selectCollection(collection.name)
+            }
+        })
+        const name=CE("button",{
+            type:"button",
+            className:"fc-collection-name",
+            title:`${collection.name} — click to read its formulas`,
+            style:{cursor:"pointer",textAlign:"left",minWidth:"0",flex:"1 1 auto",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}
+        },[collection.name])
+        name.addEventListener("click",()=>this.selectCollection(collection.name))
+        const count=CE("span",{
+            className:"fc-collection-count",
+            title:`${formatCount(collection.entries.length)} formulas, ${formatCount(collection.entries.reduce((n,e)=>n+e.targets.length,0))} measured points`
+        },[formatCount(collection.entries.length)])
+        /* A local collection wears a dot. One glyph, not a word: the name column
+           is short, and "local" written out on every row would be read zero
+           times. The title says what it means.
+
+           The cell is ALWAYS rendered, empty or not: it is the fourth column of
+           a fixed grid, and leaving it out on the rows that do not own a
+           collection would push their two checkboxes one column to the left —
+           a list whose controls are in a staircase. */
+        row.append(CE("span",{
+            className:collection.local?"fc-collection-local":"fc-collection-local off",
+            title:collection.local
+                ?"Made in this node: it can be written to and deleted"
+                :""
+        },[collection.local?"●":""]))
+        /* The two checkboxes, and they mean two DIFFERENT things, which is why
+           they are two boxes and not one tristate: "output" is what leaves this
+           node, "graph" is what is drawn in the central dialog. A user who
+           wants a collection compared but not propagated ticks the second and
+           not the first, and a single box could not express it. */
+        const inOutput=this.collectionCheck(state,"inOutput","Include this collection in the node's output")
+        const inGraphs=this.collectionCheck(state,"inGraphs","Draw this collection in the central dialog")
+        const handle=this.collectionHandle(collection,state)
+        row.append(open,name,count,inOutput,inGraphs,handle)
+        return row
+    }
+    collectionCheck(state,key,title){
+        const box=CE("input",{type:"checkbox",title,style:{margin:"0",flex:"none"}},[])
+        box.checked=!!state[key]
+        box.addEventListener("change",()=>{
+            state[key]=box.checked
+            this.origin?.saveSessionSoon?.()
+            if(key==="inGraphs") this.refreshGraph()
+            this.publishOutput()
+            this.resolveChildren()
+        })
+        return box
+    }
+
+    /* The LEFT panel, in three bands: the toolbar, the collections, the
+       formulas of the collection on screen.
+
+       The heights are decided ONCE, here, and not by the content: the
+       collection list gets a bounded share and the formula list takes the rest,
+       because a formula list has no natural height — it has "as much as you
+       scroll" — and an accordion that grew with it would push every other
+       node's panel off the panel. */
+    setupLeftPanel(){
+        const content=this.accordion.DOMelt.content
+        content.replaceChildren()
+        this.accordion.setSizingMode("viewport",{height:520})
+        this.accordion.DOMelt.container.style.maxHeight="75%"
+        stylize(content,{
+            display:"grid",
+            "grid-template-rows":"auto minmax(0, 34%) minmax(0, 1fr)",
+            minHeight:"0",
+            height:"100%",
+            overflow:"hidden",
+            padding:"3px",
+            gap:"3px"
+        })
+        content.append(this.buildToolbar(),this.buildCollectionBand(),this.buildFormulaBand())
+    }
+    buildToolbar(){
+        const bar=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em"}},[])
+        /* The Formula / Stoichiometry switch, and the Fold button that does
+           the same thing in one gesture for the collection on screen. Two
+           names for one idea, because the toggle is a MODE and the button is
+           an ACTION, and a user who has just been handed a list of ten
+           thousand isotopologues wants the second one. */
+        this.viewToggle=scaleToggle({
+            get:()=>this.parameters.view==="formula",
+            set:(on)=>this.setView(on?"formula":"stoichiometry"),
+            leftLabel:"Formula",
+            rightLabel:"Stoichiometry",
+            title:"One row per formula, or one row per molecule with its isotopologues folded under it"
+        })
+        this.filterInput=CE("input",{
+            type:"search",
+            value:this.parameters.filter,
+            placeholder:"filter…",
+            spellcheck:false,
+            title:"Keep only the rows whose notation contains this text",
+            style:{width:"100%",minWidth:"0",padding:"2px 4px"}
+        },[])
+        this.filterInput.addEventListener("input",()=>{
+            this.parameters.filter=this.filterInput.value
+            this.renderRows()
+        })
+        this.sortSelect=CE("select",{title:"Column the list is ordered by"},[])
+        for(const [value,sort] of Object.entries(FORMULA_SORTS)){
+            this.sortSelect.appendChild(new Option(sort.label,value))
+        }
+        this.sortSelect.value=this.parameters.sort
+        this.sortSelect.addEventListener("change",()=>{
+            this.parameters.sort=this.sortSelect.value
+            this.renderRows()
+        })
+        this.countLabel=CE("span",{className:"pp-readout"},["—"])
+        this.sortField=CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},[this.sortSelect])
+        this.sortField.title="Order of the list"
+        bar.append(this.viewToggle,this.filterInput,CE("div",{style:{display:"flex",alignItems:"center",gap:"4px"}},[this.sortField,this.countLabel]))
+        const fold=CE("button",{
+            type:"button",
+            title:"Fold every isotopologue of this collection under its molecule",
+            style:{cursor:"pointer",padding:"3px 6px",fontSize:"0.95em",width:"100%"}
+        },["Fold to stoichiometry"])
+        fold.addEventListener("click",()=>{
+            this.setView("stoichiometry")
+            //unfolding nothing is the point: the whole collection folds at once
+            this.openMolecules.clear()
+            this.openEntries.clear()
+            this.renderRows()
+        })
+        return CE("div",{style:{display:"grid",gap:"3px",minWidth:"0"}},[bar,fold])
+    }
+
+    /* --- the three panels ------------------------------------------------ */
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        //ONE input, and it is multiplexed: Flow.parentSynapse gathers every
+        //link landing on that single anchor into one Map, so a hundred
+        //collections arrive on one socket instead of a hundred sockets.
+        //ONE output: what the ticked collections add up to.
+        super(title,[[]],[[]],origin,destinationFlow,position)
+        this.status="floating"
+        /* formula = one row per measurable formula.
+           stoichiometry = one row per MOLECULE, the isotopologues folded under
+           it. The toggle is a VIEW, never a transformation: the rows below are
+           the same objects either way, and unfolding restores them untouched. */
+        this.parameters.view="formula"
+        this.parameters.filter=""
+        this.parameters.sort="mz"
+        //the tolerance that pairs a formula with the points measured on it
+        this.parameters.ppmWindow=5
+        this.parameters.logY=false
+        this.parameters.graphBudget=FormulaCollectionNode.GRAPH_POINT_BUDGET
+        //the collection on screen, and the formula read inside it, both by NAME
+        this.parameters.current=null
+        this.parameters.selection=null
+        //per collection: the two checkboxes, the notes, and nothing else
+        this.parameters.collectionState={}
+        /* the collections the user makes HERE. Only the text they typed is
+           stored, one string per formula: a Formula holds a Map indexed by
+           Element, so a session carrying them would carry a periodic table
+           with it. They are rebuilt at every resolve, which is why a local
+           collection can be added to while a parent one cannot. */
+        this.parameters.localCollections=[]
+        //runtime only, rebuilt by every resolve
+        this.collections=[]
+        this.diagnostics=[]
+        this.currentCollection=null
+        this.selectedEntry=null
+        this.loadedTable=null
+        this.list=null
+        this.rows=[]
+        /* THE TABLE IS ASKED FOR HERE, AT CONSTRUCTION, and not on first use.
+
+           A node that waits to be asked is a node that answers "loading…" to a
+           keystroke typed AFTER the table had already arrived — which is what
+           happened, and it looked like the node was broken. The App is already
+           fetching it; all this does is attach to that fetch from the start.
+
+           And when it lands, the node PUTS ITSELF RIGHT: the collections that
+           were stored as text could not be read a moment ago, because a formula
+           without a table is only a name. So they are re-read and the resolve
+           runs, which is why a formula typed before the page finished loading
+           still shows up on its own. */
+        this.table().then(()=>{
+            if(!this.accordion) return
+            this.renderAll()
+            if(this.parameters.localCollections.length) this.startResolve()
+        })
+        //the unfolded molecules and the unfolded formulas, by key
+        this.openMolecules=new Set()
+        this.openEntries=new Set()
+        const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
+        if(inputAnchors[0]){
+            inputAnchors[0].innerHTML='<title>Input: any number of collections of Formula, all on this one anchor</title>'
+        }
+        const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
+        if(outputAnchors[0]){
+            outputAnchors[0].innerHTML='<title>Output: the collections ticked for output</title>'
+        }
+    }
+    registered(e){
+        if(e.detail.msg.caster!==this||this.accordionRight){
+            return
+        }
+        super.registered(e)
+        const {channel,registrationName,label}=e.detail.msg
+        /* The right panel is the DETAIL of what the left list has selected:
+           the full key, the mass, every target with its error, and the free
+           text. The left panel stays a list — putting ten thousand rows and
+           their commentary in one column would make both unreadable. */
+        this.accordionRight=new Accordion(
+            `${label} (detail)`,
+            this.origin,
+            this.origin.main.querySelector(".vertical.right.content")
+        )
+        channel.register(`${registrationName}:detail`,this.accordionRight,`${label} (detail)`)
+        this.setupLeftPanel()
+        this.setupRightPanel()
+    }
+    renderAll(){
+        this.renderCollections()
+        this.renderAddRow()
+        this.renderRows()
+        this.renderSelection()
+        this.renderDiagnostics()
+    }
+
+    /* --- the rows the left panel shows ---------------------------------- */
+    /* One list, three shapes, and the difference is only in what a row HOLDS.
+
+       In "formula" view a row is a leaf. In "stoichiometry" view a row is a
+       molecule: the leaves that share a root are folded into it, and the count
+       in front says how many. The fold is a GROUPING, never a merge: the
+       formulas keep their own keys, their own m/z and their own targets, and
+       unfolding gives every one of them back exactly as it was. What is lost
+       by folding is the noise of a thousand isotopologues competing for one
+       line, and nothing else. */
+    visibleRows(){
+        const collection=this.currentCollection
+        if(!collection) return []
+        const entries=collection.entries
+        const filter=this.parameters.filter.trim().toLowerCase()
+        let rows
+        if(this.parameters.view==="stoichiometry"){
+            const groups=new Map()
+            for(const entry of entries){
+                const key=entry.molecule??entry.key
+                if(!groups.has(key)) groups.set(key,{molecule:key,entries:[]})
+                groups.get(key).entries.push(entry)
+            }
+            rows=[...groups.values()].map(group=>({
+                kind:"molecule",
+                molecule:group.molecule,
+                entries:group.entries,
+                key:group.entries[0].key,
+                notation:group.entries[0].root?String(group.entries[0].root):group.entries[0].notation,
+                mz:group.entries.reduce((n,e)=>n+e.mz,0)/group.entries.length,
+                count:group.entries.length
+            }))
+        }else{
+            rows=entries.map(entry=>({kind:"formula",entry,key:entry.key,notation:entry.notation,mz:entry.mz}))
+        }
+        if(filter){
+            rows=rows.filter(row=>row.notation.toLowerCase().includes(filter)
+                ||(row.kind==="molecule"&&row.entries.some(e=>e.key.toLowerCase().includes(filter))))
+        }
+        rows.sort(formulaComparator(this.parameters.sort))
+        return rows
+    }
+    renderRows(){
+        if(!this.list) return
+        const rows=this.visibleRows()
+        this.rows=rows
+        this.list.setRows(rows)
+        this.updateCountReadout(rows)
+    }
+    updateCountReadout(rows){
+        if(!this.countLabel) return
+        const collection=this.currentCollection
+        const total=collection?collection.entries.length:0
+        const molecules=collection&&this.parameters.view==="stoichiometry"
+            ?new Set(collection.entries.map(e=>e.molecule??e.key)).size
+            :total
+        this.countLabel.textContent=collection
+            ?`${formatCount(rows.length)} / ${formatCount(this.parameters.view==="stoichiometry"?molecules:total)}`
+            :"—"
+        this.countLabel.title=collection
+            ?`${formatCount(rows.length)} shown, ${formatCount(total)} formulas, ${formatCount(molecules)} molecules`
+            :"no collection selected"
+    }
+    /* The row itself. Plain divs, not the Table class: that one is a grid of
+       strings with a ruler, and what is needed here is a row with a note
+       marker, a title, and a click that means something.
+
+       TWO MODES IN ONE FUNCTION, because the pool must not grow a second kind
+       of element: a null element BUILDS a fresh one, a real one gets FILLED.
+       Two callbacks would mean two pools of the same thing, and a recycled
+       element must never activate the formula it used to be showing — which is
+       why the row is re-attached on every single fill. */
+    drawRow(element,row){
+        if(!element){
+            const root=CE("div",{className:"fc-row"},[])
+            const notation=CE("span",{className:"fc-cell fc-notation"},[""])
+            const mz=CE("span",{className:"fc-cell fc-num"},[""])
+            const error=CE("span",{className:"fc-cell fc-num"},[""])
+            const intensity=CE("span",{className:"fc-cell fc-num"},[""])
+            const note=CE("span",{className:"fc-cell fc-note"},[""])
+            root.append(notation,mz,error,intensity,note)
+            //one listener, not the app's delegated handleClick AND one of our
+            //own: both would fire on a single click and toggle the row twice
+            root.addEventListener("click",(event)=>{
+                event.stopPropagation()
+                if(root.row) this.activateRow(root.row)
+            })
+            root.cells=[notation,mz,error,intensity,note]
+            root.notation=notation
+            return root
+        }
+        const [notation,mz,error,intensity,note]=element.cells
+        element.row=row
+        notation.textContent=prettyNotation(row.notation)
+        element.notation.title=row.kind==="molecule"
+            ?`${formatCount(row.count)} formulas on this molecule — click to unfold`
+            :row.key
+        mz.textContent=formatMz(row.mz)
+        if(row.kind==="molecule"){
+            /* The count REPLACES the error column in this view: a molecule has
+               no error of its own, and "how many did I just fold" is the
+               number the user is looking for at that moment. */
+            error.textContent=`×${formatCount(row.count)}`
+            error.className="fc-cell fc-count"
+            intensity.textContent=""
+            note.textContent=""
+        }else{
+            const entry=row.entry
+            error.textContent=Number.isFinite(entry.errorPpm)
+                ?`${entry.errorPpm>=0?"+":""}${entry.errorPpm.toFixed(1)}`
+                :"—"
+            error.className="fc-cell fc-num"
+            intensity.textContent=Number.isFinite(entry.intensity)?formatValue(entry.intensity):"—"
+            note.textContent=entry.note?"✎":""
+            note.title=entry.note||"no information yet — write some in the panel on the right"
+        }
+        element.classList.toggle("selected",this.parameters.selection===row.key)
+        element.classList.toggle("unfolded",row.kind==="molecule"
+            ?this.openMolecules.has(row.molecule)
+            :this.openEntries.has(row.key))
+        return element
+    }
+
+    /* --- the central graph: one trace per collection the user ticked ----- */
+    /* What is drawn is the COLLECTION, not the formula list: one trace per
+       ticked collection, x = m/z, y = intensity, sticks to zero. That is what
+       makes a hundred collections comparable at a glance, which a formula
+       index never would.
+
+       The budget is a hard stop and it says so out loud. A hundred collections
+       of fifty thousand formulas is five million sticks, and a WebGL buffer of
+       that size is not a slow graph, it is a dead tab. What was dropped is
+       reported in the readout rather than silently thinning the picture. */
+    refreshGraph(){
+        if(!this.graph) return
+        const traces=[]
+        let eligible=0
+        let drawn=0
+        for(const collection of this.collections){
+            if(!this.collectionState(collection.name).inGraphs) continue
+            const points=[]
+            for(const entry of collection.entries){
+                for(const target of entry.targets){
+                    if(!Number.isFinite(target.mz)||!Number.isFinite(target.intensity)) continue
+                    points.push([target.mz,target.intensity])
+                }
+            }
+            if(!points.length) continue
+            eligible+=points.length
+            //sorted by m/z: a stick plot read left to right must not jump
+            points.sort((a,b)=>a[0]-b[0])
+            const x=new Float64Array(points.length)
+            const y=new Float64Array(points.length)
+            for(let i=0;i<points.length;i++){
+                x[i]=points[i][0]
+                y[i]=points[i][1]
+            }
+            traces.push(new XYTrace({
+                id:`${collection.name}:sticks`,
+                title:`${collection.name} (${points.length})`,
+                wave:Wave.fromCoordinates(x,y,{collection:collection.name},["m/z","intensity"]),
+                options:{
+                    color:traceColor(this.collections.indexOf(collection)),
+                    mode:"sticks-to-zero",
+                    layer:"gl"
+                }
+            }))
+            drawn+=points.length
+        }
+        const capped=drawn>this.parameters.graphBudget
+        this.graph.setTraces(traces)
+        this.graph.parameters.axis.left.scale=this.parameters.logY?"log":"linear"
+        /* The axes say what they measure, and they are written ONCE here rather
+           than left to syncAxisLabels: that helper copies the labels of the
+           FIRST trace, and a graph whose axes change meaning when a collection
+           is ticked on or off is a graph nobody reads twice. */
+        this.graph.parameters.axis.bottom.label="m/z"
+        this.graph.parameters.axis.bottom.autoLabel=false
+        this.graph.parameters.axis.left.label="Intensity"
+        this.graph.parameters.axis.left.autoLabel=false
+        this.graph.drawGraph()
+        if(this.graphReadout){
+            this.graphReadout.textContent=capped
+                ?`${formatCount(drawn)} / ${formatCount(eligible)} (capped)`
+                :`${formatCount(drawn)} / ${formatCount(eligible)}`
+            this.graphReadout.style.color=capped?"#ffb347":""
+        }
+    }
+
+    /* What this node publishes: the ticked collections, and nothing else.
+
+       A collection is published as a PLAIN descriptor, not as Formula objects.
+       Two reasons, and the second is the decisive one: a downstream node that
+       wants the chemistry re-parses `key` against the same table (it never
+       abbreviates, so it round-trips exactly), and a session that stored live
+       formulas would store a periodic table along with each of them. */
+    publishOutput(){
+        const published=[]
+        for(const collection of this.collections){
+            if(!this.collectionState(collection.name).inOutput) continue
+            published.push({
+                name:collection.name,
+                formulas:collection.entries.map(entry=>({
+                    key:entry.key,
+                    notation:entry.notation,
+                    mz:entry.mz,
+                    mass:entry.mass,
+                    charge:entry.charge,
+                    molecule:entry.molecule,
+                    errorPpm:entry.errorPpm,
+                    intensity:entry.intensity,
+                    note:entry.note,
+                    targets:entry.targets.map(t=>({
+                        mz:t.mz,
+                        intensity:t.intensity,
+                        errorPpm:t.errorPpm,
+                        cost:Number.isFinite(t.cost)?t.cost:null
+                    }))
+                }))
+            })
+        }
+        this.outputs[0]=published
+    }
+    async startResolve(){
+        this.status="pending"
+        await this.table()
+        this.readCollections()
+        this.syncCurrentCollection()
+        this.publishOutput()
+        this.renderAll()
+        this.refreshGraph()
+        this.setStatus(this.collections.length?"resolved":"floating")
+    }
+    /* The periodic table, ONCE and on demand.
+
+       The table belongs to the ORIGINE and is AWAITED, never read directly: the
+       App loads it in the background, so a node that read `origin.table` the
+       instant it woke would report "no table" for a table still in flight. The
+       same shape as FKMDNode's, deliberately.
+
+       THE CACHE IS CALLED `loadedTable`, and that is not a style choice. A node
+       with a method `table()` cannot also have a field `table`: assigning
+       `this.table = null` in the constructor puts an OWN property on the
+       instance that shadows the method, and the next `this.table()` throws
+       "this.table is not a function" — which is exactly what happened, and it
+       took the whole node down at creation. The method asks; the App owns the
+       data; the node keeps one reading of it under a name that cannot collide. */
+    async table(){
+        if(this.origin.table){
+            this.loadedTable=this.origin.table
+            return this.loadedTable
+        }
+        const loaded=await this.origin.tableReady
+        this.loadedTable=loaded??null
+        return this.loadedTable
+    }
+    /* The collection on screen, chosen by name and never by index.
+
+       After a resolve the collections are rebuilt from the parents, so a
+       selection held as an index would silently move to a different collection
+       as soon as one was added above it. A name survives that, and a name that
+       has gone away simply falls back to the first one. */
+    syncCurrentCollection(){
+        const names=this.collections.map(c=>c.name)
+        if(this.parameters.current&&names.includes(this.parameters.current)){
+            this.currentCollection=this.collections.find(c=>c.name===this.parameters.current)
+        }else{
+            this.currentCollection=this.collections[0]??null
+            this.parameters.current=this.currentCollection?.name??null
+        }
+        this.selectedEntry=this.currentCollection&&this.parameters.selection
+            ?this.currentCollection.entries.find(e=>e.key===this.parameters.selection)??null
+            :null
+    }
+    setStatus(status){
+        this.status=status
+        dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,status))
+    }
+
+    /* --- reading the multiplexed input ----------------------------------- */
+    /* The ONE input is a Map parent -> outputs, and Flow.parentSynapse fills
+       it from EVERY link that lands on it. That is the multiplexing: no
+       bookkeeping here, and a hundred cables on a single anchor behave exactly
+       like one.
+
+       A collection is whatever a parent publishes. Three shapes are accepted,
+       because the producers do not agree yet and a reader that refused two of
+       them would be useless on the flow as it stands:
+         - a Formula / Stoichiometry: a collection of one,
+         - an array of them: one collection named after the parent,
+         - an object with `formulas` and an optional `points` array: the full
+           form, where each point carries the m/z that was measured.
+       Anything else is named in the diagnostics rather than dropped in
+       silence: a collection the user cannot see is one they will spend an
+       hour looking for. */
+    /* THE collections of this node, at every resolve: the ones that arrive on
+       the input, plus the ones the user made here.
+
+       The local ones come LAST and deliberately so. They are the ones this node
+       owns, and burying them under a hundred parents' collections would make
+       them the hardest to find, for no gain: a collection the user created is
+       the one they are looking for. */
+    readCollections(){
+        const collections=[]
+        const diagnostics=[]
+        const input=this.inputs[0]
+        if(input instanceof Map){
+            for(const [parent,values] of input){
+                const parentName=parent.events?.registrationName??parent.title
+                for(const output of values??[]){
+                    for(const raw of (Array.isArray(output)?output:[output])){
+                        const collection=this.asCollection(raw,parentName,diagnostics)
+                        if(collection) collections.push(collection)
+                    }
+                }
+            }
+        }
+        for(const local of this.parameters.localCollections){
+            const collection=this.buildCollection(
+                local.name,
+                (local.keys??[]).map(key=>this.localFormula(key,local.name,diagnostics)).filter(Boolean),
+                [],
+                diagnostics,
+                {local:true}
+            )
+            if(collection) collections.push(collection)
+        }
+        this.collections=collections
+        this.diagnostics=diagnostics
+    }
+    /* The objects behind a local collection's stored keys.
+
+       Only the KEYS are stored, never the formulas: a Formula holds a Map
+       indexed by Element, so a session carrying them would drag the periodic
+       table along. `key` never abbreviates, so re-reading it is exact — and if
+       it cannot be re-read (a table still loading, a key from another table)
+       that is a diagnostic on ONE collection, not a failure of the node. */
+    localFormula(key,name,diagnostics){
+        if(!this.loadedTable){
+            diagnostics.push(`${name}: the periodic table is not ready, "${key}" is not shown`)
+            return null
+        }
+        try{
+            /* The text as TYPED, not `key`. It looks redundant next to the
+               notation, and it is the only spelling that comes back identical:
+               a formula carrying a group adduct does not survive being
+               re-read from its key, because the adduct's atom is counted once
+               in the composition and once in the brackets. The user typed a
+               string that parses to what they meant, so that string is what
+               this node keeps. */
+            return Formula.parse(key,this.loadedTable)
+        }catch(error){
+            diagnostics.push(`${name}: ${error.message}`)
+            return null
+        }
+    }
+    asCollection(raw,parentName,diagnostics){
+        /* FOUR shapes, and the fourth is the one the class itself produces.
+
+           The node is a reader, and a reader that only understood one shape
+           would be useless on the flow as it stands — the producers do not
+           agree yet. So: a Formula alone, an array of them, a {name, formulas,
+           points} object, and a FormulaCollection coming back from another
+           node. Anything else is NAMED in the diagnostics rather than dropped in
+           silence: a collection the user cannot see is one they will spend an
+           hour looking for. */
+        if(raw instanceof FormulaCollection){
+            const points=raw.points??[]
+            const collection=this.buildCollection(
+                raw.name||parentName,raw.formulas,points,diagnostics)
+            //the class may have been built with a different ppm window, and the
+            //one on screen is the one the user can change
+            if(collection) collection.ppm=this.parameters.ppmWindow
+            return collection
+        }
+        if(raw instanceof Formula||raw instanceof Stoichiometry){
+            return this.buildCollection(parentName,[raw],[],diagnostics)
+        }
+        if(Array.isArray(raw)){
+            return this.buildCollection(parentName,raw,[],diagnostics)
+        }
+        if(raw&&typeof raw==="object"){
+            const name=raw.name??raw.title??parentName
+            const formulas=raw.formulas??raw.entries??raw.items??null
+            if(Array.isArray(formulas)){
+                return this.buildCollection(name,formulas,raw.points??raw.targets??[],diagnostics)
+            }
+        }
+        diagnostics.push(`${parentName}: nothing readable (${raw?.constructor?.name??typeof raw})`)
+        return null
+    }
+
+    /* Builds ONE collection — and hands the chemistry to the class that owns it.
+
+       The pairing, the ppm window, the "closest wins" rule, the deduplication
+       by key and the family of every formula all live in FormulaCollection,
+       in chemistry.js. This method only decides WHAT a collection is made of
+       and stamps the node's own annotations onto it.
+
+       The annotations are stamped here and not in the class, and that is the
+       boundary: a note is something the USER said about a formula, not a fact
+       about it. A chemistry file that carried user annotations would be
+       describing a panel. */
+    buildCollection(name,formulas,points,diagnostics,{local=false}={}){
+        const state=this.collectionState(name)
+        const collection=new FormulaCollection({
+            name,
+            table:this.loadedTable,
+            ppm:this.parameters.ppmWindow
+        })
+        for(const formula of formulas??[]) collection.add(formula)
+        collection.setPoints(points??[])
+        for(const entry of collection.entries) entry.note=state.notes[entry.key]??""
+        //`local` is the one thing the class cannot know: a collection this node
+        //made can be written to and deleted, a collection a parent made is
+        //rebuilt at every resolve and would swallow the change silently
+        collection.local=local
+        collection.state=state
+        diagnostics.push(...collection.diagnostics)
+        collection.diagnostics=[]
+        return collection
+    }
+    /* The state record of a collection, created on first sight. The name is
+       the key, not an index: indices move when a parent is rewired, and a
+       checkbox that jumps to another collection after a reload is a bug the
+       user cannot work around. */
+    collectionState(name){
+        const states=this.parameters.collectionState
+        if(!states[name]){
+            states[name]={inOutput:true,inGraphs:true,notes:{},open:true}
+        }
+        const state=states[name]
+        if(typeof state.inOutput!=="boolean") state.inOutput=true
+        if(typeof state.inGraphs!=="boolean") state.inGraphs=true
+        if(!state.notes||typeof state.notes!=="object") state.notes={}
+        return state
+    }
+
+    renderSelection(){
+        if(!this.detail) return
+        this.detail.replaceChildren()
+        const entry=this.selectedEntry
+        if(!entry){
+            this.detail.append(CE("div",{className:"pp-caption"},["Selection"]))
+            this.detail.append(CE("div",{style:{opacity:"0.7",fontSize:"0.85em"}},[
+                this.collections.length
+                    ?"Pick a formula in the list on the left."
+                    :"Connect a node that publishes a collection of Formula."
+            ]))
+            return
+        }
+        const state=this.currentCollection?this.collectionState(this.currentCollection.name):null
+        const line=(label,value)=>{
+            const row=CE("div",{className:"fc-field"},[])
+            row.append(
+                CE("span",{className:"fc-field-label"},[label]),
+                CE("span",{className:"fc-field-value"},[String(value)])
+            )
+            return row
+        }
+        this.detail.append(CE("div",{className:"pp-caption"},["Selection"]))
+        this.detail.append(CE("div",{className:"fc-bigkey",title:entry.notation},[prettyNotation(entry.notation)]))
+        this.detail.append(line("m/z",formatMz(entry.mz)))
+        this.detail.append(line("mass",Number.isFinite(entry.mass)?entry.mass.toFixed(6):"—"))
+        this.detail.append(line("charge",entry.charge>0?`+${entry.charge}`:`${entry.charge}`))
+        this.detail.append(line("molecule",entry.molecule?prettyNotation(entry.molecule):"—"))
+        this.detail.append(line("intensity",formatValue(entry.intensity)))
+        this.detail.append(line("error",Number.isFinite(entry.errorPpm)?`${entry.errorPpm>=0?"+":""}${entry.errorPpm.toFixed(2)} ppm`:"—"))
+        /* The KEY is the identity and it never abbreviates, so it is shown
+           verbatim and wrapped: comparing two rows means reading every mass
+           number, and an ellipsis in the middle of one is worse than no key. */
+        this.detail.append(line("key",entry.key))
+        this.detail.append(CE("div",{className:"pp-caption"},[`Targets (${entry.targets.length})`]))
+        if(!entry.targets.length){
+            this.detail.append(CE("div",{style:{opacity:"0.7",fontSize:"0.85em"}},[
+                `No measured point within ${this.parameters.ppmWindow} ppm.`
+            ]))
+        }else{
+            const table=CE("div",{className:"fc-targets"},[])
+            table.append(CE("div",{className:"fc-targets-line fc-targets-head"},["m/z","intensity","error","cost"]))
+            for(const target of entry.targets){
+                table.append(CE("div",{className:"fc-targets-line"},[
+                    formatMz(target.mz),
+                    formatValue(target.intensity),
+                    Number.isFinite(target.errorPpm)?`${target.errorPpm>=0?"+":""}${target.errorPpm.toFixed(2)}`:"—",
+                    Number.isFinite(target.cost)?target.cost.toFixed(3):"—"
+                ]))
+            }
+            this.detail.append(table)
+        }
+        this.detail.append(CE("div",{className:"pp-caption"},["Information"]))
+        /* The free text is the "add information" the list promises. It is
+           written on every keystroke into the state, so a reload finds the
+           annotation where the user left it. */
+        this.noteField=CE("textarea",{
+            className:"fc-note",rows:"3",spellcheck:false,
+            placeholder:"anything worth remembering about this formula"
+        },[])
+        this.noteField.value=state?.notes?.[entry.key]??""
+        this.noteField.addEventListener("input",()=>{
+            if(!state) return
+            const text=this.noteField.value
+            if(text) state.notes[entry.key]=text
+            else delete state.notes[entry.key]
+            this.origin?.saveSessionSoon?.()
+            this.renderRows()
+        })
+        this.detail.append(this.noteField)
+    }
+
+    /* --- the two halves of the state, and the restorations -------------- */
+    serializeState(){
+        /* Only the CHOICES are stored, never the chemistry.
+
+           The collections come from the links: a skeleton knows which parents
+           are wired, and the resolve rebuilds what they say. A state carrying
+           ten thousand Formula objects would be a session file measured in
+           hundreds of megabytes, and a SECOND copy of data the flow already
+           holds — the thing nodeRestoreData explicitly avoids when it says
+           "inputs keep their shape only".
+
+           What is worth keeping is what no resolve can guess: the collections
+           the user unticked, the one they were reading, the filters, and the
+           annotations they typed. The graph half is the inherited one, because
+           the axes and the trace options are as much the user's as these are. */
+        return {
+            ...(super.serializeState()??{}),
+            view:this.parameters.view,
+            filter:this.parameters.filter,
+            sort:this.parameters.sort,
+            ppmWindow:this.parameters.ppmWindow,
+            logY:this.parameters.logY,
+            graphBudget:this.parameters.graphBudget,
+            current:this.parameters.current,
+            selection:this.parameters.selection,
+            collectionState:DC(this.parameters.collectionState),
+            //the collections the user made here, as the text they typed. They
+            //are the only collections this state carries, and carrying them as
+            //texts is what keeps a session from growing a periodic table
+            localCollections:DC(this.parameters.localCollections)
+        }
+    }
+    restoreState(state){
+        super.restoreState(state)
+        if(!state){
+            return
+        }
+        //a view that is neither of the two would leave the toggle painting half
+        //a state, so an unreadable value falls back instead of sticking
+        this.parameters.view=state.view==="stoichiometry"?"stoichiometry":"formula"
+        this.parameters.filter=typeof state.filter==="string"?state.filter:""
+        this.parameters.sort=FORMULA_SORTS[state.sort]?state.sort:"mz"
+        if(Number.isFinite(state.ppmWindow)&&state.ppmWindow>0){
+            this.parameters.ppmWindow=state.ppmWindow
+        }
+        this.parameters.logY=!!state.logY
+        if(Number.isFinite(state.graphBudget)&&state.graphBudget>0){
+            this.parameters.graphBudget=state.graphBudget
+        }
+        this.parameters.current=typeof state.current==="string"?state.current:null
+        this.parameters.selection=typeof state.selection==="string"?state.selection:null
+        this.parameters.collectionState=state.collectionState&&typeof state.collectionState==="object"
+            ?DC(state.collectionState)
+            :{}
+        /* A saved collection is a name and a list of texts. Anything else in
+           here is a session file this build did not write, and dropping it
+           quietly would be better than throwing on it: the collection comes
+           back empty and the user retypes what they had. */
+        this.parameters.localCollections=Array.isArray(state.localCollections)
+            ?state.localCollections
+                .filter(local=>local&&typeof local.name==="string")
+                .map(local=>({name:local.name,keys:Array.isArray(local.keys)?local.keys.filter(k=>typeof k==="string"):[]}))
+            :[]
+        /* The widgets only exist once the node has been REGISTERED, and a
+           restore happens after — but a headless restore must not throw on a
+           node that never opened a panel, so every repaint is guarded. */
+        this.viewToggle?.paint()
+        if(this.sortSelect) this.sortSelect.value=this.parameters.sort
+        if(this.filterInput) this.filterInput.value=this.parameters.filter
+        this.renderCollections()
+        this.renderRows()
+        this.renderSelection()
+        this.renderGraphOptions()
+    }
+    restoreAfterImport(){
+        super.restoreAfterImport()
+        /* The panels are drawn EMPTY on purpose. The collections arrive with
+           the resolve that follows the import; re-reading them here would
+           resolve this node outside the flow's own order — the rule
+           DelimitedTextNode and SimpleXYPlotNode both follow. */
+        this.renderCollections()
+        this.renderRows()
+    }
+    refreshFromLinks(){
+        /* The undo path: this is a NEW instance whose inputs are empty Maps,
+           and the command has just drawn the links again. Same contract as
+           SimpleXYPlotNode — rebuild from the live links, never from a copy
+           the command happens to be holding. */
+        this.destination?.syncInputs(this).then(()=>this.startResolve())
+    }
+
+    renderGraphOptions(){
+        if(!this.graphOptions) return
+        this.graphOptions.replaceChildren()
+        this.logToggle=scaleToggle({
+            get:()=>this.parameters.logY,
+            set:(on)=>{
+                this.parameters.logY=on
+                this.graph.parameters.axis.left.scale=on?"log":"linear"
+                this.graph.drawGraph()
+            },
+            leftLabel:"Lin",
+            rightLabel:"Log",
+            title:"Scale of the intensity axis"
+        })
+        const budget=CE("input",{
+            type:"number",min:"1000",step:"10000",size:7,
+            value:String(this.parameters.graphBudget),
+            title:"How many points the central graph may draw at once, over every collection",
+            style:{width:"100%",minWidth:"0",padding:"2px"}
+        },[])
+        budget.addEventListener("change",()=>{
+            const parsed=Number(budget.value)
+            this.parameters.graphBudget=Number.isFinite(parsed)&&parsed>=1000
+                ?Math.trunc(parsed)
+                :FormulaCollectionNode.GRAPH_POINT_BUDGET
+            budget.value=String(this.parameters.graphBudget)
+            this.refreshGraph()
+        })
+        this.graphReadout=CE("span",{
+            className:"pp-readout",
+            title:"Points drawn / points eligible, and how many the budget left out"
+        },[""])
+        const row=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em"}},[])
+        row.append(this.logToggle,CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},["Budget",budget]),this.graphReadout)
+        this.graphOptions.append(CE("div",{className:"pp-caption"},["Graphs"]),row)
+    }
+    suicide(options={}){
+        /* The scroll list holds a ResizeObserver and a pool of rows: without
+           this, a deleted node leaves an observer watching a detached box. */
+        this.list?.dispose()
+        this.list=null
+        this.accordionRight?.suicide()
+        this.accordionRight=null
+        super.suicide(options)
+    }
+}
+
 class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     constructor(title,inputs,outputs,origin,destinationFlow,position={x:180,y:10}){
         super(title,inputs,outputs,origin,destinationFlow,position)
@@ -4282,6 +6044,7 @@ const NODE_CONSTRUCTORS={
     "AntiRadioNode":PeakPickingNode,
     TrimmerNode,
     FKMDNode,
+    FormulaCollectionNode,
     //the first tools-category node: it has no data, but a session must be able
     //to name it, or a reload would turn it into a bare Node with no dialog
     ChatNode
@@ -4354,7 +6117,11 @@ const SELF_SHAPED_NODES=new Set([
     //ChatNode builds its own (empty) inputs and outputs, so it takes the
     //(title, app, flow, position) signature. Left out of this set, a reload
     //would call it with five arguments and its slots would be the App.
-    ChatNode
+    ChatNode,
+    //one multiplexed input, one output: the collection reader declares its own
+    //shape for the same reason, and a session that spelled it out would be
+    //describing a socket count the flow decides anyway
+    FormulaCollectionNode
 ])
 /* A file spells a node's shape out. A skeleton only knows how many slots the node
    HAD: what was in them was data, and data is rebuilt by the resolve. A link is
@@ -5587,6 +7354,17 @@ class MainFlowMenu extends Menu{
                         case "chat": {
                             //self-shaped: a tool node, with no data to rebuild
                             node = new ChatNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
+                            break
+                        }
+                        case "formulaCollection": {
+                            //self-shaped: ONE multiplexed input, and any number
+                            //of cables may land on it
+                            node = new FormulaCollectionNode(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
                             break
                         }
                         case "delimitedText":

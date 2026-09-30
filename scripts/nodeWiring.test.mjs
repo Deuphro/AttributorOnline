@@ -247,6 +247,29 @@ test("chat messages are inserted as text, never as markup",()=>{
     ok(!/innerHTML/.test(append),`append must not use innerHTML:\n${append}`)
 })
 
+console.log("a field never hides a method")
+/* `this.table = null` in a constructor, next to a method `table()`, is a plain
+   TypeError waiting to happen: the assignment puts an OWN property on the
+   instance that shadows the prototype method, so the next call throws
+   "this.table is not a function". It cost a whole node once — and `node --check`
+   is perfectly happy with it, because it is valid JavaScript.
+
+   So it is checked as a CONTRACT over every class in the file, not as a memory
+   of one incident. The scan is deliberately shallow — methods declared at four
+   spaces, which is the file's own indentation for a class member — because a
+   deeper walk would start matching object literals and say nothing useful. */
+test("no class shadows one of its own methods with a field",()=>{
+    for(const [name,body] of blocks){
+        for(const match of body.matchAll(/^ {4}([a-zA-Z_$][\w$]*)\(/gm)){
+            const method=match[1]
+            if(method==="constructor") continue
+            const assignment=new RegExp(`this\\.${method}\\s*=[^=]`).test(body)
+            ok(!assignment,
+                `${name}.${method}() is shadowed: the class also does "this.${method} = ..."`)
+        }
+    }
+})
+
 console.log("the dialog tiler is wired all the way through")
 test("Dialog has a tiler between the folder and the dismisser",()=>{
     /* Read from the RAW class body, not the stripped one. The stripper cannot

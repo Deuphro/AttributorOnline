@@ -258,8 +258,29 @@ class Stoichiometry{
        personne n'a sous la main au moment où l'on tient une feuille. Une
        racine sans table dit donc pourquoi elle refuse, au lieu de choisir un
        isotope en silence. */
-    constructor({composition,ionisation=[],charge=undefined,rule="mostProbable",path=undefined,parent=null,table=null}={}){
+    constructor({composition,core=null,ionisation=[],charge=undefined,rule="mostProbable",path=undefined,parent=null,table=null}={}){
         this.composition=composition
+        /* LA COMPOSITION ÉCRITE: ce que l'utilisateur a tapé, AVANT que les
+           groupes d'ionisation n'y soient absorbés.
+
+           C'est la distinction qui rend `key` relisible, et elle est
+           indispensable. "CH4;H+" donne l'ion CH5+ — un méthane protoné, cinq
+           hydrogènes, c'est de la chimie correcte. Mais si la clé est écrite
+           depuis la composition ABSORBÉE tout en répétant les crochets, elle
+           dit "12C 1H5[H+]", ce qui se relit en "12C 1H6[H+]": l'hydrogène du
+           proton est compté DEUX FOIS, une fois dans la composition et une fois
+           dans le groupe. La clé affirmait pourtant pouvoir être stockée et
+           relue des mois plus tard.
+
+           Écrire le CORE puis les crochets dit "12C 1H4[H+]", qui se relit
+           exactement. La masse, le m/z et `counts` continuent, eux, de lire la
+           composition absorbée — parce qu'un ion CH5+ pèse bien cinq
+           hydrogènes.
+
+           `null` quand il n'y a rien à se souvenir : une formule sans groupe
+           d'ionisation, ou une racine bâtie à la main. L'écriture retombe alors
+           sur `composition`, ce qui est la même chose. */
+        this.core=core
         this.ionisation=ionisation
         /* Les charges s'ADDITIONNENT, elles ne se multiplient pas.
 
@@ -333,8 +354,17 @@ class Stoichiometry{
        donnerait `undefined` sur une racine nue — le genre de bug qui
        n'apparaît que sur l'objet que personne n'a pensé à tester. */
     get key(){
-        return Formula.compositionToString(this.composition,null)
+        return Formula.compositionToString(this.written,null)
             +this.brackets
+    }
+    /* Ce qui s'ÉCRIT: le core quand on s'en souvient, la composition sinon.
+
+       Cette ligne est la correction du double compte. `composition` porte le
+       groupe absorbé — il faut bien qu'elle le porte, puisque c'est elle que la
+       masse et le m/z pèsent — mais l'écrire ET écrire les crochets compterait
+       l'adduit deux fois. Voir le constructeur. */
+    get written(){
+        return this.core??this.composition
     }
 
     /* L'AFFICHAGE, qui abrège, et qui se relit avec la même règle.
@@ -345,8 +375,10 @@ class Stoichiometry{
        n'est PAS une identité. */
     toString(){
         //l'affichage est COLLÉ: c'est la forme qu'on écrit à la main, et c'est
-        //pour ça qu'elle n'est pas une identité
-        return Formula.compositionToString(this.composition,this.rule).replace(/ /g,"")
+        //pour ça qu'elle n'est pas une identité. Comme `key`, il s'écrit depuis
+        //le core: "CH4;H+" doit se relire CH4[H+], et non CH5[H+] où le lecteur
+        //compte six hydrogènes
+        return Formula.compositionToString(this.written,this.rule).replace(/ /g,"")
             +this.brackets
     }
 
@@ -355,7 +387,14 @@ class Stoichiometry{
        Un terme dont le nom est canonique s'écrit avec son multiplicateur:
        un terme sans atome s'écrit par sa seule charge, et rien d'autre:
        "[2+]". C'est la forme que les chimistes écrivent, donc celle qu'on
-       affiche — le "e" du préfixe n'a aucune valeur lisible. */
+       affiche — le "e" du préfixe n'a aucune valeur lisible.
+
+       LE GROUPE S'ÉCRIT AVEC LA RÈGLE, et c'est le bon choix malgré l'emblème
+       « la clé n'abrège jamais ». compositionToString n'abrège que l'isotope
+       que la règle CHOISIT: [H+] reste [H+], et [2H+] — du deutérium, donc un
+       isotope que la règle ne choisirait pas — s'écrit [2H+]. Écrire le groupe
+       en `null` donnerait [1H+], ce qui n'est pas plus complet, seulement moins
+       lisible. Les deux écritures sont sans ambiguïté, et une seule se lit. */
     get brackets(){
         return this.ionisation.map(t=>{
             //la charge est réécrite telle qu'elle a été LUE
@@ -783,6 +822,38 @@ class Stoichiometry{
         }
         return parts.sort((a,b)=>rank(a)-rank(b)||(a<b?-1:1)).join(" ")
     }
+    /* LA MOLÉCULE: les isotopes effacés, la charge gardée.
+
+       Ce n'est pas `key`, et l'écart est le sujet. `key` dit QUELS isotopes ont
+       été choisis — c'est son travail, et il le fait bien. Mais deux formules
+       qui ne diffèrent que par un 13C sont LA MÊME molécule écrite deux fois, et
+       c'est ce second objet, plus petit, que le repli regroupe.
+
+       Elle se lit sur la RACINE, donc une feuille connaît sa famille sans que
+       personne ait eu à la lui passer: deux collections peuvent contenir deux
+       feuilles qui ne dérivent pas l'une de l'autre, et elles doivent quand
+       même tomber dans la même case.
+
+       Hill (C, H, puis A par symbole), comme compositionToString: deux
+       écritures d'une même molécule doivent resortir identiques, sinon le
+       repli afficherait la même molécule en double.
+
+       Et la charge FAIT partie de l'identité. C6H12O6 et C6H12O6[H+] sont deux
+       ions différents, et les fusionner prétendrait que le protoné et le
+       neutre sont la même mesure. */
+    get moleculeKey(){
+        const rank=element=>element.symbol==="C"?0:element.symbol==="H"?1:2
+        const ordered=[...this.counts.entries()]
+            .sort((a,b)=>rank(a[0])-rank(b[0])||(a[0].symbol<b[0].symbol?-1:1))
+            .map(([element,n])=>n>1?`${element.symbol}${n}`:element.symbol)
+            .join("")
+        const charge=this.charge
+        const tail=charge
+            ?`${charge>0?"+":"-"}${Math.abs(charge)>1?Math.abs(charge):""}`
+            :""
+        return ordered+tail
+    }
+
 }
 
 /* Formula EST une Stoichiometry: une feuille du graphe, qui peut elle-même
@@ -803,8 +874,8 @@ class Formula extends Stoichiometry{
        charge:       la somme de leurs charges
        rule:         la règle qui a tranché les A inconnus ("mostProbable"…)
        path:         la provenance, {"iso":k,"ionisation":n} — HORS de la clé   */
-    constructor({composition,ionisation=[],charge=undefined,rule="mostProbable",path=undefined,parent=null,table=null}={}){
-        super({composition,ionisation,charge,rule,path,parent,table})
+    constructor({composition,core=null,ionisation=[],charge=undefined,rule="mostProbable",path=undefined,parent=null,table=null}={}){
+        super({composition,core,ionisation,charge,rule,path,parent,table})
     }
 
     /* ===================================================================
@@ -868,10 +939,7 @@ class Formula extends Stoichiometry{
         /* La composition est COPIÉE, jamais partagée: une feuille et sa fille
            ne peuvent pas écrire dans la même Map, sinon la mère se modifierait
            sous les pieds de celui qui la regarde. */
-        const composition=new Map()
-        for(const [element,byA] of this.composition){
-            composition.set(element,new Map(byA))
-        }
+        const composition=copyComposition(this.composition)
         const byA=composition.get(el)
         if(!byA||byA.size===0){
             throw new Error(`${el.symbol} is not part of this formula`)
@@ -930,6 +998,25 @@ class Formula extends Stoichiometry{
         }
         byA.set(from,fromCount-count)
         byA.set(massNumber,(byA.get(massNumber)??0)+count)
+        /* Le core suit LE MÊME déplacement, quand il porte cet élément.
+
+           Sinon la fille garderait une écriture du parent qui ne décrit plus
+           rien: convertir le 12C en 13C doit changer la clé, sinon deux
+           formules différentes porteraient la même. Et quand le core n'a pas
+           l'élément — un hydrogène qui ne vient que du groupe [H+], par exemple
+           — c'est le groupe qui le porte, et il s'écrit dans les crochets; le
+           laisser intact est donc la seule chose cohérente. */
+        const core=this.core?copyComposition(this.core):null
+        const coreByA=core?.get(el)
+        if(coreByA?.has(from)){
+            const coreFrom=coreByA.get(from)
+            coreByA.set(from,coreFrom-count)
+            coreByA.set(massNumber,(coreByA.get(massNumber)??0)+count)
+            for(const [otherA,n] of [...coreByA]){
+                if(n===0) coreByA.delete(otherA)
+            }
+            if(coreByA.size===0) core.delete(el)
+        }
         /* Une Map qui porte un compte nul est une entrée FANTÔME: elle compte
            dans `counts`, dans l'affichage et dans la clé, alors qu'il n'y a
            plus rien. Sinon "12C5 13C1" deviendrait "12C5 13C1 14C0". */
@@ -945,6 +1032,7 @@ class Formula extends Stoichiometry{
            exactement la règle que Formula.key applique déjà. */
         return new Formula({
             composition,
+            core,
             //l'ionisation est RECOPIÉE, pas partagée: le même tableau entre la
             //mère et la fille ferait qu'une retouche de l'une se voie sur
             //l'autre
@@ -1045,10 +1133,21 @@ class Formula extends Stoichiometry{
            "H-1" comme un coefficient -1. Il n'y a donc plus de "remove" à
            décider ici — c'est la composition qui dit quoi faire, et elle le
            dit une fois pour toutes. */
+        /* PHOTOGRAPHIE, AVANT. Les groupes sont absorbés dans la composition
+           juste après, et c'est ce qui la rend complète — mais c'est aussi ce
+           qui la rend impropre à écrire. On garde donc la composition telle
+           qu'elle a été tapée, et c'est elle que `key` et `toString` utiliseront.
+           Sans cette copie, "CH4;H+" s'écrit "12C 1H5[H+]" et se relit en
+           "12C 1H6[H+]".
+
+           Le nom est `written` et non `core` parce que `core` est déjà, dans
+           cette fonction, la CHAÎNE du corps — le même mot ne peut pas désigner
+           la chaîne et la Map qu'on en tire. */
+        const written=copyComposition(composition)
         for(const {group} of ionisation){
             if(group) Formula.applyGroup(composition,group,1,false,table,rule)
         }
-        return new Formula({composition,ionisation,rule,table})
+        return new Formula({composition,core:written,ionisation,rule,table})
     }
 
     /* "C6H12O6" ou "12C5 13C1 1H12 16O6" -> Map<Element, Map<A,count>>
@@ -1625,6 +1724,7 @@ class Formula extends Stoichiometry{
             }else{
                 //plusieurs isotopes du même élément: toujours TOUS en entier,
                 //car l'abréviation y serait ambiguë même pour l'affichage
+
                 for(let [A,n] of [...byA].sort((a,b)=>a[0]-b[0])){
                     parts.push(`${A}${el.symbol}${n>1?n:""}`)
                 }
@@ -1634,6 +1734,296 @@ class Formula extends Stoichiometry{
     }
 }
 
+/* -------------------------------------------------------------------------
+   FormulaCollection — un ENSEMBLE NOMMÉ de formules, et les points mesurés
+   dessus.
+
+   Ce qui manquait, et que le lecteur de collections a dû inventer de son
+   côté: la collection n'était qu'un tableau, et l'appariement formule ↔ point
+   vivait dans un fichier d'interface. Or cet appariement est de la CHIMIE et
+   pas de l'affichage — c'est la même question chez tout lecteur (« à quelle
+   formule appartient ce point ? »), et deux copies finissent par diverger.
+
+   CE QUE LA CLASSE GARANTIT
+
+     - une formule n'y entre qu'une fois, parce que `key` est l'identité: deux
+       lignes qui disent la même chose ne comptent pas deux fois dans un
+       décompte ni dans un graphique;
+     - un point trop éloigné n'est rattaché à PERSONNE plutôt qu'à la formule
+       la moins éloignée — rattacher une mesure inventée coûte plus cher que de
+       la laisser non attribuée;
+     - l'erreur est en ppm SUR LE m/z, jamais sur une somme de masses;
+     - `moleculeKey` vient de la racine, donc le repli n'a besoin d'aucune
+       table de familles.
+
+   Elle ne sait rien du DOM, d'un flow, ni d'un panneau.
+   ------------------------------------------------------------------------ */
+class FormulaCollection{
+    /* name  un nom LIBRE, pas une clé: l'utilisateur le renomme, et une
+             collection doit survivre à son renommage.
+       table nécessaire seulement pour LIRE une chaîne; une collection déjà faite
+             de Formula n'en a pas besoin.
+       ppm   la fenêtre d'appariement, en ppm sur le m/z. */
+    constructor({name="collection",table=null,entries=[],points=[],ppm=5}={}){
+        this.name=name
+        this.table=table
+        this.ppm=Number.isFinite(ppm)&&ppm>0?ppm:5
+        this.entries=[]
+        this.points=[]
+        this.diagnostics=[]
+        /* the text each formula was READ from, by key. It is what a session
+           stores: see asFormula for why it is not the same thing as `notation` */
+        this.sources=new Map()
+        for(const entry of entries??[]) this.add(entry)
+        if(points?.length) this.setPoints(points)
+    }
+    get size(){ return this.entries.length }
+    get formulas(){ return this.entries.map(entry=>entry.formula) }
+    get keys(){ return this.entries.map(entry=>entry.key) }
+    find(key){
+        return this.entries.find(entry=>entry.key===key)??null
+    }
+    /* Accepte un Formula, un Stoichiometry, ou une chaîne que la table sait
+       lire. Une chaîne illisible est un DIAGNOSTIC et non une exception: une
+       collection de cent mille formules contiendra une faute de frappe, et faire
+       tomber les quatre-vingt-dix-neuf mille autres avec elle punirait
+       l'utilisateur pour une seule ligne. */
+    add(input){
+        const formula=this.asFormula(input)
+        if(!formula) return null
+        const already=this.find(formula.key)
+        if(already) return already
+        const entry={
+            formula,
+            key:formula.key,
+            notation:String(formula),
+            mz:formula.mz,
+            mass:formula.mass,
+            charge:formula.charge,
+            //la RACINE, pas la feuille: c'est ce qui permet de replier une
+            //famille d'isotopologues sans qu'on ait à la transmettre
+            root:formula.root,
+            molecule:formula.root.moleculeKey,
+            targets:[],
+            target:null,
+            errorPpm:null,
+            intensity:0
+        }
+        this.entries.push(entry)
+        this.match()
+        return entry
+    }
+    remove(key){
+        const index=this.entries.findIndex(entry=>entry.key===key)
+        if(index<0) return false
+        this.entries.splice(index,1)
+        this.match()
+        return true
+    }
+    clear(){
+        this.entries=[]
+        this.points=[]
+        this.diagnostics=[]
+    }
+    asFormula(input){
+        if(input instanceof Formula||input instanceof Stoichiometry){
+            this.remember(input,input.key)
+            return input
+        }
+        if(typeof input==="string"){
+            if(!this.table){
+                this.diagnostics.push(`${this.name}: no table, cannot read "${input}"`)
+                return null
+            }
+            try{
+                const formula=Formula.parse(input,this.table)
+                /* The text AS TYPED is kept next to the formula.
+
+                   It looks redundant — `notation` already says what was read —
+                   and it is the only spelling that survives a round trip. A
+                   formula carrying a group adduct does NOT: "[H+]" is absorbed
+                   into the composition AND written again in the brackets, so
+                   re-reading either `key` or `notation` adds that hydrogen a
+                   second time (C6H12O6[H+] comes back as C6H12O6H2[H+]). That is
+                   a defect of the engine, not of this class, and the honest
+                   thing to do about it here is to keep the user's own text —
+                   which does round-trip — and to REPORT it below rather than
+                   store a value that quietly changes. */
+                this.remember(formula,input)
+                return formula
+            }catch(error){
+                this.diagnostics.push(`${this.name}: ${error.message}`)
+                return null
+            }
+        }
+        this.diagnostics.push(`${this.name}: ${input?.constructor?.name??typeof input} is not a formula`)
+        return null
+    }
+    remember(formula,source){
+        if(this.sources.has(formula.key)) return
+        this.sources.set(formula.key,source)
+    }
+    /* Les points mesurés sur cette collection. Les remplacer/apparier à
+       nouveau, parce qu'un point peut appartenir à une formule ajoutée après le
+       dernier appel: refuser les nouveaux points ferait que l'ORDRE de deux
+       opérations déciderait du contenu de la collection. */
+    setPoints(points){
+        this.points=(points??[]).filter(point=>point&&typeof point==="object")
+        this.match()
+        return this
+    }
+    /* L'appariement, et le seul endroit où la vitesse comptait.
+
+       Un balayage linéaire serait quadratique: apparier des dizaines de
+       milliers de points à des dizaines de milliers de formules, c'est un
+       milliard de comparaisons — pas une liste lente, un onglet mort. D'où
+       l'index trié PAR COLLECTION, payé une fois, et la recherche
+       dichotomique de nearestByMz.
+
+       Le point le plus proche l'emporte, et non le premier rencontré: sinon
+       l'attribution dépendrait de l'ordre du tableau, et la même collection
+       s'attribuerait différemment selon qui l'a construite. */
+    match(){
+        const sorted=[...this.entries].sort((a,b)=>a.mz-b.mz)
+        for(const entry of this.entries) entry.targets=[]
+        for(const point of this.points){
+            const mz=Number(point.mz??point.mass)
+            if(!Number.isFinite(mz)) continue
+            /* Un point qui NOMME sa formule est pris au mot: quand le
+               producteur a l'affectation, la déduire par proximité serait
+               trafficoter une meilleure réponse que la sienne. */
+            let entry=typeof point.key==="string"?this.find(point.key):null
+            if(!entry) entry=nearestByMz(sorted,mz,this.ppm)
+            if(!entry){
+                this.diagnostics.push(`${this.name}: a point at ${mz.toFixed(4)} matches no formula`)
+                continue
+            }
+            entry.targets.push({
+                mz,
+                intensity:Number(point.intensity??point.y),
+                cost:Number(point.cost),
+                //l'erreur se mesure sur le m/z, jamais sur une somme de masses
+                errorPpm:(mz-entry.mz)/entry.mz*1e6,
+                source:point
+            })
+        }
+        /* UNE seule valeur par colonne, sinon la ligne cesse d'être comparable
+           d'un bout à l'autre de l'écran: c'est la cible la plus proche en ppm
+           qui est montrée, et les autres restent à un clic dans le détail. Une
+           formule sans cible affiche un tiret, ce qui est une information —
+           une prédiction que rien n'a encore confirmée. */
+        for(const entry of this.entries){
+            entry.target=nearestTarget(entry.targets)
+            entry.errorPpm=entry.target?entry.target.errorPpm:null
+            entry.intensity=entry.targets.reduce(
+                (n,target)=>n+(Number.isFinite(target.intensity)?target.intensity:0),0)
+        }
+        return this
+    }
+    /* Les points sous forme de paires m/z–intensité, triées: c'est la matière
+       du graphique central, et cette classe n'a pas besoin de savoir ce qu'est
+       une Wave pour la produire. */
+    toPairs(){
+        const pairs=[]
+        for(const entry of this.entries){
+            for(const target of entry.targets){
+                if(!Number.isFinite(target.mz)) continue
+                pairs.push([target.mz,Number.isFinite(target.intensity)?target.intensity:0])
+            }
+        }
+        return pairs.sort((a,b)=>a[0]-b[0])
+    }
+    /* Un descripteur PLAT, et c'est ce qui voyage dans une session.
+
+       Les objets Formula ne se sérialisent pas: leur composition est une Map
+       indexée par des Element, et une session qui les porterait traînerait la
+       table périodique avec elle. `key` n'abrège jamais, donc il se relit
+       exactement — c'est par là que le round-trip se fait. */
+    toDescriptor(){
+        return {
+            name:this.name,
+            formulas:this.entries.map(entry=>({
+                key:entry.key,
+                //the text this formula was READ from when there was one, and the
+                //rendered notation otherwise. Only the first survives a reload
+                //unchanged for a group adduct — see asFormula
+                source:this.sources.get(entry.key)??null,
+                notation:entry.notation,
+                mz:entry.mz,
+                mass:entry.mass,
+                charge:entry.charge,
+                molecule:entry.molecule,
+                errorPpm:entry.errorPpm,
+                intensity:entry.intensity,
+                targets:entry.targets.map(target=>({
+                    mz:target.mz,
+                    intensity:Number.isFinite(target.intensity)?target.intensity:null,
+                    errorPpm:target.errorPpm,
+                    cost:Number.isFinite(target.cost)?target.cost:null
+                }))
+            }))
+        }
+    }
+    /* Le chemin inverse, et c'est lui qui rend une session restaurable: la
+       table est REPASSÉE, parce qu'elle n'était pas dans le fichier.
+
+       ET LE RÉSULTAT EST VÉRIFIÉ. Une clé relue qui ne redonne pas la même
+       formule est un problème de SILENCE: la session s'ouvre, la ligne est là,
+       et le m/z est celui d'une autre molécule. Plutôt que de laisser passer,
+       la comparaison est faite et l'écart est nommé — ce qui est tout ce qu'on
+       peut faire tant que `key` n'est pas relisible pour une ionisation
+       portant un groupe. */
+    static fromDescriptor(descriptor,{table=null,name=null,ppm=5}={}){
+        const collection=new FormulaCollection({
+            name:name??descriptor?.name??"collection",
+            table,
+            ppm
+        })
+        for(const formula of descriptor?.formulas??[]){
+            /* Sans table, une clé ne rend qu'un nom: pas de masse, donc pas de
+               m/z, donc rien à afficher ni à apparier. */
+            if(!table){
+                collection.diagnostics.push(
+                    `${collection.name}: no table, "${formula.key}" cannot be re-read`)
+                continue
+            }
+            const text=formula.source??formula.notation??formula.key
+            try{
+                const entry=collection.add(text)
+                if(!entry) continue
+                if(entry.key!==formula.key){
+                    /* On ne SAIT PAS d'où vient l'écart: le moteur a pu écrire
+                       une clé que lui-même ne relit pas, ou le descripteur
+                      porter une clé étrangère. Dire lequel serait une affirmation
+                       sans preuve, alors que le fait utile — la clé stockée ne
+                       mène pas à la formule écrite — est certain. */
+                    collection.diagnostics.push(
+                        `${collection.name}: "${text}" came back as ${entry.key}, `
+                        +`not as ${formula.key} — the stored key is not re-readable`)
+                }
+            }catch(error){
+                collection.diagnostics.push(`${collection.name}: ${error.message}`)
+            }
+        }
+        return collection
+    }
+}
+/* A Map<Element, Map<A,count>> COPIED, never shared.
+
+   A leaf and its mother must not write into the same Map: the child stealing a
+   carbon from the parent is the most silent bug in this file, because the
+   parent's display stays plausible while its mass is wrong.
+
+   The non-Map properties are copied too, because parseComposition hangs a
+   `trailingSign` on the Map, and a copy that quietly dropped it would lose a
+   charge on the way. */
+function copyComposition(composition){
+    const copy=new Map()
+    for(const [element,byA] of composition) copy.set(element,new Map(byA))
+    for(const symbol of Object.getOwnPropertySymbols(composition)) copy[symbol]=composition[symbol]
+    for(const key of Object.keys(composition)) copy[key]=composition[key]
+    return copy
+}
 /* -------------------------------------------------------------------------
    The periodic table, loaded OUTSIDE this file.
 
@@ -1649,4 +2039,60 @@ async function loadTable(url="../data/elements.json"){
     return Element.load(await response.json())
 }
 
-export {Element,Formula,Stoichiometry,loadTable}
+/* La formule à laquelle appartient un point mesuré: la PLUS PROCHE en m/z, et
+   seulement si elle tombe dans la fenêtre.
+
+   `sorted` DOIT être trié par m/z croissant, et la classe le fait payer une
+   fois par collection. C'est ici qu'un balayage linéaire aurait été fatal:
+   apparier des dizaines de milliers de points à des dizaines de milliers de
+   formules est quadratique, et un milliard de comparaisons n'est pas une liste
+   lente, c'est un onglet mort.
+
+   « La plus proche », et non « la première rencontrée »: sinon l'attribution
+   dépendrait de l'ordre du tableau, et la même collection s'attribuerait
+   différemment selon qui l'a construite.
+
+   null, et non la moins mauvaise candidate — et la différence est le sujet: un
+   point à 900 ppm de tout est un point NON ATTRIBUÉ, et le rattacher à la
+   formule la plus proche inventerait une mesure. */
+function nearestByMz(sorted,mz,ppm){
+    if(!sorted.length) return null
+    let low=0
+    let high=sorted.length
+    while(low<high){
+        const middle=(low+high)>>1
+        if(sorted[middle].mz<mz) low=middle+1
+        else high=middle
+    }
+    //seuls les deux voisins peuvent être les plus proches: tout ce qui précède
+    //est en dessous du point, tout ce qui suit est au-dessus
+    let best=null
+    let bestDistance=Infinity
+    for(const candidate of [sorted[low-1],sorted[low]]){
+        if(!candidate||!Number.isFinite(candidate.mz)||candidate.mz===0) continue
+        const distance=Math.abs(candidate.mz-mz)
+        if(distance<bestDistance){
+            bestDistance=distance
+            best=candidate
+        }
+    }
+    if(!best) return null
+    return bestDistance/best.mz*1e6<=ppm?best:null
+}
+//la cible qu'une ligne montre: celle dont le m/z est le plus proche de la
+//formule. Le cas courant est qu'il n'y en ait qu'une, et celle-ci est la bonne.
+function nearestTarget(targets){
+    let best=null
+    let bestDistance=Infinity
+    for(const target of targets){
+        if(!Number.isFinite(target.errorPpm)) continue
+        const distance=Math.abs(target.errorPpm)
+        if(distance<bestDistance){
+            bestDistance=distance
+            best=target
+        }
+    }
+    return best
+}
+
+export {Element,Formula,Stoichiometry,FormulaCollection,nearestByMz,nearestTarget,loadTable}

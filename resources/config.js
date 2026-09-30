@@ -93,6 +93,11 @@ const defaultMenu={
         },
         "Tools":{
             "Chat":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Chat',type:'chat'}}}))}
+        },
+        "Chemistry":{
+            //The reader, not a producer: it consumes collections of Formula from
+            //any number of parents on ONE input, and shows them.
+            "Formula collections":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Formula collections',type:'formulaCollection'}}}))}
         }
     }
 }

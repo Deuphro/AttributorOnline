@@ -851,7 +851,351 @@ body.menu-open .flow.workspace .child{
     font-family: var(--plot-axis-font);
 }
 
-/* ---- Sandwich architecture: WebGL back layer under the SVG overlay ---- */
+/* ---- Formula collections: the left panel, level 1 and level 2 ---------- */
+/* The vocabulary is the panel's own: a row is a grid of cells like .pp-row,
+   the grip is the accordion's 1em square, and the accent is the same lime the
+   folder buttons use. Nothing new is invented here, so the node reads as part
+   of the application rather than as a widget dropped into it.
+
+   ONE EXCEPTION TO THE APP'S TYPE, and it is a deliberate one. The global rule
+   sets `letter-spacing:-1px`, which on a monospace face pulls the letters of
+   each glyph together: fine for a menu, and at 0.85em on a column of formulae
+   it is simply not readable. A column of keys and m/z is TEXT, so this panel
+   gets the spacing back and a size that can be read without leaning in. */
+.fc-collections,
+.fc-formulas,
+.fc-addrow-wrap{
+    letter-spacing:0;
+}
+.fc-collection{
+    display:grid;
+    /* seven columns, and the local dot is one of them: it is rendered even
+       when empty, so the two checkboxes keep the same place on every row */
+    grid-template-columns: 1.1em minmax(0, 1fr) auto auto auto auto 1.1em;
+    align-items:center;
+    gap:3px;
+    padding:2px;
+    font-size:0.95em;
+    border:1px solid transparent;
+    border-radius:4px;
+}
+.fc-collection:hover{
+    background:var(--hover-bg);
+}
+/* the collection whose formulas are on screen below. One accent, on the row
+   itself and not on its name: a lit button among unlit ones reads as "this one
+   is enabled" rather than "this is where you are". */
+.fc-collection.current{
+    border-color:var(--accent-border);
+    background:var(--accent-faint);
+}
+.fc-collection-open{
+    background:transparent;
+    border:none;
+    color:var(--text-muted);
+    line-height:1;
+}
+.fc-collection-name{
+    background:transparent;
+    border:none;
+    padding:0 2px;
+    color:var(--text);
+    font:inherit;
+    text-align:left;
+}
+.fc-collection.current .fc-collection-name{
+    color:var(--accent);
+    font-weight:600;
+}
+.fc-collection-count{
+    color:var(--text-dim);
+    font-size:0.85em;
+    white-space:nowrap;
+}
+/* the two checkboxes are told apart by their TITLE, never by a colour: a
+   colour here would be a legend to learn, and the panel is already dense */
+.fc-collection input[type=checkbox]{
+    margin:0;
+    cursor:pointer;
+}
+
+/* LEVEL 2 — the virtualized formula list. The spacer carries the full height
+   of the list, so the scrollbar is honest; the layer on top of it carries only
+   the rows that fit. `contain:strict` is set on the scroll box in JS: it tells
+   the browser that nothing outside may influence the layout, which is what
+   stops a hundred thousand rows from costing a full-panel reflow per scroll. */
+.fc-viewport{
+    position:absolute;
+    inset:0;
+}
+/* the scroll box of the formula list. It is a separate element from .fc-formulas
+   because that one is now a GRID with the write line above the list: the
+   virtualized viewport is absolutely positioned inside the cell that holds it,
+   and `contain:strict` on this box is what stops the browser from re-measuring
+   a hundred thousand rows on every scroll. */
+.fc-viewport-wrap{
+    position:relative;
+    min-height:0;
+    overflow:auto;
+    contain:strict;
+}
+.fc-spacer{
+    width:1px;
+}
+.fc-layer{
+    position:absolute;
+    inset:0;
+}
+/* one line. Fixed height, because the offset arithmetic that makes the
+   windowing cheap assumes it — and because a list whose rows breathe as the
+   user types cannot be scrolled by muscle memory. 22px is the smallest height
+   that carries the larger type without clipping the descenders. */
+.fc-row{
+    display:grid;
+    grid-template-columns: minmax(0, 1fr) 5.4em 3.8em 5.6em 1.1em;
+    align-items:center;
+    gap:3px;
+    height:22px;
+    padding:0 2px;
+    font-size:0.95em;
+    cursor:pointer;
+    border-bottom:1px solid rgba(255,255,255,0.04);
+}
+.fc-row:hover{
+    background:var(--hover-bg);
+}
+.fc-row.selected{
+    background:var(--accent-faint);
+    outline:1px solid var(--accent-border);
+    outline-offset:-1px;
+}
+/* an unfolded row carries a left bar rather than a different colour: the row
+   is already tinted when it is selected, and two tints on one row is one too
+   many signals in a list this dense. */
+.fc-row.unfolded{
+    box-shadow:inset 2px 0 0 var(--accent-border);
+}
+.fc-cell{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+.fc-notation{
+    /* the notation is the identity on screen: it gets the room, and it is the
+       only cell allowed to shrink */
+    min-width:0;
+}
+.fc-num{
+    text-align:right;
+    color:var(--text-muted);
+    font-variant-numeric:tabular-nums;
+}
+.fc-count{
+    text-align:right;
+    color:var(--accent);
+    font-variant-numeric:tabular-nums;
+}
+.fc-note{
+    text-align:center;
+    color:var(--text-dim);
+    font-size:0.9em;
+}
+
+/* the "this collection lives here" dot: one glyph, the accent colour, and
+   nothing at all when the collection belongs to a parent */
+.fc-collection-local{
+    color:var(--accent);
+    font-size:0.7em;
+    text-align:center;
+}
+.fc-collection-local.off{
+    color:transparent;
+}
+
+/* ---- writing: the collection button, and the one-line formula field ---- */
+/* The field is the FKMD gesture, not a form: write, read, press Enter. The
+   readout sits on the SAME line and carries the reading, so "is this what I
+   meant" is answered without moving the eyes anywhere else. */
+.fc-newcollection{
+    justify-self:start;
+    font-size:0.85em;
+    color:var(--accent);
+    border-color:var(--accent-border);
+}
+.fc-addrow-wrap{
+    padding:0 0 3px 0;
+    border-bottom:1px solid var(--border);
+    margin-bottom:2px;
+}
+.fc-addrow{
+    display:grid;
+    /* field, live reading, commit button, and the outcome of the last Enter.
+       The hint takes the WHOLE second line rather than a fourth column: a
+       refusal message is a sentence, and a sentence squeezed into an `auto`
+       column next to a button is a sentence nobody reads. */
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "field readout commit" "hint hint hint";
+    align-items:center;
+    gap:4px;
+}
+.fc-addrow input{grid-area:field}
+.fc-addrow .fc-readout{grid-area:readout}
+.fc-addrow>button{grid-area:commit}
+.fc-addrow .fc-addrow-note{grid-area:hint}
+/* the two outcomes, told apart by colour AND by the words themselves */
+.fc-addrow-ok{
+    color:var(--accent);
+}
+.fc-addrow-bad{
+    color:#ff8f6b;
+}
+.fc-addrow input{
+    width:100%;
+    min-width:0;
+    font-family:inherit;
+    font-size:1em;
+    padding:4px 5px;
+    color:var(--text);
+    background:var(--code-bg);
+    border:1px solid var(--border);
+    border-radius:4px;
+}
+.fc-addrow input:focus{
+    outline:1px solid var(--accent);
+}
+/* the reason there is no field, spelled out rather than greyed out */
+.fc-addrow-note{
+    font-size:0.85em;
+    color:var(--text-dim);
+    padding:1px 2px;
+    line-height:1.35;
+}
+.fc-readout{
+    font-size:0.85em;
+    color:var(--text-muted);
+    white-space:nowrap;
+    font-variant-numeric:tabular-nums;
+}
+.fc-readout-error{
+    color:#ff8f6b;
+}
+.fc-readout-warn{
+    color:#ffb347;
+}
+
+/* the band that holds the write line, the list and the diagnostics. It is a
+   GRID, and nothing more: it does not scroll and it does not contain. Both
+   belong to .fc-viewport-wrap, the middle row — `contain:strict` on the band
+   would bring SIZE containment with it, and a size-contained grid is laid out
+   as if it were empty, which collapses the list to nothing. */
+.fc-formulas{
+    min-height:0;
+    display:grid;
+    grid-template-rows:auto minmax(0, 1fr) auto;
+}
+.fc-menu{
+    position:fixed;
+    z-index:60;
+    display:grid;
+    gap:1px;
+    min-width:14em;
+    padding:3px;
+    background:rgba(42, 51, 63, 0.97);
+    border:1px solid rgba(111, 132, 151, 0.72);
+    border-radius:5px;
+    box-shadow:0 4px 14px rgba(0,0,0,0.45);
+}
+.fc-menu button{
+    display:grid;
+    gap:1px;
+    width:100%;
+    padding:3px 6px;
+    text-align:left;
+    background:transparent;
+    border:none;
+    color:var(--text);
+    font:inherit;
+    cursor:pointer;
+}
+.fc-menu button:hover:not(:disabled){
+    background:var(--hover-bg);
+    outline:1px solid var(--accent-border);
+    color:var(--text);
+    box-shadow:none;
+}
+.fc-menu button:disabled{
+    opacity:0.45;
+    cursor:not-allowed;
+}
+.fc-menu-label{
+    font-size:0.95em;
+}
+.fc-menu-hint{
+    font-size:0.8em;
+    color:var(--text-dim);
+}
+
+/* the right panel: the detail of one formula */
+.fc-bigkey{
+    font-size:1.15em;
+    color:var(--accent);
+    word-break:break-all;
+    padding:2px 0;
+}
+.fc-field{
+    display:grid;
+    grid-template-columns:4.5em minmax(0, 1fr);
+    gap:4px;
+    align-items:baseline;
+}
+.fc-field-label{
+    color:var(--text-dim);
+    font-size:0.9em;
+}
+/* the value wraps instead of being cut: an m/z or a key that ends in an
+   ellipsis is a number the user cannot check against anything */
+.fc-field-value{
+    min-width:0;
+    overflow-wrap:anywhere;
+    font-variant-numeric:tabular-nums;
+}
+.fc-targets{
+    display:grid;
+    gap:1px;
+    font-variant-numeric:tabular-nums;
+}
+.fc-targets-line{
+    display:grid;
+    grid-template-columns:minmax(0, 1fr) 4.6em 3.6em 3.2em;
+    gap:3px;
+    font-size:0.9em;
+}
+.fc-targets-head{
+    color:var(--text-dim);
+    font-size:0.8em;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+}
+.fc-note{
+    width:100%;
+    box-sizing:border-box;
+    resize:vertical;
+    font:inherit;
+    font-size:0.85em;
+    padding:3px 4px;
+    color:var(--text);
+    background:var(--code-bg);
+    border:1px solid var(--border);
+    border-radius:4px;
+}
+.fc-diagnostics{
+    padding:2px 3px;
+    font-size:0.78em;
+    color:var(--text-dim);
+    border-top:1px solid var(--border);
+    overflow:auto;
+}
+
 /* the container becomes a stacking context so that the negative z-index of
    the back layer can never escape behind another panel */
 .plot2d.container{

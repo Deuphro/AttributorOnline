@@ -79,7 +79,10 @@ const RESTORABLE=[
     "NodeWithRightAccordionGraph",
     "PeakPickingNode",
     "TrimmerNode",
-    "FKMDNode"
+    "FKMDNode",
+    //the collection reader keeps its view, its filters and its annotations: all
+    //three are choices no resolve can reconstruct, so all three must travel
+    "FormulaCollectionNode"
 ]
 for(const name of RESTORABLE){
     test(`${name} saves what it was set to`,()=>{

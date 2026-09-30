@@ -31,6 +31,10 @@ const test=(name,fn)=>{
     catch(e){ failures.push(name); console.log(`  FAIL ${name}\n       ${e.message}`) }
 }
 const close=(a,b,tol,msg)=>{ if(!(Math.abs(a-b)<=tol)) throw new Error(`${msg??`${a} vs ${b}`}`) }
+//l'égalité stricte, avec un message PAR DÉFAUT qui nomme les deux côtés: un
+//test qui n'échoue qu'avec "undefined != 'x'" oblige à retrouver le contexte
+const eq=(a,b,msg)=>{ if(a!==b) throw new Error(msg??`${a} != ${b}`) }
+const ok=(value,msg)=>{ if(!value) throw new Error(msg??`expected truthy, got ${value}`) }
 //combien d'atomes d'un symbole, quels que soient leurs isotopes
 const atoms=(formula,symbol)=>{
     let n=0
@@ -76,9 +80,76 @@ test("[2H+] est du deutérium, PAS deux protons",()=>{
     const s=parse("C6H12O6 [2H+]")
     if(s.charge!==1) throw new Error(`charge ${s.charge}, expected 1`)
     if(atoms(s,"H")!==13) throw new Error(`H=${atoms(s,"H")}, expected 13`)
-    //et c'est bien du deutérium qui a été ajouté
-    if(Formula.parse("C6H12O6 [2H+]",TABLE).key!=="12C6 1H12 2H 16O6[2H+]")
+    //et c'est bien du deutérium qui a été ajouté: le core compte les douze 1H,
+    //le groupe porte le 2H, et l'adduit n'est donc compté qu'une fois
+    if(Formula.parse("C6H12O6 [2H+]",TABLE).key!=="12C6 1H12 16O6[2H+]")
         throw new Error("deuterium was not applied")
+})
+
+console.log("la clé se relit ELLE-MÊME, adduit compris")
+test("une clé relue redonne la même clé, adduit compris",()=>{
+    /* LA PROPRIÉTÉ QUE LA CLÉ AFFIRME ET QUE PERSONNE NE VÉRIFIAIT.
+
+       `key` est documentée comme pouvant être stockée puis relue des mois plus
+       tard. Or elle ne l'était pas dès qu'une ionisation portait un GROUPE:
+       l'adduit était absorbé dans la composition ET réécrit entre crochets, donc
+       compté deux fois. "CH4;H+" s'écrivait "12C 1H5[H+]" et se relisait en
+       "12C 1H6[H+]" — un ion de plus, silencieusement, à chaque relecture.
+
+       Le remède est dans `written`: la clé sort du core, celui d'avant
+       l'absorption, et les crochets portent le groupe. */
+    const cases=[
+        "C6H12O6",              //neutre: rien à relire
+        "C6H12O6[H+]",          //un proton
+        "C6H12O6[H-]",          //un hydrure
+        "C6H12O6[H+][-]",       //deux termes empilés
+        "C6H12O6[Na+]",         //un adduit lourd
+        "C6H12O6[2H+]",         //du deutérium: le groupe n'est PAS l'isotope par défaut
+        "C6H12O6[23Na+]",       //et un isotope écrit explicitement
+        "CH4;H+",               //l'autre délimiteur
+        "C6H12O6[2+]"           //une charge seule, sans groupe
+    ]
+    for(const text of cases){
+        const first=Formula.parse(text,TABLE)
+        const again=Formula.parse(first.key,TABLE)
+        if(again.key!==first.key){
+            throw new Error(`"${text}" -> "${first.key}" -> re-read "${again.key}"`)
+        }
+        if(Math.abs(again.mass-first.mass)>1e-12){
+            throw new Error(`"${text}": mass drifted ${first.mass} -> ${again.mass}`)
+        }
+        if(again.charge!==first.charge){
+            throw new Error(`"${text}": charge drifted ${first.charge} -> ${again.charge}`)
+        }
+    }
+})
+test("l'affichage dit ce qui a été tapé, l'adduit en crochets",()=>{
+    /* L'affichage est la forme qu'on écrit à la main, donc il doit ressembler à
+       ce que l'utilisateur a saisi. Il disait "CH5[H+]" pour "CH4;H+", où le
+       lecteur compte six hydrogènes. */
+    eq(Formula.parse("CH4;H+",TABLE).toString(),"CH4[H+]")
+    eq(Formula.parse("C6H12O6 [H+]",TABLE).toString(),"C6H12O6[H+]")
+    eq(Formula.parse("C6H12O6 [2H+]",TABLE).toString(),"C6H12O6[2H+]")
+    //et la masse, elle, reste celle de l'ION: cinq hydrogènes pour CH5+
+    const ion=Formula.parse("CH4;H+",TABLE)
+    const methane=Formula.parse("CH4",TABLE)
+    close(ion.mass,methane.mass+PROTON-Formula.electronMass,1e-9)
+})
+test("un isotopologue d'un ionisé déplace le core ET le groupe",()=>{
+    /* Le core suit le déplacement, sinon deux formules différentes porteraient
+       la même clé — celle du parent. Et le groupe garde son isotope quand le
+       core ne porte pas l'élément: c'est lui qui l'écrit. */
+    const protonated=Formula.parse("C6H12O6[H+]",TABLE)
+    const heavy=protonated.isotopologue("C",13)
+    ok(heavy.key.includes("13C"),`the 13C must show in the key: ${heavy.key}`)
+    ok(heavy.key.includes("12C5"),`and the 12C5 beside it: ${heavy.key}`)
+    ok(heavy.key.endsWith("[H+]"),`and the adduct stays in brackets: ${heavy.key}`)
+    close(heavy.mass-protonated.mass,1.003355,1e-4)
+})
+test("décharger un 13C d'un ionisé rend bien la forme monoisotopique",()=>{
+    const back=Formula.parse("12C5 13C 1H12 16O6[H+]",TABLE).isotopologue("C",12,{target:13})
+    eq(back.key,"12C6 1H12 16O6[H+]","the 13C is gone from the core")
+    eq(atoms(back,"C"),6,"and the core still holds six carbons")
 })
 
 console.log("la masse est celle de l'ION: la charge la corrige, une fois")
@@ -220,8 +291,15 @@ test("deux chemins vers la même formule donnent la même clé",()=>{
 })
 test("la clé ne dépend que du contenu",()=>{
     const s=parse("C6H12O6 [H+]")
-    //la clé colle les crochets à la composition, comme l'affichage
-    if(s.key!=="12C6 1H13 16O6[H+]") throw new Error(`key is "${s.key}"`)
+    /* La clé écrit le CORE puis les crochets: "12C6 1H12 16O6[H+]".
+
+       Elle disait "12C6 1H13 16O6[H+]", ce qui comptait l'hydrogène du proton
+       deux fois — une fois dans la composition, une fois dans le groupe — et se
+       relisait en "12C6 1H14 16O6[H+]". Une identité qui ne se relit pas
+       elle-même n'est pas une identité. La MASSE, elle, continue de peser les
+       treize hydrogènes: un ion C6H13O6+ pèse bien treize H. */
+    if(s.key!=="12C6 1H12 16O6[H+]") throw new Error(`key is "${s.key}"`)
+    if(atoms(s,"H")!==13) throw new Error(`H=${atoms(s,"H")}, expected 13`)
 })
 
 
@@ -414,7 +492,8 @@ test("la partie adDUITE reste entre crochets dans la clé",()=>{
     //c'est la convention: ce qui est entre crochets est l'ionisation, et
     //rien d'autre ne s'y mêle
     const s=Formula.parse("C6H12O6 [H+][-]",TABLE)
-    if(s.key!=="12C6 1H13 16O6[H+][-]") throw new Error(`key is "${s.key}"`)
+    //le core, puis les crochets: l'adduit n'est compté qu'une fois
+    if(s.key!=="12C6 1H12 16O6[H+][-]") throw new Error(`key is "${s.key}"`)
     //et une formule neutre n'invente pas de crochet vide
     if(Formula.parse("C6H12O6",TABLE).key!=="12C6 1H12 16O6")
         throw new Error("a neutral formula has no brackets")
@@ -783,7 +862,7 @@ test("le 1 de la charge est facultatif, et les deux délimiteurs s'ignorent",()=
     /* "H+" et "H+1" sont la MÊME lecture: un signe nu vaut 1, comme un H seul
        dans une composition vaut un atome. Et le ";" ne change rien au fond,
        c'est un autre délimiteur pour le même terme. */
-    const expected="12C6 1H13 16O6[H+]"
+    const expected="12C6 1H12 16O6[H+]"
     for(const t of ["C6H12O6;H+","C6H12O6;H+1","C6H12O6[H+]","C6H12O6[H+1]"]){
         const f=Formula.parse(t,TABLE)
         if(f.key!==expected) throw new Error(`${t} -> "${f.key}", expected "${expected}"`)
