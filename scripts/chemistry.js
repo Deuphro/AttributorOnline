@@ -187,6 +187,19 @@ class Element{
    Un nom libre reste ACCEPTÉ s'il est une formule lisible; ce qui ne l'est pas
    est nommé, comme n'importe quel élément inconnu. */
 
+/* log(n!) sans passer par n!.
+
+   Le multinomial fait n!/∏k!, et sur un lipide n vaut 54: 54! overflowe un
+   float64, donc le calculer puis le diviser donnerait Infinity — et
+   Infinity/Infini vaut NaN, ce qui ferait disparaître la combinaison sans
+   dire pourquoi. La somme des logarithmes n'a pas ce problème, et c'est la
+   seule chose qui tienne jusqu'aux 536 ordres de grandeur du lipide. */
+function logFactorial(n){
+    let sum=0
+    for(let i=2;i<=n;i++) sum+=Math.log(i)
+    return sum
+}
+
 /* -------------------------------------------------------------------------
    Stoichiometry — la RACINE, et ce dont une formule se suspend.
 
@@ -419,6 +432,356 @@ class Stoichiometry{
             return null
         }
         return (leaf.mz-this.mz)/this.mz*1e6
+    }
+
+    /* ===================================================================
+       L'ÉNUMÉRATION — un moteur, deux files de priorité.
+
+       C'est la question du spectre: « quelles formules'ont CETTE masse ? »
+       et, à l'inverse, « quelles sont celles que je vais voir ? ». Les deux
+       sont le même moteur avec une fonction de priorité différente, et c'est
+       pour ça qu'il n'y a pas deux algorithmes.
+
+         ratio  le classement — les plus ABONDANTES d'abord
+         within la couverture — tout ce qui tombe dans la fenêtre de masse
+
+       UN SEUL MECANISME, parce que l'espace se FACTORISE: les isotopes d'un
+       élément sont indépendants de ceux d'un autre, donc le nombre total de
+       combinaisons est un PRODUIT de combinatoires, et on ne le parcourt
+       jamais. Sur C6H12O6 il fait 7 x 13 x 28 = 2548; sur C54H104O6 il en
+       fait 161 700. Aucun des deux n'est jamais matérialisé en entier.
+
+       POURQUOI UN TAS ET NON « LES k MEILLEURS PAR ÉLÉMENT ». C'est la
+       question qu'on se pose naturellement, et la réponse est non: la
+       probabilité totale est un PRODUIT entre éléments, donc les rangs
+       n'alignent pas. Le M+2 du glucose peut venir de 2 x 13C, qui est au
+       RANG 3 du carbone, ou de 2 x 18O, qui est au RANG 4 de l'oxygène. Un
+       sous-espace « top-2 par élément » perd le premier et garde le second —
+       il se trompe donc deux fois. Il n'existe pas de k constant qui marche:
+       il dépend du nombre d'éléments et de leurs isotopes. Le tas, lui, ne
+       raisonne pas par élément: son germe est un vecteur d'INDICES tous à
+       zéro, et son seul mouvement est incrémenter UN indice. Le k est alors
+       le nombre de résultats rendus, pas un paramètre à calibrer.
+
+       TOUT EST EN LOGARITHME, et ce n'est pas une optimisation. La queue de
+       la distribution est extrême: sur un lipide, la plus rare est à -536
+       ordres de grandeur, et float64 sature à 1e-308. En probabilité
+       ordinaire elle SOUS-FLOTTE À ZÉRO — le cas disparaît, sans erreur et
+       sans avertissement. Une probabilité qui vaut 0 ne distingue plus rien,
+       alors que son logarithme distingue tout. C'est aussi ce qui garde le
+       tas ordonné: comparer des P qui ont toutes sous-flotté donnerait des
+       égalités, donc un ordre arbitraire. On ne convertit en probabilité
+       qu'AFFICHAGE, sur la valeur déjà rendue.
+
+       `ratio` est le kriter du code Igor de la thèse (generesimu, L.600):
+       un seuil RELATIF au maximum de chaque élément, entre 0 pour tout
+       prendre et 1 pour le seul plus probable. Il est relatif et non absolu
+       pour une raison concrète: il s'adapte à chaque élément au lieu
+       d'appliquer la même barre à tous. Mesuré sur C6H12O6, ratio=0.001
+       laisse 3 x 2 x 3 = 18 combinaisons là où une barre absolue à 0.1 %
+       en laisserait 49. Le rapport est le même en logarithme — la soustraction
+       est le log du quotient — donc la sémantique d'Igor est préservée
+       exactement, et elle survit là où la probabilité littérale meurt.
+
+       LE SEUIL EST SÛR PARCE QUE LA DÉCROISSANCE EST STRICTE. Le
+       multinomial a un maximum unique et une queue monotone, donc dès que
+       logP[k] - logP[0] passe sous le seuil, plus rien derrière ne peut
+       remonter. On peut s'arrêter sans rien perdre — ce que le kriter
+       d'Igor fait par balayage, et ce qu'on fait ici par corte.
+
+       `within` l'emporte sur le classement quand les deux sont donnés: une
+       couverture est plus informative qu'un classement, et une fenêtre sans
+       limite rend tout ce qu'elle contient, ce qui est le cas pédagogique.
+       `limit` ne fait alors plus que borner le nombre rendu. Ce n'est pas
+       une erreur, c'est un autre usage, donc ce n'est pas un `throw`.
+       --------------------------------------------------------------------
+    */
+    *isotopologues({ratio=0,limit=10,within=null}={}){
+        if(!this.table){
+            /* Une racine sans table ne SAIT ni quelles masses existent, ni
+               quelles abondances. Deviner en silence produirait une liste
+               fausse, avec des masses fausses — le pire des deux. */
+            throw new Error(
+                "isotopologues needs the periodic table: this node was built without one")
+        }
+        if(within!==null&&(typeof within!=="object"||!Number.isFinite(within.mz))){
+            /* Une fenêtre est un OBJET {mz, ppm}, pas un nombre. Un nombre seul
+               serait lu comme un m/z sans tolérance, donc il produirait une
+               couverture d'un seul point — la forme exacte du bug qu'on ne
+               voit pas: une liste qui rend presque rien, sans jamais rien
+               signaler. */
+            throw new Error(`within must be {mz, ppm}, got ${JSON.stringify(within)}`)
+        }
+        if(within!==null&&!(within.ppm>0)){
+            throw new Error(`within.ppm must be positive, got ${within.ppm}`)
+        }
+        const charge=this.charge
+        const elements=[...this.composition.keys()]
+        /* `within` raisonne en m/z, donc il se resserre d'un facteur |z|: un 2+
+           a son axe divisé par deux, et chercher une fenêtre non divisée
+           irait chercher au mauvais endroit. C'est ce qui fait qu'une même
+           molécule se retrouve à ses différentes charges. */
+        const scale=within!==null?Math.max(1,Math.abs(charge||1)):1
+        /* Les bornes de CHAQUE élément: la masse que le reste de la molécule
+           peut apporter, minimale et maximale. C'est ce qui rend l'élagage par
+           élément sound — sans elles, on comparerait la masse d'un seul atome
+           à la masse de la molécule, et tout tomberait dehors. On les calcule
+           AVANT les listes, en deux passes: d'abord le min et le max de chaque
+           élément, puis le reste en sommant les autres. */
+        const heaviestIsotope=(element,count)=>{
+            let mass=0
+            for(const isotope of element.isotopes){
+                if((isotope.abundance??1)>0) mass=Math.max(mass,isotope.mass*count)
+            }
+            return mass
+        }
+        const lightestMass=(element,count)=>{
+            let mass=0
+            for(const isotope of element.isotopes){
+                if((isotope.abundance??1)>0){ mass+=isotope.mass*count; break }
+            }
+            return mass
+        }
+        const perElementMin=elements.map((el,i)=>lightestMass(el,this.counts.get(el)))
+        const perElementMax=elements.map((el,i)=>heaviestIsotope(el,this.counts.get(el)))
+        const lists=elements.map((element,i)=>
+            Stoichiometry.isotopicCompositions(
+                element,this.counts.get(element),ratio,within,scale,[
+                    perElementMin.reduce((a,v,j)=>j===i?a:a+v,0),
+                    perElementMax.reduce((a,v,j)=>j===i?a:a+v,0)
+                ]))
+        if(lists.some(list=>list.length===0)) return
+        /* Le germe est le vecteur d'indices TOUS À ZÉRO: chaque élément à son
+           isotope le plus probable. Un germe choisi ailleurs couperait la
+           chaîne — tout état du top-k a un parent mieux classé, donc il doit
+           être atteignable en remontant depuis le sommet. */
+        const ranks=elements.map(()=>0)
+        const totalLogP=(candidate)=>candidate.reduce(
+            (a,index,i)=>a+lists[i][index].logProbability,0)
+        const totalMass=(candidate)=>candidate.reduce(
+            (a,index,i)=>a+lists[i][index].mass,0)
+        const electronMass=this.constructor.electronMass
+        const open=[{ranks,logP:totalLogP(ranks)}]
+        const seen=new Set([ranks.join(",")])
+        let rank=0
+        while(open.length){
+            /* Le maximum sort en premier. Un heap binaire serait plus rapide,
+               mais ici il faudrait pop() le MINIMUM, et shift() le fait déjà:
+               on trie donc la liste entière à chaque tour. C'est O(k log k)
+               sur le nombre d'états OUVERTS, ce qui reste très en dessous du
+               produit cartésien — 2548 ou 161 700, on n'en materialize aucun. */
+            let best=0
+            for(let i=1;i<open.length;i++){
+                if(open[i].logP>open[best].logP) best=i
+            }
+            const current=open.splice(best,1)[0]
+            const mass=totalMass(current.ranks)
+            /* La charge ne fait PAS partie de l'énumération: l'électron n'a
+               pas de nombre de masse, donc il n'a rien à faire varier. Il n'est
+               porté que par la correction de masse, ici comme dans `mass`. */
+            const ionMass=mass-charge*electronMass
+            /* En mode FENÊTRE, un état peut être hors fenêtre et doit être
+               IGNORÉ — mais PAS ABANDONNÉ : il faut quand même l'étendre, sinon
+               la marche s'arrête net. Le germe en est l'exemple: c'est l'état
+               le plus PROBABLE, qui n'a aucune raison d'être dans la fenêtre
+               demandée. Sauter son expansion revenait à ne rien rendre du
+               tout, puisque c'est de lui que partent tous les voisins.
+               Et le rang ne compte que ce qui est RENDU: un état ignoré n'a
+               pas de rang, sinon la numérotation mentirait. */
+            const inWindow=within===null||(
+                (()=>{
+                    const mz=ionMass/scale
+                    return mz>=within.mz*(1-within.ppm*1e-6)
+                        &&mz<=within.mz*(1+within.ppm*1e-6)
+                })())
+            if(inWindow){
+                rank++
+                yield{
+                    rank,
+                    mass,
+                    ionMass,
+                    mz:ionMass/Math.max(1,Math.abs(charge||1)),
+                    logProbability:current.logP,
+                    notation:Stoichiometry.isotopicNotation(elements,current.ranks,lists,true),
+                    key:Stoichiometry.isotopicNotation(elements,current.ranks,lists,false),
+                    ionisation:this.ionisation,
+                    charge,
+                }
+                if(limit!==Infinity&&rank>=limit) return
+            }
+            /* UN SEUL indice bouge à la fois. C'est tout le voisinage, et c'est
+               suffisant: tout état du top-k a un parent mieux classé, donc il
+               est atteint par cette marche. */
+            for(let i=0;i<lists.length;i++){
+                const next=current.ranks.slice()
+                next[i]++
+                if(next[i]>=lists[i].length) continue
+                const marker=next.join(",")
+                if(seen.has(marker)) continue
+                seen.add(marker)
+                /* En mode fenêtre, un voisin qui sort de la fenêtre est
+                   ÉLAGUÉ ICI. La coupe porte sur la MASSE DU Voisin, pas sur
+                   son rang: la fenêtre est en ppm, donc c'est la seule
+                   comparison qui ait un sens. Un voisin trop lourd ne peut
+                   pas s'alléger en remontant, donc la coupe est sûre — et
+                   sans elle le tas remonterait tout l'espace en renvoyant des
+                   masses à 5 000 ppm de la cible, ce qui n'est pas une
+                   fenêtre mais un tri déguisé. */
+                if(within!==null){
+                    const mz=(totalMass(next)-charge*electronMass)/scale
+                    if(mz<within.mz*(1-within.ppm*1e-6)) continue
+                    if(mz>within.mz*(1+within.ppm*1e-6)) continue
+                }
+                open.push({ranks:next,logP:totalLogP(next)})
+            }
+        }
+    }
+
+    /* Les multinomiales d'UN élément, en logP décroissant, tronquées par le
+       seuil RELATIF. C'est le crible d'Igor — mais en UNE fonction au lieu
+       des dix que la thèse portait (crible1..crible10), qui étaient le même
+       calcul du dix fois avec un nombre de boucles `for` différent.
+
+       ELLE REMPLACE LE RÉGIME ENTIER, parce qu'Igor ne sait pas itérer sur
+       une dimension variable. Ici la récursion porte le nombre d'isotopes, et
+       il n'y a plus de plafond à 10 — donc plus de crible10 à recopier quand
+       un élément gagne un isotope. C'était aussi le siège d'un bug dormant :
+       crible1 (L.509) faisait `k9=n-k8` alors que k8 n'existe pas dans une
+       fonction à une seule variable, donc la fonction mono-isotope était
+       fausse. Elle n'était jamais appelée, et le bug dormait depuis la
+       thèse. Une récursion n'a pas de cas particulier à oublier.
+
+       `within` élague ICI, avant tout croisement: la masse est additive, donc
+       un isotope qui pushes la masse hors de la fenêtre ne pourra jamais y
+       revenir en remontant. C'est sound, et c'est ce qui rend le mode
+       fenêtre gratuit — sur le glucose, la fenêtre à 5 ppm du 13C1 ramène
+       les listes de 7/13/28 à 2/1/2, et il ne reste que trois états à
+       fabriquer au lieu de 2548.
+       -------------------------------------------------------------------- */
+    static isotopicCompositions(element,n,ratio=0,within=null,scale=1,bounds=[0,Infinity]){
+        const isotopes=element.isotopes
+        /* `out` est réassigné par les deux coupes de seuil plus bas, donc il
+           ne peut pas être `const`. */
+        let out=[]
+        const counts=new Array(isotopes.length).fill(0)
+        /* `total` est le nombre d'atomes, fixe pour toute la liste. Il est
+           gardé À PART de `remaining`, qui est ce qu'il reste à distribuer:
+           les deux valent n au premier appel, puis divergent, et les confondre
+           donnait un multinomial calculé sur le mauvais n. */
+        const total=n
+        const rec=(index,remaining)=>{
+            if(index===isotopes.length-1){
+                counts[index]=remaining
+                /* La formule est le multinomial
+                       n!/∏k! × ∏p^k
+                   écrit en logarithmes. C'est la même qu'Igor écrit
+                   `∏binomial(somme courante, k) × p^k`, algébriquement
+                   identique — vérifié: la somme des P vaut 1.000000.
+                   `??1` pour l'abondance: les 56 éléments mono-isotopiques ont
+                   `abundance: null` dans le NIST, parce qu'un isotope unique
+                   est à 100 % par définition mais n'a pas besoin d'être écrit.
+                   Une P nulle ferait disparaître l'atome. */
+                let logProbability=logFactorial(total)
+                let mass=0
+                for(let i=0;i<counts.length;i++){
+                    logProbability-=logFactorial(counts[i])
+                    if(counts[i]>0){
+                        const abundance=isotopes[i].abundance??1
+                        if(abundance>0) logProbability+=counts[i]*Math.log(abundance)
+                        mass+=counts[i]*isotopes[i].mass
+                    }
+                }
+                out.push({counts:counts.slice(),logProbability,mass})
+                return
+            }
+            for(let k=0;k<=remaining;k++){ counts[index]=k; rec(index+1,remaining-k) }
+        }
+        rec(0,n)
+        /* Le TRI décroissant en logP. C'est lui qui rend le seuil possible:
+           sans lui, on ne sait pas où s'arrêter. */
+        out.sort((a,b)=>b.logProbability-a.logProbability)
+        /* Les deux coupes ci-dessous ASSIGNENT `out`: la liste est filtrée
+           en place, pas reconstruite. */
+        if(ratio>0){
+            /* Le rapport étant un logarithme, la soustraction EST le log du
+               quotient — donc cette coupe applique EXACTEMENT le kriter
+               d'Igor, pas une approximation de lui. */
+            const floorLog=out[0].logProbability+Math.log(ratio)
+            const kept=out.filter(state=>state.logProbability>=floorLog)
+            out=kept
+        }
+        if(within!==null){
+            /* L'élagage par élément ne peut PAS comparer la masse d'un seul
+               atome à la fenêtre: celle du glucose est 180, et un seul carbone
+               pèse 12. Comparés directement, TOUTES les listes tombent dehors
+               et la recherche ne rend rien — c'est ce qui arrive si on oublie
+               que la masse est une SOMME.
+
+               Il faut donc la borne AUTRE: l'élément doit rester compatible
+               avec la fenêtre ET avec ce que les autres peuvent apporter. On
+               lui passe donc `bounds` = [masse minimale du reste, masse
+               maximale du reste], et on ne garde que ce qui remplit encore la
+               fenêtre. C'est sound: ajouter des atomes ne peut qu'augmenter
+               la masse, donc un état trop léger ne rattrapera jamais, et un
+               état trop lourd non plus. */
+            const [restMin,restMax]=bounds
+            const kept=out.filter(state=>{
+                const low=state.mass+restMin
+                const high=state.mass+restMax
+                return high>=within.mz*(1-within.ppm*1e-6)
+                    &&low<=within.mz*(1+within.ppm*1e-6)
+            })
+            out=kept
+        }
+        return out
+    }
+
+    /* L'écriture d'un rang: chaque isotope en entier, dans l'ordre de A, avec
+       l'A ÉCRIT. La même règle que `Formula.key`: rien n'est abrégé, donc
+       deux isotopologues ne se confondent jamais sur un isotope oublié, et
+       la chaîne peut être stockée puis relue des mois plus tard. */
+    static isotopicNotation(elements,ranks,lists,abbreviate=true){
+        const parts=[]
+        for(let i=0;i<elements.length;i++){
+            const state=lists[i][ranks[i]]
+            const element=elements[i]
+            /* On n'abrège que l'ISOTOPE PAR DÉFAUT de l'élément, et seulement
+               pour l'affichage. C'est la condition qui rend l'écriture relisible:
+               "C6H12O6" se relit en 12C6, donc l'A n'y apprend rien. Mais
+               "C C5" ne se relit pas — un C sans A et un 12C ne se distinguent
+               plus. Donc l'A s'écrit dès que ce n'est pas l'isotope que la
+               règle choisirait, et seulement là. */
+            const defaultA=element.mostProbableA
+            for(const [slot,count] of state.counts.entries()){
+                if(count===0) continue
+                const A=element.isotopes[slot].A
+                /* Deux formes, et elles ne doivent JAMAIS se confondre:
+
+                   `notation` ABRÈGE — l'A ne s'écrit que pour l'isotope qui
+                   n'est pas celui par défaut. "C6H12O6" se relit en 12C6, donc
+                   l'A n'y apprend rien, et c'est lisible.
+
+                   `key` N'ABRÈGE PAS — tout le nombre de masse est écrit, et
+                   deux isotopes du MÊME élément sont séparés par un espace.
+                   C'est ce qui la rend unique: sans cela, "C6H12O6" et
+                   "13C6H12O6" sortaient la même clé, et deux formules
+                   différentes devenaient la même entrée d'un dictionnaire.
+                   Une clé qui abrège perd l'information sans pouvoir la
+                   retrouver — c'est la règle que Formula.key pose déjà. */
+                const name=!abbreviate||A===defaultA
+                    ?(abbreviate?element.symbol:`${A}${element.symbol}`)
+                    :`${A}${element.symbol}`
+                parts.push(count>1?`${name}${count}`:name)
+            }
+        }
+        /* Hill: C, H, puis le reste par symbole. C'est l'ordre dans lequel un
+           chimiste écrit, donc c'est l'ordre lisible. */
+        const symbolOf=(part)=>part.replace(/[^A-Za-z]+/g,"")
+        const rank=(part)=>{
+            const symbol=symbolOf(part)
+            return symbol==="C"?0:symbol==="H"?1:2
+        }
+        return parts.sort((a,b)=>rank(a)-rank(b)||(a<b?-1:1)).join(" ")
     }
 }
 
