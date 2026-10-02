@@ -1,4 +1,4 @@
-/* -------------------------------------------------------------------------
+﻿/* -------------------------------------------------------------------------
    Test — node scripts/attribution.test.mjs
 
    Ce qui est vérifié ici, c'est le CRIBLE: combien de combinaisons il trouve,
@@ -25,7 +25,9 @@ import {
     cribleHeap,
     cribleMixedRadix,
     attributeSpectrum,
-    lastNonZero
+    lastNonZero,
+    saneBound,
+    saneRatio
 } from "./attribution.js"
 
 const TABLE=Element.load(JSON.parse(
@@ -830,6 +832,169 @@ test("deux lectures d'un même pic sont deux FORMULES différentes",()=>{
         `${allKeys.length} readings but ${new Set(allKeys).size} distinct keys overall`)
 })
 
+test("un adduit à 1..1 est POSÉ, pas cherché",()=>{
+    /* LE RÉGRESSION DU BOUTON « AUCUNE SOLUTION ».
+
+       Un `[H+]` avec `min:1, max:1` est un GROUPE FIXE: il est présent une fois,
+       quoi qu'il arrive. Or il l'est aussi par DÉFAUT dans la liste ionisante du
+       nœud — donc une régression ici ne « perd » pas un réglage exotic, elle tue le
+       réglage par défaut et renvoie zéro résultat partout.
+
+       Ce qui l'avait tuée: le repère du groupe fixe était un `Int32Array` et la
+       clé de groupe est une CHAÎNE. Une chaîne dans un tableau d'entiers vaut 0,
+       donc la recherche de la Map échouait, la branche « groupe fixe » n'était
+       jamais prise, et la branche d'après mettait le compte de l'adduit à zéro
+       PARTOUT. La charge valait toujours 0, et rien ne pouvait s'accrocher à un
+       pic.
+
+       ON TESTE LES DEUX COTÉS, parce que les deux se trompent différemment: le
+       1..1 doit rendre ce que le 0..1 rendait (charge 1 disponible), et il doit
+       le rendre en PROPORTION — un groupe fixe ne coûte pas une dimension. */
+    const groups=[{group:"CH2",ratio:1,max:20},{group:"NH",ratio:1,max:20},{group:"O",ratio:1,max:8},{group:"C",ratio:1,max:20}]
+    const required=plan({combining:groups,ionising:[{group:"[H+]",min:1,max:1}],
+        chargeAuto:true})
+    const optional=plan({combining:groups,ionising:[{group:"[H+]",min:0,max:1}],
+        chargeAuto:true})
+    const result=attributeSpectrum(required,new SortedPoints(CROP_X,CROP_Y),
+        {limit:Infinity,ppm:10,bestMatches:3})
+    /* D'abord ça MARCHE: le réglage par défaut doit expliquer le spectre. */
+    ok(result.entries.length>0,
+        `a required [H+] must still attribute: ${result.entries.length} readings`)
+    ok(required.chargeSet?.includes(1),
+        `charge 1 must be reachable, got ${JSON.stringify(required.chargeSet)}`)
+    /* Puis ça ne COÛTE PAS: l'adduit fixé ne doit pas doubler l'espace. */
+    const requiredSpace=cribleMixedRadix(required,{
+        maxMass:required.massCeiling(new SortedPoints(CROP_X,CROP_Y)),
+        minMass:required.massFloor(new SortedPoints(CROP_X,CROP_Y))
+    }).visited
+    const optionalSpace=cribleMixedRadix(optional,{
+        maxMass:optional.massCeiling(new SortedPoints(CROP_X,CROP_Y)),
+        minMass:optional.massFloor(new SortedPoints(CROP_X,CROP_Y))
+    }).visited
+    ok(requiredSpace<optionalSpace,
+        `a fixed adduct must not cost a dimension: ${requiredSpace} fixed vs `+
+        `${optionalSpace} free`)
+    /* Et PAS DEUX FOIS MOINS, ce qui serait une fausse promesse: le plafond de
+       masse rogne les deux espaces différemment, donc le rapport n'est pas
+       exactement 2. Ce qu'on peut affirmer, c'est « pas plus de », et c'est ce
+       que le test vérifie. */
+})
+
+test("un isotope s'ouvre PAR GROUPE, et c'est ce qui rend les listes tenables",()=>{
+    /* LE PROBLÈME QUE ÇA RÉSOUT, et il faut le poser avant la solution.
+
+       Un `ratio` global ne peut pas dire « 13C oui, 17O non ». Ouvrir le
+       seuil pour voir le 13C ouvre le 17O et le 18O dans la MÊME liste, parce que
+       le seuil était commun — et ces isotopes-là sont rares, donc ils
+       multiplient les briques sans jamais servir. */
+
+    /* L'ISOTOPE RARE EST OUVERT, LE GROUP LE RENDANT TOUT AUTRE: c'est la preuve
+       que le seuil est bien par groupe. CH2 à 0.01 donne 12CH2 et 13CH2; le même
+       groupe à 1 ne donne que 12CH2. */
+    const wide=plan({combining:[{group:"CH2",ratio:0.01}],ionising:["[H+]"]})
+    const narrow=plan({combining:[{group:"CH2",ratio:1}],ionising:["[H+]"]})
+    ok(wide.combinables.length>1,
+        `ratio 0.01 should open more than one isotopic mass, got ${wide.combinables.length}`)
+    ok(narrow.combinables.length===1,
+        `ratio 1 should keep only the most probable, got ${narrow.combinables.length}`)
+    /* ET les deux plans de la fixture: un seul ratio pour toute la liste
+       ouvrait le 13C du groupe C en même temps que le 13C du groupe CH2. On
+       veut pouvoir les ouvrir L'UN SANS L'AUTRE — c'est tout l'intérêt. */
+    const onlyC=plan({
+        combining:[
+            {group:"CH2",ratio:1},
+            {group:"C",ratio:0.01}
+        ],
+        ionising:["[H+]",{group:"[H+]",min:1,max:1}],
+        chargeMin:1,chargeMax:1
+    })
+    const notations=onlyC.combinables.map(c=>c.notation)
+    ok(notations.includes("13C"),
+        `the C group should have opened its 13C, got ${notations.join(" ")}`)
+    ok(!notations.includes("13C H2"),
+        `CH2 stayed at ratio 1 and must NOT have opened its 13C, got ${notations.join(" ")}`)
+})
+
+test("les bornes min/max comptent le GROUPE entier, pas chaque isotope",()=>{
+    /* LA BORNE EST PARTAGÉE, et c'est le piège. Un groupe « CH2 » est fait de
+       12CH2 ET 13CH2 à ratio 0.01; `max:2` veut dire deux CH2 AU TOTAL, donc
+       un seul 13CH2 et un seul 12CH2 — pas deux de chaque. */
+    const bounded=plan({
+        combining:[{group:"CH2",ratio:0.01,min:0,max:2}],
+        ionising:["[H+]"],chargeMin:1,chargeMax:1
+    })
+    /* Les briques DU GROUPE CH2 portent toutes la même borne. L'adduit est à
+       part: il a sa propre entrée, et il n'a pas de borne à 2. */
+    const groupBounds=new Set(bounded.items
+        .filter(item=>String(item.groupIndex).startsWith("combining#"))
+        .map(item=>item.groupMax))
+    ok(groupBounds.size===1&&groupBounds.has(2),
+        `every brick of the CH2 group must carry max 2, got ${[...groupBounds]}`)
+    /* Et la vérité se vérifie au RENDU, où toutes les multiplicités sont
+       connues: c'est `groupWithin` qui décide, pas la répartition. */
+    const counts=new Int32Array(bounded.itemCount)
+    const indices=bounded.items.map((item,index)=>String(item.groupIndex).startsWith("combining#")?index:-1)
+        .filter(index=>index>=0)
+    /* Un vecteur qui met deux briques du groupe à 1 doit passer: deux CH2, pas
+       plus, quelle que soit la façon dont ils se partagent. */
+    counts[indices[0]]=1
+    counts[indices[1]]=1
+    ok(bounded.groupWithin(counts),`two bricks of a max-2 group must be allowed`)
+    /* Et trois doivent être refusés — même si le CHIFFRE de la première brique
+       peut legally atteindre 3, parce que le budget est partagé. C'est exactement
+       le cas que la répartition des bornes ne sait pas voir. */
+    counts[indices[0]]=2
+    counts[indices[1]]=1
+    ok(!bounded.groupWithin(counts),
+        `three CH2 in a max-2 group must be refused even though the digit allows it`)
+})
+
+test("un min par adduit tient la charge basse",()=>{
+    /* LE MIN EST CE QUI REMPLACE LE « charge min » TAPÉ À LA MAIN, et il se
+       vérifie dans les deux sens: un adduit exigé est toujours présent, un
+       adduit facultatif peut manquer. */
+    const required=plan({
+        combining:[{group:"CH2",ratio:1}],
+        ionising:[{group:"[Na+]",min:1,max:1}],
+        chargeMin:1,chargeMax:1
+    })
+    const counts=new Int32Array(required.itemCount)
+    /* Sans adduit: la charge est nulle, donc rien ne peut être proposé. */
+    ok(!required.withinCharge(counts),
+        "a plan whose adduct has min 1 admits nothing without it")
+    counts[required.combinables.length]=1
+    ok(required.withinCharge(counts),
+        "the required adduct, once present, gives the charge")
+    /* Et le plan refuse d'autoriser un min plus grand que le max, en le DIT. */
+    const impossible=plan({
+        combining:[{group:"CH2",ratio:1}],
+        ionising:[{group:"[H+]",min:3,max:1}],
+        chargeMin:1,chargeMax:1
+    })
+    ok(impossible.diagnostics.some(d=>/is above max/.test(d)),
+        `an impossible bound must be reported: ${JSON.stringify(impossible.diagnostics)}`)
+})
+
+test("une chaîne reste une chaîne: rien d'existant ne casse",()=>{
+    /* LA COMPATIBILITÉ, et elle n'est pas-optionnelle. Une session enregistrée,
+       un script, un test: tout écrit `"CH2"` et rien d'autre. Ça doit produire le
+       plan d'avant — mêmes briques, même isotopie. */
+    const old=plan({combining:["CH2"],ionising:["[H+]"],ratio:0,chargeMin:1,chargeMax:1})
+    const explicit=plan({
+        combining:[{group:"CH2",min:0,max:Infinity}],
+        ionising:[{group:"[H+]",min:0,max:Infinity}],
+        ratio:0,chargeMin:1,chargeMax:1
+    })
+    ok(old.combinables.length===explicit.combinables.length,
+        `${old.combinables.length} vs ${explicit.combinables.length} combinable masses`)
+    ok(old.combinables.map(c=>c.key).join()===explicit.combinables.map(c=>c.key).join(),
+        "the same string and the same object must give the same bricks")
+    /* Et le `ratio` du PLAN reste respecté quand l'entrée n'en donne pas: c'est
+       ce qui permet à un appelant de dire ratio:0 et de tout garder. */
+    ok(old.combinables.length===6,
+        `ratio 0 on a bare string must keep every isotopic mass, got ${old.combinables.length}`)
+})
+
 test("la sélection borne le nombre de formules construites",()=>{
     /* The point of selecting BEFORE building formulas. Not a timing assertion —
        timings vary — but a STRUCTURAL one: the number of formulas BUILT is
@@ -854,6 +1019,71 @@ test("sans sélection, le moteur se comporte comme avant",()=>{
     const result=cropRun()
     ok(result.keptMatches===null,"the default must not select")
     ok(result.entries.length>20000,`everything should be rendered, got ${result.entries.length}`)
+})
+
+const NAME=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+const start=NAME.indexOf("/* UNE LISTE DE GROUPES, QUELLE QUE SOIT SON")
+const end=NAME.indexOf("/* La liste du nœud, normalisée")
+if(start<0||end<start){
+    console.error("readGroups could not be located in interface.js - the test cannot run")
+    process.exit(1)
+}
+const slice=NAME.slice(start,end)
+if(!slice.includes("readGroups(value,kind)")){
+    console.error("the readGroups slice is incomplete - the test cannot run")
+    process.exit(1)
+}
+/* `readGroups` est une MÉTHODE du nœud, donc on la sort comme TEXTE et on la
+   rappelle sur une coquille qui n'a que ce dont elle a besoin: `readList`, et
+   `Formula`/`Stoichiometry` pour le `instanceof`. C'est tout l'intérêt du
+   découpage — il éprouve la migration LIVRÉE, pas une copie qui cesse d'être
+   vraie dès que quelqu'un édite le vrai fichier.
+
+   LE LIT DEPUIS UNE CLASSE, et c'est pour ça qu'on reconstruit une classe: le
+   texte est une méthode, donc il n'est pas valide tout seul dans `new Function`.
+   On le rend dans un CORPS DE CLASSE, ce qui accepte exactement la même
+   écriture, et on prend la méthode sur le prototype. */
+const Shell=new Function("Formula","Stoichiometry","saneBound","saneRatio",`return class {
+    ${slice}
+}`)(Formula,Stoichiometry,saneBound,saneRatio)
+const readGroups=(value,kind)=>Shell.prototype.readGroups.call({
+    readList:(text)=>String(text??"").split(/[\n;]/).map(l=>l.trim()).filter(l=>l.length>0)
+},value,kind)
+
+test("une session à l'ancienne écriture se relit, et prend les défauts par liste",()=>{
+    /* LA MIGRATION, et c'est elle qui évite de perdre les sessions.
+
+       Une session enregistrée avant les bornes porte une chaîne. Elle doit
+       redevenir une liste de groupes, et surtout recevoir les DÉFAUTS DE SA
+       LISTE: un groupe de masse à 0..∞, un adduit à 1..1. Les confondre donnerait
+       un adduit facultatif — donc des formules sans charge, donc rien à
+       rattacher à un pic. */
+    const old=readGroups("CH2\nNH\nO","combining")
+    ok(old.length===3,`three lines became three groups, got ${old.length}`)
+    ok(old.every(g=>g.group&&g.min===0&&g.max===Infinity&&g.ratio===1),
+        `every combining group gets 0..∞ and ratio 1: ${JSON.stringify(old)}`)
+    const adduct=readGroups("[H+]","ionising")
+    ok(adduct[0].min===1&&adduct[0].max===1,
+        `an adduct is required by default: ${JSON.stringify(adduct)}`)
+})
+
+test("une session à la nouvelle écriture se relit sans y toucher",()=>{
+    const read=readGroups([{group:"CH2",min:1,max:4,ratio:0.01}],"combining")
+    ok(read.length===1&&read[0].min===1&&read[0].max===4&&read[0].ratio===0.01,
+        `a current session must survive unchanged: ${JSON.stringify(read)}`)
+})
+
+test("`∞` se lit comme l'infini, parce que c'est ce que la case affiche",()=>{
+    /* LA CASE MONTRE « ∞ » ET LA LECTURE ATTEND « ∞ ». Si l'un des deux disait
+       autre chose, lever l'infini demanderait de taper un mot que l'écran ne
+       montre pas — et une borne qu'on ne sait pas lever est une borne
+       permanente. */
+    const read=readGroups([{group:"CH2",max:"∞"}],"combining")
+    ok(read[0].max===Infinity,`"∞" must read as Infinity, got ${read[0].max}`)
+    const spelled=readGroups([{group:"CH2",max:"Infinity"}],"combining")
+    ok(spelled[0].max===Infinity,`the spelled-out form works too, got ${spelled[0].max}`)
+    const number=readGroups([{group:"CH2",max:"12"}],"combining")
+    ok(number[0].max===12,`a number still reads as a number, got ${number[0].max}`)
 })
 
 console.log("le NOM de l'option, entre le moteur et le nœud")
@@ -952,5 +1182,364 @@ test("le nom du réglage est le même des deux côtés",()=>{
     ok(engineHas,"and the engine's option carries that same name")
 })
 
+/* -------------------------------------------------------------------------
+   LES TROIS DÉFAUTS, ET LEUR TEST.
+
+   Chacun de ces tests a ÉCHOUÉ avant la correction, et il échoue encore si on
+   réintroduit la faute — c'est vérifié, pas supposé. Ils sont écrits contre le
+   MOTEUR parce que c'est là que les défauts 2 et 3 vivent; le défaut 1 est un
+   défaut de PANNEAU, et il se vérifie dans scripts/bug1.mjs.
+   ------------------------------------------------------------------------- */
+
+test("BUG 2 — un adduit facultatif (min:0) rend la charge 0 atteignable",()=>{
+    /* LE FAUX, ET LA FAUSSE IDÉE QU'IL PORTE.
+
+       « Reachable charge(s): 1 » pour un adduit en `0..1` n'est pas une
+       simplification: les SOMMES possibles sont {0, 1}, et le 0 est écarté par
+       un `.filter(v=>v>0)`. Un `min:0` signifie « cet adduit est facultatif »,
+       donc qu'un neutre EST possible — et l'écran doit le dire au lieu de
+       montrer un ensemble plus étroit que ce que les réglages autorisent. */
+    const optional=plan({
+        combining:[{group:"CH2",ratio:1,max:20}],
+        ionising:[{group:"[H+]",min:0,max:1,ratio:1}],
+        chargeAuto:true
+    })
+    ok(optional.chargeSet?.includes(0),
+        `a 0..1 adduct makes the neutral reachable, got ${JSON.stringify(optional.chargeSet)}`)
+    ok(optional.chargeSet?.includes(1),
+        `and must keep the charge 1, got ${JSON.stringify(optional.chargeSet)}`)
+
+    /* ET L'AUTRE MOITIÉ DU CONTRAT: un adduit OBLIGATOIRE (1..1) ne doit PAS
+       ouvrir la charge 0. C'est ce qui distingue « j'ai demandé le neutre » de
+       « le calcul en a trouvé un par hasard ». */
+    const required=plan({
+        combining:[{group:"CH2",ratio:1,max:20}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        chargeAuto:true
+    })
+    ok(!required.chargeSet?.includes(0),
+        `a 1..1 adduct admits no neutral, got ${JSON.stringify(required.chargeSet)}`)
+})
+
+test("BUG 2bis — le neutre est DIT, et il se range comme les autres",()=>{
+    /* CE TEST AFFIRMAIT AUTREFOIS `chargeMin >= 1`, ET IL AVAIT TORT.
+
+       Il corrigeait le défaut 2 en prohibant le neutre — parce qu'à l'époque on
+       croyait qu'un neutre était une division par zéro. C'était faux: `Formula.mz`
+       fait `mass/Math.abs(charge||1)` et rend donc la MASSE, qui est la bonne
+       valeur. Et l'utilisateur attribue des listes de NEUTRES, et il sonde des
+       masses de neutres sans vouloir ajouter le proton de tête.
+
+       Le contrat vrai est donc l'inverse de celui qu'on avait écrit: le neutre
+       est une lecture à part entière, au m/z de sa masse. Il est dit à l'écran
+       ET il est rendu. */
+    const optional=plan({
+        combining:[{group:"CH2",ratio:1,max:20}],
+        ionising:[{group:"[H+]",min:0,max:1,ratio:1}],
+        chargeAuto:true
+    })
+    ok(optional.neutralPossible,
+        "a 0..1 adduct makes a neutral reachable, and the plan must say so")
+    ok(optional.chargeSet?.includes(0)&&optional.chargeSet?.includes(1),
+        `and both charges must be offered, got ${JSON.stringify(optional.chargeSet)}`)
+
+    /* UNE LISTE IONISANTE VIDE EST UN CHOIX, ET ELLE SE DIT COMME TEL.
+
+       Elle rendait `null`, donc l'écran annonçait « the adducts cannot charge
+       anything » — ce qui laisse croire à un plan cassé, alors que c'est
+       exactement le réglage d'un utilisateur qui veut des masses neutres. */
+    const none=plan({
+        combining:[{group:"C",ratio:1,max:20}],
+        ionising:[],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    ok(Array.isArray(none.chargeSet),
+        `an empty ionising list must still answer, got ${JSON.stringify(none.chargeSet)}`)
+    ok(none.chargeSet?.length===1&&none.chargeSet[0]===0,
+        `and the only charge it can reach is the neutral one, got `+
+        `${JSON.stringify(none.chargeSet)}`)
+
+    /* LA DÉPENSE, MESURÉE ET NON SUPPOSÉE.
+
+       Ouvrir `chargeMin` à 0 ne coûte RIEN: même `visited`, mêmes états. Le
+       neutre ne rajoute aucune dimension — il était déjà produit par le
+       crible, on cessait seulement de le jeter.
+
+       Ce qui double, c'est l'adduit en `0..1`: il cesse d'être fixé, donc
+       son compte devient une variable de plus. C'est le prix de « l'adduit
+       est facultatif », et il est payé une fois, pas deux. */
+    const points=new SortedPoints([100,200,300],[1,1,1])
+    const walk=(ionising,chargeMin)=>{
+        const p=plan({combining:[{group:"CH2",ratio:1,max:20}],ionising,chargeMin,chargeAuto:true})
+        return cribleMixedRadix(p,{
+            maxMass:p.massCeiling(points),
+            minMass:p.massFloor(points),
+            accept:state=>p.withinCharge(state.counts)
+        }).visited
+    }
+    const adduct=[{group:"[H+]",min:1,max:1,ratio:1}]
+    ok(walk(adduct,0)===walk(adduct,1),
+        `the charge window alone must cost nothing: `+
+        `${walk(adduct,0)} vs ${walk(adduct,1)}`)
+    /* Et l'adduit facultatif en coûte plus, une fois — c'est la dimension. */
+    const optionalAdduct=[{group:"[H+]",min:0,max:1,ratio:1}]
+    ok(walk(optionalAdduct,1)>walk(adduct,1),
+        `an optional adduct does add a dimension, got `+
+        `${walk(optionalAdduct,1)} vs ${walk(adduct,1)}`)
+})
+
+test("BUG 3 — un groupe dont la NOTATION porte l'isotope garde cet isotope",()=>{
+    /* LE CŒUR DU DÉFAUT, ET IL EST CHIMIQUE, PAS D'AFFICHAGE.
+
+       « 13C » est une formule qui dit 13C. La lire en brique doit donc peser
+       13.00336. Or `readCombining` appelle `root.isotopologues({ratio})`, et le
+       germe d'`isotopologues` est l'état le PLUS PROBABLE: à ratio 1 il ne rend
+       que 12C. Le 13C écrit par l'utilisateur disparaissait donc, et le groupe
+       devenait indiscernable d'un « C » — mesuré: même masse au dalton près. */
+    const forced=plan({
+        combining:[{group:"13C",min:1,max:1,ratio:1}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    /* Les masses sont lues dans la TABLE, pas recopiées: une masse écrite en
+       dur dans un test devient un second orifice de vérité, et c'est
+       exactement le genre de chiffre qui survit à un changement de source. */
+    const CARBON=TABLE.bySymbol.get("C")
+    const CARBON_13=CARBON.isotope(13).mass
+    const HYDROGEN=TABLE.bySymbol.get("H")
+    ok(forced.combinables.length>0,
+        `a readable group must give a brick, got ${forced.combinables.length}`)
+    close(forced.combinables[0].atomicMass,CARBON_13,1e-3,
+        `"13C" must weigh the mass of 13C, got ${forced.combinables[0].atomicMass}`)
+    ok(forced.combinables[0].key.startsWith("13C"),
+        `and it must say so in its key, got "${forced.combinables[0].key}"`)
+
+    /* ET IL DOIT SE DÉMARQUER d'un « C », sinon le réglage ne veut rien dire. */
+    const plain=plan({
+        combining:[{group:"C",min:1,max:1,ratio:1}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    ok(Math.abs(forced.combinables[0].atomicMass-plain.combinables[0].atomicMass)>1,
+        `"13C" and "C" must not weigh the same, both gave `+
+        `${forced.combinables[0].atomicMass}`)
+
+    /* ET LE 13C DOIT ATTEINDRE LES FORMULES PROPOSÉES, pas seulement la liste de
+       briques: c'est ce que l'utilisateur attend, et c'est ce que le nœud
+       affiche. On sonde la masse qu'un 13C protoné donnerait.
+
+       DEUX POINTS, et c'est délibéré: avec un point unique, la masse visée est
+       à la fois le plancher et le plafond de l'énumération, donc la formule
+       tombe pile sur la borne — un cas limite qui teste `capsFor`, pas
+       l'isotope. Un spectre a toujours une plagée de pics de part et
+       d'autre de la cible, et c'est cette situation-là qu'on veut vérifier. */
+    const probe=CARBON_13+1.007276
+    const found=attributeSpectrum(forced,new SortedPoints([probe-4,probe,probe+4],[1,1,1]),
+        {limit:Infinity,bestMatches:5,ppm:20})
+    ok(found.entries.some(entry=>/13C/.test(entry.notation)),
+        `a 13C group must propose a 13C formula, got `+
+        `${found.entries.map(e=>e.notation).join(" ")||"(nothing)"}`)
+
+    /* ET LE CAS GÉNÉRAL: un isotope écrit dans un groupe plus gros.
+
+       « 13C2H4 » et non « 13CH2 »: ce dernier est un défaut de GRAMMAIRE
+       distinct — il se lit 13C + 1H au lieu de 13C + 2H (constaté pendant cette
+       correction, hors des trois défauts signalés, et non corrigé ici). Un test
+       doit dire ce qui est vrai, donc il s'appuie sur une écriture que la
+       grammaire lit correctement. */
+    const labelled=plan({
+        combining:[{group:"13C2H4",min:1,max:1,ratio:1}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    const expected=2*CARBON_13+4*HYDROGEN.isotope(1).mass
+    close(labelled.combinables[0].atomicMass,expected,1e-3,
+        `"13C2H4" must weigh 2 x 13C + 4 H, got ${labelled.combinables[0].atomicMass}`)
+    ok(labelled.combinables[0].key.startsWith("13C"),
+        `and the written isotope must survive into the key, got `+
+        `"${labelled.combinables[0].key}"`)
+})
+
+test("BUG 3bis — un isotope écrit n'ouvre PAS les isotopes voisins",()=>{
+    /* L'inverse du défaut, et il compte autant.
+
+       Si « 13C » à ratio 0 donnait 12C ET 13C, on aurait remplacé un isotope
+       choisi par TOUS ceux de son élément — exactement le reproche fait au
+       `ratio` global dans la section « par groupe ». Le `ratio` sert à ouvrir
+       les isotopes d'un groupe; il ne doit pas défaire un isotope ÉCRIT. */
+    const open=plan({
+        combining:[{group:"13C",min:1,max:1,ratio:0}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    const notations=open.combinables.map(brick=>brick.notation)
+    ok(notations.includes("13C"),
+        `the written isotope must be there, got ${notations.join(" ")}`)
+    ok(!notations.includes("C"),
+        `and ratio 0 must not add back a 12C the user did not ask for, `+
+        `got ${notations.join(" ")}`)
+})
+
+test("BUG 3ter — un groupe SANS isotope écrit se comporte comme avant",()=>{
+    /* La non-régression: faire respecter un isotope écrit ne doit RIEN changer
+       pour « C » ou « CH2 », qui n'en écrivent aucun. */
+    const carbon=plan({combining:["C"],ionising:["[H+]"],ratio:1,chargeMax:1,table:TABLE})
+    ok(carbon.combinables.length===1,
+        `a bare "C" keeps one brick at ratio 1, got ${carbon.combinables.length}`)
+    const wide=plan({combining:["C"],ionising:["[H+]"],ratio:0,chargeMax:1,table:TABLE})
+    ok(wide.combinables.length>1,
+        `and ratio 0 still opens its isotopes, got ${wide.combinables.length}`)
+    ok(carbon.combinables[0].key===plan({
+        combining:[{group:"C",ratio:1}],ionising:["[H+]"],ratio:1,chargeMax:1,table:TABLE
+    }).combinables[0].key,
+    `"C" and {group:"C",ratio:1} must still give the same brick`)
+})
+
+test("BUG 3quater — le ratio ne s'ouvre QUE sur les éléments NON écrits",()=>{
+    /* X
+
+       Verrouiller un isotope en passant le seuil du GROUPE entier à 0
+       verrouillait aussi tous les autres éléments du groupe: « 13C2H4 » à
+       ratio 1 rendait ses cinq deutériums. C'est littéralement le défaut que
+       la section « par groupe » reproche au `ratio` global — un isotope choisi
+       ouvrait tous les isotopes du groupe — et je l reintroduisais par un autre
+       chemin.
+
+       Le seuil est donc PAR ÉLÉMENT : seul le carbone écrit passe à 0, les
+       hydrogènes gardent le seuil du groupe. */
+    const closed=plan({
+        combining:[{group:"13C2H4",min:1,max:1,ratio:1}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    ok(closed.combinables.length===1,
+        `ratio 1 must keep the written isotope and NOTHING else, got `+
+        `${closed.combinables.length}: ${closed.combinables.map(b=>b.notation).join(" ")}`)
+    ok(closed.combinables[0].key.startsWith("13C"),
+        `and the brick must still be the 13C one, got "${closed.combinables[0].key}"`)
+
+    /* ET LE SEUIL RESTE UTILE SUR LE RESTE: c'est lui qui ouvre les
+       deutériums, et rien d'autre ne le ferait. */
+    const open=plan({
+        combining:[{group:"13C2H4",min:1,max:1,ratio:0}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    ok(open.combinables.length>1,
+        `ratio 0 must open the hydrogens it did not lock, got ${open.combinables.length}`)
+    ok(open.combinables.every(brick=>brick.key.startsWith("13C")),
+        `and the written isotope must survive all of them, got `+
+        `${open.combinables.map(b=>b.key).join(" ")}`)
+
+    /* ET LE TÉMOIN: un groupe SANS isotope écrit se comporte exactement comme
+       avant, sinon la correction aurait changé le cas ordinaire. */
+    const plain=plan({
+        combining:[{group:"CH2",min:1,max:1,ratio:1}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    ok(plain.combinables.length===1,
+        `"CH2" at ratio 1 keeps one brick, got ${plain.combinables.length}`)
+})
+
+test("NEUTRES — une liste de masses se lit sans adduit, quand l'utilisateur le demande",()=>{
+    /* CE QUE L'OUTIL DOIT PERMETTRE, ET CE QUI L'EN EMPÊCHAIT.
+
+       Attribuer une liste de MASSES DE NEUTRES est un usage légitime: on a
+       une liste de pics, on veut savoir quelles molécules *neutres* elle
+       contient, et on ne veut pas avoir à ajouter la masse du proton de tête
+       à chaque saisie. La sonde de masse (`probeMass`) a le même besoin: taper
+       « 46.04186 » doit trouver l'éthanol, pas obliger à taper « 47.04914 ».
+
+       Ce qui l'en empêchait n'était PAS une division par zéro — `Formula.mz`
+       fait `mass/Math.abs(charge||1)` et rend donc la MASSE d'un neutre, ce qui
+       est juste. L'obstacle était `if(!charge) return` dans la sélection, plus
+       `enumerateCharges` qui écartait le 0.
+
+       DONC: quand la liste ionisante est VIDE (ou ne demande que des neutres),
+       les lectures doivent exister, au m/z de leur masse. */
+    const neutral=plan({
+        combining:[{group:"C",ratio:1,max:20},{group:"H",ratio:1,max:40},
+            {group:"O",ratio:1,max:4}],
+        ionising:[],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    const C12=TABLE.bySymbol.get("C").isotope(12).mass
+    const H1=TABLE.bySymbol.get("H").isotope(1).mass
+    /* l'éthanol C2H6O, cherché par sa masse NEUTRE — sans le proton ajouté */
+    const ethanol=2*C12+6*H1+TABLE.bySymbol.get("O").isotope(16).mass
+    /* TROIS POINTS, ET LE TARGET N'EST NI LE PLUS BAS NI LE PLUS HAUT.
+
+       Une cible posée sur une borne devient simultanément plancher et
+       plafond de l'énumération: la formule tombe pile sur la limite et le test
+       mesure `capsFor` au lieu de mesurer ce qu'il prétend. Les points de
+       garde sont ce qu'un vrai spectre a de toute façon. */
+    const found=attributeSpectrum(neutral,
+        new SortedPoints([ethanol-30,ethanol,ethanol+30],[1,1,1]),
+        {limit:Infinity,bestMatches:5,ppm:20})
+    ok(found.entries.length>0,
+        `a neutral mass list must produce readings, got ${found.entries.length}`)
+    ok(found.entries.every(entry=>entry.charge===0),
+        `and they must carry no charge, got `+
+        `${JSON.stringify(found.entries.map(e=>e.charge))}`)
+    ok(found.entries.some(entry=>/C2H6O|C2H6O/.test(entry.notation)),
+        `the neutral ethanol must be proposed, got `+
+        `${found.entries.map(e=>e.notation).join(" ")||"(nothing)"}`)
+
+    /* LE M/Z D'UN NEUTRE EST SA MASSE, et c'est ce qui rend la sonde
+       utilisable sans ajouter le proton à la main. */
+    const ethanolEntry=found.entries.find(e=>/C2H6O/.test(e.notation))
+    if(ethanolEntry){
+        close(ethanolEntry.mz,ethanol,1e-3,
+            `a neutral is read at its own mass, got ${ethanolEntry.mz}`)
+    }
+})
+
+test("NEUTRES — une liste ionisante présente les ions ET les neutres",()=>{
+    /* L'AUTRE SENS, ET IL VAUT MIEUX LE DIRE.
+
+       Un adduit en `0..1` autorise l'absence d'adduit: les deux lectures sont
+       alors demandées, et les deux doivent être rendues. C'est ce qui permet à
+       la sonde de trouver « 46.04186 » ET « 47.04914 » avec la même liste. */
+    const both=plan({
+        combining:[{group:"C",ratio:1,max:20},{group:"H",ratio:1,max:40},
+            {group:"O",ratio:1,max:4}],
+        ionising:[{group:"[H+]",min:0,max:1,ratio:1}],
+        ratio:1,chargeMax:1,table:TABLE,chargeAuto:true
+    })
+    const T=TABLE
+    const ethanol=2*T.bySymbol.get("C").isotope(12).mass
+        +6*T.bySymbol.get("H").isotope(1).mass
+        +T.bySymbol.get("O").isotope(16).mass
+    const protonated=ethanol+1.007276
+    /* QUATRE POINTS, ET LES DEUX EXTRÊMES SONT DES GARDES.
+
+       Un pic cible posé sur le point le plus bas ou le plus haut devient
+       simultanément plancher et plafond de l'énumération, et la formule tombe
+       pile sur la borne — un cas limite qui teste `capsFor`, pas les charges.
+       C'est ce qui s'est produit à la première rédaction de ce test: le
+       protoné, placé au point le plus haut, était à la fois plancher et
+       plafond, et disparaissait. Un spectre a une plagée de pics de part et
+       d'autre; on lui en donne. */
+    const result=attributeSpectrum(both,
+        new SortedPoints([ethanol-30,ethanol,protonated,protonated+30],[1,1,1,1]),
+        {limit:Infinity,bestMatches:10,ppm:20})
+    const charges=[...new Set(result.entries.map(entry=>entry.charge))].sort()
+    ok(charges.includes(0),
+        `an optional adduct must also give the neutral, charges seen: ${JSON.stringify(charges)}`)
+    ok(charges.includes(1),
+        `and must keep the protonated form, charges seen: ${JSON.stringify(charges)}`)
+
+    /* ET LE PROTONÉ EST AU BON m/z, pas seulement présent. */
+    const ion=result.entries.find(entry=>entry.charge===1&&/C2H7O/.test(entry.notation))
+    ok(ion!==undefined,
+        `the protonated ethanol must be proposed, got `+
+        `${result.entries.map(e=>`${e.notation}(z=${e.charge})`).join(" ")||"(nothing)"}`)
+    if(ion) close(ion.mz,protonated,1e-3,
+        `the protonated form sits at M+H, got ${ion.mz}`)
+})
+
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if(failures.length) process.exitCode=1
+
+

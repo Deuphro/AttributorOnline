@@ -110,6 +110,106 @@ function mergeComposition(target,source,times=1){
    `take` sont les deux briques qu'on peut RETIRER, `give` les deux qu'on leur
    rend: retirer une unité de chacune des deux `take` et en ajouter une à chaque
    `give` laisse la composition — donc la formule — strictement inchangée. */
+/* UNE LISTE DE GROUPES, NORMALISÉE — et c'est le seul endroit qui sait lire les
+   deux écritures.
+
+   L'ancienne écriture est une chaîne: `"CH2"`. La nouvelle est un objet:
+   `{group:"CH2", min:0, max:Infinity, ratio:1}`. Les deux sont acceptées, et
+   une chaîne reçoit les valeurs par défaut — ce qui veut dire qu'un appelant
+   ancien continue de fonctionner sans écrire une ligne de plus.
+
+   LES VALEURS PAR DÉFAUT SONT CHOISIES, PAS NEUTRES, et c'est le changement de
+   fond. `min:0, max:Infinity` dit « autant que la masse le permet » — c'était le
+   comportement d'avant, et il explosait. `ratio:1` dit « l'isotope le plus
+   probable seulement », donc un groupe qui n'a jamais été touché n'ouvre qu'une
+   masse isotopique.
+
+   On ne veut pas dire pour autant qu'une liste sans isotopie soit un défaut:
+   ouvrir `ratio:0` sur UN groupe est un choix légitime et doit rester possible.
+   C'est le DÉFAUT qui change, pas la capacité. */
+/* L'IDENTITÉ D'UN GROUPE, ET ELLE DOIT ÊTRE UNIQUE À TRAVERS LES DEUX LISTES.
+
+   `combining` et `ionising` numérotent leurs entrées à partir de zéro, alors que
+   leurs bornes sont appliquées SÉPARÉMENT — `groupWithin` compte par identifiant.
+   Sans un espace de noms, le premier groupe de masse et le premier adduit
+   s'appelleraient tous deux « 0 », et leurs multiensembles seraient additionnés
+   ensemble: une borne `max:2` sur « CH2 » limiterait alors aussi le proton. */
+function groupKeyOf(isCombining,index){
+    return (isCombining?"combining#":"ionising#")+index
+}
+
+function normaliseGroups(list){
+    const source=Array.isArray(list)?list:[]
+    return source.map((entry,index)=>{
+        /* DÉJÀ NORMALISÉ: on ne relit pas un objet comme une formule. */
+        if(entry&&typeof entry==="object"&&!("key" in entry)&&!("group" in entry)){
+            return {...entry,index}
+        }
+        if(entry&&typeof entry==="object"&&(entry instanceof Formula||entry instanceof Stoichiometry)){
+            return {group:entry,min:0,max:Infinity,ratio:undefined,index}
+        }
+        if(entry&&typeof entry==="object"){
+            /* `{group, min, max, ratio}`. `key` est un synonyme accepté parce
+               qu'une session sérialisée écrit souvent sous ce nom.
+
+               `ratio` LAISSÉ ABSENT quand on ne l'a pas donné, et c'est
+               volontaire: l'entrée hérite alors du `ratio` du plan, donc
+               `buildPlan({ratio:0,combining:["CH2"]})` garde exactement le sens
+               qu'il avait. Le « 1 par défaut » que l'écran affiche est une
+               décision d'INTERFACE, et elle appartient à l'écran: si le moteur
+               l'imposait, un appelant qui passe `ratio:0` n'aurait plus aucun
+               moyen de garder toutes les isotopies. */
+            const group=entry.group??entry.key
+            return {
+                group,
+                min:saneBound(entry.min,0),
+                max:saneBound(entry.max,Infinity),
+                ratio:entry.ratio===undefined?undefined:saneRatio(entry.ratio,1),
+                index
+            }
+        }
+        return {group:entry,min:0,max:Infinity,ratio:undefined,index}
+    }).filter(entry=>entry.group!==undefined&&entry.group!==null)
+}
+
+/* UNE BORNE. `∞` et les écritures voisines sont lues comme l'infini, parce que
+   c'est ce que le LEMNISCATE du tableau affiche et que taper « Infinity » dans
+   une case est une façon de ne pas comprendre sa propre table.
+
+   On NE REMET PAS `min` et `max` à l'échange: une borne basse plus grande que la
+   borne haute est presque toujours une faute de frappe, et l'échanger
+   silencieusement rendrait un plan qui ne donne rien — ou pire, quelque chose
+   qu'on n'a pas demandé. On la garde, et le plan la signale en diagnostic: une
+   borne impossible doit se voir à l'écran, pas se deviner à l'usage. */
+function saneBound(value,fallback){
+    if(value===undefined||value===null||value==="") return fallback
+    if(value==="∞"||value==="inf"||value==="Infinity"||value==="-inf") return Infinity
+    const parsed=Number(value)
+    if(Number.isNaN(parsed)) return fallback
+    if(!Number.isFinite(parsed)) return parsed>0?Infinity:fallback
+    return Math.max(0,Math.trunc(parsed))
+}
+function saneRatio(value,fallback){
+    if(value===undefined||value===null||value==="") return fallback
+    const parsed=Number(value)
+    if(!Number.isFinite(parsed)) return fallback
+    return Math.min(1,Math.max(0,parsed))
+}
+
+/* L'IDENTITÉ D'UNE COMPOSITION, pour comparer deux briques.
+
+   Deux briques de même composition sont INTERCHANGEABLES, et c'est tout ce qu'il
+   faut savoir ici. La clé est signée et non réduite, comme le vecteur de
+   différence: réduire « 13 » en « 1 » ferait croire que ¹³C et ¹²C se
+   ressemblent, et c'est precisement la confusion qui fait relever une relation
+   entre deux groupes portant la meme formule. */
+function keyOfComposition(composition){
+    const parts=[]
+    for(const [element,byA] of composition)
+        for(const [A,n] of byA) parts.push(`${element.symbol}${A}:${n}`)
+    return parts.sort().join("|")
+}
+
 function findDependence(items){
     /* Seules les briques SANS CHARGE et de masse strictement POSITIVE entrent
        dans la recherche. Un adduit est une charge, et un « [2+] » pèse deux
@@ -149,6 +249,33 @@ function findDependence(items){
         const key=delta.map(([e,A,n])=>`${e.symbol}${A}:${n}`).sort().join("|")
         const previous=seen.get(key)
         if(previous===undefined){ seen.set(key,[i,j]); continue }
+        /* VÉRIFIER QUE LA RELATION APPREND QUELQUE CHOSE, et c'est la condition
+           qui manquait.
+
+           Un plan peut contenir DEUX FOIS la même paire de briques: un groupe
+           « C » et un groupe « 13C » produisent chacun un ¹²C et un ¹³C, donc
+           les items 0 et 2 sont deux ¹²C identiques, et 1 et 3 deux ¹³C
+           identiques. Les paires (0,1) et (2,3) ont le même vecteur de
+           différence, donc l'algorithme annonce une dépendance.
+
+           Elle est vraie au sens des COMPOSITIONS, mais elle ne veut rien dire
+           ici: `groupWithin` compte les deux groupes SÉPARÉMENT, donc un ¹³C du
+           premier groupe et un ¹²C du second ne sont PAS interchangeables avec
+           l'inverse. La forme canonique déduite — « l'un des deux ¹³C doit être à
+           zéro » — interdisait alors des multiensembles parfaitement
+           légitimes, et les formules disparaissaient: un groupe « 13C » en
+           min 1 ne renvoyait aucun ¹³C.
+
+           On exige donc que les QUATRE briques soient de compositions DISTINCTES
+           deux à deux. Quand deux groupes portent la même formule, on renonce à
+           élaguer: plus lent, et surtout exact. */
+        const four=[i,j,previous[0],previous[1]]
+        const distinct=new Set(
+            four.map(index=>keyOfComposition(items[index].composition)))
+        if(distinct.size!==4){
+            seen.set(key,[i,j])
+            continue
+        }
         /* v(i) - v(j) == v(k) - v(l) se réécrit v(i) + v(l) == v(k) + v(j). */
         return {take:[i,previous[1]],give:[previous[0],j]}
     }
@@ -226,7 +353,7 @@ class MassHeap{
    qu'un plan peut concerner des millions de combinaisons.
    ------------------------------------------------------------------------- */
 class AttributionPlan{
-    constructor({combining=[],ionising=[],ratio=0,chargeMin=1,chargeMax=1,table=null,rule="mostProbable"}={}){
+    constructor({combining=[],ionising=[],ratio=0,chargeMin=1,chargeMax=1,table=null,rule="mostProbable",chargeAuto=false}={}){
         this.table=table
         this.rule=rule
         this.ratio=ratio
@@ -239,8 +366,196 @@ class AttributionPlan{
         this.combinables=[]
         this.ionisers=[]
         this.items=[]
-        this.readCombining(combining)
-        this.readIonising(ionising)
+        /* LECTURE DES GROUPES, et une entrée n'est plus une chaîne.
+
+           Une chaîne dit QUEL groupe. Elle ne disait pas combien de fois on
+           l'autorise, ni quelle isotopie on ouvre — et c'est exactement ce qui
+           manquait: un seul `ratio` pour toute la liste obligeait à choisir entre
+           « 13C » et « 17O », parce qu'ouvrir l'un ouvrait l'autre. Les deux
+           explosions venaient de là.
+
+           Une entrée est donc `{group, min, max, ratio}`:
+             - `group`  la formule, chaîne ou Formula — l'ancienne écriture
+             - `min`    borne basse de multiplicité, 0 par défaut
+             - `max`    borne haute, Infinity par défaut
+             - `ratio`  fenêtre isotopique À CE GROUPE, 1 par défaut
+
+           `min:0, max:Infinity, ratio:1` est le groupe « moderne seulement »,
+           et c'est le NOUVEAU DÉFAUT: une liste qui n'a jamais été configurée
+           doit rester petite. Une chaîne seule est encore acceptée et reçoit ce
+           défaut, donc rien d'existant ne casse. */
+        this.groups=normaliseGroups(combining)
+        this.adducts=normaliseGroups(ionising)
+        /* La plage de charge, quand elle se déduit des bornes par adduit.
+           `chargeAuto` est vrai quand l'appelant veut que le plan la CALCULE;
+           sinon les bornesPassed restent celles qu'il a données. Le nœud passe
+           `true` au premier calcul, puis laisse le champ modifiable. */
+        this.chargeAuto=chargeAuto
+        this.readCombining(this.groups)
+        this.readIonising(this.adducts)
+        if(chargeAuto) this.deriveChargeWindow()
+    }
+
+    /* LA FENÊTRE DE CHARGE, DÉDUITE DES BORNES PAR ADDUIT.
+
+       Chaque adduit porte une charge, et chaque adduit a un `min` et un `max`.
+       La charge d'une attribution est la SOMME des charges des adduits
+       employés, donc sa borne basse est la somme des `min` et sa borne haute la
+       somme des `max` — en valeur ABSOLUE, comme partout ailleurs.
+
+       Une liste de deux adduits à 1..1 donne donc |z| ∈ [1,2]: les deux ensemble,
+       ou l'un seul. C'est ce que la saisieNe rend pas immédiatement évident, et
+       le dire dans le plan vaut mieux que le laisser deviner. */
+    deriveChargeWindow(){
+        /* Les adduits sont les ENTRÉES lues, et chacune porte sa charge. On la lit
+           sur l'ION lui-même: `ionisers` contient les `Formula` déjà passées par
+           `parseIonisationOnly`, donc leur charge est exacte et lue, pas devinée.
+           `groupKey` est l'index de l'ENTRÉE, PRÉFIXÉ PAR LA LISTE, ce qui est
+           exactement ce qu'il faut apparier — et un adduit illisible n'apparaît
+           pas dans `ionisers`, donc il ne compte pas, ce qui est voulu.
+
+           LE PRÉFIXE N'EST PAS COSMÉTIQUE. Les deux listes numérotent leurs
+           entrées à PARTIR DE ZÉRO, donc sans lui le groupe « CH2 » et l'adduit
+           « [H+] » porteraient le même `groupIndex` — et `groupWithin` les
+           compterait ensemble, bornant un adduit par la borne d'un groupe de
+           masse. Un `0` et un `0` ne sont pas le même groupe dès qu'on borne
+           chacun de son côté. */
+        let low=0,high=0
+        for(const [index,entry] of this.adducts.entries()){
+            const piece=this.ionisers.find(i=>i.groupIndex===groupKeyOf(false,index))
+            if(!piece) continue
+            const charge=Math.abs(piece.charge||0)
+            low+=charge*Math.max(0,Math.trunc(Number(entry.min)||0))
+            high+=charge*(Number.isFinite(entry.max)
+                ?Math.max(0,Math.trunc(entry.max)):Infinity)
+        }
+        /* Une borne `Infinity` ne veut rien dire comme borne de charge, et le
+           champ doit rester saisissable: on garde alors la borne reçue. */
+        /* La borne haute ne veut rien dire comme borne de charge, et le champ
+           doit rester lisible: on garde alors la borne reçue. */
+        if(!Number.isFinite(high)) high=this.chargeMax
+        /* LA BORNE BASSE VAUT 0 QUAND ELLE DOIT.
+
+           `if(low>0)` laissait `chargeMin` à sa valeur reçue — donc à 1 — dès
+           que les adduits autorisaient le neutre. Deux conséquences, et la
+           seconde est celle qu'on voit:
+
+             - une liste ionisante VIDE ne donnait aucun neutre possible, alors
+               que c'est la façon la plus directe de demander des masses
+               neutres: aucun adduit, donc charge 0, donc rien à ioniser;
+             - un adduit en `0..1` gardait `chargeMin: 1`, donc `withinCharge`
+               rejetait les neutres que les réglages autorisaient.
+
+           Le seuil se pose donc sur ce que les réglages disent, pas sur ce
+           qu'ils ne disent pas: `low` est déjà la borne déduite, et 0 est une
+           borne aussi légitime qu'une autre. */
+        if(low!==this.chargeMin) this.chargeMin=low
+        if(high>0) this.chargeMax=Math.max(this.chargeMax,high)
+        /* ET L'ENSEMBLE DES CHARGES ATTEIGNABLES, parce que c'est ce que
+           l'utilisateur veut LIRE.
+
+           Une borne basse et une borne haute disent « entre 1 et 2 », ce qui
+           laisse croire que 1,5 existe. Les adduits ne donnent que des charges
+           entières, et la liste réelle est plus courte que l'intervalle: un
+           [H+] seul donne {1}; un [H+] et un [Na+] donnent {1,2}; un [H+] et un
+           [Cl-] donnent {0} — un neutre, que le champ doit pouvoir dire.
+
+           On énumère donc les SOMMES réellement possibles. La liste d'adduits
+           est minuscule, donc l'énumération est triviale — et une liste de
+           dizaines d'adduits resterait gérable parce que chaque adduit est
+           borné, donc le produit des `max+1` est ce qu'il est. Au-delà, on
+           s'arrête et on dit qu'on s'est arrêté. */
+        this.chargeSet=this.enumerateCharges()
+        /* LE NEUTRE EST POSSIBLE, ET C'EST UN FAIT — une lecture, pas un artefact.
+
+           Un adduit en `0..1` autorise l'absence d'adduit, donc une somme de
+           charges nulle. L'écran l'affichait en « 1 » seulement, parce que
+           l'énumération écartait le 0; l'utilisateur lisait donc un ensemble
+           plus étroit que ce qu'il venait de régler, sans aucune raison
+           visible.
+
+           LA SUITE DU COMMENTAIRE DISAIT « on ne descend PAS la fenêtre du
+           crible, parce que le neutre coûte le double pour rien ». C'était une
+           double erreur, mesurée depuis: `mass/0` ne se produit pas — `Formula.mz`
+           garde son `||1` — et la fenêtre n'ajoute AUCUNE dimension (mesuré:
+           même nombre d'états visités avec `chargeMin` à 0 et à 1). Le
+           doublement venait de l'adduit `0..1` lui-même, qui cesse d'être fixé.
+
+           Le neutre est donc une lecture comme une autre, au m/z de sa masse. */
+        this.neutralPossible=this.chargeSet?.includes(0)??false
+        if(this.neutralPossible){
+            this.diagnostics.push(
+                "ionising: an adduct at min 0 makes a NEUTRAL reachable — it is "+
+                "read at its own mass, with no proton added")
+        }
+        this.chargeDerived={min:this.chargeMin,max:this.chargeMax}
+        return this
+    }
+
+    /* TOUTES LES CHARGES, en VALEUR ABSOLUE, que les adduits actuels peuvent
+       donner. C'est une énumération des SOMMES, pas un intervalle: un [H+] et
+       un [Na+] donnent {1,2} et pas {1, 1.5, 2}.
+
+       LE ZÉRO EST RENDU, ET C'EST LE POINT CORRIGÉ. Il était filtré par
+       `.filter(v=>v>0)`, ce qui cachait deux erreurs en une: la ligne
+       « Reachable charge(s) » mentait sur les réglages en cours, et un plan
+       sans aucune charge non nulle se voyait renvoyer `null` — donc « the
+       adducts cannot charge anything » — alors que la seule chose qu'il
+       pouvait faire était de ne pas charger. Un neutre est un résultat de
+       calcul, pas une absence de résultat; il se dit comme tel. */
+    enumerateCharges(ceiling=4096){
+        /* `let`, et non `const`: chaque adduit REMPLACE l'ensemble des sommes
+           par les siennes (voir plus bas). Le germe `0` est le point de
+           départ de l'énumération — l'absence de tout adduit — et il ne survit
+           pas au premier adduit si celui-ci est obligatoire. */
+        let sums=new Set([0])
+        let anyAdduct=false
+        for(const [index,entry] of this.adducts.entries()){
+            const piece=this.ionisers.find(i=>i.groupIndex===groupKeyOf(false,index))
+            if(!piece) continue
+            anyAdduct=true
+            const charge=piece.charge||0
+            const min=Math.max(0,Math.trunc(Number(entry.min)||0))
+            const max=Number.isFinite(entry.max)?Math.max(min,Math.trunc(entry.max)):min
+            if(max>ceiling) return null
+            const next=new Set()
+            for(const sum of sums){
+                for(let n=min;n<=max;n++) next.add(sum+charge*n)
+            }
+            if(next.size>ceiling) return null
+            /* `sums` EST REMPLACÉ, ET C'EST LE POINT CORRIGÉ.
+
+               L'union conservait le germe `0` de l'itération précédente: après
+               un adduit en `1..1`, la somme 0 restait donc dans l'ensemble, et
+               un adduit OBLIGATOIRE se lisait comme s'il autorisait le neutre.
+               C'est la seconde moitié du même symptôme — et elle est distincte
+               du filtre `v>0` corrigé plus bas: l'une cachait le 0 qu'on
+               devait avoir, l'autre en FABRIQUAIT un qu'on n'avait pas.
+
+               Chaque adduit rend ses `min..max` copies, point de départ: après
+               le premier adduit, l'ensemble ne contient plus que ses sommes à
+               lui. La somme de toutes les combinaisons se lit donc dans le
+               dernier `next`, pas dans l'union de tous. */
+            sums=next
+        }
+        const charges=[...new Set([...sums].map(v=>Math.abs(v)))]
+            .filter(v=>Number.isFinite(v))
+            .sort((a,b)=>a-b)
+        /* `null` veut dire « je n'ai pas su énumérer », ou « aucun adduit ».
+           Le cas « des adduits qui ne chargent que des neutres » n'est PLUS
+           confondu avec le premier: c'est `{0}`, et il se lit. */
+        if(!charges.length) return null
+        /* PAS D'ADDUCT N'EST UN CHOIX, ET L'ÉCRAN LE DIT AUTREMENT.
+
+           Une liste ionisante VIDE est ce que tape l'utilisateur qui veut des
+           masses NEUTRES. Il n'y a alors qu'une charge possible — la charge
+           nulle — et c'est une RÉPONSE, pas une panne. La ligne doit donc
+           montrer « 0 » et l'expliquer, au lieu d'annoncer « none — the
+           adducts cannot charge anything », qui persuadait l'utilisateur que
+           son plan était cassé alors qu'il faisait exactement ce qu'il
+           demandait. */
+        if(!anyAdduct) return [0]
+        return charges
     }
 
     /* Une saisie -> une Formula (racine), ou un diagnostic.
@@ -277,27 +592,100 @@ class AttributionPlan{
        liste est TOUJOURS triée par abondance décroissante, donc les plus
        abondants sont les premiers dans tous les cas, quel que soit le seuil. */
     readCombining(entries){
-        entries.forEach((raw,index)=>{
+        entries.forEach((entry,index)=>{
             const label=`combining group ${index+1}`
-            const root=this.asRoot(raw,label)
+            const root=this.asRoot(entry.group,label)
             if(!root) return
+            /* LA FENÊTRE ISOTOPIQUE EST PAR GROUPE, et c'est le cœur du
+               changement. Avant, un seul `ratio` valait pour toute la liste:
+               l'ouvrir à 0.01 pour voir le 13C ouvrait aussi le 17O et le 18O,
+               parce que le seuil était global. Le seuil est donc lu DANS
+               l'entrée, avec `ratio:1` en repli — et `ratio:1` ne garde que le
+               plus probable, donc un groupe intact n'ouvre qu'une masse. */
+            const ratio=entry.ratio!==undefined?entry.ratio:this.ratio
+            if(entry.min>entry.max){
+                this.diagnostics.push(`${label}: min ${entry.min} is above max `+
+                    `${Number.isFinite(entry.max)?entry.max:"∞"} — it will match nothing`)
+            }
             let produced=0
             /* `limit: Infinity` et non 10: une brique est petite (CH2, O), mais
                c'est le NOMBRE DE BRIQUES qui décide du volume, et il est
                justement ce qu'on cherche à explorer. */
-            for(const state of root.isotopologues({ratio:this.ratio,limit:Infinity})){
+            /* L'ISOTOPE ÉCRIT EST UNE CONTRAINTE, ET NON UNE AMORCE.
+
+               « 13C » ne demande pas « du carbone, isotopes ouverts »: il
+               demande DU 13C. Or `isotopologues` part du germe le PLUS
+               PROBABLE — à ratio 1 il ne rend donc que 12C, et le 13C écrit
+               disparaissait. Mesuré avant correction: un groupe « 13C » en
+               1..1 pesait 12.0000, indiscernable d'un « C ».
+
+               On distingue donc deux éléments: ceux dont l'isotope a été
+               ÉCRIT, et ceux dont il est resté par défaut. Les premiers sont
+               verrouillés sur leur isotope — le `ratio` ouvre les seconds et
+               ne défait jamais les premiers. C'est la seule lecture qui
+               respecte ce que l'utilisateur a tapé, et elle ne change rien
+               pour un groupe sans isotope écrit (« C », « CH2 »). */
+            const written=new Map()
+            for(const [element,byA] of root.composition){
+                for(const [A,count] of byA){
+                    /* Un atome n'est « écrit » que si son isotope n'est pas
+                       celui que la règle aurait choisi de toute façon: sans
+                       cette comparaison, « C » serait pris pour un isotope
+                       choisi et le groupe perdrait toute isotopie.
+                       `pickA` rend l'A que la règle trancherait, donc la
+                       comparaison se fait sur l'A — pas sur un isotope, et
+                       pas sur un rang dans une liste triée. */
+                    if(count>0&&A!==element.pickA(this.rule)) written.set(element,A)
+                }
+            }
+            /* LE VERROU EST PAR ÉLÉMENT, ET LE SEUIL RESTE PAR ÉLÉMENT AUSSI.
+
+               C'est LA subtlety que le premier correctif avait manquée. Il
+               passait `ratio: 0` pour le groupe entier dès qu'un isotope était
+               écrit, ce qui verrouillait le carbone ET les hydrogènes: un
+               « 13C2H4 » à ratio 1 rendait ses cinq deutériums. C'était
+               exactement le défaut reproché au `ratio` global — un isotope
+               choisi ouvrait tous les isotopes de son groupe.
+
+               La correction est de ne toucher QUE l'élément écrit: son seuil
+               passe à 0 (on doit pouvoir atteindre le 13C, que le seuil
+               aurait autrement exclu), et le FILTRE le garde. Les autres
+               éléments gardent le seuil du groupe, donc « 13C2H4 » à ratio 1
+               rend une seule brique, et à 0.01 ouvre ses deutériums — comme
+               « CH2 ». On construit donc une Map, pas un nombre. */
+            const ratioFor=new Map()
+            for(const element of written.keys()) ratioFor.set(element,0)
+            for(const state of root.isotopologues({ratio,ratioFor,limit:Infinity})){
                 /* La clé n'abrège JAMAIS (règle de Formula.key): elle se relit
                    exactement, et c'est ce qui permet de reconstruire la
                    composition plus bas sans l'avoir stockée. */
                 const composition=Formula.parseComposition(state.key,this.table,this.rule)
+                /* LE FILTRE DU VERROU. Il se lit sur la composition qu'on vient
+                   de relire, donc il ne peut pas se tromper d'élément ni
+                   confondre 13 et 1: c'est le A qui compte, pas le rang. */
+                let respects=true
+                for(const [element,A] of written){
+                    const byA=composition.get(element)
+                    if(!byA||byA.get(A)!==root.composition.get(element).get(A)){
+                        respects=false
+                        break
+                    }
+                }
+                if(!respects) continue
                 this.combinables.push({
-                    groupIndex:index,
+                    groupIndex:groupKeyOf(true,index),
                     groupKey:root.key,
                     groupNotation:String(root),
                     key:state.key,
                     notation:state.notation,
                     atomicMass:atomicMassOf(composition),
-                    logProbability:state.logProbability
+                    logProbability:state.logProbability,
+                    /* LES BORNES DU GROUPE, sur la brique. Elles voyagent avec
+                       elle parce que `capsFor` ne connaît que les briques: c'est
+                       le seul moyen de borner un GROUPE, qui est fait de
+                       plusieurs briques, alors qu'une brique n'a qu'un compte. */
+                    groupMin:entry.min,
+                    groupMax:entry.max
                 })
                 produced++
             }
@@ -358,12 +746,18 @@ class AttributionPlan{
        juste s'annulent, et le symptôme — une formule absente sans raison
        visible — ne renvoie à aucun des deux sites. */
     readIonising(entries){
-        entries.forEach((raw,index)=>{
+        entries.forEach((entry,index)=>{
             const label=`ionising group ${index+1}`
-            const root=this.asIoniser(raw,label)
+            const root=this.asIoniser(entry.group,label)
             if(!root) return
+            if(entry.min>entry.max){
+                this.diagnostics.push(`${label}: min ${entry.min} is above max `+
+                    `${Number.isFinite(entry.max)?entry.max:"∞"} — it will match nothing`)
+            }
             this.ionisers.push({
-                groupIndex:index,
+                groupIndex:groupKeyOf(false,index),
+                groupMin:entry.min,
+                groupMax:entry.max,
                 //`group` est l'équivalent de `groupNotation` pour une brique de
                 //masse: TOUTE brique se nomme, sinon la recette affiche « null »
                 //sur les adduits — c'est-à-dire précisément sur ce que
@@ -508,7 +902,26 @@ class AttributionPlan{
        [H+] et un [Cl-]. Ce n'est pas un oubli, c'est un choix, et il est dit
        ici parce qu'il borne le domaine exploré. */
     capsFor(maxMass){
-        return this.items.map(item=>{
+        /* LES BORNES D'UN GROUPE, ET ELLES SONT PARTAGÉES.
+
+           Un GROUPE est fait de plusieurs BRIQUES — « CH2 » donne 12CH2 et 13CH2,
+           et plus encore si on ouvre l'isotopie — et chacune a son propre compte
+           dans le vecteur de multiplicités. Or `max:4` sur « CH2 » veut dire QUATRE
+           CH2 AU TOTAL, pas quatre de chaque isotope.
+
+           La borne d'une brique ne peut donc pas se lire seule: elle dépend de ce
+           que ses sœurs ont déjà pris. On désigne donc, pour chaque groupe, la
+           brique qui PORTE le budget — la PREMIÈRE du groupe — et elle seule
+           reçoit `max`. C'est arbitraire mais DÉTERMINISTE, parce qu'une
+           répartition qui dépendrait de l'ordre de parcours ferait varier le même
+           plan d'une exécution à l'autre.
+
+           Et c'est un CHOIX DE PERFORMANCE, pas une physique: cela change
+           quels multiensembles sont énumérés, jamais la composition qu'ils
+           produisent. La vérité du budget est vérifiée au rendu par
+           `groupWithin`, qui voit toutes les multiplicités. L'élagage
+           accélère; le filtre décide. */
+        const caps=this.items.map((item,index)=>{
             /* Un adduit SANS ATOME n'a pas de masse: un [2+] ne perd que deux
                électrons, donc sa masse est légèrement NÉGATIVE, et
                `maxMass / masse` serait un quotient négatif qui le ferait
@@ -522,11 +935,59 @@ class AttributionPlan{
             const byMass=item.atomicMass>0
                 ?Math.floor(maxMass/item.atomicMass)
                 :Infinity
+            /* Pour un adduit, la charge borne EN OUTRE la multiplicité, sinon un
+               [2+] en fenêtre ±10 donnerait un volume absurde. On retient donc le
+               plus petit des deux plafonds.
+
+               ASSUMPTION, et elle est réelle: les adduits d'une même liste sont
+               supposés de même signe. La borne ignore donc les annulations entre
+               un [H+] et un [Cl-]. Ce n'est pas un oubli, c'est un choix, et il est
+               dit ici parce qu'il borne le domaine exploré. */
             const byCharge=item.charge
                 ?Math.floor(this.chargeMax/Math.abs(item.charge))
                 :Infinity
-            return Math.max(0,Math.min(byMass,byCharge))
+            let cap=Math.max(0,Math.min(byMass,byCharge))
+            /* LE BUDGET DU GROUPE, sur la brique qui le porte. C'est ce qui fait
+               qu'un `max` borne le GROUPE entier, et non chaque isotope. */
+            if(this.leadsItsGroup(index)&&Number.isFinite(item.groupMax??Infinity)){
+                cap=Math.min(cap,item.groupMax)
+            }
+            return cap
         })
+        return caps
+    }
+
+    /* LA PREMIÈRE BRIQUE D'UN GROUPE, et c'est elle qui porte le budget. */
+    leadsItsGroup(index){
+        const group=this.items[index].groupIndex
+        for(let i=0;i<index;i++) if(this.items[i].groupIndex===group) return false
+        return true
+    }
+
+    /* LE VRAI BUDGET D'UN GROUPE, AU RENDU.
+
+       `capsFor` répartit le budget pour ne pas énumérer plus que nécessaire,
+       mais cette répartition est arbitraire: elle ne dit pas si l'utilisateur a
+       vraiment autorisé cinq CH2. Ce contrôle dit la vérité, et il s'applique au
+       moment du RENDU, où toutes les multiplicités sont connues. */
+    groupWithin(counts){
+        const totals=new Map()
+        for(let i=0;i<this.items.length;i++){
+            const times=counts[i]
+            if(!times) continue
+            const group=this.items[i].groupIndex
+            totals.set(group,(totals.get(group)??0)+times)
+        }
+        for(const [group,total] of totals){
+            /* On lit les bornes sur N'IMPORTE QUELLE brique du groupe: elles sont
+               identiques sur toutes, sinon le budget n'aurait pas de sens. */
+            const sample=this.items.find(i=>i.groupIndex===group)
+            if(!sample) continue
+            const min=sample.groupMin??0
+            const max=Number.isFinite(sample.groupMax)?sample.groupMax:Infinity
+            if(total<min||total>max) return false
+        }
+        return true
     }
 
     /* La charge d'un vecteur de multiplicités: la somme des charges des
@@ -866,6 +1327,56 @@ function cribleMixedRadix(plan,{maxMass,minMass=0,limit=Infinity,accept=null,emi
         :-1
     const [takeA,takeB]=dependence?dependence.take:[0,0]
     const [giveA,giveB]=dependence?dependence.give:[0,0]
+    /* LES GROUPES FIXES, et c'est LA question « ça coûte combien? ».
+
+       Un groupe à `min === max` ne varie pas: il est présent exactement N fois,
+       quoi qu'il arrive. Or chaque brique a sa place dans le compteur, donc une
+       borne `0..N` laisse le compteur CHOISIR entre N+1 valeurs alors qu'il n'y en
+       a qu'une de possible — et trois groupes fixes à 1..1 multiplient l'espace
+       par 2×2×2 pour un résultat unique.
+
+       La question de l'utilisateur — « forcer 1 Mg, 1 SO4, 1 CH3OH » — veut dire
+       DÉCALER la masse à criblée d'une constante, pas explorer trois dimensions de
+       plus. Donc un groupe fixe ne doit coûter qu'UNE case: celle du groupe, pas
+       celle de chaque isotope.
+
+       LA RÈGLE, donc: à la PREMIÈRE brique d'un groupe fixe, on ne boucle pas sur
+       le compte — on boucle sur LES BRIQUES DU GROUPE, en n'en allumant qu'une à
+       la valeur N. Les briques suivantes du groupe sont forcées à zéro, parce que
+       le compte est déjà placé. Un groupe de `ratio:1` n'a qu'une brique, donc
+       aucune boucle du tout: une case de plus dans le plan, pas dans la boucle.
+
+       On ne le fait QUE dans le crible mixte, qui parcourt les chiffres
+       directement et peut donc sauter une dimension. Le tas, lui, marche par
+       arêtes: il devrait porter la même optimisation, et ne la porte pas — on le
+       dit dans le readout plutôt que de le laisser croire. */
+    const fixedGroups=new Map()
+    for(const [index,item] of items.entries()){
+        const group=item.groupIndex
+        if(fixedGroups.has(group)) continue
+        const min=item.groupMin??0
+        const max=item.groupMax??Infinity
+        if(!Number.isFinite(max)||min!==max) continue
+        const members=[]
+        for(let i=0;i<count;i++) if(items[i].groupIndex===group) members.push(i)
+        fixedGroups.set(group,{count:min,members})
+    }
+    /* `fixedAt` DIT QUEL GROUPE EST DÉCIDÉ À CE CHIFFRE — et il ne peut PAS être
+       UN `Int32Array`, parce qu'une clé de groupe est une CHAÎNE.
+
+       C'était un `Int32Array(count).fill(-1)` recevant `fixedAt[first]=group`.
+       Une chaîne dans un tableau d'entiers devient `NaN` puis `0`: donc
+       `fixedAt[première]` valait 0, et `fixedGroups.get(0)` — la Map étant
+       indexée par « combining#0 » / « ionising#0 » — renvoyait `undefined`.
+
+       Résultat : `fixed` restait toujours `undefined`, la branche « groupe fixe »
+       n'était jamais prise, et la branche d'après forçait le compte de CHAQUE
+       membre à zéro. Un adduit `[H+] 1..1` était donc mis à zéro partout, la
+       charge valait toujours 0, et le nœud ne trouvait RIEN. Le réglage par
+       défaut de la liste ionisante étant précisément `1..1`, tout le nœud était
+       mort. */
+    const fixedAt=new Array(count).fill(null)
+    for(const [group,fixed] of fixedGroups) fixedAt[fixed.members[0]]=fixed
     const collect=!emit
     const states=[]
     const counts=new Int32Array(count)
@@ -899,6 +1410,44 @@ function cribleMixedRadix(plan,{maxMass,minMass=0,limit=Infinity,accept=null,emi
                 }
             }
             return false
+        }
+        /* LE GROUPE FIXE, et il ne boucle pas sur le COMPTE.
+
+           À la première brique d'un groupe à `min === max`, le choix n'est pas
+           « combien de fois » — c'est DÉJÀ décidé — mais « quel isotope », donc
+           on allume UNE brique du groupe à la valeur N et on récurse. Les briques
+           suivantes du groupe tombent plus bas, à zéro forcé.
+
+           C'est ce qui fait que `1 CH3OH` coûte une case et non une dimension:
+           la masse est décalée d'une constante, et le nombre de combinaisons
+           reste celui du reste du plan. */
+        const fixed=fixedAt[index]??null
+        if(fixed){
+            /* On tente chaque isotope du groupe, et on n'allume que celui-là. */
+            for(const member of fixed.members){
+                if(fixed.count===0) break
+                if(member<index) continue
+                for(const other of fixed.members) counts[other]=0
+                if(fixed.count>caps[member]) continue
+                counts[member]=fixed.count
+                const shifted=mass+fixed.count*items[member].atomicMass
+                if(shifted<=maxMass&&step(index+1,shifted)) return true
+                counts[member]=0
+            }
+            for(const member of fixed.members) counts[member]=0
+            return false
+        }
+        /* UNE BRIQUE DU GROUPE FIXE, PAS LA PREMIÈRE: le compte est déjà posé, on
+           ne peut donc plus que passer. Et c'est le seul cas où l'on EFFACE: sans
+           cela la brique garderait le compte du tour d'essai précédent, et le
+           crible trouverait des multiensembles impossibles. */
+        if(fixedGroups.size){
+            const owner=items[index].groupIndex
+            if(fixedGroups.has(owner)&&!fixed){
+                counts[index]=0
+                const kept=step(index+1,mass)
+                return kept
+            }
         }
         for(let k=0;k<=caps[index];k++){
             counts[index]=k
@@ -1226,15 +1775,24 @@ function attributeSpectrum(plan,points,{limit=Infinity,ppm=null,bestMatches=null
            de NaN, donc une dichotomie qui ne trouvait rien — et une sélection
            qui rendait zéro sans jamais se tromper visiblement. */
         const charge=estimateCharge(plan,state.counts)
-        /* UNE CHARGE NULLE N'A PAS DE m/z. La masse de l'état est alors celle
-           d'un neutre, qui n'a rien à faire dans une liste d'ions — et surtout,
-           `mass/0` vaut Infinity, donc `nearest` accrocherait le DERNIER point du
-           spectre et lui attribuerait une formule qui n'a aucune raison d'être
-           là. Un infini ne se compare pas à une mesure: on écarte, et c'est le
-           seul endroit où une charge nulle peut arriver, parce que la fenêtre
-           d'ionisation l'exclut dès qu'elle commence à 1. */
-        if(!charge) return
-        const target=sorted.nearest(state.mass/charge)
+        /* LE NEUTRE EST UNE LECTURE, PAS UNE DIVISION PAR ZÉRO.
+
+           Le refus d'origine disait « une charge nulle n'a pas de m/z, donc
+           `mass/0` vaut Infinity ». C'est FAUX, et c'était mesuré:
+           `Formula.mz` fait `mass/Math.abs(charge||1)`, donc un neutre rend sa
+           MASSE — la bonne valeur. L'obstacle réel était ce `return`.
+
+           Et l'obstacle était un choix, pas une nécessité. Un utilisateur peut
+           vouloir attribuer une liste de masses NEUTRES, ou sonder « 46.04186 »
+           dans la sonde sans avoir à ajouter la masse du proton de tête. Dans
+           les deux cas la réponse existe: la masse.
+
+           Donc un neutre se range comme les autres, au m/z de sa masse. La
+           fenêtre d'ionisation reste ce qui décide: un plan qui n'admet que
+           des ions n'en produira pas, et un plan qui admet les deux rendra les
+           deux. Rien n'est calculé « en plus » — un état à charge 0 était déjà
+           produit et payé par le crible; on cessait de le jeter. */
+        const target=sorted.nearest(state.mass/Math.max(1,Math.abs(charge)))
         if(!target) return
         const errorPpm=target.errorPpm
         /* hors fenêtre: cette formule n'est pas une proposition pour CE point,
@@ -1269,7 +1827,7 @@ function attributeSpectrum(plan,points,{limit=Infinity,ppm=null,bestMatches=null
         /* La fenêtre d'ionisation ne filtre que le RENDU: un état à charge 0
            doit être développé quand même, sinon il bloquerait l'accès à tous
            ses voisins — dont certains sont exactement à la bonne charge. */
-        accept:state=>plan.withinCharge(state.counts),
+        accept:state=>plan.withinCharge(state.counts)&&plan.groupWithin(state.counts),
         emit:selecting?rank:null
     })
     attribution.visited=visited
@@ -1429,8 +1987,10 @@ function attributeSpectrum(plan,points,{limit=Infinity,ppm=null,bestMatches=null
    deux listes, remplit `items` et rend un objet qui ne contient AUCUNE formule
    vivante — seulement des clés et des nombres. C'est ce qui permet de le
    garder dans une session sans ytrainer la table périodique. */
-function buildPlan({combining=[],ionising=[],ratio=0,chargeMin=1,chargeMax=1,table=null,rule="mostProbable"}={}){
-    const plan=new AttributionPlan({combining,ionising,ratio,chargeMin,chargeMax,table,rule})
+function buildPlan({combining=[],ionising=[],ratio=0,chargeMin=1,chargeMax=1,table=null,rule="mostProbable",chargeAuto=false}={}){
+    const plan=new AttributionPlan({
+        combining,ionising,ratio,chargeMin,chargeMax,table,rule,chargeAuto
+    })
     plan.buildItems()
     return plan
 }
@@ -1442,6 +2002,9 @@ export {
     atomicMassOf,
     mergeComposition,
     lastNonZero,
+    normaliseGroups,
+    saneBound,
+    saneRatio,
     cribleHeap,
     cribleMixedRadix,
     stateToFormula,

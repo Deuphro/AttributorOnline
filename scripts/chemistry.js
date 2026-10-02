@@ -535,7 +535,7 @@ class Stoichiometry{
        une erreur, c'est un autre usage, donc ce n'est pas un `throw`.
        --------------------------------------------------------------------
     */
-    *isotopologues({ratio=0,limit=10,within=null}={}){
+    *isotopologues({ratio=0,limit=10,within=null,ratioFor=null}={}){
         if(!this.table){
             /* Une racine sans table ne SAIT ni quelles masses existent, ni
                quelles abondances. Deviner en silence produirait une liste
@@ -585,7 +585,19 @@ class Stoichiometry{
         const perElementMax=elements.map((el,i)=>heaviestIsotope(el,this.counts.get(el)))
         const lists=elements.map((element,i)=>
             Stoichiometry.isotopicCompositions(
-                element,this.counts.get(element),ratio,within,scale,[
+                element,this.counts.get(element),
+                /* LE SEUIL, PAR ÉLÉMENT — `ratioFor` l'emporte sur `ratio`.
+
+                   Un seuil UNIQUE s'applique à tous les éléments d'un coup, donc
+                   verrouiller le carbone d'un « 13C2H4 » verrouillait aussi
+                   les hydrogènes: le groupe rendait alors ses cinq deutériums
+                   même à ratio 1, ce qui est le défaut exact reproché au
+                   `ratio` global. Un seuil qui n'appartient qu'à un élément se
+                   dit donc par une Map<Element, ratio>; les autres gardent le
+                   leur. `null` = le seuil global, donc le comportement par
+                   défaut est strictement inchangé. */
+                ratioFor?.get(element)??ratio,
+                within,scale,[
                     perElementMin.reduce((a,v,j)=>j===i?a:a+v,0),
                     perElementMax.reduce((a,v,j)=>j===i?a:a+v,0)
                 ]))

@@ -9,3 +9,36 @@
 # Regenerate with: cargo build --release --target wasm32-unknown-unknown
 #                  wasm-pack build --target web --out-dir pkg --release
 XOP/rust-extension/target/
+
+# puppeteer, installed ONLY to render the page in scripts/harness.mjs. It is a
+# verification tool, not a dependency of the application: nothing in scripts/
+# imports it except the harness, and the app runs in a browser that already
+# exists. Kept out of package.json on purpose — adding it there would make every
+# `npm install` drag a 150 MB browser download onto a backend server.
+# To run the harness:  npm i puppeteer   (then node scripts/bug1.mjs)
+node_modules/puppeteer/
+node_modules/puppeteer-core/
+node_modules/@puppeteer/
+node_modules/chromium-bidi/
+node_modules/devtools-protocol/
+node_modules/ws/
+node_modules/zod/
+node_modules/typed-query-selector/
+node_modules/webdriver-bidi-protocol/
+node_modules/ansi-regex/
+node_modules/ansi-styles/
+node_modules/emoji-regex/
+node_modules/strip-ansi/
+node_modules/string-width/
+node_modules/wrap-ansi/
+node_modules/cliui/
+node_modules/escalade/
+node_modules/get-caller-file/
+node_modules/lilconfig/
+node_modules/mitt/
+node_modules/modern-tar/
+node_modules/yargs/
+node_modules/yargs-parser/
+node_modules/get-east-asian-width/
+node_modules/.bin/
+node_modules/y18n/

@@ -1,4 +1,4 @@
-import {$,CE,stylize,fakeData,DC,requestPOST,SingleJsonFile} from "./util.js"
+﻿import {$,CE,stylize,fakeData,DC,requestPOST,SingleJsonFile} from "./util.js"
 import {save as saveSession, import as importSessionData} from "./sessions.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {defaultMenu} from "../resources/config.js"
@@ -11,7 +11,7 @@ import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 import {Formula,Stoichiometry,FormulaCollection,loadTable} from "./chemistry.js"
 //the attribution engine: the two group lists, the isotopic and ionisation
 //windows, and the sieve. Pure, and tested without a DOM (attribution.test.mjs).
-import {buildPlan,attributeSpectrum,SortedPoints} from "./attribution.js"
+import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio} from "./attribution.js"
 //where the nodes go, and which two of them get wired together by themselves.
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
@@ -2476,17 +2476,35 @@ class AttributionNode extends NodeWithAccordion{
 
            NH et C densifient la grille. On ne le déduit pas: c'est le plan qui,
            sur ce spectre, couvre les 95 points. */
-        this.parameters.combining="CH2\nNH\nO\nC"
-        this.parameters.ionising="[H+]"
-        /* THE ISOTOPIC WINDOW — the `ratio` of the legacy code, relative to
-           each group's maximum. 0 keeps everything; "keep only the abundant
-           ones" is said by raising the ratio.
+        /* THE GROUPS, and each one is a ROW with its own bounds.
 
-           0.1 and not 0: it does cut CH₂ to its most abundant isotope, and that
-           is exactly what makes the grid coarse — but it also keeps the volume
-           sane. 29381 attributions at ratio 0.1 over that peak list, against
-           far more at 0. The sieve's ceiling is what a reader is prepared to
-           read, so the ratio serves the same purpose from upstream. */
+           They used to be two text areas, one group per line, and that shape could
+           not carry what a group needs: how many of it, and which isotopes. One
+           global `ratio` had to cover every group at once, so opening the ¹³C
+           opened the ¹⁷O with it — rare isotopes multiply bricks without ever
+           being used, and the enumeration grew by three for nothing.
+
+           So a group is `{group, min, max, ratio}` and each row owns its four.
+           `ratio:1` is the default, which means "the most probable isotope only":
+           an untouched list is a SHORT list. Opening ¹³C is then a per-row
+           decision, which is what it always should have been. */
+        this.parameters.combining=[
+            {group:"CH2",min:0,max:Infinity,ratio:1},
+            {group:"NH",min:0,max:Infinity,ratio:1},
+            {group:"O",min:0,max:Infinity,ratio:1},
+            {group:"C",min:0,max:Infinity,ratio:1}
+        ]
+        this.parameters.ionising=[
+            /* Un adduit est OBLIGATOIRE par défaut: une attribution sans charge
+               n'a pas de m/z, donc un adduct facultatif à 0..1 produirait des
+               neutres que rien ne peut rattacher à un pic. 1..1 est donc la seule
+               initialisation qui ait un sens ici. */
+            {group:"[H+]",min:1,max:1,ratio:1}
+        ]
+        /* `ratio` reste en paramètre parce que des sessions enregistrées le
+           portent, et parce qu'il sert de REPLI quand une ligne ne dit rien. Un
+           écran qui le montre encore serait double emploi; il est donc lu, pas
+           présenté. */
         this.parameters.ratio=0.1
         /* THE IONISATION WINDOW — bounds on |charge|, in absolute value: a 2+
            and a 2- are the same thing to measure. */
@@ -2526,6 +2544,15 @@ class AttributionNode extends NodeWithAccordion{
         /* one attribution list per input wave, in input order — therefore in
            flow order, stable from one resolve to the next */
         this.attributions=[]
+        /* LE DRAPEAU DU CALCUL, et il est le SEUL qui dise si les résultats
+           correspondent aux réglages.
+
+           Un changement de réglage ne relance rien: il met ce drapeau, et le
+           bouton Resolve le remet à zéro en calculant. C'est ce qui permet de
+           régler une liste de dix groupes sans payer dix cribles — et le nœud ne
+           ment jamais, il AFFICHE qu'il est en retard. */
+        this.needsResolve=false
+        this.staleReason=null
         /* the kernel's complaints, per input. A kernel that fails on one
            spectrum must not stop the others. */
         this.kernelErrors=[]
@@ -2581,6 +2608,65 @@ class AttributionNode extends NodeWithAccordion{
             .map(line=>line.trim())
             .filter(line=>line.length>0)
     }
+
+    /* UNE LISTE DE GROUPES, QUELLE QUE SOIT SON ÂGE.
+
+       Trois écritures existent dans le monde, et les trois doivent marcher:
+
+         "CH2\nNH"                    une chaîne, une ligne par groupe — les
+                                      sessions enregistrées avant les bornes
+         "CH2\nNH"                    passé par `readList`, donc un tableau
+         {group:"CH2",min:0,max:∞}    une entrée, et c'est la forme courante
+
+       La migration vit ICI, et pas dans le moteur, parce que c'est une question
+       de FORMAT DE SESSION, pas de chimie: le moteur accepte déjà les deux
+       écritures. Ce qui décide ici, c'est le DÉFAUT appliqué à une ligne qui ne
+       dit rien — et il dépend de la liste: un groupe de masse à 0..∞, un adduit
+       à 1..1, parce qu'une attribution sans adduit n'a pas de m/z. */
+    readGroups(value,kind){
+        const adducts=kind==="ionising"
+        const fallback={
+            min:adducts?1:0,
+            max:adducts?1:Infinity,
+            /* `ratio:1` — l'isotope le plus probable seulement. C'est le défaut
+               qui rend une liste NEUVE petite; ouvrir l'isotopie devient un
+               geste par ligne, et non une bascule globale. */
+            ratio:1
+        }
+        const source=Array.isArray(value)
+            ?value
+            :this.readList(value).map(line=>({group:line}))
+        /* LES BORNES SONT LUES ICI, et pas seulement relues.
+
+           `saneBound` et `saneRatio` viennent du moteur, volontairement: ce qui
+           décide du sens de « ∞ » doit être décidé UNE fois. Si le tableau
+           affichait « ∞ » et que le moteur lise autre chose, la case mentirait
+           — et elle mentirait seulement à l'écran, ce qui est le pire endroit.
+
+           Donc `groupList` rend toujours des nombres ou `Infinity`, jamais la
+           chaîne tapée. Le tableau, la session et le plan voient la même chose. */
+        return source.map(entry=>{
+            if(typeof entry==="string") return {group:entry,...fallback}
+            if(entry&&typeof entry==="object"&&!(entry instanceof Formula)
+                &&!(entry instanceof Stoichiometry)){
+                const group=entry.group??entry.key
+                if(group===undefined||group===null) return null
+                return {
+                    group,
+                    min:saneBound(entry.min,fallback.min),
+                    max:saneBound(entry.max,fallback.max),
+                    ratio:saneRatio(entry.ratio,fallback.ratio)
+                }
+            }
+            return {group:entry,...fallback}
+        }).filter(Boolean)
+    }
+
+    /* La liste du nœud, normalisée, et c'est la SEULE source de vérité que
+       `buildPlan` et le tableau voient. */
+    groupList(kind){
+        return this.readGroups(this.parameters[kind],kind)
+    }
     /* The plan, rebuilt on every resolve.
 
        Rebuilt rather than kept incremental, on purpose: a list of groups is
@@ -2590,14 +2676,74 @@ class AttributionNode extends NodeWithAccordion{
        written on screen, which is the worst kind of bug: plausible, and wrong. */
     buildPlan(){
         this.plan=buildPlan({
-            combining:this.readList(this.parameters.combining),
-            ionising:this.readList(this.parameters.ionising),
+            combining:this.groupList("combining"),
+            ionising:this.groupList("ionising"),
             ratio:Number(this.parameters.ratio),
             chargeMin:Math.abs(Math.trunc(Number(this.parameters.chargeMin)||0)),
             chargeMax:Math.abs(Math.trunc(Number(this.parameters.chargeMax)||0)),
+            /* `chargeAuto` demande au plan de CALCULER la fenêtre de charge à
+               partir des min/max par adduit. La valeur obtenue est recopiée dans
+               les paramètres juste après, donc elle reste modifiable à l'écran:
+               c'est une valeur proposée, pas une valeur imposée. */
+            chargeAuto:true,
             table:this.loadedTable
         })
+        /* Les bornes par adduct SE DÉDUISENT d'elles-mêmes, et la fenêtre de
+           charge s'affiche ensuite — déduite, puis modifiable.
+
+           On ne SUPPRIME PAS le champ, parce qu'une borne automatique ne sait
+           rien faire d'une liste d'adduits de signes OPPOSÉS: leurs charges
+           s'annulent, et une somme de bornes n'y dit rien. Le champ reste donc;
+           il est rempli par le plan, et une retouche manuelle tient jusqu'au
+           prochain changement de liste. */
         this.diagnostics=[...this.plan.diagnostics]
+        if(this.plan.chargeDerived&&this.chargeAuto!==false){
+            this.parameters.chargeMin=this.plan.chargeDerived.min
+            this.parameters.chargeMax=this.plan.chargeDerived.max
+            this.plan.chargeMin=this.parameters.chargeMin
+            this.plan.chargeMax=this.parameters.chargeMax
+        }
+        /* LA LIGNE DE CHARGE, et elle est une LECTURE du plan. Pas un champ,
+           donc rien à saisir et rien à valider: elle ne peut pas diverger des
+           réglages qui la produisent, ce qu'un champ finit toujours par faire.
+
+           ELLE MONTRE LE NEUTRE, ET DIT POURQUOI IL NE DONNE PAS DE LECTURE.
+           Un adduit en `min:0` autorise l'absence d'adduit, donc une somme de
+           charges nulle; la ligne disait pourtant « 1 », ce qui était un
+           ensemble plus étroit que les réglages de l'utilisateur. Le 0 est
+           donc affiché — et il est impossible de ne pas se demander alors ce
+           qu'il produit, alors qu'il ne produit RIEN: le m/z d'un neutre est
+           une division par zéro. Le plan le dit dans ses diagnostics, et cette
+           ligne le reprend. */
+        if(this.chargeLabel){
+            const set=this.plan.chargeSet
+            this.chargeLabel.textContent=set
+                ?`Reachable charge(s): ${set.join(", ")}`
+                :"Reachable charge(s): none — the adducts cannot charge anything"
+            this.chargeLabel.title=set
+                ?`derived from the adducts and their min/max: |z| in {${set.join(", ")}}`
+                :"no adduct gives a non-zero charge, so nothing can be attributed"
+            /* ET LA DEMI-VÉRITÉ, DITE À CÔTÉ DU CHIFFRE. Un `min:0`
+               se lit donc sans avoir à ouvrir quoi que ce soit. */
+            if(this.plan.neutralPossible){
+                /* LE NEUTRE EST DIT, ET CE N'EST PLUS UNE DEMI-VÉRITÉ.
+
+                   Ce texte disait « un neutre n'a pas de m/z, donc il ne donne
+                   aucune lecture ». C'était faux de bout en bout: `Formula.mz`
+                   fait `mass/Math.abs(charge||1)`, donc un neutre se lit à sa
+                   MASSE, et il donne une lecture comme un autre.
+
+                   La phrase dit maintenant ce qui est vrai et ce qui reste vrai:
+                   le 0 est atteignable, et il se lit à la masse. */
+                this.chargeLabel.textContent+=
+                    "\n0 = neutral: read at its own mass, no adduct needed"
+                this.chargeLabel.title+=
+                    "\nA neutral is matched on its own mass — no proton is added for you."
+                this.chargeLabel.style.opacity="0.9"
+            }else{
+                this.chargeLabel.style.opacity="1"
+            }
+        }
         return this.plan
     }
 
@@ -2953,6 +3099,20 @@ class AttributionNode extends NodeWithAccordion{
 
            Le statut est donc posé par `setStatus`, qui pose et diffuse. */
         this.setStatus("pending")
+        /* LE DRAPEAU TOMBE ICI, ET LE BOUTON SE REPEINT.
+
+           `resolveNow` ne fait que poser le drapeau, mais `startResolve` est
+           aussi appelé par le graphe — une resolve de flux, une restauration de
+           session — donc c'est lui, et lui seul, qui sait qu'un calcul vient
+           d'aboutir. Sans cette ligne, un nœud résolu par le graphe gardait
+           « Resolve (never run) » au-dessus d'un readout plein de résultats.
+
+           Le drapeau part AVANT le calcul: pendant celui-ci, le nœud doit avoir
+           l'air de ne plus être à jour, sinon on rejoue le défaut que
+           `markStale` corrige. */
+        this.needsResolve=false
+        this.staleReason=null
+        this.renderResolveButton()
         /* Le readout est repeint tout de suite, AVANT le calcul: il passe au
            plan courant et annonce la résolution, donc l'utilisateur a quelque
            chose à lire pendant que ça tourne. */
@@ -2983,43 +3143,64 @@ class AttributionNode extends NodeWithAccordion{
             padding:"4px",
             gap:"4px"
         })
+        /* LE CHAMP DE SAISIE, puis LE TABLEAU en dessous.
+
+           Le champ ne remplace pas le tableau: il AJOUTE une ligne. Les deux
+           vivent ensemble parce qu'ils font deux gestes différents — taper un
+           groupe nouveau, ou régler un groupe existant — et qu'un tableau seul
+           ne peut pas faire le premier, tandis qu'un champ seul ne peut pas
+           faire le second. */
         this.combiningInput=this.field(content,
-            "Groups to combine (one per line)",
-            this.parameters.combining,
+            "Add a group to combine",
+            "",
             {
-                multiline:true,
-                onInput:(value)=>{this.parameters.combining=value},
-                onCommit:(value)=>this.commitLists("combining",value)
+                onCommit:(value)=>this.addGroup("combining",value)
             },
-            "Chemical formulas: CH2, O, NH... each becomes a set of isotopic masses to combine. Click away or press Ctrl+Enter to apply"
+            "CH2, O, NH... Adds one row to the table below. Enter applies it"
         )
         this.ionisingInput=this.field(content,
-            "Ionising groups (one per line)",
-            this.parameters.ionising,
+            "Add an ionising group",
+            "",
             {
-                multiline:true,
-                onInput:(value)=>{this.parameters.ionising=value},
-                onCommit:(value)=>this.commitLists("ionising",value)
+                onCommit:(value)=>this.addGroup("ionising",value)
             },
-            "Adducts: [H+], [Na+], [2+]... each must carry a charge. Click away or press Ctrl+Enter to apply"
+            "[H+], [Na+], [2+]... Adducts must carry a charge. Enter adds one row"
         )
+        this.combiningTable=this.groupTable(content,"combining","Groups to combine")
+        this.ionisingTable=this.groupTable(content,"ionising","Ionising groups")
         /* `field` returns its input, and the numeric ones are KEPT: `syncUI` has to
            be able to write a restored value back into the field it came from,
            otherwise the screen shows one setting and the sieve uses another. The
-           two text areas already had a reference; the five numbers did not, which
-           is why a reload moved the sliders on screen only. */
-        this.ratioInput=this.field(content,"Isotopic window (ratio, 0 = keep all)",this.parameters.ratio,{
-            tag:"number",
-            onCommit:(raw)=>this.commitNumber("ratio",raw,0,1)
-        },"Relative probability threshold, per group, as in the legacy code. 0 keeps every isotopic mass")
-        this.chargeMinInput=this.field(content,"Charge min",this.parameters.chargeMin,{
-            tag:"number",
-            onCommit:(raw)=>this.commitNumber("chargeMin",raw,0,64)
-        },"Lowest |charge| an attribution may carry")
-        this.chargeMaxInput=this.field(content,"Charge max",this.parameters.chargeMax,{
-            tag:"number",
-            onCommit:(raw)=>this.commitNumber("chargeMax",raw,0,64)
-        },"Highest |charge| an attribution may carry")
+           five numbers are kept for that reason, and a reload used to move them
+           on screen only. */
+        /* LE « ISOTOPIC WINDOW » GLOBAL A DISPARU DE L'ÉCRAN, et c'est la
+           conséquence directe du ratio par ligne.
+
+           Un seuil unique devait couvrir tous les groupes à la fois, donc ouvrir
+           le ¹³C ouvrait le ¹⁷O, et les deux multipliaient le nombre de briques
+           pour rien. Le seuil est maintenant une case de chaque ligne du tableau.
+           Le PARAMÈTRE reste — des sessions l'ont, et il sert de repli quand une
+           ligne ne dit rien — mais l'afficher serait un double emploi: deux
+           réglages pour une seule chose, dont un que personne ne devrait avoir à
+           toucher. */
+        /* LES CHARGES ATTEIGNABLES, ET ELLES SE LISENT — PLUS DE DEUX CHAMPS.
+
+           Un « Charge min » et un « Charge max » donnaient un INTERVALLE, donc
+           « entre 1 et 2 » — ce qui laisse croire que 1,5 existe. Les adduits ne
+           donnent que des charges entières, et l'ensemble réel est souvent plus
+           court que l'intervalle: [H+] seul donne « 1 »; [H+] et [Na+] donnent
+           « 1, 2 ».
+
+           Une LIGNE, donc, parce que la question n'est pas « quelles bornes? »
+           mais « quelles charges ai-je? ». Et elle est déduite, pas saisie: elle
+           ne peut pas mentir sur les réglages qui la produisent.
+
+           Elle reste le seul endroit où la charge se lit, donc elle doit aussi
+           dire ce qui n'est PAS possible — les bornes restent appliquées par le
+           plan, et c'est le readout qui annonce le refus. */
+        this.chargeLabel=CE("div",{className:"an-charges"},[])
+        stylize(this.chargeLabel,{fontSize:"0.8em",lineHeight:"1.35"})
+        content.appendChild(this.chargeLabel)
         /* L'ANCIEN CHAMP « Attributions per spectrum » ÉTAIT MORT.
 
            Il écrivait `parameters.limit`, un réglage que le renommage a retiré de
@@ -3042,13 +3223,362 @@ class AttributionNode extends NodeWithAccordion{
             tag:"number",
             onCommit:(raw)=>this.commitNumber("ppm",raw,0,10000)
         },"A formula further off than this is not proposed at all; inside it, the measured offset is reported")
+        /* LE BOUTON RESOLVE, et il EXISTE POUR UNE RAISON MESURÉE.
+
+           Chaque changement de case relançait tout le crible. Sur une liste de
+           groupes c'est insupportable — et surtout inutile: changer le `max` de
+           CH2 n'a rien à voir avec la formule qu'on cherche, et payer le plan
+           complet à chaque frappe est du temps brûlé.
+
+           Donc les réglages MARQUENT le nœud comme à recalculer, et le bouton
+           fait le calcul. Le bouton se lit « Resolve » quand il y a quelque chose
+           à faire et « up to date » quand il n'y a rien — un bouton qu'on peut
+           cliquer sans effet apparent apprend à ne pas être cliqué. */
+        this.resolveButton=CE("button",{type:"button"},["Resolve"])
+        stylize(this.resolveButton,{
+            fontSize:"0.85em",padding:"3px 10px",cursor:"pointer",
+            color:"inherit",background:"rgba(255,255,255,0.08)",
+            border:"1px solid rgba(255,255,255,0.2)",borderRadius:"3px"
+        })
+        this.resolveButton.addEventListener("click",()=>this.resolveNow())
+        content.appendChild(this.resolveButton)
+        /* LE BOUTON EST PEINT TOUT DE SUITE, et pas seulement quand un
+           réglage change. `renderResolveButton` n'était appelé que par
+           `markStale` et `resolveNow` — donc un nœud qui n'avait jamais rien
+           calculé gardait l'étiquette peinte à la construction, « Resolve »,
+           alors que le test de `resolveNow` le faisait sortir sans rien
+           calculer. Le bouton et son comportement disaient deux choses
+           différentes dès la première seconde. On le rend donc ici, une fois,
+           dans l'état réel. */
+        this.renderResolveButton()
+
+        /* LE CHAMP DE MASSE, et il ne dépend d'aucun pic mesuré.
+
+           Les autres réglages répondent à « qu'est-ce que MES pics sont? ». Celui-ci
+           répond à « qu'est-ce que CETTE masse pourrait être? » — la question
+           inverse, celle qu'on se pose devant un pic inconnu. Le même plan et le
+           même crible répondent aux deux; seule l'entrée change.
+
+           LA FENÊTRE EST DE ±0,5, et c'est un choix de GÉOMÉTRIE: à CH₂/NH/O/C
+           une substitution d'un atome léger pèse 1 à 16 Da, donc 0,5 ne peut pas
+           confondre deux formules voisines — et une masse exacte a cinq chiffres
+           décimaux, donc un intervalle plus serré n'aurait rien à montrer. */
+        this.massInput=this.field(content,"Probe a mass (m/z)",this.parameters.probeMass??"",{
+            tag:"number",
+            onCommit:(raw)=>this.probeMass(raw)
+        },"Type one m/z to see what the current plan makes of it. Enter runs it over ±0.5")
+        this.probeOutput=CE("div",{className:"an-probe"},[])
+        stylize(this.probeOutput,{
+            fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap",opacity:"0.9"
+        })
+        content.appendChild(this.probeOutput)
+        this.renderGroupTables()
         this.readout=CE("div",{style:{fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap"}},[])
         content.appendChild(this.readout)
     }
 
-    /* ONE field, with its caption. A function, because there are seven of them
-       and a function is the only way to give them all the same properties and
-       the same keyboard handling without writing the same line seven times. */
+    /* LE TABLEAU DES GROUPES, et il est reconstruit à chaque changement.
+
+       Une ligne par groupe: la formule, min, max, le ratio, la suppression. Les
+       deux listes partagent la MACHINE, pas les valeurs par défaut — un adduit
+       s'exige, un groupe de masse se propose.
+
+       LE TABLEAU EST REDESSINÉ ENTIÈREMENT à chaque fois, et c'est un choix: une
+       liste de groupes fait cinq à dix lignes, donc virtualiser serait du travail
+       pour rien, et le redessin garantit qu'aucune ligne ne garde l'état d'un
+       groupe supprimé. */
+
+    /* Une case. `∞` est affiché POUR `Infinity`, parce que c'est ce que la case
+       contient: si elle dit « ∞ », taper remplace l'infini par un nombre, ce
+       qui est exactement ce qu'on veut. « Infinity » obligerait à deviner quoi
+       taper. */
+    boundCell(value,onCommit,{title}={}){
+        const input=CE("input",{
+            type:"text",spellcheck:false,
+            value:value===Infinity?"∞":String(value),title
+        },[])
+        stylize(input,{
+            width:"100%",boxSizing:"border-box",fontSize:"0.85em",
+            padding:"1px 3px",borderRadius:"2px",fontFamily:"monospace",
+            textAlign:"center",background:"rgba(255,255,255,0.06)",
+            border:"1px solid rgba(255,255,255,0.15)"
+        })
+        input.addEventListener("keydown",(event)=>{
+            if(event.key==="Enter"){ event.preventDefault(); onCommit(input.value) }
+        })
+        /* LE BLUR VALIDE AUSSI: on ne laisse pas une valeur saisie sans effet,
+           parce qu'un réglage affiché et jamais appliqué est le défaut qu'on ne
+           voit pas — il a l'air de fonctionner. */
+        input.addEventListener("blur",()=>onCommit(input.value))
+        return input
+    }
+
+    groupRowStyle(){
+        return {
+            display:"grid",gap:"3px",alignItems:"center",
+            gridTemplateColumns:"1fr 3.2em 3.2em 3.6em 1.6em"
+        }
+    }
+
+    groupTable(content,kind,label){
+        const box=CE("div",{className:"an-group-table"},[])
+        const caption=CE("div",{className:"an-caption"},[label])
+        const head=CE("div",{},["group","min","max","isotope",""])
+        const rows=CE("div",{className:"an-group-rows"},[])
+        stylize(caption,{fontSize:"0.8em",opacity:"0.8",marginTop:"4px"})
+        stylize(head,this.groupRowStyle())
+        for(const cell of head.children) stylize(cell,{
+            fontSize:"0.7em",opacity:"0.7",textAlign:"center",overflow:"hidden"
+        })
+        stylize(box,{display:"flex",flexDirection:"column",gap:"2px"})
+        box.append(caption,head,rows)
+        content.appendChild(box)
+        return {box,rows,kind}
+    }
+
+    /* UNE LIGNE, neuve à chaque redessin — donc aucun état ne survit à la
+       suppression d'une autre ligne. */
+    drawGroupRow(table,entry,index){
+        const adducts=table.kind==="ionising"
+        const fallback={min:adducts?1:0,max:adducts?1:Infinity,ratio:1}
+        const row=CE("div",{},[])
+        stylize(row,this.groupRowStyle())
+        const name=CE("span",{},[String(entry.group)])
+        stylize(name,{
+            fontSize:"0.85em",fontFamily:"monospace",overflow:"hidden",
+            textOverflow:"ellipsis",whiteSpace:"nowrap"
+        })
+        row.appendChild(name)
+        const commit=(field,raw)=>{
+            const groups=this.groupList(table.kind)
+            const target=groups[index]
+            if(!target) return
+            target[field]=raw
+            this.commitGroups(table.kind,groups)
+        }
+        row.appendChild(this.boundCell(entry.min??fallback.min,
+            (raw)=>commit("min",raw),
+            {title:"Fewest copies of this group. For an adduct, 1 means it is required"}))
+        row.appendChild(this.boundCell(entry.max??fallback.max,
+            (raw)=>commit("max",raw),
+            {title:"Most copies of this group, counted over ALL its isotopes. ∞ means no limit"}))
+        row.appendChild(this.boundCell(entry.ratio??fallback.ratio,
+            (raw)=>commit("ratio",raw),
+            {title:"Isotopic window for THIS group alone. 1 keeps only the most probable isotope, 0 keeps every one"}))
+        const remove=CE("button",{type:"button",title:"Remove this group"},["✕"])
+        stylize(remove,{
+            fontSize:"0.8em",lineHeight:"1",padding:"2px",cursor:"pointer",
+            color:"inherit",background:"rgba(255,255,255,0.08)",
+            border:"1px solid rgba(255,255,255,0.15)",borderRadius:"2px"
+        })
+        remove.addEventListener("click",()=>{
+            const groups=this.groupList(table.kind)
+            groups.splice(index,1)
+            this.commitGroups(table.kind,groups)
+        })
+        row.appendChild(remove)
+        return row
+    }
+
+    /* LA SONDE DE MASSE, et elle ne passe par AUCUN chemin de résolution.
+
+       Elle construit un `SortedPoints` de trois points — bas, centre, haut — et
+       appelle le moteur dessus. Ce n'est pas un raccourci: c'est exactement le
+       même `attributeSpectrum` avec le même plan, donc la réponse est celle que
+       donnerait un pic réel à cette position. Seul l'entrée change.
+
+       Le point du MILIEU est l'interrogé; les deux autres bornent la fenêtre et
+       servent à `nearest`, qui a besoin d'un voisinage pour choisir. Trois
+       points suffisent parce qu'ils sont à 0,5 d'écart et que rien d'autre ne
+       peut se glisser entre. */
+    probeMass(raw){
+        const mass=Number(raw)
+        const output=this.probeOutput
+        if(!Number.isFinite(mass)||mass<=0){
+            if(output) output.textContent=mass<=0
+                ?"That m/z must be above zero."
+                :"Type a number to probe."
+            return
+        }
+        this.parameters.probeMass=mass
+        const half=0.5
+        const window=new SortedPoints([mass-half,mass,mass+half],[1,1,1])
+        let result
+        try{
+            result=attributeSpectrum(this.plan??this.buildPlan(),window,{
+                limit:Infinity,ppm:this.parameters.ppm,
+                bestMatches:this.parameters.bestMatches
+            })
+        }catch(error){
+            if(output) output.textContent=`The sieve refused this mass: ${error.message}`
+            return
+        }
+        const centre=result.entries
+            .filter(entry=>entry.target?.index===1)
+            .sort((a,b)=>Math.abs(a.errorPpm)-Math.abs(b.errorPpm))
+        if(!output) return
+        if(!centre.length){
+            output.textContent=`${mass} — no formula within `+
+                `${this.parameters.ppm} ppm. Loosen the isotope windows, or the counts.`
+            return
+        }
+        const lines=centre.map(entry=>
+            `${prettyNotation(entry.notation)}  ${entry.mz.toFixed(5)}  `+
+            `${entry.errorPpm>=0?"+":""}${entry.errorPpm.toFixed(2)} ppm`)
+        output.textContent=`${mass} — ${centre.length} reading(s):\n${lines.join("\n")}`
+    }
+
+    /* LE TABLEAU, encore. Il est redessiné après chaque resolve parce que le plan
+       peut avoir changé sous les pieds du lecteur — une session relue avec des
+       groupes que le plan ne connaît pas doit le montrer. */
+    renderGroupTables(){
+        for(const table of [this.combiningTable,this.ionisingTable]){
+            if(!table) continue
+            table.rows.replaceChildren()
+            const groups=this.groupList(table.kind)
+            if(!groups.length){
+                const empty=CE("div",{},["— no group yet —"])
+                stylize(empty,{fontSize:"0.8em",opacity:"0.5",padding:"2px"})
+                table.rows.appendChild(empty)
+                continue
+            }
+            groups.forEach((entry,index)=>{
+                table.rows.appendChild(this.drawGroupRow(table,entry,index))
+            })
+        }
+    }
+
+    /* AJOUTER UN GROUPE, et le champ se vide après coup — parce que la ligne
+       reste visible dans le tableau. Sans ça, taper « CH2 » puis « NH » laisserait
+       les deux dans le champ, et il faudrait deviner lequel a été ajouté. */
+    addGroup(kind,value){
+        const text=String(value??"").trim()
+        if(!text) return
+        const groups=this.groupList(kind)
+        groups.push(this.readGroups([text],kind)[0])
+        this.commitGroups(kind,groups)
+        if(kind==="combining"&&this.combiningInput) this.combiningInput.value=""
+        if(kind==="ionising"&&this.ionisingInput) this.ionisingInput.value=""
+    }
+
+    /* MARQUER « À RECALCULER », ET NE PAS RECALCULER.
+
+           C'est le comportement que demande l'écran: régler une case ne lance
+           rien, le bouton lance. Le nœud passe donc en « floating » — qui veut
+           dire « ses résultats ne correspondent plus à ses réglages » — et le
+           bouton s'allume.
+
+           `needsResolve` est le FIL réel de l'état, et pas la couleur: une
+           couleur peut mentir (elle vient d'un événement), un drapeau non. */
+    markStale(reason){
+        this.needsResolve=true
+        this.staleReason=reason??this.staleReason
+        this.setStatus("floating")
+        this.renderResolveButton()
+        this.renderReadout()
+        return this
+    }
+
+    resolveNow(){
+        /* « RIEN À FAIRE » ET « JAMAIS CALCULÉ » NE SONT PAS LA MÊME CHOSE.
+
+           Le test était `!this.needsResolve`, et `needsResolve` vaut faux tant
+           que personne n'a changé un réglage. Un nœud qui n'a JAMAIS été
+           résolu est donc dans le même cas qu'un nœud à jour: le bouton se
+           nommait « Resolve », s'affichait actif, et sortait ici sans rien
+           calculer. C'est le défaut 1, reproduit dans un vrai Chromium: un
+           nœud créé, une liste de pics branchée, readout « no plan yet », et
+           un clic qui ne change rien — parce que le crible n'avait jamais
+           tourné.
+
+           La question utile n'est donc pas « un réglage a-t-il changé ? » mais
+           « l'écran montre-t-il des résultats qui correspondent aux réglages ? ».
+           Sans plan, il n'y a rien qui corresponde: il y a donc quelque chose
+           à faire. */
+        if(!this.needsResolve&&this.plan){
+            /* Cliquer sur un bouton qui n'a rien à faire ne doit PAS coûter un
+               calcul complet — sinon l'utilisateur finit par ne plus croire le
+               bouton, et il aura raison. */
+            this.renderReadout()
+            return Promise.resolve()
+        }
+        /* Le drapeau et le bouton sont posés par `startResolve` lui-même: c'est
+           le seul endroit qui sait qu'un calcul a eu lieu, et il est appelé
+           aussi par le graphe. Les poser ici comme avant faisait deux fois le
+           même travail et laissait les deux chemins libres de diverger. */
+        return this.startResolve().then(()=>this.resolveChildren())
+    }
+
+    renderResolveButton(){
+        const button=this.resolveButton
+        if(!button) return
+        /* LE LIBELLÉ SUIT LA MÊME VÉRITÉ QUE LE TEST. Sans plan, le nœud n'a
+           rien à jour: il n'a jamais rien calculé. Afficher « up to date » au
+           dessus d'un readout « no plan yet » serait un panneau qui se
+           contredit lui-même — et c'est le genre de mensonge qui donne envie
+           de ne plus cliquer sur rien. */
+        const pending=this.needsResolve||!this.plan
+        button.textContent=pending
+            ?(this.plan?"Resolve":"Resolve (never run)")
+            :"up to date"
+        button.disabled=!pending
+        button.style.opacity=pending?"1":"0.55"
+        button.title=pending
+            ?`${this.plan
+                ?this.staleReason??"settings changed"
+                :"nothing has been attributed yet"} — click to attribute`
+            :"nothing has changed since the last attribution"
+    }
+
+    commitGroups(kind,groups){
+        /* ON NE POSE PAS SUR `commitNumber`, et c'est un choix CORRIGÉ.
+
+           J'avais d'abord appelé `commitNumber(kind, groups, …)` en comptant sur
+           lui pour valider et relancer. Il fait `Number(raw)` — donc
+           `Number([{…},{…}])` vaut `NaN`, la garde `!Number.isFinite` renvoie,
+           et la fonction SORT AVANT `setStatus` et `startResolve`.
+
+           Résultat : le tableau affichait la nouvelle valeur, le paramètre la
+           prenait, et le crible ne relançait JAMAIS. Un réglage qui change sans
+           rien recalculer — exactement le défaut que ce fichier dénonce à
+           longueur de chapitre, et que je venais d'introduire en le portant à
+           son propre exemple. */
+        /* LE « AVANT » EST LA LISTE LUE, et pas le paramètre brut. Une session
+           ancienne porte une chaîne; la comparer à la liste normalisée la
+           déclarerait toujours différente, et le moindre clic relancerait pour rien. */
+        const before=JSON.stringify(this.groupList(kind))
+        this.parameters[kind]=groups
+        /* LE REDESSIN EST ICI, et pas ailleurs: la case qu'on vient de valider
+           doit redevenir la case validée. Sans ça, taper « 40 » dans un champ
+           laisserait « 40 » affiché pendant que le plan en compte 20. */
+        this.renderGroupTables()
+        /* Rien n'a changé: ne pas relancer, comme `commitNumber` le fait. Deux
+           saisies qui recalculent le même plan feraient clignoter le nœud pour
+           un résultat identique. */
+        if(JSON.stringify(this.groupList(kind))===before){
+            this.renderReadout()
+            return
+        }
+        /* LE RÉGLAGE NE RECALCULE PLUS: il MARQUE. Le bouton Resolve fait le
+           calcul, et le bouton se voit. Voir `markStale`.
+
+           SAUF POUR DEUX RÉGLAGES, et l'exception est mesurée. `bestMatches` et
+           `ppm` ne touchent pas au CRIBLE: ils ne font que reclasser ce qu'il a
+           déjà rendu. Les remettre dans la file d'attente donnait exactement le
+           défaut signalé — « je passe de 3 à 1 et rien ne change » — parce que le
+           nombre qui rétrit la liste est justement celui qu'on règle le plus
+           souvent.
+
+           Ils appliquent donc tout de suite. `ratio`, `min` et `max` changent la
+           liste elle-même, donc eux passent par le bouton: on règle dix groupes
+           et on calcule une fois. */
+        if(name==="bestMatches"||name==="ppm"){
+            this.setStatus("floating")
+            this.renderReadout()
+            return this.startResolve().then(()=>this.resolveChildren())
+        }
+        this.markStale(`${name} changed`)
+    }
     field(content,label,value,{multiline,tag,onCommit,onInput}={},help=""){
         const box=CE("div",{className:"an-field"},[])
         const caption=CE("div",{className:"an-caption"},[label])
@@ -3146,10 +3676,18 @@ class AttributionNode extends NodeWithAccordion{
             return
         }
         this.parameters[name]=bounded
-        if(this[fieldFor(name)]) this[fieldFor(name)].value=String(bounded)
-        this.setStatus("floating")
-        this.renderReadout()
-        this.startResolve().then(()=>this.resolveChildren())
+        /* `this.fieldFor(name)` et NON `this[fieldFor(name)]`. L'appel était
+           écrit sans le `this.`, donc il cherchait une variable globale — et
+           `Uncaught ReferenceError: fieldFor is not defined` tuait la fonction
+           avant `setStatus`, donc AVANT le `startResolve`. Le champ se
+           VALIDAIT et le nœud ne relançait rien.
+
+           C'est exactement le genre de faute qui ne se voit pas dans les
+           tests: ils vérifient que le nom du réglage est le même des deux
+           côtés, pas que la touche Enter fait recalculer. */
+        const input=this.fieldFor(name)
+        if(input) input.value=String(bounded)
+        this.markStale(`${name} changed`)
     }
     /* Le champ d'un réglage, pour que la valeur BORNÉE soit réécrite à l'écran.
 
@@ -3169,16 +3707,6 @@ class AttributionNode extends NodeWithAccordion{
        listes différentes peuvent donner le même plan — `"CH2 "` et `"CH2"` se
        lisent pareil — et relancer sur une différence qui n'en est pas une
        ferait clignoter le nœud sans rien changer. */
-    commitLists(name,text){
-        if(text===this.parameters[name]){
-            this.renderReadout()
-            return
-        }
-        this.parameters[name]=text
-        this.setStatus("floating")
-        this.renderReadout()
-        this.startResolve().then(()=>this.resolveChildren())
-    }
     /* THE READOUT: what the node understood, and what it found.
 
        The first lines say what the plan IS — how many bricks, how many adducts,
@@ -3231,6 +3759,18 @@ class AttributionNode extends NodeWithAccordion{
 
     renderAll(){
         this.renderReadout()
+        /* LE BOUTON EST REPEINT ICI, ET C'EST LA SEULE FIN DE RESOLVE.
+
+           `startResolve` repeint le bouton tout de suite, pour annoncer le
+           calcul — mais à cet instant `this.plan` est encore celui d'avant, donc
+           un nœud qui calcule pour la première fois s'affichait « Resolve
+           (never run) » AU-DESSUS d'un readout plein de 220 lectures. Le
+           libellé et le texte se contredisaient.
+
+           Le plan existe maintenant: `renderResolveButton` peut donc lire la
+           vérité et poser « up to date ». C'est le seul endroit où les deux
+           sont connus en même temps, donc c'est ici que le bouton se repeint. */
+        this.renderResolveButton()
     }
 
     /* The STATE, for a session.
@@ -3240,24 +3780,45 @@ class AttributionNode extends NodeWithAccordion{
        reload showing results computed from settings that may have changed since.
        Only the INTENTIONS travel. */
     serializeState(){
+        /* Les listes sont ÉCRITES sous leur forme lue, donc une session
+           enregistrée contient déjà les bornes. Une session plus ancienne, elle,
+           portait une chaîne — et elle reste relisible: `restoreState` la passe
+           par `groupList`, qui sait lire les deux. On n'écrit pas la forme
+           normalisée ici, parce qu'on n'a pas à le faire pour que la session
+           marche: `readGroups` lit les deux, et c'est lui qui décide.
+
+           Ce qui PART, c'est l'intention. Le plan, les attributions et la table
+           sont dérivés, donc les garder montrerait des résultats calculés avec
+           des réglages qui ont pu changer depuis. */
         return {
-            combining:this.parameters.combining,
-            ionising:this.parameters.ionising,
+            combining:this.groupList("combining"),
+            ionising:this.groupList("ionising"),
             ratio:this.parameters.ratio,
             chargeMin:this.parameters.chargeMin,
             chargeMax:this.parameters.chargeMax,
             bestMatches:this.parameters.bestMatches,
-            ppm:this.parameters.ppm
+            ppm:this.parameters.ppm,
+            probeMass:this.parameters.probeMass
         }
     }
 
     restoreState(state){
         if(!state) return
-        for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm"]){
+        for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm","probeMass"]){
             if(state[name]!==undefined&&state[name]!==null){
                 this.parameters[name]=state[name]
             }
         }
+        /* LES LISTES PASSENT PAR `groupList`, et c'est la migration.
+
+           Une session d'avant les bornes porte `"CH2\nNH"`; celle d'aujourd'hui
+           porte des objets. Les deux sont réécrites ici sous la forme courante,
+           donc TOUT ce qui relit le nœud ensuite — le tableau, `buildPlan`, le
+           diagnostic — ne voit qu'une seule forme. C'est le seul endroit où il
+           faut traiter les deux, et il faut le faire: le faire partout, c'est
+           mettre la migration à chaque lecteur. */
+        this.parameters.combining=this.groupList("combining")
+        this.parameters.ionising=this.groupList("ionising")
         /* A session saved before the rename carries `limit`, and the two are not
            the same setting: `limit` counted enumerated states, `bestMatches`
            counts readings per peak. Copying the number across would be a LIE —
@@ -3275,8 +3836,14 @@ class AttributionNode extends NodeWithAccordion{
        with the first while the screen shows the second — the worst of the two,
        because the reader sees one value and gets another. */
     syncUI(){
-        if(this.combiningInput) this.combiningInput.value=this.parameters.combining
-        if(this.ionisingInput) this.ionisingInput.value=this.parameters.ionising
+        /* Les deux champs de SAISIE sont vides par construction — ils ajoutent une
+           ligne et ne décrivent pas la liste — donc il n'y a rien à y remettre.
+           Les LISTES, elles, vivent dans le tableau, et c'est lui qu'il faut
+           redessiner: une session relue avec trois groupes doit les montrer. */
+        this.renderGroupTables()
+        if(this.massInput&&this.parameters.probeMass!==undefined){
+            this.massInput.value=String(this.parameters.probeMass)
+        }
         /* Les CHAMPS NUMÉRIQUES AUSSI, et c'est la moitié du panneau.
 
            La fonction ne les touchait pas, alors que son commentaire affirmait le
@@ -3290,9 +3857,9 @@ class AttributionNode extends NodeWithAccordion{
            l'inverse: un champ vide ou illisible ne doit pas effacer un réglage
            restauré. */
         const numeric={
-            ratioInput:"ratio",
-            chargeMinInput:"chargeMin",
-            chargeMaxInput:"chargeMax",
+            /* Les deux champs de charge sont PARTIS: la ligne « Reachable
+               charge(s) » les remplace, et elle est dérivée. Il n'y a donc plus
+               rien à y écrire. */
             bestMatchesInput:"bestMatches",
             ppmInput:"ppm"
         }
