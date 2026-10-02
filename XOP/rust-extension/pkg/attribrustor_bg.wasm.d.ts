@@ -40,6 +40,8 @@ export function trim_histogram(a: number, b: number, c: number, d: number, e: nu
 export function trimresult_low_bound(a: number): number;
 export function trimresult_high_bound(a: number): number;
 export function trimresult_kept_count(a: number): number;
+export function crible_heap(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number): void;
+export function fkmd(a: number, b: number, c: number, d: number): void;
 export function __wbg_radiodecision_free(a: number): void;
 export function radiodecision_points_x(a: number, b: number): void;
 export function radiodecision_points_y(a: number, b: number): void;
@@ -59,7 +61,6 @@ export function bench(a: number): number;
 export function sieve(a: number): void;
 export function zeros_matrix(a: number, b: number): void;
 export function persistent_homology_0d(a: number, b: number, c: number, d: number, e: number): void;
-export function fkmd(a: number, b: number, c: number, d: number): void;
 export function __wbindgen_add_to_stack_pointer(a: number): number;
 export function __wbindgen_free(a: number, b: number, c: number): void;
 export function __wbindgen_malloc(a: number, b: number): number;

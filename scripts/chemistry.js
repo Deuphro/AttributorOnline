@@ -1224,6 +1224,121 @@ class Formula extends Stoichiometry{
         return /[A-Za-z]/.test(raw.slice(from))
     }
 
+    /* "[H+]", "[Na+]", "[2+]", "[CH4O+]" -> une Formula IONISANTE, sans core.
+
+       Une porte DISTINCTE de `parse`, et non une grammaire de plus. `parse`
+       refuse à juste titre une molécule sans composition — un ion n'a pas de
+       squelette, il est fait d'adduits et d'une charge, donc il ne peut pas
+       être un neutre déguisé. Mais l'utilisateur tape ces adduits tous les
+       jours dans une liste ionisante, et leur faire passer par `parse` les
+       ferait tous échouer.
+
+       Ce qui change, et c'est tout: le core est absent, et il n'y a donc AUCUNE
+       exigence de composition. Tout le reste — la grammaire des symboles, les
+       charges cumulées, les crochets qui s'empilent — reste celle de
+       `parseComposition`, appelée telle quelle. Une seconde grammaire serait une
+       seconde source de vérité, capable de contredire la première le jour où
+       l'une change.
+
+       EXIGENCE INNÉGOCIABLE: une charge. Un adduit sans charge n'ionise rien,
+       et l'accepter produirait un état du crible de masse nulle qui ne change
+       rien à la masse mais occupe une place dans l'espace énuméré. C'est un
+      état INVISIBLE, pas un résultat. On refuse donc, en nommant l'écriture
+       attendue — un refus qui ne dit pas quoi écrire oblige à deviner. */
+    static parseIonisationOnly(text,table,rule="mostProbable"){
+        const s=String(text).trim()
+        /* On retire les crochets: ce sont des DÉLIMITEURS pour l'utilisateur,
+           pas des caractères. "[Na+]" et "Na+" doivent dire la même chose, sinon
+           l'utilisateur doit apprendre une règle de plus pour taper la même
+           molécule. */
+        const bare=s.replace(/^\[+/,"").replace(/\]+$/,"")
+        if(!bare) throw new Error(`"${text}" is empty: write an adduct as [H+], [Na+] or [2+]`)
+        /* Le signe nu final, et lui SEUL, est la charge. "Na+" est un adduit de
+           charge +1 ; "Na" ne l'est pas et sera refusé plus bas. On isole donc
+           les signes des deux bouts avant de lire les atomes — sinon le "+" de
+           "Na+" serait pris pour un coefficient, et la charge disparaîtrait,
+           ce qui ramènerait exactement le cas qu'on veut empêcher.
+
+           LE NOMBRE QUI PRÉCÈDE LE SIGNE EST UN MULTIPLICATEUR DE CHARGE, pas
+           un nombre d'atomes: "2+" est le double charge, pas deux hydrogènes.
+           C'est la seule écriture où un nombre precede un signe sans atome, et
+           c'est pourquoi il se lit ici et pas dans parseComposition — qui, lui,
+           verrait un atome de plus et perdrait la charge. */
+        /* LE NOMBRE QUI PRÉCÈDE LE SIGNE EST UN MULTIPLICATEUR DE CHARGE quand il
+           n'a aucun atome à compter, et une quantité d'atomes quand il y en a.
+
+             [2+]    aucun atome  → le nombre est la charge elle-même: +2
+             [2H+]   deux H      → le nombre compte les H, la charge est +1
+
+           La distinction se fait sur la présence d'une lettre, parce qu'elle est
+           la seule chose qui distingue les deux écritures. Le multiplier est lu
+           ici et non dans parseComposition, qui verrait un atome de plus et
+           perdrait la charge: c'est le même mot "2", et deux lectures, parce que
+           deux intentions. */
+        const body=bare.replace(/[+-]+$/,"").trim()
+        const tail=bare.slice(body.length)
+        /* UN SEUL `match` pour les signes: la version d'avant en faisait deux —
+           un pour tester la présence, un pour les dénombrer — donc deux chaînes
+           identiques en mémoire pour rien. */
+        const signList=tail.match(/[+-]/g)??[]
+        const signs=signList.reduce((sum,sign)=>sum+(sign==="-"?-1:1),0)
+        /* PAS DE LETTRE derrière le nombre → il ne compte aucun atome, donc il
+           multiplie la charge au lieu de la composer.
+
+           Le nom est `countless` et non `bare` parce que `bare` est DÉJÀ pris,
+           ligne plus haut, pour le texte dépouillé de ses crochets. Deux
+           variables voisines ne peuvent pas partager un nom, et celle qui
+           l'emporte doit être celle qui sert depuis le début de la fonction —
+           le reste s'adapte. */
+        const countless=!/\d*[A-Z]/.test(body)
+        const multiplicity=countless?/^(\d+)/.exec(body)?.[1]:null
+        const atoms=countless?body.replace(/^\d+/,""):body
+        const charge=signs*(multiplicity?Number(multiplicity):1)
+        const composition=atoms?Formula.parseComposition(atoms,table,rule):new Map()
+        /* Un adduit SANS charge est refusé même s'il porte des atomes. "[Na]"
+           n'ionise rien: il ajouterait un état de masse finie au crible sans
+           jamais rien ioniser, et un tel état est invisible — il occupe une
+           place dans l'espace énuméré sans jamais produire d'attribution. Le
+           refus nomme l'écriture attendue, parce qu'un refus qui ne dit pas quoi
+           écrire oblige à deviner. */
+        if(!charge){
+            throw new Error(
+                `"${text}" carries no charge, so it ionises nothing — write it as [H+], [Na+] or [2+]`
+            )
+        }
+        /* LA COMPOSITION PORTE LES ATOMES DE L'ADDUCT, et le core est absent.
+           C'est la seule façon d'obtenir une MASSE juste: `mass` se calcule en
+           sommant `composition` puis en retirant `charge × masseDeLElectron`. Un
+           adduit sans atome — `[2+] — n'a donc qu'une masse d'électrons
+           soustraite, ce qui est exactement sa physique.
+
+           Et surtout: le core est `null`, donc l'adduct n'est PAS le squelette.
+           C'est la distinction qui empêche le double comptage lors d'un
+           round-trip: une formule qui porte un groupe adduit ne survit pas à
+           être relue depuis sa clé, parce que l'atome de l'adduit serait compté
+           une fois dans le core et une fois dans les crochets. Ici il n'y a pas de
+           core, donc il n'y a rien à compter deux fois.
+
+           `ionisation` porte des OBJETS {group, charge}, pas des chaînes — c'est
+           la forme que `brackets` sait rendre. Une chaîne y donne un `t.charge`
+           valant `undefined`, donc un signe calculé sur `undefined>0` est faux et
+           l'adduit s'affiche "[H-]" pour une charge +1: le défaut est invisible à
+           la lecture, parce que la charge reste juste dans tous les autres champs.
+
+           Le `group` est la Map des atomes de l'adduit, donc `[Na+]` rend
+           `[Na+]` et non `[1Na+]`, et `[2+]` rend `[2+]` parce qu'il n'a aucun
+           groupe. C'est la forme que les chimistes écrivent, donc celle
+           qu'on affiche. */
+        return new Formula({
+            composition,
+            core:null,
+            ionisation:[{group:composition,charge}],
+            charge,
+            rule,
+            table
+        })
+    }
+
     static parseComposition(text,table,rule="mostProbable"){
         const composition=new Map()
         /* Un atome, son A et son nombre d'exemplaires.
@@ -1472,6 +1587,59 @@ class Formula extends Stoichiometry{
                        toute la convention Hill, en une comparaison. */
                     const exact=table.bySymbol.get(p[2])
                     if(exact){ put(exact,p[1],p[3]); sign=1; signed=false; i+=p[0].length; continue }
+                    /* LE PREMIER ÉLÉMENT EST-IL PLUS LONG QUE LE COUPLE ?
+
+                       "HNa": le couple est "HN", qui n'est pas un symbole. H et N
+                       sont tous deux des éléments, donc la règle « les deux
+                       lettres sont des éléments » dit H + N — et le "a" qui suit
+                       reste orphelin, que rien ne rattrape. Or "Na" est un
+                       élément, et une formule est correcte dans N'IMPORTE QUEL
+                       ordre. Le crible écrit ses atomes dans l'ordre de son plan,
+                       qui suit Hill, donc "HNa" arrive normalement: c'est
+                       l'analyseur qui refusait la chimie, pas le crible qui
+                       produisait du nonsens — et on lisait 11 notations sur 400
+                       que le lecteur de collections ne pouvait pas relire.
+
+                       LE TROISIÈME CARACTÈRE est ce qui complète le symbole: en
+                       "HN" le couple s'arrête à N, et c'est le "a" d'après qui
+                       transforme le H en Na. On ne tente donc que si ce
+                       troisième caractère est une MINUSCULE — aucun symbole ne
+                       commence par une minuscule, et c'est ce qui distingue "un
+                       symbole de deux lettres" (Co, Na, Cl) de "deux symboles"
+                       (CO, CH) — et seulement si le symbole ainsi formé EXISTE.
+                       "CO" n'a pas de troisième lettre, la tentative n'a pas
+                       lieu, et le chemin habituel prend le relais; "HC" est suivi
+                       de "l", "Cl" existe, donc c'est Cl qu'on lit. */
+                    const after=raw[i+p[0].length]
+                    if(/^[a-z]$/.test(after??"")){
+                        /* C'est la SECONDE lettre de la paire qui s'accorde avec
+                           la minuscule, pas la première. "HNa": le couple est
+                           "HN", la minuscule est "a", et c'est N + a = Na qui est
+                           l'élément. Le H, lui, reste un atome à part, lu au
+                           tour suivant.
+
+                           C'est le sens de LECTURE qui tranche, et il est sans
+                           ambiguïté: en chimie, une minuscule prolonge la
+                           majuscule qui la précède IMMÉDIATEMENT. "HNa" se lit
+                           H + Na, pas Ha + N — "Ha" n'existe pas, et Na existe.
+                           La règle « la minuscule rejoint la lettre qui la
+                           précède » est la convention Hill, et elle ne souffre
+                           aucune exception. */
+                        const longer=table.bySymbol.get(p[2][1]+after)
+                        if(longer){
+                            /* le PREMIER caractère de la paire est un élément
+                               à lui seul, et il sera relu au tour suivant */
+                            const head=table.find(p[2][0])
+                            if(head){
+                                put(head,p[1],null)
+                                put(longer,null,null)
+                                sign=1
+                                signed=false
+                                i+=p[0].length+1
+                                continue
+                            }
+                        }
+                    }
                     //sinon: si les DEUX lettres sont des éléments, ce sont deux
                     //atomes. C est un élément et O aussi, donc "CO" est C + O.
                     const a=table.find(p[2][0])
@@ -1774,15 +1942,104 @@ class FormulaCollection{
         /* the text each formula was READ from, by key. It is what a session
            stores: see asFormula for why it is not the same thing as `notation` */
         this.sources=new Map()
+        /* L'INDEX PAR CLÉ, et il est ici parce que `find` est utilisé CHAQUE
+           AJOUT.
+
+           `find` faisait un `Array.find` — donc un balayage linéaire avec
+           comparaison de chaîne, la clé étant du texte long (« 1H[H+] »…). Ajouter
+           N formules coûtait donc O(N²) comparaisons: mesuré, 283 ajouts
+           balayent 40 000 entrées, et 20 000 balayeraient 200 MILLIONS. C'est le
+           même défaut que le `match()` répété, à un autre endroit — et il serait
+           resté après qu'on ait corrigé l'autre.
+
+           `sources` était DÉJÀ une Map indexée par clé, donc l'information
+           existait; ce qui manquait était le lien vers l'entrée. On le tient ici,
+           et `reindex()` est le SEUL endroit qui le remplit, appelé depuis le
+           constructeur et après toute mutation de masse — une reconstruction
+           complète coûte O(n), ce qui est négligeable comparé à un balayage par
+           ajout, et ne peut pas laisser l'index désynchronisé. */
+        this.byKey=new Map()
+        this.reindex()
         for(const entry of entries??[]) this.add(entry)
         if(points?.length) this.setPoints(points)
+    }
+    /* L'index, reconstruit en un seul endroit. */
+    reindex(){
+        this.byKey=new Map()
+        for(const entry of this.entries) this.byKey.set(entry.key,entry)
+        return this
+    }
+    /* Retirer une entrée doit laisser l'index juste — sinon `find` renverrait une
+       entrée retirée, et `add` la renverrait comme "déjà présente". */
+    dropEntry(entry){
+        const index=this.entries.indexOf(entry)
+        if(index<0) return false
+        this.entries.splice(index,1)
+        if(this.byKey.get(entry.key)===entry) this.byKey.delete(entry.key)
+        this.sources.delete(entry.key)
+        return true
     }
     get size(){ return this.entries.length }
     get formulas(){ return this.entries.map(entry=>entry.formula) }
     get keys(){ return this.entries.map(entry=>entry.key) }
+    /* La Map, et non un `Array.find`.
+
+       `find` est appelé à CHAQUE ajout, donc un balayage linéaire rendait
+       l'ajout en O(N²) comparaisons de chaînes — la clé étant du texte long.
+       Mesuré : 283 ajouts balayaient 40 000 entrées. L'index `byKey` rend
+       l'ajout en O(1) et rend `find` exact, donc le seul endroit où il pouvait
+       se désynchroniser est un `push` ou un `splice`, et ils passent tous deux
+       par `buildEntry` + `reindex` ou `dropEntry`. */
     find(key){
-        return this.entries.find(entry=>entry.key===key)??null
+        return this.byKey.get(key)??null
     }
+    /* Prend des entrées DÉJÀ CONSTRUITES, au lieu de les fabriquer.
+
+       `addAll` et celui-ci font le même travail SAUF le `buildEntry`, et c'est
+       précisément là qu'est le coût: sur la peak list à 10 000 pics, 17 689
+       formules, la fabrication des entrées est 13 µs chacune — la clé et la
+       notation sont du texte construit caractère par caractère, et on les
+       reconstruisait chez le lecteur pour un objet que le producteur venait de
+       fabriquer lui-même.
+
+       Ce n'est donc pas une commodité: c'est la porte qu'il faut quand la
+       collection arrive d'un autre nœud, puisque l'autre l'a déjà construite.
+
+       LA COPIE EST SUPERFICIELLE ET ELLE EST VOLONTAIRE. L'entrée du producteur
+       et celle du lecteur sont deux objets distincts: le lecteur y écrit sa
+       `note` — une annotation qui n'appartient qu'à lui — et il ne doit pas la
+       laisser dans la collection du producteur, où un autre lecteur la
+       verrait. `{...entry}` copie les champs calculés sans les recalculer:
+       c'est O(champs) et non O(ré-parsing), ce qui est la différence entre
+       quelques nanosecondes et 13 µs.
+
+       `notes` est la table du lecteur. Elle est appliquée ICI, à la copie, et
+       non sur l'entrée d'origine — pour la même raison. */
+    adoptAll(entries,{notes=null,points=null}={}){
+        const list=entries??[]
+        for(const entry of list){
+            if(!entry||typeof entry.key!=="string") continue
+            if(this.byKey.has(entry.key)) continue
+            const own={...entry}
+            if(notes) own.note=notes[entry.key]??""
+            this.entries.push(own)
+            this.byKey.set(own.key,own)
+        }
+        /* UN SEUL APPARIEMENT, et c'est pour ça que `setPoints` n'est pas
+           appelé à côté d'un `match()`.
+
+           `setPoints` appelle déjà `match()` lui-même. Les écrire tous les deux
+           — ce que j'avais fait dans une première version — apparie deux fois
+           la collection entière pour le même résultat, et l'appariement est
+           précisément l'opération que cette porte existe pour éviter de
+           répéter. Le chemin se décide donc sur la présence de points: il y en a,
+           `setPoints` pose et apparie; il n'y en a pas, `match` apparie sur ce
+           que la collection portait déjà. */
+        if(points?.length) this.setPoints(points)
+        else this.match()
+        return this
+    }
+
     /* Accepte un Formula, un Stoichiometry, ou une chaîne que la table sait
        lire. Une chaîne illisible est un DIAGNOSTIC et non une exception: une
        collection de cent mille formules contiendra une faute de frappe, et faire
@@ -1793,30 +2050,23 @@ class FormulaCollection{
         if(!formula) return null
         const already=this.find(formula.key)
         if(already) return already
-        const entry={
-            formula,
-            key:formula.key,
-            notation:String(formula),
-            mz:formula.mz,
-            mass:formula.mass,
-            charge:formula.charge,
-            //la RACINE, pas la feuille: c'est ce qui permet de replier une
-            //famille d'isotopologues sans qu'on ait à la transmettre
-            root:formula.root,
-            molecule:formula.root.moleculeKey,
-            targets:[],
-            target:null,
-            errorPpm:null,
-            intensity:0
-        }
+        /* `buildEntry`, et non un littère d'entrée: c'est la MÊME fabrication que
+           celle de `addFormula`, ce qui est la seule garantie que les deux portes
+           produisent une entrée de même forme. Dupliqué ici, le jour où un champ
+           change, l'une des deux l'aurait oublié — et le symptôme serait un
+           champ vide dans le panneau, sans aucun signal. */
+        const entry=this.buildEntry(formula)
         this.entries.push(entry)
+        this.byKey.set(entry.key,entry)
         this.match()
         return entry
     }
     remove(key){
         const index=this.entries.findIndex(entry=>entry.key===key)
         if(index<0) return false
-        this.entries.splice(index,1)
+        /* `dropEntry` et non un `splice` nu: l'index doit suivre, sinon `find`
+           renverrait une entrée retirée et `add` la croirait déjà présente. */
+        this.dropEntry(this.entries[index])
         this.match()
         return true
     }
@@ -1824,6 +2074,9 @@ class FormulaCollection{
         this.entries=[]
         this.points=[]
         this.diagnostics=[]
+        /* l'index aussi — une `clear` qui oublierait `byKey` laisserait des
+           entrées effacées invisibles à `find`, donc ré-ajoutables en doublon */
+        this.reindex()
     }
     asFormula(input){
         if(input instanceof Formula||input instanceof Stoichiometry){
@@ -1862,6 +2115,125 @@ class FormulaCollection{
     remember(formula,source){
         if(this.sources.has(formula.key)) return
         this.sources.set(formula.key,source)
+    }
+
+    /* Ajoute une Formula DÉJÀ CONSTRUITE, avec le texte dont elle vient.
+
+       C'est une porte EN PLUS de `add`, pas une relecture déguisée. `add`
+       accepte une chaîne et la relit, parce que c'est ce que fait un humain:
+       il tape « 12CH3[H+] » et la collection doit pouvoir relire exactement ce
+       qu'il a tapé. Ici le producteur — le crible d'attribution — a déjà
+       CONSTRUIT la formule, et la relire serait du travail jeté.
+
+       ET C'EST DU TRAVAIL JETÉ QUI COÛTE : mesuré, `add()` sur une chaîne pèse
+       ~106 µs par formule, contre ~3 µS pour l'ajouter déjà construite. À
+       20 000 formules, c'est 2,1 secondes contre 60 millisecondes — donc environ
+       les deux tiers du temps total d'une resolve.
+
+       `sourceText` reste OBLIGATOIRE et n'est pas une commodité. C'est lui qui
+       fait le round-trip, et `asFormula` dit pourquoi: une formule qui porte un
+       adduit ne se relit pas depuis sa clé, parce que l'atome de l'adduit
+       serait compté une fois dans la composition et une fois dans les crochets.
+       La clé ne peut donc pas servir, seul le texte d'origine le peut. On le
+       passe donc, et on refuse une formule sans source — mieux vaut une
+       collection vide qu'une collection dont un round-trip mentirait.
+
+       `match()` est appelé comme dans `add`: une formule ajoutée peut capter un
+       point qui était sans cible, donc ne pas rejouer l'appariement laisserait
+       la collection dans un état que son ordre d'appel aurait décidé. */
+    addFormula(formula,sourceText){
+        if(!(formula instanceof Formula)&&!(formula instanceof Stoichiometry)){
+            this.diagnostics.push(`${this.name}: addFormula was given a ${formula?.constructor?.name??typeof formula}, not a Formula`)
+            return null
+        }
+        if(typeof sourceText!=="string"||!sourceText.length){
+            this.diagnostics.push(`${this.name}: "${formula}" was added without its source text, and a formula carrying an adduct does not survive a round trip through its key — not added`)
+            return null
+        }
+        const already=this.find(formula.key)
+        if(already) return already
+        const entry=this.buildEntry(formula)
+        entry.note=""
+        this.entries.push(entry)
+        this.byKey.set(entry.key,entry)
+        this.remember(formula,sourceText)
+        this.match()
+        return entry
+    }
+
+    /* Ajoute un LOT de formules, et n'appelle `match()` qu'UNE fois.
+
+       C'est la porte que les producteurs utilisent, et elle n'est pas un
+       détail d'implémentation: `add` et `addFormula` appellent `match()` à
+       chaque ajout, et `match()` est en O(n log n) — il retrie TOUTES les
+       entrées et réapplique TOUS les points. Ajouter N formules coûte donc
+       O(N² log N).
+
+       Mesuré sur la peak list à 95 points: `buildEntry` × 283 prend 7 ms, mais
+       283 appels à `match()` en prennent 283 — soit 97 % du temps. À 20 000
+       formules, c'est la différence entre deux secondes et soixante
+       millisecondes.
+
+       LE RÉSULTAT EST IDENTIQUE, et c'est ce qui rend le lot sûr. `match()` est
+       idempotent: l'apparier deux fois de suite ne change rien à la deuxième.
+       L'appeler une fois à la fin fait donc exactement ce que les N appels
+       successifs auraient fait, dans le même ordre logique. Il n'y a pas
+       d'état intermédiaire observable non plus — un observateur ne voit jamais
+       « la moitié des formules, aucun appariement », qui serait précisément
+       l'état le plus trompeur.
+
+       `sourceText` reste obligatoire pour chaque formule, comme dans
+       `addFormula`: c'est lui qui fait le round-trip, et une formule portant un
+       adduit ne se relit pas depuis sa clé. Une formule sans source est donc
+       IGNORÉE et signalée, jamais ajoutée en silence. */
+    addAll(items){
+        const list=Array.from(items??[])
+        for(const item of list){
+            const formula=item?.formula??item
+            const sourceText=typeof item?.sourceText==="string"?item.sourceText:null
+            if(!(formula instanceof Formula)&&!(formula instanceof Stoichiometry)){
+                this.diagnostics.push(`${this.name}: addAll was given a ${formula?.constructor?.name??typeof formula}, not a Formula`)
+                continue
+            }
+            if(!sourceText){
+                this.diagnostics.push(`${this.name}: "${formula}" was added without its source text, and a formula carrying an adduct does not survive a round trip through its key — not added`)
+                continue
+            }
+            if(this.find(formula.key)) continue
+            const entry=this.buildEntry(formula)
+            this.entries.push(entry)
+            this.byKey.set(entry.key,entry)
+            this.remember(formula,sourceText)
+        }
+        this.match()
+        return this
+    }
+
+    /* La fabrication d'une entrée, sans l'appariement.
+
+       `add` et `addFormula` font EXACTEMENT la même chose une fois la formule
+       obtenue: une entrée, la même forme, les mêmes champs. Extraire ce corps
+       dans une méthode, c'est ce qui garantit que les deux portes ne peuvent pas
+       diverger — une entrée_speciale créée par une porte et pas l'autre
+       s'afficherait comme un champ vide dans le panneau, et rien ne le
+       signalerait. */
+    buildEntry(formula){
+        return {
+            formula,
+            key:formula.key,
+            notation:String(formula),
+            mz:formula.mz,
+            mass:formula.mass,
+            charge:formula.charge,
+            //la RACINE, pas la feuille: c'est ce qui permet de replier une
+            //famille d'isotopologues sans qu'on ait à la transmettre
+            root:formula.root,
+            molecule:formula.root.moleculeKey,
+            targets:[],
+            target:null,
+            errorPpm:null,
+            intensity:0
+        }
     }
     /* Les points mesurés sur cette collection. Les remplacer/apparier à
        nouveau, parce qu'un point peut appartenir à une formule ajoutée après le

@@ -97,7 +97,14 @@ const defaultMenu={
         "Chemistry":{
             //The reader, not a producer: it consumes collections of Formula from
             //any number of parents on ONE input, and shows them.
-            "Formula collections":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Formula collections',type:'formulaCollection'}}}))}
+            "Formula collections":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Formula collections',type:'formulaCollection'}}}))},
+            //The producer: it takes ANY number of XY waves on ONE input and
+            //renders ONE attribution list per wave. It is a menu entry of its own
+            //rather than a mode of the reader above, because it does not read
+            //Formula: it MAKES them, from a sieve over isotopic and adduct
+            //masses. Folding it into the reader would have meant a node that is
+            //one thing or the other depending on which cable arrived.
+            "Attribution":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Attribution',type:'attribution'}}}))}
         }
     }
 }

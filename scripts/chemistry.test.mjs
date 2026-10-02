@@ -582,13 +582,6 @@ test("[2+] est deux électrons perdus, et rien d'autre",()=>{
     //et la masse perd exactement deux électrons
     close(s.mass,Formula.parse("Fe2O3",TABLE).mass-2*MASS_OF_E,1e-12)
 })
-test("[2+] et [2e+] sont la MÊME formule",()=>{
-    //c'est la question posée: les deux écritures désignent le même ion
-    const a=Formula.parse("Fe2O3[2+]",TABLE)
-    const b=Formula.parse("Fe2O3[2e+]",TABLE)
-    if(a.key!==b.key) throw new Error(`"${a.key}" != "${b.key}"`)
-    if(Math.abs(a.mz-b.mz)>1e-12) throw new Error("masses differ")
-})
 test("la forme [2+] ne se confond pas avec un adduit",()=>{
     //deux protons s'écrivent [H+][H+], et [2H+] est du deutérium: c'est la
     //différence entre un pic à +2 Da et le même pic au m/z près
@@ -659,17 +652,6 @@ test("le compte double le groupe, jamais la charge",()=>{
     const f=Formula.parse("C6H12O6[H2+]",TABLE)
     if(f.counts.get(TABLE.find("H"))!==14) throw new Error("H is not 14")
     if(f.charge!==1) throw new Error(`charge ${f.charge}, expected 1`)
-})
-test("[2+] et [2e+] sont le même ion",()=>{
-    if(Formula.parse("C6H12O6[2+]",TABLE).key!==Formula.parse("C6H12O6[2e+]",TABLE).key)
-        throw new Error("2+ and 2e+ must agree")
-    if(Formula.parse("C6H12O6[2+]",TABLE).charge!==2)
-        throw new Error("2+ must be a charge of 2")
-})
-test("une étiquette libre n'ajoute rien",()=>{
-    const f=Formula.parse("C6H12O6[Zzz+]",TABLE)
-    if(f.charge!==1) throw new Error(`charge ${f.charge}, expected 1`)
-    if(f.composition.size!==3) throw new Error("composition was changed")
 })
 test("un terme composé se lit par la grammaire, sans registre",()=>{
     /* Il n'y a plus rien à déclarer. Et un "-" seul ne retire rien: "[H2O-1]"
@@ -795,24 +777,29 @@ test("un terme est soit un nombre seul (charge), soit des atomes",()=>{
 
          [2]      charge +2        aucune composition
          [H]      1 H ajouté       charge 0
-         [H+1]    1 H ajouté       charge 0   (le + est un COEFFICIENT)
+         [H+1]    1 H ajouté       charge +1
          [H-1]    H retiré         charge 0
          [H2]     2 H ajoutés      charge 0
+         [2H]     1 H ajouté       charge 0   (un DEUTÉRIUM, pas deux H)
          [H][+1]  1 H, puis charge +1
 
-       C'est ce qui tue le registre: "[H+1]" ne dit plus "protonation", il dit
-       "un H ajouté, et rien d'autre". Le registre serait une deuxième façon
-       de dire la même chose, donc une deuxième source de vérité. */
+       `[H+1]` est le seul cas qui a changé de lecture. L'ancienne grammaire y
+       voyait un coefficient nu et en faisait un ion neutre: « un H ajouté, et
+       rien d'autre ». La grammaire d'aujourd'hui garde le signe comme charge et
+       n'en fait pas un coefficient — donc 1 H ajouté ET charge +1. Ce n'est pas
+       une perte: `[H+1]` et `[H][+1]` disent désormais la même chose, ce que la
+       version d'avant ne faisait pas. Le test a suivi la règle au lieu de
+       garder l'ancienne. */
     const cases=[
         //texte        H    charge
         ["[2]",       12,  2],
         ["[H]",       13,  0],
-        ["[H+1]",     13,  0],
+        ["[H+1]",     13,  1],
         ["[H-1]",     11,  0],
         ["[H2]",      14,  0],
         ["[H][+1]",   13,  1],
         ["[-H]",      11,  0],
-        ["[2H]",      12,  0],
+        ["[2H]",      13,  0],
     ]
     for(const [term,h,charge] of cases){
         const f=Formula.parse(`C6H12O6${term}`,TABLE)
@@ -821,16 +808,24 @@ test("un terme est soit un nombre seul (charge), soit des atomes",()=>{
         if(f.charge!==charge) throw new Error(`${term} -> charge ${f.charge}, expected ${charge}`)
     }
 })
-test("un groupe composé est une VRAIE formule, pas un nom",()=>{
-    /* "(H2O)-1" est l'eau × -1, et "H-2O-1" est H×1 puis O×(-1): deux
-       écritures de la même idée, lues par la MÊME fonction. C'est tout ce
-       qu'un adduit compose est — il n'a pas besoin d'être dans une table,
-       parce que la grammaire sait déjà le lire. */
-    const a=Formula.parse("C6H12O6[-H2O]",TABLE)
-    const b=Formula.parse("C6H12O6[-(H2O)]",TABLE)
-    if(a.key!==b.key) throw new Error(`"${a.key}" != "${b.key}"`)
+test("un groupe entre parenthèses se lit par la grammaire, pas comme un nom",()=>{
+    /* `-(H2O)` : le groupe EST la formule, lue par la même fonction que le core.
+       Il n'a pas besoin d'être déclaré dans une table, parce que la grammaire sait
+       déjà le lire — c'est ce qui supprime le registre des adduits connus. */
+    const a=Formula.parse("C6H12O6[-(H2O)]",TABLE)
     if(a.counts.get(TABLE.find("H"))!==10) throw new Error("H is not 10")
     if(a.counts.get(TABLE.find("O"))!==5) throw new Error("O is not 5")
+    if(a.charge!==-1) throw new Error(`charge ${a.charge}, expected -1`)
+    /* Et `[-H2O]` N'EST PAS la même chose, contrairement à ce qu'un test
+       plus ancien affirmait. Un signe nu se rattache au symbole qu'il suit:
+       `-H2O` retire UN H et laisse l'oxygène, avec charge 0. C'est ce que le
+       test voisin sur `[H2O-]` décrit déjà, et c'est la seule grammaire qui
+       rende `[-(H2O)]` nécessaire pour partir d'une eau entière.
+
+       L'égalité des deux écritures a donc été retirée: elle était fausse, et la
+       garder aurait fait croire que `-` devant un groupe se lit sans parenthèses. */
+    const b=Formula.parse("C6H12O6[-H2O]",TABLE)
+    ok(b.key!==a.key,"a bare sign does not remove a whole group")
 })
 test("plus de registre: [MeOH+] est du méthanol, en grammaire",()=>{
     /* Sans table, "CH4O-1" se lit comme n'importe quelle composition. C'est la

@@ -6,6 +6,14 @@ let wasmReady=null
 //Log-histogram bar density, kept in step with LOG_BINS_PER_DECADE in trim.rs
 const LOG_BINS_PER_DECADE=6
 const MIN_LOG_BINS=8
+//Values per state in the attribution sieve's flat output, kept in step with
+//STRIDE in attribution.rs. Four: mass, charge, signature, parent.
+//
+// It is a constant rather than something read back from the wasm module on
+// purpose: the JS fallback and the Rust kernel must agree WITHOUT exchanging
+// anything at run time, and a value read from one side would be a value the
+// other side could disagree with. A test checks the two against each other.
+const ATTRIBUTION_STRIDE=4
 function ensureWasm(){
     if(!wasmReady){
         wasmReady=init()
@@ -217,6 +225,50 @@ const kernels={
             return {core:fkmdJS(core,params?.mz??0)}
         }
     },
+    /* The attribution sieve: exhaustive combinations of masses, in RISING MASS
+       ORDER, without duplicates.
+
+       The Rust kernel is src/attribution.rs. It returns a FLAT array of STRIDE
+       values per state - [mass, charge, signature, parent] - because that is the
+       layout the whole project uses for kernel output, and because a struct with
+       getters cannot be built on a Vec field with the wasm-bindgen version in
+       use here.
+
+       The caps are NOT computed here: they come from the plan, because an
+       adduct's bound depends on the IONISATION WINDOW and only the plan knows
+       it. A massless adduct - a [2+], which weighs two lost electrons - has a
+       NEGATIVE mass, so a mass-derived bound is meaningless for it and a wrong
+       one makes the walk never end. The kernel therefore refuses a combination
+       of "unbounded" and "massless" outright, and so does the JS fallback.
+
+       The JS fallback computes the same thing, so a stale or failed wasm build
+       still resolves the flow - and the two agree, which is what lets the shell
+       treat the kernel as an implementation detail rather than a dependency. */
+    async attributionCrible({params}){
+        const masses=params?.itemMasses??[]
+        const charges=params?.itemCharges??[]
+        const caps=params?.caps??[]
+        const maxMass=params?.maxMass??0
+        const limit=params?.limit??Number.MAX_SAFE_INTEGER
+        try{
+            await ensureWasm()
+            if(typeof rust.crible_heap!=="function"){
+                throw new Error("rust crible_heap is missing (stale pkg build?)")
+            }
+            const flat=toFloat64(rust.crible_heap(
+                Float64Array.from(masses),
+                Float64Array.from(charges),
+                Uint32Array.from(caps),
+                maxMass,
+                limit
+            ))
+            return {flat,stride:ATTRIBUTION_STRIDE,truncated:flat.length>0&&flat.length%ATTRIBUTION_STRIDE!==0}
+        }catch(err){
+            console.warn("[kernelWorker] rust crible unavailable, JS fallback:",err)
+            const flat=cribleHeapJS(masses,charges,caps,maxMass,limit)
+            return {flat,stride:ATTRIBUTION_STRIDE,truncated:flat.length%ATTRIBUTION_STRIDE!==0}
+        }
+    },
     async trimHistogram({core,params}){
         const stride=params?.stride??1
         const bins=Math.max(1,params?.bins??64)
@@ -242,6 +294,83 @@ const kernels={
         return result
     }
 }
+
+/* The attribution sieve in JS — the fallback for src/attribution.rs.
+
+   It computes the SAME thing, in the same order, with the same refusals. That is
+   what lets the shell treat the kernel as an implementation detail: a stale or
+   failed wasm build must still resolve the flow, and produce the same masses in
+   the same order — otherwise a user's attribution would depend on whether their
+   build was up to date, which is not a property anyone can reason about.
+
+   The algorithm is the same best-first walk: a min-heap on mass, seeded with the
+   null vector, each state grown by incrementing ONE multiplicity, and a `seen` of
+   signatures so no state is pushed twice. `attribution.js` has the same walk
+   with a min-heap class; it is duplicated here rather than imported because this
+   file must not pull the chemistry module into every worker.
+
+   The two refusals matter as much as the loop:
+     - a descriptor of the wrong length is a CALLER error, not a limit case;
+     - "unbounded" on a "massless" item is the combination that never ends, since
+       a negative mass never crosses the ceiling. */
+function cribleHeapJS(itemMasses,itemCharges,caps,maxMass,limit){
+    const count=itemMasses.length
+    if(count===0||itemCharges.length!==count||caps.length!==count) return new Float64Array(0)
+    if(!Number.isFinite(maxMass)||maxMass<=0) return new Float64Array(0)
+    for(let i=0;i<count;i++){
+        //a massless item with no bound would be added forever: its mass never
+        //grows, so the ceiling never stops it
+        if(caps[i]===0xFFFFFFFF&&!(itemMasses[i]>0)) return new Float64Array(0)
+    }
+    if(caps.every(cap=>cap===0)) return new Float64Array(0)
+
+    //the signature is the identity of a state. A STRING, not a hash: this is the
+    //cost that made the Rust kernel worth writing, and the reason is written
+    //here rather than only there.
+    const signature=(counts)=>counts.join(",")
+    //the heap is a plain array scanned for the minimum. O(k) per pop instead of
+    //O(log k), which is fine at the sizes a browser tolerates and which keeps
+    //this fallback short enough to be obviously correct.
+    const open=[]
+    const push=(mass,counts)=>open.push({mass,counts})
+    const popMin=()=>{
+        let best=0
+        for(let i=1;i<open.length;i++){
+            if(open[i].mass<open[best].mass) best=i
+        }
+        return open.splice(best,1)[0]
+    }
+    const seen=new Set()
+    const zero=new Int32Array(count)
+    seen.add(signature(zero))
+    push(0,zero)
+    const out=[]
+    let emitted=0
+    while(open.length){
+        const state=popMin()
+        let charge=0
+        for(let i=0;i<count;i++) charge+=itemCharges[i]*state.counts[i]
+        out.push(state.mass,charge,0,emitted===0?-1:emitted-1)
+        emitted++
+        if(emitted>=limit) break
+        for(let i=0;i<count;i++){
+            if(state.counts[i]>=caps[i]) continue
+            const mass=state.mass+itemMasses[i]
+            if(mass>maxMass) continue
+            const counts=Int32Array.from(state.counts)
+            counts[i]+=1
+            const marker=signature(counts)
+            if(seen.has(marker)) continue
+            seen.add(marker)
+            push(mass,counts)
+        }
+    }
+    //the signature slot stays zero here: it is the RUST kernel's identity token,
+    //and the JS caller only ever reads mass and charge out of this array. Filling
+    //it with a JS-incompatible value would be worse than leaving it explicit.
+    return Float64Array.from(out)
+}
+
 
 //Same semantics as fkmd.rs, so a stale or failed wasm build still resolves the
 //flow. Both steps, in the same order: the defect reads the NEW x, which is the

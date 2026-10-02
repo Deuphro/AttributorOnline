@@ -9,6 +9,9 @@ import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 //is DATA and is fetched by the App that needs it (see App), never at module
 //load: importing a node graph must not drag a 72 Ko download with it.
 import {Formula,Stoichiometry,FormulaCollection,loadTable} from "./chemistry.js"
+//the attribution engine: the two group lists, the isotopic and ionisation
+//windows, and the sieve. Pure, and tested without a DOM (attribution.test.mjs).
+import {buildPlan,attributeSpectrum,SortedPoints} from "./attribution.js"
 //where the nodes go, and which two of them get wired together by themselves.
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
@@ -2421,6 +2424,898 @@ class FKMDNode extends NodeWithAccordion{
         this.readFormula()
     }
 }
+/* -------------------------------------------------------------------------
+   AttributionNode — a PRODUCER of formula lists.
+
+   This node holds TWO lists of formulas — the groups to combine and the
+   ionising groups it may use — plus the settings that bound the sieve, and it
+   renders ONE attribution list PER INPUT WAVE.
+
+   It is self-shaped and its input is MULTIPLEXED, for the reason the collection
+   reader gives: the number of cables is the flow's decision, not the node's, so
+   spelling it out here would mean spelling it out twice — here, and in every
+   saved session.
+
+   THE SIEVE IS SEQUENTIAL. One spectrum at a time, never a Promise.all: the
+   pool holds a few workers, a burst would queue every spectrum at once, each
+   would pay for its own core copy, and the interface would stall on all of them
+   at the same moment. That is FKMDNode's argument, for the same reason.
+
+   IT SITS HERE, between FKMDNode and PeakPickingNode, and the placement is not
+   cosmetic: collectionReader.test.mjs slices interface.js between two anchors —
+   the count helpers and the reader class — and evaluates that slice with
+   `new Function`. A class dropped between those anchors lands inside the slice
+   and the slice stops compiling. A node that breaks a test by existing in the
+   wrong place is a node whose position has to be argued for, so it is written
+   down rather than rediscovered.
+   ------------------------------------------------------------------------ */
+class AttributionNode extends NodeWithAccordion{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        //one multiplexed input (XY waves), one output
+        super(title,[[]],[[]],origin,destinationFlow,position)
+        this.status="floating"
+        /* THE TWO LISTS, as text. Text rather than formulas, for the same
+           reason the reader does it: a session must not carry the periodic table
+           along with it. */
+        /* LES GROUPES PAR DÉFAUT, et ils viennent d'une MESURE, pas d'une
+           intuition.
+
+           Une peak list réelle de 95 ions entre 175 et 389, ionisation [H+] :
+
+             CH2, O seulement  →  2 masses combinables, 0 correspondance à 10 ppm
+             CH2, NH, O, C     →  4 masses combinables, 344 correspondances,
+                                les 95 points couverts, médiane 4 par point
+
+           La différence n'est pas un réglage de précision: `ratio` à 0.1 écarte
+           les isotopologues de CH₂, et il ne reste que la masse la plus
+           abondante de chaque groupe. Deux briques font une grille grossière —
+           les écarts entre deux combinaisons sont de l'ordre du Dalton — donc
+           la plus proche formule possible reste à 10 ppm du pic, et une fenêtre
+           à 10 ppm ne peut rien accrocher. C'est le minimum géométrique, pas un
+           mauvais dosage.
+
+           NH et C densifient la grille. On ne le déduit pas: c'est le plan qui,
+           sur ce spectre, couvre les 95 points. */
+        this.parameters.combining="CH2\nNH\nO\nC"
+        this.parameters.ionising="[H+]"
+        /* THE ISOTOPIC WINDOW — the `ratio` of the legacy code, relative to
+           each group's maximum. 0 keeps everything; "keep only the abundant
+           ones" is said by raising the ratio.
+
+           0.1 and not 0: it does cut CH₂ to its most abundant isotope, and that
+           is exactly what makes the grid coarse — but it also keeps the volume
+           sane. 29381 attributions at ratio 0.1 over that peak list, against
+           far more at 0. The sieve's ceiling is what a reader is prepared to
+           read, so the ratio serves the same purpose from upstream. */
+        this.parameters.ratio=0.1
+        /* THE IONISATION WINDOW — bounds on |charge|, in absolute value: a 2+
+           and a 2- are the same thing to measure. */
+        this.parameters.chargeMin=1
+        this.parameters.chargeMax=1
+        /* HOW MANY READINGS TO KEEP, PER PEAK. This replaces the old `limit`.
+
+           `limit` capped the sieve's OUTPUT — the enumeration, ordered by rising
+           mass — so it kept the lightest combinations and cut the rest. On the
+           95-peak list, `limit=2000` published the 2 000 lightest states and
+           discarded 27 381, including the only candidates for the high-mass
+           peaks. It read like "show me 2 000 results" and behaved like "show me
+           the bottom of the pile", which are opposite things.
+
+           This counts per PEAK, so no peak can be starved by a richer neighbour,
+           and the walk is exhaustive: nothing is dropped for arriving late in the
+           enumeration.
+
+           3, and not 1: an exact-mass match inside 10 ppm is genuinely ambiguous
+           at the CH₂/NH/O/C level — several compositions routinely land within a
+           fraction of a ppm of each other. One reading per peak publishes a
+           confident answer the data does not support; three shows the ambiguity
+           without burying the reader. The window in ppm still decides WHO is a
+           candidate, and this decides how many of them are shown. */
+        this.parameters.bestMatches=3
+        /* The match window, in ppm. It is BOTH an admissibility filter and a
+           displayed measurement: a formula further off than this is not
+           proposed at all, because a reader cannot act on a 4 000 ppm error, and
+           keeping it would fill the ranking with values that are plainly wrong.
+           Inside the window the raw offset is still reported, so the number the
+           user reads is the real one and not merely a pass/fail. */
+        this.parameters.ppm=10
+        /* the plan, the table, and the diagnostics of the last resolve */
+        this.plan=null
+        this.loadedTable=null
+        this.diagnostics=[]
+        /* one attribution list per input wave, in input order — therefore in
+           flow order, stable from one resolve to the next */
+        this.attributions=[]
+        /* the kernel's complaints, per input. A kernel that fails on one
+           spectrum must not stop the others. */
+        this.kernelErrors=[]
+        /* monotonic ticket: a newer resolve forbids an older one to publish,
+           otherwise two spectra launched by hand would tread on each other */
+        this.run=0
+        const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
+        if(inputAnchors[0]){
+            inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity). Each is attributed separately.</title>'
+        }
+        const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
+        if(outputAnchors[0]){
+            outputAnchors[0].innerHTML='<title>Output: one attribution list per input wave</title>'
+        }
+    }
+
+    /* The periodic table, ONCE and on demand.
+
+       It belongs to the ORIGIN and is AWAITED, never read live: the App loads it
+       in the background, so a node reading `origin.table` on waking would say
+       "no table" about a table still in flight. The same shape as FKMDNode and
+       the collection reader, on purpose.
+
+       The cache is called `loadedTable`, and that is not a matter of taste: a
+       node with a `table()` method cannot have a `table` field. The assignment
+       in the constructor puts an OWN property on the instance which masks the
+       method, and the next `this.table()` throws "this.table is not a
+       function" — which is exactly what happened, and it took the node down at
+       creation. The two names therefore have to differ, and the reason is worth
+       more than the name. */
+    async table(){
+        if(this.origin.table){
+            this.loadedTable=this.origin.table
+            return this.loadedTable
+        }
+        const loaded=await this.origin.tableReady
+        this.loadedTable=loaded??null
+        return this.loadedTable
+    }
+
+    /* The lists, READ OVER SEVERAL LINES.
+
+       A list of groups IS a list: the reader types one formula per line. It is
+       the only reading that makes these two lists usable whatever their size —
+       a single field can hold one group and nothing else.
+
+       The EMPTY line does not show up in a final newline, hence the filter: a
+       trailing newline is what an editor adds by itself, and it must not become
+       an empty group — which would be a diagnostic per line. */
+    readList(text){
+        return String(text??"")
+            .split(/[\n;]/)
+            .map(line=>line.trim())
+            .filter(line=>line.length>0)
+    }
+    /* The plan, rebuilt on every resolve.
+
+       Rebuilt rather than kept incremental, on purpose: a list of groups is
+       small, reading it costs a fraction of a millisecond, and an incremental
+       plan would be one more state to maintain — to save less than maintaining
+       it costs. A stale plan would yield masses that no longer match what is
+       written on screen, which is the worst kind of bug: plausible, and wrong. */
+    buildPlan(){
+        this.plan=buildPlan({
+            combining:this.readList(this.parameters.combining),
+            ionising:this.readList(this.parameters.ionising),
+            ratio:Number(this.parameters.ratio),
+            chargeMin:Math.abs(Math.trunc(Number(this.parameters.chargeMin)||0)),
+            chargeMax:Math.abs(Math.trunc(Number(this.parameters.chargeMax)||0)),
+            table:this.loadedTable
+        })
+        this.diagnostics=[...this.plan.diagnostics]
+        return this.plan
+    }
+
+    /* Every XY wave landed on the input anchor, in link order.
+
+       The input is what the flow builds: Map<parent, Array<Array<Wave>>>, one
+       inner list PER LINK, each holding the waves of that link's output slot.
+       Three levels is not a choice, it is the shape the synapse leaves, and
+       reading it at the wrong depth yields an output MISSING ONE LEVEL — so
+       quietly too short.
+
+       Several cables may land on the SAME anchor; the walk visits each, so each
+       brings its waves and, later, its attribution list. A 1D wave is COUNTED
+       and not thrown away: a node that silently dropped two spectra out of three
+       looks exactly like a node that works. */
+    collectInputWaves(){
+        const input=this.inputs[0]
+        const waves=[]
+        let skipped=0
+        if(input instanceof Map){
+            for(const values of input.values()){
+                if(!Array.isArray(values)) continue
+                for(const parentOutputs of values){
+                    if(!Array.isArray(parentOutputs)) continue
+                    for(const wave of parentOutputs){
+                        if(!(wave instanceof Wave)) continue
+                        if(wave.degree!==2||wave.dims[1]!==2){
+                            skipped++
+                            continue
+                        }
+                        waves.push(wave)
+                    }
+                }
+            }
+        }
+        return {waves,skipped}
+    }
+
+    /* ONE spectrum -> ONE attribution list.
+
+       The steps are the engine's, and their order is not negotiable: the plan
+       fixes the windows, the point index is sorted ONCE, the sieve enumerates by
+       rising mass, and the matching is O(log n) per candidate.
+
+       The sorted index is built HERE, for this spectrum, and not handed to the
+       kernel: sorting points is the job of the side that HOLDS the points, and
+       the kernel only does combinatorics. The sort costs O(n log n) once and the
+       binary search O(log n) per attribution, so the total stays in
+       O(n log n + k log n) — not the O(k·n) a linear scan per candidate would
+       give. */
+    attributeWave(wave){
+        const half=wave.size/2
+        const x=new Float64Array(half)
+        const y=new Float64Array(half)
+        /* A 2D core is laid out [x0..xN, y0..yN] — two contiguous halves, not
+           interleaved. That is the shape every kernel produces, so it is what we
+           read. Fresh arrays rather than a `subarray` over the core: the core
+           belongs to the parent node, and a view would share it, so a write here
+           would be visible in the parent's data. */
+        if(wave.core.length>=wave.size){
+            for(let i=0;i<half;i++) x[i]=wave.core[i]
+            for(let i=0;i<half;i++) y[i]=wave.core[i+half]
+        }
+        const points=new SortedPoints(x,y)
+        /* `bestMatches` IS THE RESULT SELECTOR, and it replaced the old `limit`.
+
+           A `limit` counted STATES — the crible's own output — and the crible
+           emits them by rising mass, so a limit kept the LIGHTEST combinations
+           and dropped the rest. Measured on the 95-point peak list: `limit=2000`
+           published the 2 000 lightest and discarded 27 381 states, several of
+           which were the only candidates for high-mass peaks. It was not a
+           result selector at all — it was an enumeration cut, wearing the name
+           of one. The list it produced was a PREFIX, and a prefix of formulas
+           ordered by mass says nothing about which formulas explain the peaks.
+
+           `bestMatches` counts PER PEAK instead, so no peak can be starved by a
+           richer neighbour. The space is now walked whole; nothing is dropped for
+           being late.
+
+           `limit` is still honoured by the engine for callers that want a bound
+           on the ENUMERATION (a preview of a huge spectrum), and the node simply
+           stops asking for one: `Infinity`, so the walk is exhaustive and the
+           truncation flag stays false — which is what makes the list trustworthy
+           enough to publish. */
+        const result=attributeSpectrum(this.plan,points,{
+            limit:Infinity,
+            bestMatches:Math.max(1,Math.trunc(Number(this.parameters.bestMatches))||3),
+            ppm:Number(this.parameters.ppm)>0?Number(this.parameters.ppm):null
+        })
+        /* The ORIGINAL peak list rides along. The node has to hand the
+           collection the spectrum's own points, not one duplicated point per
+           surviving formula: a 95-peak spectrum with `bestMatches=3` would
+           otherwise arrive as 240 points, so every peak would appear three times
+           and the reader's tables, graphs and counts would all be tripled. The
+           attributions are many-to-one BY CONSTRUCTION, and the points are the
+           one-to-many side that must not be inflated. */
+        result.peakList=points
+        return result
+    }
+    /* THE RESOLVE: one attribution list per input.
+
+       SEQUENTIAL, and the pattern is FKMDNode's. A spectrum that fails is not a
+       reason to abandon the rest: it is recorded and the resolve continues,
+       because a broken spectrum is a broken RESULT, not a dead node. */
+    async resolveAttributions(){
+        const run=++this.run
+        const {waves,skipped}=this.collectInputWaves()
+        this.skippedInputs=skipped
+        if(!this.plan?.items?.length||!waves.length){
+            this.attributions=[]
+            this.kernelErrors=[]
+            this.renderReadout()
+            return
+        }
+        const published=[]
+        const errors=[]
+        for(let i=0;i<waves.length;i++){
+            if(run!==this.run) return        // superseded: publish nothing
+            const wave=waves[i]
+            /* LAISSER RESPIRER LE NAVIGATEUR ENTRE DEUX SPECTRES.
+
+               `attributeWave` est SYNCHRONE: plusieurs centaines de
+               millisecondes, deux ou trois secondes sur un gros signal. Pendant
+               ce temps le thread principal est occupé, donc rien ne se
+               redessine — le curseur se fige, on ne peut pas cliquer, et surtout
+               le nœud ne peut pas passer en « calcul » parce que le navigateur
+               n'a aucune occasion de peindre quoi que ce soit.
+
+               Rendre la main entre deux spectres ne coûte presque rien et
+               répare les deux: le nœud peut repeindre son état, et l'utilisateur
+               voit où il en est. Le `setTimeout(0)` suffit — c'est la file de
+               rendu qui doit être vidée, et elle l'est au tour de boucle suivant.
+
+               On ne rend PAS la main AU MILIEU d'un spectre: le crible ne se
+               suspend pas, et le découpage se ferait au prix d'une contadorisation
+               plus coûteuse que le temps qu'on cherche à sauver. Le
+               spectrographe est la seule unité de travail. */
+            if(i>0) await new Promise(resolve=>setTimeout(resolve,0))
+            if(run!==this.run) return
+            try{
+                const result=this.attributeWave(wave)
+                published.push(result)
+                for(const line of result.diagnostics??[]){
+                    errors.push(`${wave.metadata?.title??"wave"}: ${line}`)
+                }
+            }catch(error){
+                /* A failure is NAMED, not swallowed: a node that loses a
+                   spectrum in silence looks exactly like a node that worked. */
+                const message=error?.message??String(error)
+                errors.push(`${wave.metadata?.title??"wave"}: ${message}`)
+                published.push({entries:[],diagnostics:[message]})
+            }
+        }
+        if(run!==this.run) return
+        this.attributions=published
+        this.kernelErrors=errors
+        this.outputs[0]=this.publishable(published)
+        /* "error" only if NOTHING came out. A partial success is a success, and
+           a node painted red over three good results would be lying. */
+        this.setStatus(errors.length&&!published.some(result=>result.entries.length)
+            ?"error"
+            :"resolved")
+        this.renderReadout()
+    }
+
+    /* L'ÉTAT DU NŒUD, et surtout le FAIRE SAVOIR.
+
+       Le nœud assignait `this.status` en silence. Or la couleur du nœud sur le
+       graphe n'est pas lue dans le champ: elle vient de l'événement
+       `nodeStatusChanged`. Un nœud qui change d'état sans le diffuser ne change
+       donc pas d'apparence — et c'est exactement le défaut observé: à la
+       re-resolve, le nœud restait VERT pendant tout le calcul, puis le virait
+       quand le résultat était déjà là et que l'attente servait à rien.
+
+       Le champ et l'événement doivent dire la MÊME chose au MÊME instant, sinon
+       l'interface ment sur l'état réel. D'où une fonction unique, comme dans les
+       nœuds voisins, qui pose l'état et le diffuse ensemble. */
+    setStatus(status){
+        this.status=status
+        dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,status))
+    }
+
+    /* What the node PUBLISHES: a REAL FormulaCollection per input wave.
+
+       This used to publish plain descriptors — `{key, notation, mz…}` — and the
+       collection reader could do nothing with them. Its `asCollection` accepts
+       Formula, Stoichiometry, an array of either, or `{name, formulas|entries|
+       items}`, so a descriptor matched none of those four and the reader fell
+       through to "nothing readable (Object)". The shape was not merely too
+       nested: the ELEMENTS were the wrong TYPE. A descriptor carries a key and
+       a notation; a collection holds Formulas.
+
+       So this builds the real thing, and hands it over. Three reasons that is
+       the right way round rather than a loosening of the reader's contract:
+
+         - the ppm window, the closest-point rule, deduplication by key and the
+           molecule family all LIVE in FormulaCollection. Re-implementing them
+           here would give two answers to one question, and the two would
+           disagree the day either changed.
+         - the collection's OWN matching re-derives the targets from the points,
+           so the reader gets the same "closest point wins" semantics everywhere
+           instead of trusting ours.
+         - a collection is a LIVE object: the reader's graphs, folding and notes
+           act on it. A frozen descriptor would need all of that rebuilt.
+
+       THE NOTATION IS WHAT WE HAND OVER, NOT THE KEY, and the reason is in
+       FormulaCollection.asFormula: a formula carrying an adduct does not
+       survive being re-read from its key, because the adduct's atom is counted
+       once in the composition and again in the brackets. The notation we
+       produced is the spelling that round-trips, so it is the one that travels.
+
+       The window is left to the collection, so we pass the user's own ppm: two
+       windows disagreeing would mean two answers to "is this measured?".
+
+       Points carry their KEY when we found one, and `match()` takes a named
+       point at its word rather than re-deriving it by proximity — our pairing
+       already knows, and re-deciding it here would be second-guessing a better
+       answer with a worse one. */
+    publishable(published){
+        const table=this.loadedTable
+        const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):10
+        return published.map((result,index)=>{
+            const wave=this.collectInputWaves().waves[index]
+            const name=wave?.metadata?.title??"attribution"
+            const collection=new FormulaCollection({name,table,ppm})
+            /* `addAll`, and not a loop of `add`.
+
+               `add` takes a STRING and re-reads it, because a human types a
+               formula; we already HAVE the Formula, the crible built it. Re-reading
+               240 notations is measured at ~106 µs each — about 25 ms — and `add`
+               also calls `match()` on every single addition, so the loop would
+               re-sort and re-match the whole collection 240 times, which is 97 % of
+               the construction time. `addAll` takes the built Formula with its
+               notation as the round-trip text, and matches ONCE at the end. Same
+               entries, same keys, same targets: `match()` is idempotent. */
+            collection.addAll((result.entries??[]).map(entry=>({
+                formula:entry.formula,
+                /* the notation, not the key — see above */
+                sourceText:entry.notation
+            })))
+            /* The probability is OURS to carry: a collection has no notion of
+               how likely the sieve thought a combination was, and dropping it
+               would lose the ranking the sieve was built to produce. It rides
+               along on the entry, which is a plain object. */
+            for(const entry of result.entries??[]){
+                const added=collection.find(entry.formula.key)
+                if(!added) continue
+                added.logProbability=entry.logProbability
+                added.recipe=entry.recipe
+                /* `inWindow` says whether WE matched it. The collection will
+                   match again, on its own window; where the two disagree the
+                   reader is right, and the flag is kept only so the readout
+                   can say that a difference happened. */
+                added.sievedInWindow=entry.inWindow
+            }
+            /* THE POINTS ARE THE SPECTRUM'S OWN, one per peak.
+
+               The alternative — one point per surviving formula — is the bug this
+               replaces. With `bestMatches=3` a 95-peak spectrum produced 240
+               points, so every peak appeared three times: the reader's tables
+               listed peaks that do not exist, the graphs drew them three times, and
+               the point count stopped meaning "95 ions measured". The attributions
+               are many-to-one BY CONSTRUCTION — three readings of one peak is the
+               feature, not a defect — so the mapping is the other way round, and
+               only the peaks that WERE matched appear at all.
+
+               A peak gets its key from the BEST reading of itself, the one the
+               sieve ranked first. The other `bestMatches-1` readings are left
+               unkeyed rather than competing for it: a key names THE formula a
+               peak was called, and three keys on one peak would be a claim the
+               ranking does not support. The unkeyed readings are still in the
+               collection, still readable, still ranked by `logProbability`. */
+            const peakList=result.peakList
+            const bestKeyFor=new Map()
+            for(const entry of result.entries??[]){
+                const pointIndex=entry.target?.index
+                if(pointIndex===undefined||pointIndex===null) continue
+                if(!bestKeyFor.has(pointIndex)) bestKeyFor.set(pointIndex,entry.key)
+            }
+            const points=[]
+            if(peakList&&peakList.length){
+                for(let i=0;i<peakList.length;i++){
+                    const mz=peakList.x[i]
+                    /* a mass of zero has no ppm and matches nothing, so it is not a
+                       peak to publish — the crible's own `nearest` refuses it for
+                       the same reason, and the two must agree. */
+                    if(!Number.isFinite(mz)||mz===0) continue
+                    const key=bestKeyFor.get(i)
+                    points.push(key?{mz,key,intensity:peakList.y[i]??0}:{mz,intensity:peakList.y[i]??0})
+                }
+            }
+            collection.setPoints(points)
+            /* the sieve's own diagnostics survive the crossing: a refused adduct
+               or a truncated sieve is a fact about the RUN, not about the
+               collection, and the reader is where a user will look for it. */
+            collection.diagnostics.push(...(result.diagnostics??[]))
+            /* La troncature ne vient plus de ce nœud — il demande `Infinity` au
+               moteur, parce qu'un plafond sur l'ÉNUMÉRATION produirait un préfixe
+               trié par masse, pas une attribution. La branche reste donc
+               inatteignable en pratique, et c'est bien ainsi qu'il en est.
+
+               Elle est conservée parce que le MOTEUR accepte toujours un plafond,
+               pour un appelant qui veut borner unePreview: si un jour quelqu'un
+               reintroduit une borne ici, l'avertissement doit déjà exister, sinon
+               la liste tronquée partirait sans un mot.
+
+               Le repli lit `truncationLimit`, le nombre que la course a réellement
+               utilisé, et non un réglage présent à l'affichage: afficher le
+               réglage courant, c'est accuser une course d'une limite qu'elle n'a
+               jamais eue. */
+            if(result.truncated){
+                collection.diagnostics.push(
+                    `${name}: the sieve was truncated at ${result.truncationLimit??"an unknown number of"} states — the list is a prefix, not the whole space`
+                )
+            }
+            /* The selection is REPORTED, because "how many readings per peak" is
+               the difference between a list of 95 and a list of 285, and the user
+               cannot tell those apart by looking. It says what was KEPT per peak
+               and how many peaks had at least one candidate — if those two differ,
+               some peaks have no explanation inside the window, which is a fact
+               about the spectrum and not a failure. */
+            if(result.keptMatches!==null&&result.keptMatches!==undefined){
+                /* « kept up to N reading(s) per peak » — DISTINCT readings. The
+                   word matters: `bestMatches` bounds the number of DIFFERENT
+                   formulas kept for one peak, and the engine skips a candidate
+                   whose composition is already there. Without that, a peak whose
+                   bricks are dependent could return the same formula three times,
+                   and the user would read one ambiguous formula as three. */
+                collection.diagnostics.push(
+                    `${name}: kept up to ${result.keptMatches} DISTINCT reading(s) per peak — ${result.entries.length} formula(s) for ${result.candidates} peak(s); the other ${(result.pointCount??0)-result.candidates} peak(s) had no formula within ${ppm} ppm`
+                )
+            }
+            collection.attributionCount=result.entries.length
+            collection.visited=result.visited
+            collection.matched=result.matched
+            collection.elapsedMs=result.elapsedMs
+            collection.truncated=result.truncated
+            return collection
+        })
+    }
+
+    /* The public RESOLVE: the table, the plan, then the attribution. */
+    async startResolve(){
+        /* L'ÉTAT « CALCUL », DIFFUSÉ ET NON POSÉ EN SILENCE.
+
+           `this.status="pending"` ne changeait RIEN à l'écran: la couleur vient
+           de l'événement `nodeStatusChanged`, et un nœud qui écrit dans son
+           champ sans diffuser reste peint avec son apparence précédente. À la
+           première resolve le nœud était gris et le devenait à la fin, sans
+           rien indiquer entre les deux; à la RE-resolve il restait VERT pendant
+           tout le calcul — plus trompeur encore, parce que le vert se lisait
+           « c'est fait » alors que le travail venait de commencer.
+
+           Le statut est donc posé par `setStatus`, qui pose et diffuse. */
+        this.setStatus("pending")
+        /* Le readout est repeint tout de suite, AVANT le calcul: il passe au
+           plan courant et annonce la résolution, donc l'utilisateur a quelque
+           chose à lire pendant que ça tourne. */
+        this.renderReadout()
+        await this.table()
+        this.buildPlan()
+        await this.resolveAttributions()
+        this.renderAll()
+        this.origin?.saveSessionSoon?.()
+    }
+    /* The INTERFACE, in the accordion.
+
+       Two text areas (one per list), five number fields, and a readout. That is
+       everything the node exposes, and everything it can: each setting bounds
+       the sieve, and a setting that did not bound the sieve would not belong
+       here. */
+    setupUI(){
+        if(!this.accordion) return
+        const content=this.accordion.DOMelt.content
+        content.replaceChildren()
+        /* "content" sizing, not "viewport": the panel is two text areas and a
+           few lines, so it must be as tall as what it holds. There is no plot
+           here, and a 260 px box around five lines would be mostly empty. */
+        this.accordion.setSizingMode("content")
+        stylize(content,{
+            display:"grid",
+            "grid-template-columns":"minmax(0, 1fr)",
+            padding:"4px",
+            gap:"4px"
+        })
+        this.combiningInput=this.field(content,
+            "Groups to combine (one per line)",
+            this.parameters.combining,
+            {
+                multiline:true,
+                onInput:(value)=>{this.parameters.combining=value},
+                onCommit:(value)=>this.commitLists("combining",value)
+            },
+            "Chemical formulas: CH2, O, NH... each becomes a set of isotopic masses to combine. Click away or press Ctrl+Enter to apply"
+        )
+        this.ionisingInput=this.field(content,
+            "Ionising groups (one per line)",
+            this.parameters.ionising,
+            {
+                multiline:true,
+                onInput:(value)=>{this.parameters.ionising=value},
+                onCommit:(value)=>this.commitLists("ionising",value)
+            },
+            "Adducts: [H+], [Na+], [2+]... each must carry a charge. Click away or press Ctrl+Enter to apply"
+        )
+        /* `field` returns its input, and the numeric ones are KEPT: `syncUI` has to
+           be able to write a restored value back into the field it came from,
+           otherwise the screen shows one setting and the sieve uses another. The
+           two text areas already had a reference; the five numbers did not, which
+           is why a reload moved the sliders on screen only. */
+        this.ratioInput=this.field(content,"Isotopic window (ratio, 0 = keep all)",this.parameters.ratio,{
+            tag:"number",
+            onCommit:(raw)=>this.commitNumber("ratio",raw,0,1)
+        },"Relative probability threshold, per group, as in the legacy code. 0 keeps every isotopic mass")
+        this.chargeMinInput=this.field(content,"Charge min",this.parameters.chargeMin,{
+            tag:"number",
+            onCommit:(raw)=>this.commitNumber("chargeMin",raw,0,64)
+        },"Lowest |charge| an attribution may carry")
+        this.chargeMaxInput=this.field(content,"Charge max",this.parameters.chargeMax,{
+            tag:"number",
+            onCommit:(raw)=>this.commitNumber("chargeMax",raw,0,64)
+        },"Highest |charge| an attribution may carry")
+        /* L'ANCIEN CHAMP « Attributions per spectrum » ÉTAIT MORT.
+
+           Il écrivait `parameters.limit`, un réglage que le renommage a retiré de
+           la lecture — le champ s'affichait, acceptait la frappe, et ne
+           produisait aucun effet: le pire genre de contrôle, parce qu'il a
+           l'air de faire son travail. Personne ne l'aurait signalé de lui-même,
+           puisque changer la valeur ne changeait rien — c'est exactement le
+           défaut qu'on ne voit pas.
+
+           Il est remplacé par ce qui existe réellement: combien de lectures
+           GARDER par pic. Le plafond était de 1 à 1e6 parce qu'il comptait des
+           états de crible; ici 1 à 20 suffit, parce qu'au-delà le tableau
+           devient illisible de toute façon. Une borne honnête vaut mieux qu'une
+           borne copier-coller. */
+        this.bestMatchesInput=this.field(content,"Best matches to keep (per peak)",this.parameters.bestMatches,{
+            tag:"number",
+            onCommit:(raw)=>this.commitNumber("bestMatches",raw,1,20)
+        },"How many readings of EACH PEAK to keep, ranked by mass error. The sieve is walked whole, so this never truncates the search — it only bounds the list you read")
+        this.ppmInput=this.field(content,"Match window (ppm)",this.parameters.ppm,{
+            tag:"number",
+            onCommit:(raw)=>this.commitNumber("ppm",raw,0,10000)
+        },"A formula further off than this is not proposed at all; inside it, the measured offset is reported")
+        this.readout=CE("div",{style:{fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap"}},[])
+        content.appendChild(this.readout)
+    }
+
+    /* ONE field, with its caption. A function, because there are seven of them
+       and a function is the only way to give them all the same properties and
+       the same keyboard handling without writing the same line seven times. */
+    field(content,label,value,{multiline,tag,onCommit,onInput}={},help=""){
+        const box=CE("div",{className:"an-field"},[])
+        const caption=CE("div",{className:"an-caption"},[label])
+        const input=CE(multiline?"textarea":"input",{
+            ...(multiline?{}:{type:tag??"text"}),
+            value:String(value),
+            spellcheck:false,
+            title:help
+        },[])
+        stylize(caption,{fontSize:"0.8em",opacity:"0.8"})
+        stylize(input,{
+            width:"100%",boxSizing:"border-box",fontSize:"0.9em",
+            padding:"3px 5px",borderRadius:"3px",
+            fontFamily:multiline?"monospace":"inherit",
+            ...(multiline?{rows:3,resize:"vertical"}:{})
+        })
+        if(multiline){
+            /* ENTER in a text area inserts a NEWLINE, and that is exactly what
+               we want: a list of groups is typed line by line. It is the one key
+               that must behave the opposite of the others, and there is
+               therefore NOTHING to do to it — no listener for that key.
+
+               BUT THEN, HOW IS A LIST COMMITTED? If no key does it, the list is
+               never applied: you type it, you click elsewhere, and the sieve keeps
+               running on the old one. A setting you cannot commit is not a
+               setting, and the symptom is the worst kind — a field that accepts
+               the whole list, looks correct, and does nothing.
+
+               BLUR commits. It is the only event that says "I have finished
+               writing" without imposing a key, and — the reason it is the right
+               choice here — the only one that does not fire in the middle of
+               typing. Ctrl+Enter is offered beside it for the same reason, so
+               the list can be validated without leaving the field.
+
+               Both are wired ONLY when the caller passes `onCommit`, so a text
+               area that is just a display stays inert. */
+            input.addEventListener("input",()=>onInput?.(input.value))
+            if(onCommit){
+                input.addEventListener("blur",()=>onCommit(input.value))
+                input.addEventListener("keydown",(event)=>{
+                    if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){
+                        event.preventDefault()
+                        onCommit(input.value)
+                    }
+                })
+            }
+        }else if(onCommit){
+            /* ENTER commits: it applies the setting and re-runs the resolve.
+               Every other key does nothing, deliberately — the sieve can produce
+               millions of states, so triggering it on each keystroke would be
+               ruinous. */
+            input.addEventListener("keydown",(event)=>{
+                if(event.key==="Enter"){
+                    event.preventDefault()
+                    onCommit(input.value)
+                }
+            })
+        }
+        box.append(caption,input)
+        content.appendChild(box)
+        return input
+    }
+
+    /* A numeric setting, CHECKED before it is stored, and then APPLIED.
+
+       Le contrôle ne s'arrêtait pas au stockage: Enter écrivait la valeur,
+      `renderReadout` repeignait le texte, et rien d'autre. Le nœud restait
+       VERT — donc « c'est fait » — alors que ses résultats dataient du réglage
+       précédent, et il ne se relisait pas. Changer `ratio` n'avait donc aucun
+       effet visible tant qu'on ne lançait pas une resolve à la main: le réglage
+       affichait une valeur, le crible en calculait une autre, et rien ne
+       signalait l'écart. C'est le pire des deux mondes, exactement celui que le
+       commentaire de `syncUI` condemnait.
+
+       LA SUITE EST CELLE DE `FKMDNode`, parce que c'est la convention de la
+       maison: Enter commite, et commiter c'est résoudre PUIS descendre. Ni le
+       reste du graphe, ni les parents — leurs sorties sont déjà en mémoire et
+       les refaire serait du travail que personne n'a demandé.
+
+       `floating` D'ABORD, et l'ordre compte. Le nœud passe en « sale » AVANT de
+       résoudre: pendant le calcul il doit avoir l'air de ne plus être à jour,
+       sinon on rejoue le défaut qu'on vient de corriger. */
+    commitNumber(name,raw,low,high){
+        const value=Number(raw)
+        if(!Number.isFinite(value)){
+            this.renderReadout()
+            return
+        }
+        const bounded=Math.min(high,Math.max(low,value))
+        /* Rien n'a changé: ne pas relancer. Le cas est réel — taper 1 puis 1
+           dans un champ, ou valider la valeur déjà écrite — et relancer quand
+           rien n'a bougé ferait clignoter le nœud pour un résultat identique. */
+        if(bounded===this.parameters[name]){
+            this.renderReadout()
+            return
+        }
+        this.parameters[name]=bounded
+        if(this[fieldFor(name)]) this[fieldFor(name)].value=String(bounded)
+        this.setStatus("floating")
+        this.renderReadout()
+        this.startResolve().then(()=>this.resolveChildren())
+    }
+    /* Le champ d'un réglage, pour que la valeur BORNÉE soit réécrite à l'écran.
+
+       Sans cela, taper 500 dans un champ borné à 20 affichait 500 et calculait
+       20: deux nombres différents pour un seul réglage, et c'est le second
+       qui sert. Le nom du champ est dérivé du nom du paramètre, donc les deux
+       listes ne peuvent pas diverger sur une règle écrite deux fois. */
+    fieldFor(name){
+        const camel=name.charAt(0).toUpperCase()+name.slice(1)
+        return this[`${camel}Input`]??null
+    }
+    /* Les DEUX LISTES, commitées ensemble, et pour la même raison que les
+       nombres: sans re-résolve, le champ montre une liste et le crible en
+       calcule une autre.
+
+       La comparaison se fait sur le texte ÉCRIT, pas sur la liste lue: deux
+       listes différentes peuvent donner le même plan — `"CH2 "` et `"CH2"` se
+       lisent pareil — et relancer sur une différence qui n'en est pas une
+       ferait clignoter le nœud sans rien changer. */
+    commitLists(name,text){
+        if(text===this.parameters[name]){
+            this.renderReadout()
+            return
+        }
+        this.parameters[name]=text
+        this.setStatus("floating")
+        this.renderReadout()
+        this.startResolve().then(()=>this.resolveChildren())
+    }
+    /* THE READOUT: what the node understood, and what it found.
+
+       The first lines say what the plan IS — how many bricks, how many adducts,
+       which windows — because a silent sieve is a sieve nobody can debug. The
+       next ones say what it PRODUCED, and the diagnostics are there so that a
+       refused adduct does not vanish without anyone learning why. */
+    renderReadout(){
+        if(!this.readout) return
+        const lines=[]
+        if(this.origin?.tableError&&!this.loadedTable){
+            lines.push(`table unavailable: ${this.origin.tableError}`)
+        }else if(this.plan){
+            lines.push(
+                `${this.plan.combinables.length} combinable masses, ${this.plan.ionisers.length} adducts`,
+                `ratio ${this.plan.ratio}, charge |z| in [${this.plan.chargeMin}, ${this.plan.chargeMax}]`
+            )
+        }else{
+            lines.push("no plan yet")
+        }
+        for(const line of this.diagnostics??[]) lines.push(line)
+        for(const line of this.kernelErrors??[]) lines.push(`kernel: ${line}`)
+        if(this.skippedInputs) lines.push(`${this.skippedInputs} input(s) skipped: not an XY wave`)
+        /* L'ATTRIBUTION, une ligne par entrée. Le nœud produit « une liste
+           d'attributions par entrée », donc le compteur est PAR ENTRÉE et jamais
+           un total: un total laisserait croire qu'un seul spectre a été traité
+           alors qu'il y en a trois. */
+        for(const [index,result] of (this.attributions??[]).entries()){
+            const parts=[`${result.entries.length} readings`]
+            /* « N sur M dans la fenêtre » n'a plus de sens depuis la sélection:
+               le seuil en ppm filtre AVANT le classement, donc tout ce qui est
+               publié EST dans la fenêtre, et le dire répéterait la même chose
+               deux fois. Ce qui est utile, c'est l'autre côté: combien de pics
+               sont couverts, et combien n'ont rien reçu.
+
+               C'est le seul endroit où un pic sans explication se voit. Il ne se
+               voit pas dans la liste — une absence ne s'affiche pas toute seule —
+               alors que c'est précisément l'information qui manque quand on
+               cherche pourquoi un pic reste inexpliqué. */
+            if(result.keptMatches!==null&&result.keptMatches!==undefined){
+                parts.push(`up to ${result.keptMatches}/peak`)
+                const covered=result.candidates??0
+                const total=result.pointCount??covered
+                if(covered<total) parts.push(`${total-covered} peak(s) unexplained in ${this.parameters.ppm} ppm`)
+            }
+            if(result.truncated) parts.push("TRUNCATED — this is a prefix, not the whole space")
+            lines.push(`input ${index+1}: ${parts.join(", ")}`)
+        }
+        this.readout.textContent=lines.join("\n")
+    }
+
+    renderAll(){
+        this.renderReadout()
+    }
+
+    /* The STATE, for a session.
+
+       The TWO LISTS as text and the FIVE settings. Nothing else: the plan, the
+       attributions and the table are all DERIVED, so keeping them would mean a
+       reload showing results computed from settings that may have changed since.
+       Only the INTENTIONS travel. */
+    serializeState(){
+        return {
+            combining:this.parameters.combining,
+            ionising:this.parameters.ionising,
+            ratio:this.parameters.ratio,
+            chargeMin:this.parameters.chargeMin,
+            chargeMax:this.parameters.chargeMax,
+            bestMatches:this.parameters.bestMatches,
+            ppm:this.parameters.ppm
+        }
+    }
+
+    restoreState(state){
+        if(!state) return
+        for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm"]){
+            if(state[name]!==undefined&&state[name]!==null){
+                this.parameters[name]=state[name]
+            }
+        }
+        /* A session saved before the rename carries `limit`, and the two are not
+           the same setting: `limit` counted enumerated states, `bestMatches`
+           counts readings per peak. Copying the number across would be a LIE —
+           `limit:2000` restored as `bestMatches:2000` would ask for two thousand
+           readings of every single peak, which is not what that session meant.
+
+           So the old value is dropped, not translated, and the new default
+           applies. The user loses a number they can hardly have meant, and gets a
+           setting that behaves the way its name says. Nothing is guessed. */
+        this.syncUI()
+    }
+
+    /* The fields follow the restored state. Without this, a reload would show
+       settings different from the ones APPLIED, and the sieve would compute
+       with the first while the screen shows the second — the worst of the two,
+       because the reader sees one value and gets another. */
+    syncUI(){
+        if(this.combiningInput) this.combiningInput.value=this.parameters.combining
+        if(this.ionisingInput) this.ionisingInput.value=this.parameters.ionising
+        /* Les CHAMPS NUMÉRIQUES AUSSI, et c'est la moitié du panneau.
+
+           La fonction ne les touchait pas, alors que son commentaire affirmait le
+           contraire: après un rechargement, les deux listes retrouvaient leur
+           contenu et les cinq nombres restaient ceux de la CONSTRUCTEUR. Le
+           crible tournait donc avec les réglages restaurés pendant que
+           l'écran affichait les valeurs par défaut — un nœud dont l'affichage
+           et le calcul sont réglés différemment, sans rien qui le dise.
+
+           On écrit dans chaque champ la valeur du paramètre, jamais
+           l'inverse: un champ vide ou illisible ne doit pas effacer un réglage
+           restauré. */
+        const numeric={
+            ratioInput:"ratio",
+            chargeMinInput:"chargeMin",
+            chargeMaxInput:"chargeMax",
+            bestMatchesInput:"bestMatches",
+            ppmInput:"ppm"
+        }
+        for(const [field,key] of Object.entries(numeric)){
+            const input=this[field]
+            if(input) input.value=this.parameters[key]
+        }
+    }
+
+    registered(e){
+        if(e.detail.msg.caster!==this||this.accordion) return
+        super.registered(e)
+        this.setupUI()
+        /* NO resolve is triggered here: the node may have no input yet, and a
+           resolve that finds no wave would publish an empty output. The
+           settings are restored — the reader sees their values — and the
+           attributions come on the first resolve, once something is connected.
+           That is FKMDNode's shape. */
+        this.syncUI()
+        this.renderReadout()
+    }
+}
+
 
 class PeakPickingNode extends NodeWithAccordion{
 
@@ -3714,7 +4609,7 @@ class VirtualRowList{
     //rows drawn beyond the viewport, top and bottom. A screenful is plenty on
     //a fast wheel and not enough on a slow drag; 8 rows is the compromise.
     static OVERSCAN=8
-    constructor({rowHeight,onRow,onActivate=null}={}){
+    constructor({rowHeight,onRow,onActivate=null,scrollElement=null}={}){
         this.rowHeight=rowHeight
         this.onRow=onRow
         this.onActivate=onActivate
@@ -3727,8 +4622,27 @@ class VirtualRowList{
         this.layer=CE("div",{className:"fc-layer"},[])
         this.element=CE("div",{className:"fc-viewport"},[this.spacer,this.layer])
         this.spacer.addEventListener("click",()=>{})
+        /* OÙ EST LE DÉFILEMENT, ET C'EST LA MOITIÉ DU BUG.
+
+           `this.element` (`.fc-viewport`) est `position:absolute; inset:0` DANS
+           `.fc-viewport-wrap`, et c'est le WRAP qui porte `overflow:auto`. Le
+           wrap est donc le conteneur qui défile, et `this.element` non: son
+           `scrollTop` vaut 0 en permanence.
+
+           Lire la position sur le mauvais élément ne produit pas une erreur, ça
+           produit une liste VIDE: `first` reste à 0, donc les lignes peintes
+           restent celles du début, positionnées en `translateY(0…)` — et le
+           wrap les fait défiler vers le haut en sortant du champ. On voit donc
+           quelques lignes, puis du vide, puis plus rien. C'est exactement le
+           symptôme décrit, et il n'apparaît qu'au défilement: au premier rendu
+           la position 0 est la bonne, donc la liste semble juste.
+
+           Le défilement est donc demandé à l'élément qui le porte, et la hauteur
+           lue sur LE MÊME: en mesurer un et en faire défiler un autre, la
+           fenêtre arriverait décalée d'un plein écran. */
+        this.scroll=scrollElement??this.element
         this.observer=new ResizeObserver(()=>this.paint())
-        this.observer.observe(this.element)
+        this.observer.observe(this.scroll)
     }
     setRows(rows){
         this.rows=rows
@@ -3763,12 +4677,12 @@ class VirtualRowList{
        because the list may hold a hundred thousand rows and a linear scan on
        every scroll frame is what virtualization was supposed to remove. */
     visibleRange(){
-        const scrollTop=this.element.scrollTop
+        const scrollTop=this.scroll.scrollTop
         /* One screenful when the box has not been laid out yet. A zero here
            would make `needed` zero, which hides every pooled row — and the list
            would then be blank for a reason that has nothing to do with how many
            formulas it holds. */
-        const height=this.element.clientHeight||this.rowHeight*8
+        const height=this.scroll.clientHeight||this.rowHeight*8
         const first=Math.max(0,Math.floor(scrollTop/this.rowHeight)-VirtualRowList.OVERSCAN)
         const last=Math.min(this.rows.length,Math.ceil((scrollTop+height)/this.rowHeight)+VirtualRowList.OVERSCAN)
         return {first,last}
@@ -3805,11 +4719,14 @@ class VirtualRowList{
         if(!this.rows.length) return
         const clamped=Math.max(0,Math.min(this.rows.length-1,index))
         const top=clamped*this.rowHeight
-        const height=this.element.clientHeight||this.rowHeight
-        if(top<this.element.scrollTop){
-            this.element.scrollTop=top
-        }else if(top+this.rowHeight>this.element.scrollTop+height){
-            this.element.scrollTop=top+this.rowHeight-height
+        /* Même élément que `visibleRange`, pour la même raison: écrire le
+           défilement sur un conteneur qui ne défile pas ne fait rien du tout, et
+           les flèches du clavier semblaient ne pas marcher. */
+        const height=this.scroll.clientHeight||this.rowHeight
+        if(top<this.scroll.scrollTop){
+            this.scroll.scrollTop=top
+        }else if(top+this.rowHeight>this.scroll.scrollTop+height){
+            this.scroll.scrollTop=top+this.rowHeight-height
         }
         this.paint()
     }
@@ -3919,13 +4836,36 @@ function traceColor(index){
 function isDeleteKey(event){
     return event.key==="Delete"||event.key==="Backspace"
 }
-//The orders the list accepts. Each one returns 0 for "equal": the caller adds
-//the m/z and the key as tie-breakers, because a list whose order changes
-//between two identical paints is a list that moves the row under the cursor.
+/* Les ordres que la liste accepte. Chacun renvoie 0 pour « égal » : l'appelant
+   ajoute le m/z puis la clé comme départage, parce qu'une liste dont l'ordre
+   bouge entre deux peintures identiques est une liste qui déplace la ligne sous
+   le curseur.
+
+   TOUTE COMPARAISON NUMÉRIQUE PASSE PAR `ordered`, et c'est nécessaire : sans
+   elle, deux valeurs absentes produisent `Infinity - Infinity`, c'est-à-dire
+   `NaN`. `NaN` est FAUX, donc le `||` du départage le rattrapait et le tri
+   « fonctionnait » — par un accident de représentation, pas par une règle. Le
+   jour où le départage aurait été un `?:` au lieu d'un `||`, l'ordre aurait
+   simplement été indéfini, sans lever la moindre erreur. Un `NaN` dans un
+   comparateur ne se voit jamais: `Array.sort` le propage en silence. */
+const ordered=(a,b)=>{
+    const left=Number.isFinite(a)?a:null
+    const right=Number.isFinite(b)?b:null
+    /* Une valeur ABSENTE n'est pas « égale » à une autre valeur absente: les
+       deux sont inconnues, et le départage doit encore décider. On leur donne
+       donc +∞ — « le plus loin possible » — et le départage tranche ensuite sur
+       le m/z et la clé, qui, eux, existent toujours. */
+    const l=left===null?Infinity:left
+    const r=right===null?Infinity:right
+    return l-r||0
+}
 const FORMULA_SORTS={
-    mz:{label:"m/z",compare:(a,b)=>a.mz-b.mz},
-    intensity:{label:"intensity",compare:(a,b)=>(b.intensity??-1)-(a.intensity??-1)},
-    error:{label:"error",compare:(a,b)=>Math.abs(a.errorPpm??Infinity)-Math.abs(b.errorPpm??Infinity)},
+    mz:{label:"m/z",compare:(a,b)=>ordered(a.mz,b.mz)},
+    /* Décroissant: le plus intense d'abord, parce qu'on cherche le signal
+       dominant. Une ligne sans intensité mesurée part donc en FIN, jamais en
+       tête — un `?? 0` la ferait passer devant toutes les autres. */
+    intensity:{label:"intensity",compare:(a,b)=>ordered(b.intensity,a.intensity)},
+    error:{label:"error",compare:(a,b)=>ordered(Math.abs(a.errorPpm),Math.abs(b.errorPpm))},
     notation:{label:"notation",compare:(a,b)=>(a.notation<b.notation?-1:a.notation>b.notation?1:0)}
 }
 /* THE COMPARATOR, as a function — never as a table entry.
@@ -3944,10 +4884,32 @@ const FORMULA_SORTS={
    An UNKNOWN order falls back to m/z instead of throwing: the order is a
    display choice stored in a session file, and a file this build did not write
    must not be able to blank the list. */
+/* L'ordre des clés, et RIEN D'AUTRE.
+
+   Isolé du comparateur parce qu'il ne sert qu'à lui, et parce qu'il mérite son
+   propre commentaire: c'est la fonction la plus simple du fichier et celle dont
+   l'erreur serait la plus discrète. Renvoie 0 sur l'égalité, sans quoi le
+   comparateur n'est plus réflexif. */
+const byKeyOrder=(a,b)=>{
+    const left=a??""
+    const right=b??""
+    if(left===right) return 0
+    return left<right?-1:1
+}
 function formulaComparator(name){
     const sort=Object.prototype.hasOwnProperty.call(FORMULA_SORTS,name)?FORMULA_SORTS[name]:null
     const compare=sort?.compare??FORMULA_SORTS.mz.compare
-    return (a,b)=>compare(a,b)||a.mz-b.mz||(a.key<b.key?-1:1)
+    /* Le départage final renvoyait 1 SUR L'ÉGALITÉ: `(a.key<b.key?-1:1)`
+       répond 1 même quand les deux clés sont identiques. Un comparateur se
+       doit d'être réflexif — `cmp(a,a) === 0` — sinon l'implémentation de tri
+       n'a plus d'ordre stable à suivre et peut rendre deux résultats
+       différents pour le MÊME tableau, selon la méthode qu'elle choisit.
+
+       Ici, deux lignes ne devraient jamais partager une clé, puisque `byKey`
+       garantit l'unicité dans la collection. C'est donc une faute qui ne
+       pouvait pas se montrer — mais elle est fausse, et une fonction fausse
+       dans un comparateur se révèle dès qu'on trie autre chose. */
+    return (a,b)=>compare(a,b)||ordered(a.mz,b.mz)||byKeyOrder(a.key,b.key)
 }
 /* -------------------------------------------------------------------------
    FormulaCollectionNode — a READER for collections of Formula.
@@ -4014,13 +4976,19 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
            why — a control that is visibly not applicable teaches, and one that
            silently does nothing does not. */
         this.addRow=CE("div",{className:"fc-addrow-wrap"},[])
+        /* Le wrap est créé AVANT la liste, parce que c'est LUI qui défile et que
+           la virtualisation a besoin de le savoir dès sa construction. Fabriquer
+           la liste d'abord imposerait de lui retrouver son parent après coup —
+           et c'est exactement ce que la version d'avant faisait implicitement, en
+           supposant que `.fc-viewport` était le conteneur: il ne l'est pas. */
+        const viewport=CE("div",{className:"fc-viewport-wrap"},[])
         this.list=new VirtualRowList({
             rowHeight:FormulaCollectionNode.ROW_HEIGHT,
-            onRow:(element,row)=>this.drawRow(element,row)
+            onRow:(element,row)=>this.drawRow(element,row),
+            scrollElement:viewport
         })
-        const viewport=CE("div",{className:"fc-viewport-wrap"},[])
         viewport.appendChild(this.list.element)
-        viewport.addEventListener("scroll",()=>this.list?.paint())
+        viewport.addEventListener("scroll",()=>this.list?.paint(),{passive:true})
         /* The band is focusable so the arrow keys have somewhere to arrive:
            without a tabindex the browser sends them to the next control, and a
            list of formulas is not readable with the mouse alone. */
@@ -4910,8 +5878,23 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         //ONE input, and it is multiplexed: Flow.parentSynapse gathers every
         //link landing on that single anchor into one Map, so a hundred
         //collections arrive on one socket instead of a hundred sockets.
-        //ONE output: what the ticked collections add up to.
-        super(title,[[]],[[]],origin,destinationFlow,position)
+        /* TWO outputs now, and they are TWINS: the same collections, the same
+           entries, the same order of collections — read two ways.
+
+             0  the collections themselves, as data
+             1  the same collections as XY waves, one per collection
+
+           Why the second one: a collection is an object graph. Nothing that reads
+           spectra can take it — not a plot, not the trimmer, not the attribution
+           node. So the numbers the list is showing could not be LOOKED at, only
+           read. Wiring output 1 into a plot makes the list checkable: what the
+           panel claims, and what the data says, side by side.
+
+           A second anchor, not a second list on the first: the collections and
+           the waves are different kinds of thing and a consumer should say which
+           it wants. Index 0 is untouched, so every link a session already has
+           keeps its socket. */
+        super(title,[[]],[[],[]],origin,destinationFlow,position)
         this.status="floating"
         /* formula = one row per measurable formula.
            stoichiometry = one row per MOLECULE, the isotopologues folded under
@@ -4970,6 +5953,14 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]){
             outputAnchors[0].innerHTML='<title>Output: the collections ticked for output</title>'
+        }
+        if(outputAnchors[1]){
+            /* The second anchor, and what it says matters: a Wave is NOT a
+               measurement. Its intensity is the one the collection's matching
+               gave the formula — often zero, because nothing was matched on it.
+               Saying "masses/intensities" without that would let it be read as a
+               spectrum, and it is the opposite: it is the list, in numbers. */
+            outputAnchors[1].innerHTML='<title>Output: one XY wave per ticked collection — m/z against the intensity its match gave it. Unmatched formulas are at 0, so a flat row means "no match", not "no signal"</title>'
         }
     }
     registered(e){
@@ -5047,10 +6038,41 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                    enumerated their parents differently. */
                 notation:group.molecule,
                 mz:group.entries.reduce((n,e)=>n+e.mz,0)/group.entries.length,
-                count:group.entries.length
+                count:group.entries.length,
+                /* LES DEUX CHAMPS DE TRI D'UNE MOLÉCULE, et ils ne se moyennent
+                   pas de la même façon — délibérément.
+
+                   L'INTENSITÉ S'ADDITIONNE. C'est une quantité de signal: une
+                   molécule dont dix isotopologues sont mesurés porte dix fois le
+                   signal, et c'est cette ligne-là qu'on cherche quand on trie par
+                   intensité. Une moyenne répondrait « chaque isotopologue
+                   contribue également », ce qui est une autre question et pas
+                   celle qu'on pose.
+
+                   L'ERREUR, ELLE, N'EXISTE PAS POUR UN GROUPE: une molécule n'a
+                   pas été mesurée, ses feuilles l'ont été. Lui donner une moyenne
+                   fabriquerait un nombre qui ne correspond à rien de mesuré, et
+                   le placerait à côté des vraies erreurs. Elle vaut donc
+                   `Infinity`, ce qui la met en FIN de liste par défaut — une
+                   molécule ne se glisse jamais devant une feuille qu'elle ne peut
+                   pas concurrencer. */
+                intensity:group.entries.reduce((n,e)=>n+(Number.isFinite(e.intensity)?e.intensity:0),0),
+                errorPpm:Infinity
             }))
         }else{
-            rows=entries.map(entry=>({kind:"formula",entry,key:entry.key,notation:entry.notation,mz:entry.mz}))
+            rows=entries.map(entry=>({
+                kind:"formula",entry,key:entry.key,notation:entry.notation,mz:entry.mz,
+                /* Les deux champs que le comparateur LIT, posés à plat sur la
+                   ligne. Ils vivaient dans `entry`, et le comparateur les
+                   cherchait sur la ligne: il y trouvait `undefined` aux deux
+                   endroits, donc `intensity` et `error` renvoyaient 0 pour
+                   toutes les paires et retombaient sur le m/z. Choisir « erreur »
+                   dans le menu ne changeait donc RIEN à l'ordre — sans lever la
+                   moindre exception, ce qui est la pire façon de ne pas
+                   fonctionner. */
+                intensity:entry.intensity,
+                errorPpm:entry.errorPpm
+            }))
         }
         if(filter){
             rows=rows.filter(row=>row.notation.toLowerCase().includes(filter)
@@ -5213,32 +6235,88 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
        wants the chemistry re-parses `key` against the same table (it never
        abbreviates, so it round-trips exactly), and a session that stored live
        formulas would store a periodic table along with each of them. */
+    /* LES DEUX SORTIES, ET ELLES NAISSENT ENSEMBLE.
+
+       Une boucle, deux représentations. C'est la seule façon d'éviter que les
+       deux sorties divergent — et diverger ici ne serait pas spectaculaire: on
+       verrait une collection de 240 formules et une vague de 238 points, sans
+       qu'aucune des deux ne soit fausse. C'est le genre d'écart qui se cherche
+       une demi-journée. En les construisant dans le même passage, il n'y a pas
+       d'écart possible.
+
+       CE QUE LA VAGUE EST, ET CE QU'ELLE N'EST PAS. Ce n'est PAS une mesure:
+       c'est la liste, en nombres. L'abscisse est le m/z calculé de la formule —
+       jamais la masse d'un pic mesuré — et l'ordonnée est l'intensité que
+       l'appariement de la collection a donnée à cette formule.
+
+       UNE FORMULE SANS APPARIEMENT VA À ZÉRO, ET ELLE Y VAIT. Elle est
+       retirée, la collection perdrait une ligne sans que rien ne le dise, et la
+       vague compterait moins de points que la sortie n°1 n'a de formules. Zéro
+       est une affirmation — « rien n'a été mesuré là » — et elle est vraie,
+       alors qu'une absence serait un silence. Le décompte de ces lignes part
+       dans les métadonnées pour qu'on puisse les compter.
+
+       LE m/z EST TRIÉ CROISSANT, et c'est la seule chose que la vague réordonne.
+       Une onde qu'un nœud à spectre consomme doit être croissante en masse: le
+       trimmer, le traceur et l'attribution cherchent par dichotomie, et une
+       entrée non triée donne des résultats faux SANS lever la seule erreur. La
+       sortie n°1 garde l'ordre de la collection — une liste de formules n'a pas
+       d'ordre, et le changer ici n'aurait aucun bénéfice. */
     publishOutput(){
         const published=[]
+        const waves=[]
         for(const collection of this.collections){
             if(!this.collectionState(collection.name).inOutput) continue
-            published.push({
-                name:collection.name,
-                formulas:collection.entries.map(entry=>({
-                    key:entry.key,
-                    notation:entry.notation,
-                    mz:entry.mz,
-                    mass:entry.mass,
-                    charge:entry.charge,
-                    molecule:entry.molecule,
-                    errorPpm:entry.errorPpm,
-                    intensity:entry.intensity,
-                    note:entry.note,
-                    targets:entry.targets.map(t=>({
-                        mz:t.mz,
-                        intensity:t.intensity,
-                        errorPpm:t.errorPpm,
-                        cost:Number.isFinite(t.cost)?t.cost:null
-                    }))
+            const formulas=collection.entries.map(entry=>({
+                key:entry.key,
+                notation:entry.notation,
+                mz:entry.mz,
+                mass:entry.mass,
+                charge:entry.charge,
+                molecule:entry.molecule,
+                errorPpm:entry.errorPpm,
+                intensity:entry.intensity,
+                note:entry.note,
+                targets:entry.targets.map(t=>({
+                    mz:t.mz,
+                    intensity:t.intensity,
+                    errorPpm:t.errorPpm,
+                    cost:Number.isFinite(t.cost)?t.cost:null
                 }))
-            })
+            }))
+            published.push({name:collection.name,formulas})
+
+            /* UN m/z INFINI OU ABSENT SORT DE LA VAGUE, et il est compté. Un NaN
+               dans une onde ne se voit pas: le tracé l'ignore, une dichotomie
+               renvoie n'importe quoi, et le nœud en aval perd un point sans
+               jamais le dire. On l'écarte donc — mais on le DIT, dans les
+               métadonnées, parce qu'un point perdu en silence est exactement le
+               défaut qu'on est en train de corriger partout ailleurs. */
+            const usable=formulas.filter(f=>Number.isFinite(f.mz)&&f.mz>0)
+            const dropped=formulas.length-usable.length
+            const ordered=[...usable].sort((a,b)=>a.mz-b.mz)
+            const x=new Float64Array(ordered.length)
+            const y=new Float64Array(ordered.length)
+            let unattributed=0
+            for(let i=0;i<ordered.length;i++){
+                x[i]=ordered[i].mz
+                const intensity=Number.isFinite(ordered[i].intensity)?ordered[i].intensity:0
+                if(!Number.isFinite(ordered[i].intensity)) unattributed++
+                y[i]=intensity
+            }
+            waves.push(Wave.fromCoordinates(x,y,{
+                title:`${collection.name} (m/z, intensity)`,
+                collection:collection.name,
+                /* the position of the same collection in output 0, so a consumer
+                   holding both can pair them without guessing on the name */
+                collectionIndex:published.length-1,
+                formulas:formulas.length,
+                unmatched:unattributed,
+                dropped
+            },["mz","intensity"]))
         }
         this.outputs[0]=published
+        this.outputs[1]=waves
     }
     async startResolve(){
         this.status="pending"
@@ -5383,14 +6461,40 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
            node. Anything else is NAMED in the diagnostics rather than dropped in
            silence: a collection the user cannot see is one they will spend an
            hour looking for. */
+        /* ADOPTER, quand la collection vient d'un autre nœud.
+
+           Le producteur a DÉJÀ fabriqué ses entrées — clé, notation, masse, m/z,
+           racine, famille de molécule. Les rebâtir ici recalculait tout ça, à
+           13 µs la formule, pour un objet que l'autre venait de fabriquer. Sur
+           17 689 formules c'était la moitié du temps du chemin complet.
+
+           On adopte donc les entrées, en copie superficielle: le lecteur garde
+           les siennes parce qu'il y écrit sa note, mais il ne recalcule rien.
+           `buildCollection` reste le chemin des quatre autres formes d'entrée —
+           une chaîne, un tableau, un objet nu — où il n'y a rien à adopter.
+
+           Et la fenêtre ppm N'EST PLUS ÉCRASÉE. Elle l'était, et c'était un
+           défaut: le lecteur remplaçait silencieusement les 10 ppm du nœud
+           d'attribution par son propre 5, sans champ pour le dire, donc sans
+           moyen de les aligner. Une collection qui arrive apprise garde la
+           fenêtre qui a décidé de son contenu — c'est la seule qui ait le
+           droit de la fixer. */
         if(raw instanceof FormulaCollection){
-            const points=raw.points??[]
-            const collection=this.buildCollection(
-                raw.name||parentName,raw.formulas,points,diagnostics)
-            //the class may have been built with a different ppm window, and the
-            //one on screen is the one the user can change
-            if(collection) collection.ppm=this.parameters.ppmWindow
-            return collection
+            const state=this.collectionState(raw.name||parentName)
+            const adopted=new FormulaCollection({
+                name:raw.name||parentName,
+                table:this.loadedTable,
+                ppm:raw.ppm
+            })
+            adopted.adoptAll(raw.entries,{
+                notes:state.notes,
+                points:raw.points??[]
+            })
+            adopted.local=false
+            adopted.state=state
+            diagnostics.push(...adopted.diagnostics)
+            adopted.diagnostics=[]
+            return adopted
         }
         if(raw instanceof Formula||raw instanceof Stoichiometry){
             return this.buildCollection(parentName,[raw],[],diagnostics)
@@ -5427,7 +6531,37 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             table:this.loadedTable,
             ppm:this.parameters.ppmWindow
         })
-        for(const formula of formulas??[]) collection.add(formula)
+        /* `addAll`, PAS une boucle de `add`. Les deux chemins produisent exactement
+           les mêmes entrées — `match()` est idempotent, et les doublons sont
+           écartés par `byKey` dans les deux cas — mais pas au même coût.
+
+           `add` appelle `match()` à CHAQUE ajout, et `match()` retrie toutes les
+           entrées puis réapplique tous les points: ajouter N formules revient donc
+           à apparier N fois un ensemble qui grandit, soit O(N² log N). Mesuré sur
+           cette fonction, sur des formules réelles:
+
+               N=200    boucle  23 ms   addAll   6 ms
+               N=800    boucle  86 ms   addAll  18 ms
+               N=3200   boucle 1368 ms   addAll  54 ms
+
+           Le rapport grandit avec N, parce qu'il n'y a rien de linéaire là-dedans.
+           Un lecteur branché sur une grosse collection — un peak list large, un
+           ratio isotopique bas, une fenêtre de masse généreuse — passe donc de
+           « instantané » à « le navigateur abandonne » sans qu'aucune ligne
+           n'ait l'air fausse: chaque appel individuellement est correct, c'est
+           leur NOMBRE qui est le problème.
+
+           C'est le même défaut que celui du producteur, corrigé du même côté :
+           l'appariement se fait une fois, à la fin, sur l'ensemble terminé. */
+        collection.addAll((formulas??[]).map(formula=>({
+            formula,
+            /* Le TEXTE, parce que `addAll` refuse une formule sans source: une
+               formule qui porte un adduit ne se relit pas depuis sa clé, et la
+               source est ce qui rend le round-trip exact. `String(formula)` est
+               cette notation — celle que `add` aurait reconstruite en interne
+               depuis l'objet, donc aucun changement de contenu. */
+            sourceText:String(formula)
+        })))
         collection.setPoints(points??[])
         for(const entry of collection.entries) entry.note=state.notes[entry.key]??""
         //`local` is the one thing the class cannot know: a collection this node
@@ -6252,6 +7386,7 @@ const NODE_CONSTRUCTORS={
     TrimmerNode,
     FKMDNode,
     FormulaCollectionNode,
+    AttributionNode,
     //the first tools-category node: it has no data, but a session must be able
     //to name it, or a reload would turn it into a bare Node with no dialog
     ChatNode
@@ -6328,7 +7463,11 @@ const SELF_SHAPED_NODES=new Set([
     //one multiplexed input, one output: the collection reader declares its own
     //shape for the same reason, and a session that spelled it out would be
     //describing a socket count the flow decides anyway
-    FormulaCollectionNode
+    FormulaCollectionNode,
+    //same shape and same reason: the attribution node takes any number of XY
+    //waves and renders one attribution list per wave, so its socket count is the
+    //flow's business, not the node's
+    AttributionNode
 ])
 /* A file spells a node's shape out. A skeleton only knows how many slots the node
    HAD: what was in them was data, and data is rebuilt by the resolve. A link is
@@ -7567,6 +8706,18 @@ class MainFlowMenu extends Menu{
                             //self-shaped: ONE multiplexed input, and any number
                             //of cables may land on it
                             node = new FormulaCollectionNode(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
+                        }
+                        case "attribution": {
+                            //self-shaped, and for the SAME reason: the input is
+                            //multiplexed, so a session must not spell out how many
+                            //sockets it has
+                            node = new AttributionNode(
                                 title,
                                 origin,
                                 origin.channel.get("mainFlow"),

@@ -16,6 +16,7 @@
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
 import {Element,Formula,FormulaCollection,nearestByMz,nearestTarget} from "./chemistry.js"
+import {Wave} from "./formats.js"
 
 const TABLE=Element.load(JSON.parse(
     readFileSync(new URL("../data/elements.json",import.meta.url),"utf8")))
@@ -48,6 +49,30 @@ const helpers=new Function(`${helpersSource}
     return {prettyNotation,formatCount,formatValue,formatMz,FORMULA_SORTS,formulaComparator}`
 )()
 const {prettyNotation,formatCount,formatValue,formatMz,FORMULA_SORTS,formulaComparator}=helpers
+
+/* `visibleRows` is a METHOD of the reader, so it cannot be pulled out of the
+   helper slice — but it is the code that decides what a row CARRIES, and the
+   orders below read fields off the row. Those two facts came apart once already:
+   the comparator read `row.intensity` and `row.errorPpm` while the rows only
+   carried them under `row.entry`, so choosing "intensity" or "error" in the menu
+   changed NOTHING and threw nothing. Every hand-built row in the tests above has
+   the flat fields, so no test could see it.
+
+   So the method is sliced out and called against a stand-in `this`. It is the
+   real method, not a copy of it. */
+const visibleRowsStart=source.indexOf("    visibleRows(){")
+const visibleRowsEnd=source.indexOf("    renderRows(){",visibleRowsStart)
+if(visibleRowsStart<0||visibleRowsEnd<visibleRowsStart){
+    console.error("visibleRows could not be located in interface.js - the test cannot run")
+    process.exit(1)
+}
+const visibleRowsSource=source.slice(visibleRowsStart,visibleRowsEnd)
+if(!visibleRowsSource.includes("return rows")){
+    console.error("the visibleRows slice is incomplete - the test cannot run")
+    process.exit(1)
+}
+const visibleRows=new Function("formulaComparator",
+    `return ({${visibleRowsSource}}).visibleRows`)(formulaComparator)
 
 /* moleculeKey is a GETTER on Stoichiometry now, not a free function in the
    interface: it is a fact about a formula, and a fact about a formula belongs
@@ -272,6 +297,309 @@ test("rows of equal m/z keep a stable order, by key",()=>{
         "the chosen order wins first...")
     eq([...tie].sort(formulaComparator("mz")).map(r=>r.key).join(""),"az",
         "...and the key settles the tie")
+})
+
+console.log("les LIGNES portent ce que les ordres lisent")
+/* A stand-in for the reader, holding only what `visibleRows` touches. */
+const readerWith=(entries,{view="formula",sort="mz",filter=""}={})=>({
+    currentCollection:{name:"c",entries},
+    parameters:{view,sort,filter}
+})
+const entry=(key,mz,intensity,errorPpm,molecule)=>({
+    key,notation:key,mz,intensity,errorPpm,molecule:molecule??key
+})
+
+test("une ligne porte l'intensité et l'erreur que le comparateur lit",()=>{
+    /* LE TEST DU BUG. `intensity` et `error` se choisissent dans le menu, donc
+       le tri doit les lire — sur la LIGNE. Elles vivaient sous `row.entry`, le
+       comparateur les cherchait à plat, il obtenait `undefined` partout, et les
+       deux ordres retombaient sur le m/z. Choisir « erreur » ne changeait rien à
+       l'ordre, sans lever la moindre exception: le genre de panne qu'on ne
+       signale pas, puisqu'il n'y a rien à signaler.
+
+       On vérifie donc que le menu change réellement l'ordre, en partant des
+       lignes que le LECTEUR produit et non de lignes fabriquées à la main. */
+    const entries=[
+        entry("big",180,9000,8.0),
+        entry("small",12,10,0.5),
+        entry("mid",100,500,4.0)
+    ]
+    const keys=(name)=>visibleRows.call(readerWith(entries,{sort:name})).map(r=>r.key).join("")
+    eq(keys("intensity"),"bigmidsmall",
+        "intensity descending: 9000, 500, 10 — and NOT the m/z order")
+    eq(keys("error"),"smallmidbig",
+        "smallest error first: 0.5, 4, 8 — and NOT the m/z order")
+    eq(keys("mz"),"smallmidbig","m/z ascending: 12, 100, 180")
+})
+
+test("chaque ordre du menu donne un ordre différent du m/z",()=>{
+    /* La propriété qui compte n'est pas « quatre ordres différents » — c'est
+       qu'AUCUN ne retombe sur le m/z. Le bug faisait exactement ça: `intensity`
+       et `error` lisaient des champs absents, renvoyaient 0 pour toute paire, et
+       le départage sur le m/z prenait le relais. Les deux ordres étaient
+       l'ordre du m/z sous un autre nom.
+
+       Le jeu de données est choisi pour que les trois classements divergent. La
+       première version en utilisait un autre, où les trois ordres sortaient
+       «bca» — un jeu qui ne prouve rien, et qui a échoué pour la bonne
+       raison. */
+    const entries=[
+        entry("a",12,1,5),
+        entry("b",100,9,1),
+        entry("c",180,5,9)
+    ]
+    const order=(name)=>visibleRows.call(readerWith(entries,{sort:name})).map(r=>r.key).join("")
+    const mz=order("mz")
+    ok(mz==="abc",`m/z ascending is a,b,c — got ${mz}`)
+    for(const name of ["intensity","error"]){
+        const got=order(name)
+        ok(got!==mz,`"${name}" fell back to the m/z order (${got}) — that is the bug`)
+    }
+    ok(order("intensity")!==order("error"),
+        "intensity and error must not collapse onto each other either")
+})
+
+test("une molécule additionne son intensité, et n'a pas d'erreur",()=>{
+    /* Two leaves folded onto one molecule, and the numbers a fold has to invent.
+       L'intensité S'ADDITIONNE — c'est du signal. L'erreur n'existe pas pour un
+       groupe: une molécule n'a pas été mesurée, ses feuilles si. Lui donner une
+       moyenne fabriquerait un nombre qui ne correspond à rien de mesuré, et la
+       ferait passer devant des feuilles qu'elle ne peut pas concurrencer. */
+    const entries=[
+        entry("h",15,100,0.4,"CH4[H+]"),
+        entry("d",17,40,1.2,"CH4[H+]"),
+        entry("other",99,7,0.1,"H2O")
+    ]
+    const rows=visibleRows.call(readerWith(entries,{view:"stoichiometry"}))
+    eq(rows.length,2,"two molecules")
+    const molecule=rows.find(r=>r.kind==="molecule"&&r.notation==="CH4[H+]")
+    ok(molecule,`CH4[H+] is folded: ${rows.map(r=>r.notation).join(", ")}`)
+    eq(molecule.intensity,140,"intensities are added: 100 + 40")
+    eq(molecule.errorPpm,Infinity,"a molecule has no error of its own")
+    eq(rows.find(r=>r.notation==="H2O").intensity,7,"a single leaf keeps its own intensity")
+    const byIntensity=visibleRows.call(
+        readerWith(entries,{view:"stoichiometry",sort:"intensity"}))
+    eq(byIntensity[0].notation,"CH4[H+]","the summed 140 comes before the 7")
+})
+
+console.log("les DEUX sorties, et le jumeau exact")
+/* `publishOutput` builds output 0 (the collections) and output 1 (the waves) in
+   ONE loop, so the test that matters is the one that compares them: if the two
+   ever disagreed, a reader would see 240 formulas on the left and 238 points on
+   the right, and neither side would be able to tell you it was wrong. */
+const publishStart=source.indexOf("    publishOutput(){")
+const publishEnd=source.indexOf("    async startResolve(){",publishStart)
+if(publishStart<0||publishEnd<publishStart){
+    console.error("publishOutput could not be located in interface.js - the test cannot run")
+    process.exit(1)
+}
+const publishOutput=new Function("Wave",
+    `return ({${source.slice(publishStart,publishEnd)}}).publishOutput`)(Wave)
+
+/* A stand-in reader holding the two things `publishOutput` touches. */
+const publisherWith=(collections,{ticked={}}={})=>({
+    collections,
+    collectionState:(name)=>({inOutput:ticked[name]??true}),
+    outputs:[[],[]]
+})
+const collectionOf=(name,entries)=>({name,entries})
+const row=(key,mz,intensity,errorPpm)=>({
+    key,notation:key,mz,mass:mz,charge:1,molecule:key,
+    errorPpm,intensity,note:"",targets:[]
+})
+
+test("chaque collection tickée donne une collection ET une wave",()=>{
+    const collections=[
+        collectionOf("first",[row("a",180,900,1),row("b",12,50,2)]),
+        collectionOf("second",[row("c",100,10,3)])
+    ]
+    const node=publisherWith(collections)
+    publishOutput.call(node)
+    eq(node.outputs[0].length,2,"two collections on output 0")
+    eq(node.outputs[1].length,2,"two waves on output 1")
+    eq(node.outputs[1].map(w=>w.metadata.collection).join(","),"first,second",
+        "and they are the same collections, in the same order")
+})
+
+test("une collection non cochée ne produit rien",()=>{
+    /* A wave for a collection whose checkbox is off would put data on the graph
+       the user deliberately excluded — the one thing the checkbox is for. */
+    const collections=[
+        collectionOf("shown",[row("a",180,900,1)]),
+        collectionOf("hidden",[row("b",12,50,2)])
+    ]
+    const node=publisherWith(collections,{ticked:{shown:true,hidden:false}})
+    publishOutput.call(node)
+    eq(node.outputs[0].map(c=>c.name).join(","),"shown","output 0 honours the tick")
+    eq(node.outputs[1].map(w=>w.metadata.collection).join(","),"shown",
+        "output 1 honours the same tick")
+})
+
+test("la wave porte un point par formule, dans l'ordre croissant des m/z",()=>{
+    const entries=[row("a",180,900,1),row("b",12,50,2),row("c",100,10,3)]
+    const node=publisherWith([collectionOf("c",entries)])
+    publishOutput.call(node)
+    const wave=node.outputs[1][0]
+    eq(wave.dims[0],3,"one point per formula")
+    const xs=Array.from(wave.core.subarray(0,3))
+    const ys=Array.from(wave.core.subarray(3,6))
+    eq(xs.join(","),"12,100,180","m/z ascending, whatever the collection's own order")
+    eq(ys.join(","),"50,10,900","and each intensity travels with its own m/z")
+    eq(wave.metadata.collectionIndex,0,"the position of the same collection in output 0")
+})
+
+test("les deux sorties ne peuvent pas diverger",()=>{
+    /* THE test. Same entries, two representations, compared. A formula with no
+       match is the interesting case: it must still be a point, at zero, or the
+       wave quietly has fewer points than the collection has formulas — and a
+       reader comparing the two counts would be looking at the only clue. */
+    const entries=[
+        row("matched",180,900,1),
+        row("unmatched",100,null,null),
+        row("also-matched",12,50,2)
+    ]
+    const node=publisherWith([collectionOf("c",entries)])
+    publishOutput.call(node)
+    const formulas=node.outputs[0][0].formulas
+    const wave=node.outputs[1][0]
+    eq(wave.dims[0],formulas.length,
+        `the wave has ${wave.dims[0]} points for ${formulas.length} formulas`)
+    eq(wave.metadata.formulas,formulas.length,"and it says so in its metadata")
+    eq(wave.metadata.unmatched,1,"one formula had no match")
+    const ys=Array.from(wave.core.subarray(3,3+wave.dims[0]))
+    eq(ys[ys.indexOf(0)],0,"an unmatched formula is at zero, not missing")
+})
+
+test("un m/z impossible est écarté, et compté",()=>{
+    /* A NaN in a wave is invisible: a plot skips it, a binary search returns
+       anything, and the node downstream is short one point with no way to say
+       so. So it is dropped — and COUNTED, because a point lost in silence is
+       the exact defect this whole change is about. */
+    const entries=[row("good",100,10,1),row("bad",NaN,5,2),row("zero",0,7,3)]
+    const node=publisherWith([collectionOf("c",entries)])
+    publishOutput.call(node)
+    const wave=node.outputs[1][0]
+    eq(wave.dims[0],1,"only the usable m/z became a point")
+    eq(wave.metadata.dropped,2,"and the two that did not are counted")
+    eq(wave.metadata.formulas,3,"while the collection still holds all three")
+})
+
+test("une collection vide donne une wave vide, pas une absente",()=>{
+    /* An empty wave and a missing one are different: a downstream node that
+       loops over waves would treat "no wave" as "nothing to do" and "empty wave"
+       as "nothing in it". The first skips a step the second must perform. */
+    const node=publisherWith([collectionOf("empty",[])])
+    publishOutput.call(node)
+    eq(node.outputs[1].length,1,"the wave is there")
+    eq(node.outputs[1][0].dims[0],0,"and it is empty")
+})
+
+console.log("ADOPTER une collection déjà construite")
+test("adopter et fabriquer donnent le même résultat",()=>{
+    /* The point of `adoptAll`: the reader must not change a single key, a single
+       target or a single error by skipping the rebuild. If it did, the producer
+       and the reader would disagree about what the same formula measured — and
+       the reader is the one on screen, so the disagreement would be invisible
+       from the attribution node. */
+    const built=new FormulaCollection({name:"src",table:TABLE,ppm:10})
+    built.addAll(["C6H12O6[H+]","CH4[H+]","H2O[H+]"].map(t=>({
+        formula:Formula.parse(t,TABLE),sourceText:t
+    })))
+    built.setPoints([{mz:181.0707,intensity:900},{mz:17.0265,intensity:40}])
+
+    const rebuilt=new FormulaCollection({name:"r",table:TABLE,ppm:10})
+    rebuilt.addAll(built.formulas.map(f=>({formula:f,sourceText:String(f)})))
+    rebuilt.setPoints(built.points)
+
+    const adopted=new FormulaCollection({name:"a",table:TABLE,ppm:10})
+    adopted.adoptAll(built.entries,{points:built.points})
+
+    eq(adopted.entries.map(e=>e.key).join("|"),rebuilt.entries.map(e=>e.key).join("|"),
+        "same keys, same order")
+    eq(adopted.entries.map(e=>e.notation).join("|"),rebuilt.entries.map(e=>e.notation).join("|"),
+        "same notations")
+    eq(adopted.entries.map(e=>String(e.errorPpm)).join("|"),
+        rebuilt.entries.map(e=>String(e.errorPpm)).join("|"),
+        "same errors, so the matching landed on the same targets")
+    eq(adopted.entries.map(e=>e.targets.length).join("|"),
+        rebuilt.entries.map(e=>e.targets.length).join("|"),"same target counts")
+})
+
+test("adopter ne touche pas les entrées du producteur",()=>{
+    /* The reader writes its OWN note on its own copy. If the copy were shared,
+       the note would appear in the producer's collection and in any other reader
+       downstream — an annotation belonging to one panel leaking into another. */
+    const producer=new FormulaCollection({name:"src",table:TABLE,ppm:10})
+    producer.addAll([{formula:Formula.parse("C6H12O6[H+]",TABLE),sourceText:"C6H12O6[H+]"}])
+    const before=producer.entries[0].note
+
+    const reader=new FormulaCollection({name:"r",table:TABLE,ppm:10})
+    reader.adoptAll(producer.entries,{notes:{"12C6 1H12 16O6[H+]":"my own note"}})
+
+    eq(producer.entries[0].note,before,"the producer's entry is untouched")
+    const mine=reader.entries[0]
+    ok(mine.note.length>0,"the reader's copy carries the note")
+    ok(mine!==producer.entries[0],"and it is a DIFFERENT object")
+})
+
+test("une collection apprise garde la fenêtre qui l'a remplie",()=>{
+    /* The reader used to overwrite the producer's window with its own, silently:
+       10 ppm became 5, with no field to show it and no way to align them. The
+       window that decided what is IN the collection is the one that has to
+       decide what stays matched. */
+    const producer=new FormulaCollection({name:"src",table:TABLE,ppm:10})
+    ok(producer.ppm===10,"the producer built itself at 10 ppm")
+    const reader=new FormulaCollection({name:"r",table:TABLE,ppm:5})
+    reader.adoptAll(producer.entries,{})
+    eq(reader.ppm,5,"and an adopting collection keeps the window IT was given")
+})
+
+console.log("la virtualisation: le défilement est lu où il se produit")
+test("la liste lit le défilement sur le conteneur qui défile",()=>{
+    /* A STRUCTURAL assertion, and it says so: there is no DOM here, so this
+       cannot prove the list scrolls correctly — it can only prove the two things
+       that made it not scroll.
+
+       `.fc-viewport` is `position:absolute; inset:0` INSIDE `.fc-viewport-wrap`,
+       and the wrap is what carries `overflow:auto`. Reading `scrollTop` on the
+       viewport therefore always yields 0: `first` stays 0, the painted rows stay
+       the first ones, and the wrap scrolls them out of sight. A few rows, then
+       nothing — and only while scrolling, because at rest the position 0 is the
+       correct one and the list looks perfectly fine. */
+    const start=source.indexOf("class VirtualRowList{")
+    const end=source.indexOf("/* ---- small pure helpers for the collection reader",start)
+    ok(start>0&&end>start,"the VirtualRowList block is locatable")
+    const block=source.slice(start,end)
+    ok(!/this\.element\.scrollTop/.test(block),
+        "scrollTop must not be read on .fc-viewport: it never scrolls, the wrap does")
+    ok(!/this\.element\.clientHeight/.test(block),
+        "the height must be measured on the same element that scrolls")
+    const rangeStart=block.indexOf("visibleRange(){")
+    const rangeBody=block.slice(rangeStart,block.indexOf("paint(){",rangeStart))
+    ok(/this\.scroll\.scrollTop/.test(rangeBody),"visibleRange reads the real scroll position")
+    ok(/this\.scroll\.clientHeight/.test(rangeBody),"visibleRange measures the real viewport")
+})
+
+test("le wrap est passé à la liste comme conteneur",()=>{
+    /* The other half: the reader has to HAND OVER the scrolling element. The
+       listener was already on the wrap, so the repaint was firing — on a list
+       that could not know where it had been scrolled to. Repainting correctly
+       from a wrong position still looks like a bug. */
+    const start=source.indexOf("buildFormulaBand(){")
+    /* The end anchor is the NEXT method, not a comment: `buildFormulaBand`
+       contains a comment that itself starts with "The write line" — it describes
+       the row above the list — so that anchor cut the slice 672 characters in,
+       before the line the test is about. */
+    const end=source.indexOf("    renderAddRow(){",start)
+    ok(start>0&&end>start,"the buildFormulaBand block is locatable")
+    const block=source.slice(start,end)
+    ok(/scrollElement\s*:\s*viewport/.test(block),
+        "VirtualRowList must be given the wrap as its scrollElement")
+    const wrapAt=block.indexOf("const viewport=CE(\"div\",{className:\"fc-viewport-wrap\"}")
+    const listAt=block.indexOf("this.list=new VirtualRowList(")
+    ok(wrapAt>0&&listAt>0,"the wrap and the list are both built here")
+    ok(wrapAt<listAt,
+        "the wrap must exist BEFORE the list: the list needs it at construction")
 })
 
 console.log("la collection: une formule n'y entre qu'une fois")

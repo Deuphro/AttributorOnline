@@ -254,6 +254,121 @@ export function trim_histogram(core, stride, bins, scale) {
     return TrimHistogram.__wrap(ret);
 }
 
+let cachedUint32Memory0 = null;
+
+function getUint32Memory0() {
+    if (cachedUint32Memory0 === null || cachedUint32Memory0.byteLength === 0) {
+        cachedUint32Memory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32Memory0;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32Memory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+/**
+* Les bornes de multiplicité ne sont PAS calculées ici.
+*
+* Elles viennent de `AttributionPlan.capsFor`, en JS, et c'est la seule façon
+* d'avoir raison: la borne d'un ADDUCT dépend de la FENÊTRE D'IONISATION, que
+* seul le plan connaît. Une brique est bornée par `maxMass // mass`; un adduit
+* est borné par la charge maximale autorisée, parce qu'un [2+] en fenêtre ±10
+* donnerait sinon un volume absurde.
+*
+* Le calcul ici serait un second endroit où décider, donc un second endroit où
+* se tromper — et l'erreur serait invisible: le crible rendrait des
+* combinaisons, dans le mauvais ordre peut-être, sans qu'aucun test le voie.
+*
+* `caps_for` a longtemps existé ici et faisait ce calcul. Elle a été retirée
+* après qu'un test eut Tourné en boucle indéfiniment: un adduit SANS ATOME a
+* une masse négative, donc `maxMass / mass` est négatif, donc `max(0)` donne
+* 0… et un `[2+]` en fenêtre ±3 rendait zéro combinaison, alors qu'il est
+* l'adduit le plus utile d'un plan. La borne par la charge ne se devine pas
+* depuis les masses, et c'est exactement pour ça qu'elle vit dans le plan.
+* Le crible exhaustif, par tas.
+*
+* * `item_masses` la masse de chaque brique: somme des atomes pour une brique
+*   de masse, masse de l'ION pour un adduit
+* * `item_charges` la charge de chaque brique; 0 pour une brique de masse
+* * `caps` la multiplicité maximale de chaque brique, calculée par le plan
+* * `max_mass` le plafond de masse totale
+* * `limit` le nombre maximal d'états rendus
+*
+* La sortie est un `Vec<f64>` PLAT de `STRIDE` valeurs par état, dans l'ordre
+* du tas — donc par masse croissante. Un seul `Vec` et non un struct à getters:
+* c'est le format que le projet utilise partout (`fkmd`,
+* `persistent_homology_0d`), il n'alloue rien côté JS, et il évite le `Copy`
+* que `#[wasm_bindgen(getter)]` exige sur un champ `Vec` dans la version de
+* wasm-bindgen d'ici.
+*
+* La charge totale d'un état est la SOMME des charges des briques employées, et
+* c'est elle que la fenêtre d'ionisation filtrera côté JS. Le kernel ne connaît
+* pas la fenêtre: il rend ce qui existe, et le shell décide ce qui compte — la
+* même séparation que partout ailleurs dans le projet.
+*
+* Le plafond borne à la fois le nombre de COPIES d'une brique et la somme. La
+* masse ne peut qu'augmenter en ajoutant une brique, donc un état trop lourd ne
+* peut jamais s'alléger en remontant, et l'élagage est sûr.
+* @param {Float64Array} item_masses
+* @param {Float64Array} item_charges
+* @param {Uint32Array} caps
+* @param {number} max_mass
+* @param {number} limit
+* @returns {Float64Array}
+*/
+export function crible_heap(item_masses, item_charges, caps, max_mass, limit) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(item_masses, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(item_charges, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray32ToWasm0(caps, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.crible_heap(retptr, ptr0, len0, ptr1, len1, ptr2, len2, max_mass, limit);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v4 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v4;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core, mz) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.fkmd(retptr, ptr0, len0, mz);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v2 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
 /**
 * A z READ FROM THE DATA, which is a different thing from the 3σ convention.
 *
@@ -435,36 +550,6 @@ export function persistent_homology_0d(data, mode) {
         var v3 = getArrayF64FromWasm0(r0, r1).slice();
         wasm.__wbindgen_free(r0, r1 * 8, 8);
         return v3;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
-* Applies the F-KMD transform to a canonical core.
-*
-* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
-* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
-* without a second reshape.
-*
-* The output y is the DEFECT, and the input y (the intensities) is not carried
-* over: the caller asked for one value per point, and the defect is that value.
-* Intensities stay reachable on the input wave, which the caller still holds.
-* @param {Float64Array} core
-* @param {number} mz
-* @returns {Float64Array}
-*/
-export function fkmd(core, mz) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.fkmd(retptr, ptr0, len0, mz);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        var v2 = getArrayF64FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_free(r0, r1 * 8, 8);
-        return v2;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
@@ -1171,6 +1256,7 @@ function __wbg_finalize_init(instance, module) {
     __wbg_init.__wbindgen_wasm_module = module;
     cachedFloat64Memory0 = null;
     cachedInt32Memory0 = null;
+    cachedUint32Memory0 = null;
     cachedUint8Memory0 = null;
 
 
