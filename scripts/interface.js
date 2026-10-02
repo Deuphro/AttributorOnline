@@ -3137,19 +3137,61 @@ class AttributionNode extends NodeWithAccordion{
            few lines, so it must be as tall as what it holds. There is no plot
            here, and a 260 px box around five lines would be mostly empty. */
         this.accordion.setSizingMode("content")
+        /* LA RÈGLE DU SPINNER, POSÉE UNE SEULE FOIS.
+
+           Le navigateur ne donne aucun attribut pour masquer les flèches d'un
+           `type=number`; il faut une règle CSS sur la pseudo-classe interne. On
+           l'ajoute ici, au panneau, plutôt que dans `field`: la fonction est
+           appelée à chaque reconstruction de tableau, et une règle par appel
+           empilerait des `<style>` sans fin.
+
+           Les DEUX sélecteurs sont dans la même règle parce qu'ils visent deux
+           navigateurs différents — `-webkit-inner-spin-button` pour Chrome et
+           Safari, `-moz-appearance` pour Firefox. N'en écrire qu'un laisserait
+           les flèches sur la moitié des postes. */
+        /* LE STYLE EST POSÉ DANS LE `<head>`, ET UNE SEULE FOIS.
+
+   Le panneau est vidé par `replaceChildren()` à chaque `setupUI`, donc une règle
+   posée dedans disparaît — et une règle recréée à chaque appel empilerait une
+   balise par reconstruction de tableau. Le `<head>` survit au panneau, et le
+   garde évite le doublon.
+
+   `setAttribute`, ET NON `dataset`. `dataset.anUI` s'écrit `data-an-u-i` — le
+   d de « UI » devient « u-i » — donc le sélecteur `style[data-an-ui]` ne
+   retrouvait JAMAIS la balise. Le garde paraissait donc justifié alors qu'il ne
+   l'était pas: chaque appel de `setupUI` empilait une règle, et le test
+   « une seule règle » échouait sans qu'on comprenne pourquoi. Un attribut
+   écrit en entier ne sufferte pas de cette conversion implicite. */
+        if(!document.head.querySelector("style[data-an-ui]")){
+            const uiStyle=document.createElement("style")
+            uiStyle.setAttribute("data-an-ui","1")
+            uiStyle.textContent=
+                ".no-spin::-webkit-inner-spin-button,"+
+                ".no-spin::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}"+
+                ".no-spin{-moz-appearance:textfield}"
+            document.head.appendChild(uiStyle)
+        }
         stylize(content,{
             display:"grid",
             "grid-template-columns":"minmax(0, 1fr)",
             padding:"4px",
             gap:"4px"
         })
-        /* LE CHAMP DE SAISIE, puis LE TABLEAU en dessous.
+        /* LE CHAMP DE SAISIE, AU-DESSUS DE SA LISTE, ET PAS À CÔTÉ DE L'AUTRE.
 
            Le champ ne remplace pas le tableau: il AJOUTE une ligne. Les deux
            vivent ensemble parce qu'ils font deux gestes différents — taper un
-           groupe nouveau, ou régler un groupe existant — et qu'un tableau seul
-           ne peut pas faire le premier, tandis qu'un champ seul ne peut pas
-           faire le second. */
+           groupe nouveau, ou régler un groupe existant.
+
+           Et ils doivent être LUS ENSEMBLE. Les deux champs d'abord, puis les
+           deux tableaux, obligeait l'œil à sauter d'une liste à l'autre pour
+           savoir à quoi le champ se rapporte: « Add an ionising group » était
+           collé à la liste des groupes NEUTRES, qu'il ne concernait pas.
+
+           Donc chaque bloc est le champ PUIS son tableau, et les deux blocs
+           sont séparés visuellement. Le second porte d'ailleurs son propre
+           titre de liste, alors que le premier dépendait du seul libellé du
+           champ — on ne lit plus une liste orpheline. */
         this.combiningInput=this.field(content,
             "Add a group to combine",
             "",
@@ -3158,6 +3200,18 @@ class AttributionNode extends NodeWithAccordion{
             },
             "CH2, O, NH... Adds one row to the table below. Enter applies it"
         )
+        this.combiningTable=this.groupTable(content,"combining","Groups to combine")
+        /* LA SÉPARATION. Un simple `gap` ne disait rien — les deux blocs avaient
+           la même apparence, et rien n'indiquait qu'on passait d'une liste à
+           l'autre. Un filet de rien, plus une marge au-dessus du second bloc,
+           donne la séparation sans ajouter de titre: les titres sont déjà là. */
+        this.groupDivider=CE("div",{className:"an-divider"},[])
+        stylize(this.groupDivider,{
+            height:"1px",
+            margin:"6px 2px 2px",
+            background:"rgba(255,255,255,0.18)"
+        })
+        content.appendChild(this.groupDivider)
         this.ionisingInput=this.field(content,
             "Add an ionising group",
             "",
@@ -3166,7 +3220,6 @@ class AttributionNode extends NodeWithAccordion{
             },
             "[H+], [Na+], [2+]... Adducts must carry a charge. Enter adds one row"
         )
-        this.combiningTable=this.groupTable(content,"combining","Groups to combine")
         this.ionisingTable=this.groupTable(content,"ionising","Ionising groups")
         /* `field` returns its input, and the numeric ones are KEPT: `syncUI` has to
            be able to write a restored value back into the field it came from,
@@ -3215,14 +3268,37 @@ class AttributionNode extends NodeWithAccordion{
            états de crible; ici 1 à 20 suffit, parce qu'au-delà le tableau
            devient illisible de toute façon. Une borne honnête vaut mieux qu'une
            borne copier-coller. */
-        this.bestMatchesInput=this.field(content,"Best matches to keep (per peak)",this.parameters.bestMatches,{
+        /* LES DEUX RÉGLAGES DE LECTURE, SUR UNE MÊME RANGÉE.
+
+           Ils posaient chacun DEUX lignes — un libellé puis une case — pour
+           dire deux choses voisines: combien de lectures garder par pic, et à
+           quelle erreur elles sont encore acceptées. Rien ne les oppose, et
+           rien ne les sépare à l'écran non plus.
+
+           Une grille à deux colonnes les met côte à côte et rend le couple
+           visible. Les libellés raccourcis — « Matches per mass » et
+           « Tolerance » — disent la même chose en deux mots; le détail long
+           reste dans l'infobulle, qui n'a pas bougé.
+
+           `field` reçoit une cible optionnelle: sans elle, il se comporte
+           exactement comme avant. C'est ce qui permet de garder une seule
+           fonction pour les champs sur une ligne et ceux sur deux. */
+        const readingRow=CE("div",{className:"an-row"},[])
+        stylize(readingRow,{
+            display:"grid",
+            "grid-template-columns":"1fr 1fr",
+            gap:"6px",
+            "align-items":"start"
+        })
+        content.appendChild(readingRow)
+        this.bestMatchesInput=this.field(readingRow,"Matches per mass",this.parameters.bestMatches,{
             tag:"number",
             onCommit:(raw)=>this.commitNumber("bestMatches",raw,1,20)
         },"How many readings of EACH PEAK to keep, ranked by mass error. The sieve is walked whole, so this never truncates the search — it only bounds the list you read")
-        this.ppmInput=this.field(content,"Match window (ppm)",this.parameters.ppm,{
+        this.ppmInput=this.field(readingRow,"Tolerance",this.parameters.ppm,{
             tag:"number",
             onCommit:(raw)=>this.commitNumber("ppm",raw,0,10000)
-        },"A formula further off than this is not proposed at all; inside it, the measured offset is reported")
+        },"Match window, in ppm. A formula further off than this is not proposed at all; inside it, the measured offset is reported")
         /* LE BOUTON RESOLVE, et il EXISTE POUR UNE RAISON MESURÉE.
 
            Chaque changement de case relançait tout le crible. Sur une liste de
@@ -3263,13 +3339,40 @@ class AttributionNode extends NodeWithAccordion{
            une substitution d'un atome léger pèse 1 à 16 Da, donc 0,5 ne peut pas
            confondre deux formules voisines — et une masse exacte a cinq chiffres
            décimaux, donc un intervalle plus serré n'aurait rien à montrer. */
-        this.massInput=this.field(content,"Probe a mass (m/z)",this.parameters.probeMass??"",{
+        /* LA SONDE: UN FOND, UN NOM COURT, ET PAS DE FLÈCHES.
+
+           « Probe a mass (m/z) » disait trois choses dont une inutile — le
+           m/z est ce que le champ attend, et l'infobulle le dit. « Probe » seul
+           suffit, et le fond le détache du reste du panneau: c'est la seule
+           partie de ce nœud qui ne décrit PAS les réglages en cours mais
+           répond à une question posée au coup par coup. Elle se lit donc
+           autrement, et c'est utile quand le panneau fait quinze lignes.
+
+           LES FLÈCHES DISPARAISSENT. Une masse n'est pas un entier: le spinner
+           du navigateur l'avance de 1 à chaque cran, ce qui est absurde entre
+           46.04186 et 46.04187, et il fait perdre la main sur une saisie au
+           dixième de dalton. Le champ reste `type=number` — donc la validation
+           reste celle du navigateur — mais sans les boutons.
+
+           Le `step` est mis très fin, parce qu'un `type=number` sans flèches
+           utilise le pas du navigateur pour les touches ↑/↓, qui resteraient
+           sinon par crans de 1. */
+        this.massInput=this.field(content,"Probe",this.parameters.probeMass??"",{
             tag:"number",
+            noSpinner:true,
+            step:"0.00001",
             onCommit:(raw)=>this.probeMass(raw)
         },"Type one m/z to see what the current plan makes of it. Enter runs it over ±0.5")
+        stylize(this.massInput,{
+            background:"rgba(120,180,255,0.10)",
+            border:"1px solid rgba(120,180,255,0.28)"
+        })
         this.probeOutput=CE("div",{className:"an-probe"},[])
         stylize(this.probeOutput,{
-            fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap",opacity:"0.9"
+            fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap",opacity:"0.9",
+            background:"rgba(120,180,255,0.06)",
+            padding:"3px 5px",
+            borderRadius:"3px"
         })
         content.appendChild(this.probeOutput)
         this.renderGroupTables()
@@ -3310,6 +3413,14 @@ class AttributionNode extends NodeWithAccordion{
            parce qu'un réglage affiché et jamais appliqué est le défaut qu'on ne
            voit pas — il a l'air de fonctionner. */
         input.addEventListener("blur",()=>onCommit(input.value))
+        /* ET TOUTE CORRECTION AU CLAVIER, POUR LA MÊME RAISON.
+
+           Ces cases sont en `type="text"` — la borne admet « ∞ », qui n'est pas
+           un nombre — donc elles n'ont pas de spinner natif. En revanche elles
+           se corrigent au clavier, et une case où l'on peut écrire une valeur
+           qui n'est jamais appliquée est exactement le défaut que ce fichier
+           dénonce à longueur de chapitre. */
+        input.addEventListener("change",()=>onCommit(input.value))
         return input
     }
 
@@ -3562,32 +3673,39 @@ class AttributionNode extends NodeWithAccordion{
         /* LE RÉGLAGE NE RECALCULE PLUS: il MARQUE. Le bouton Resolve fait le
            calcul, et le bouton se voit. Voir `markStale`.
 
-           SAUF POUR DEUX RÉGLAGES, et l'exception est mesurée. `bestMatches` et
-           `ppm` ne touchent pas au CRIBLE: ils ne font que reclasser ce qu'il a
-           déjà rendu. Les remettre dans la file d'attente donnait exactement le
-           défaut signalé — « je passe de 3 à 1 et rien ne change » — parce que le
-           nombre qui rétrit la liste est justement celui qu'on règle le plus
-           souvent.
-
-           Ils appliquent donc tout de suite. `ratio`, `min` et `max` changent la
-           liste elle-même, donc eux passent par le bouton: on règle dix groupes
-           et on calcule une fois. */
-        if(name==="bestMatches"||name==="ppm"){
-            this.setStatus("floating")
-            this.renderReadout()
-            return this.startResolve().then(()=>this.resolveChildren())
-        }
-        this.markStale(`${name} changed`)
+           LES DEUX CHAMPS NUMÉRIQUES NE PASSENT PAS PAR ICI. `bestMatches` et
+           `ppm` ont leurs propres champs et appellent `commitNumber`, qui les
+           applique tout de suite — parce qu'ils reclassent sans recribler. La
+           branche qui le disait, et qui vivait ici, était du CODE MORT : elle
+           affirmait une règle qu'aucun chemin n'atteignait, et le prochain
+           lecteur aurait cru les deux réglages traités par cette fonction. */
+        this.markStale(`${kind} changed`)
     }
-    field(content,label,value,{multiline,tag,onCommit,onInput}={},help=""){
+    /* `field`, ET LES DEUX OPTIONS QUI SERVENT À LA PRÉSENTATION.
+
+       `noSpinner` retire les flèches haut/bas d'un `type=number`. Le
+       navigateur n'offre pas d'attribut pour cela: il faut passer par une règle
+       CSS qui masque le `-webkit-inner-spin-button`. Elle est posée UNE SEULE
+       FOIS dans `setupUI` — la créer ici, à chaque appel, ajouterait un
+       `<style>` par champ et par reconstruction de tableau.
+
+       `step` sert au même endroit: un `type=number` sans flèches garde le pas du
+       navigateur sur les touches ↑/↓, et une masse saisie par crans de 1 serait
+       absurde. Le pas fin rend ces touches utilisables.
+
+       Les deux sont OPTIONNELS et ne changent rien quand on ne les passe pas —
+       c'est ce qui permet de garder une seule fonction pour tous les champs. */
+    field(content,label,value,{multiline,tag,onCommit,onInput,noSpinner,step}={},help=""){
         const box=CE("div",{className:"an-field"},[])
         const caption=CE("div",{className:"an-caption"},[label])
         const input=CE(multiline?"textarea":"input",{
             ...(multiline?{}:{type:tag??"text"}),
+            ...(step?{step}:{}),
             value:String(value),
             spellcheck:false,
             title:help
         },[])
+        if(noSpinner) input.classList.add("no-spin")
         stylize(caption,{fontSize:"0.8em",opacity:"0.8"})
         stylize(input,{
             width:"100%",boxSizing:"border-box",fontSize:"0.9em",
@@ -3629,13 +3747,31 @@ class AttributionNode extends NodeWithAccordion{
             /* ENTER commits: it applies the setting and re-runs the resolve.
                Every other key does nothing, deliberately — the sieve can produce
                millions of states, so triggering it on each keystroke would be
-               ruinous. */
+               ruinous.
+
+               ET LA FLÈCHE DU SPINNER, QUI N'EST PAS UNE FRAPPE.
+
+               Un `input[type=number]` a des flèches haut/bas. Cliquer dessus
+               change la valeur sans qu'aucun `keydown` ne parte — mesuré dans un
+               vrai Chromium: ni `input`, ni `change`, ni `keydown`. La case
+               affichait donc une nouvelle valeur que rien n'appliquait, et il
+               fallait deviner qu'Enter existait. C'est un réglage qui a l'air de
+               marcher parce qu'il change à l'écran.
+
+               On écoute donc `change`, que la flèche déclenche à chaque cran et
+               que le navigateur envoie aussi à la sortie du champ. `input` ne
+               suffirait pas: il part à chaque frappe et on relancerait le crible
+               à chaque caractère.
+
+               Le même rattrapage vaut pour les CASES DE GROUPE, dont `boundCell`
+               valide au blur et sur Enter — la flèche y était muette aussi. */
             input.addEventListener("keydown",(event)=>{
                 if(event.key==="Enter"){
                     event.preventDefault()
                     onCommit(input.value)
                 }
             })
+            input.addEventListener("change",()=>onCommit(input.value))
         }
         box.append(caption,input)
         content.appendChild(box)
@@ -3687,6 +3823,26 @@ class AttributionNode extends NodeWithAccordion{
            côtés, pas que la touche Enter fait recalculer. */
         const input=this.fieldFor(name)
         if(input) input.value=String(bounded)
+        /* DEUX RÉGLAGES S'APPLIQUENT TOUT DE SUITE, ET CE SONT LES DEUX
+           CHAMPS NUMÉRIQUES.
+
+           `bestMatches` et `ppm` ne changent pas la liste que le crible
+           énumère: ils reclassent ce qu'il a DÉJÀ rendu. Recribler pour eux
+           serait du travail payé pour un résultat identique — et l'inverse, les
+           mettre dans la file du bouton, donnait exactement le défaut signalé:
+           taper 1 dans « Best matches » ne changeait rien à l'affichage, et il
+           fallait découvrir qu'un bouton Resolve existait pour le voir.
+
+           Cette règle ÉTAIT écrite, mais dans `commitGroups` — que ces deux
+           champs n'appellent jamais. Elle était donc du code mort: l'intention
+           existait, l'exécution non. Elle vit maintenant ici, où elle s'exécute.
+
+           `floating` D'ABORD, et l'ordre compte: pendant le calcul, le nœud doit
+           avoir l'air de ne plus être à jour. */
+        this.setStatus("floating")
+        if(name==="bestMatches"||name==="ppm"){
+            return this.startResolve().then(()=>this.resolveChildren())
+        }
         this.markStale(`${name} changed`)
     }
     /* Le champ d'un réglage, pour que la valeur BORNÉE soit réécrite à l'écran.

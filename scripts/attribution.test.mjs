@@ -35,8 +35,20 @@ const TABLE=Element.load(JSON.parse(
 
 let passed=0
 const failures=[]
-const test=(name,fn)=>{
-    try{ fn(); passed++; console.log(`  ok   ${name}`) }
+/* `await fn()` — SANS quoi un test `async` est compté « ok » avant d'avoir rien
+   vérifié, et qu'on n'apprend qu'il était faux qu'après la sortie de la suite.
+
+   C'est arrivé: le test « bestMatches/ppm s'appliquent tout de suite » est
+   async parce qu'il attend la promesse de `startResolve`. Appelé sans `await`,
+   `try` n'entourait que la création de la promesse, donc le compteur
+   passait à 64 alors que la dernière assertion n'avait pas encore tourné — et
+   un rejet plus tard faisait sortir le processus en 1 sans qu'aucun test ne
+   soit nommé.
+
+   La suite est donc séquentielle et attend chacun. C'est plus strict, et c'est
+   la seule façon dont « 64 passed » veut dire quelque chose. */
+const test=async(name,fn)=>{
+    try{ await fn(); passed++; console.log(`  ok   ${name}`) }
     catch(e){ failures.push(name); console.log(`  FAIL ${name}\n       ${e.message}`) }
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??`expected a truthy value, got ${value}`) }
@@ -49,20 +61,20 @@ const plan=(options)=>buildPlan({table:TABLE,...options})
 
 console.log("les deux listes, et ce qu'elles produisent")
 
-test("la liste à combiner donne les masses isotopiques du groupe",()=>{
+await test("la liste à combiner donne les masses isotopiques du groupe",()=>{
     const p=plan({combining:["CH2"],ionising:["[H+]"],chargeMax:1})
     /* CH2 a deux isotopes de C et trois de H: 2 x 3 = 6 combinaisons */
     ok(p.combinables.length===6,`expected 6 combinable masses, got ${p.combinables.length}`)
 })
 
-test("la liste ionisante exige une charge et le dit",()=>{
+await test("la liste ionisante exige une charge et le dit",()=>{
     const p=plan({combining:["CH2"],ionising:["Na"],chargeMax:1})
     ok(p.ionisers.length===0,"Na carries no charge and must be refused")
     ok(p.diagnostics.some(d=>/carries no charge/.test(d)),
         `the refusal must be visible: ${JSON.stringify(p.diagnostics)}`)
 })
 
-test("[Na+] est un adduit valide, de masse atomique et de charge",()=>{
+await test("[Na+] est un adduit valide, de masse atomique et de charge",()=>{
     const p=plan({combining:["CH2"],ionising:["[Na+]"],chargeMax:1})
     ok(p.ionisers.length===1,`expected 1 ionising group, got ${p.ionisers.length}`)
     close(p.ionisers[0].charge,1,1e-12,"[Na+] carries a +1")
@@ -71,20 +83,20 @@ test("[Na+] est un adduit valide, de masse atomique et de charge",()=>{
     close(p.ionisers[0].atomicMass,22.98922,1e-4,"the sodium ion mass")
 })
 
-test("un groupe illisible est un diagnostic, pas une exception",()=>{
+await test("un groupe illisible est un diagnostic, pas une exception",()=>{
     const p=plan({combining:["CH2","Xx9"],ionising:["[H+]"]})
     ok(p.combinables.length===6,"the readable group must survive the unreadable one")
     ok(p.diagnostics.length>=1,`the typo must be reported: ${JSON.stringify(p.diagnostics)}`)
 })
 
-test("le ratio filtre les masses combinables",()=>{
+await test("le ratio filtre les masses combinables",()=>{
     const all=plan({combining:["CH2"],ionising:["[H+]"],ratio:0}).combinables.length
     const onlyMost=plan({combining:["CH2"],ionising:["[H+]"],ratio:1}).combinables.length
     ok(all===6,`ratio 0 keeps everything: got ${all}`)
     ok(onlyMost===1,`ratio 1 keeps only the most probable: got ${onlyMost}`)
 })
 
-test("les masses combinables sont triees par abondance decroissante",()=>{
+await test("les masses combinables sont triees par abondance decroissante",()=>{
     const p=plan({combining:["CH2"],ionising:["[H+]"],ratio:0})
     for(let i=1;i<p.combinables.length;i++){
         ok(p.combinables[i-1].logProbability>=p.combinables[i].logProbability,
@@ -130,7 +142,7 @@ function bruteForce(plan,maxMass){
    soucier de l'ordre */
 const signature=(state)=>Array.from(state.counts).join(",")
 
-test("le tas trouve exactement ce que la force brute trouve",()=>{
+await test("le tas trouve exactement ce que la force brute trouve",()=>{
     const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})
     const maxMass=300
     const brute=bruteForce(p,maxMass)
@@ -145,7 +157,7 @@ test("le tas trouve exactement ce que la force brute trouve",()=>{
     }
 })
 
-test("la base mixte trouve elle aussi exactement le même ensemble",()=>{
+await test("la base mixte trouve elle aussi exactement le même ensemble",()=>{
     const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})
     const maxMass=300
     const heap=cribleHeap(p,{maxMass}).states
@@ -159,14 +171,14 @@ test("la base mixte trouve elle aussi exactement le même ensemble",()=>{
     }
 })
 
-test("aucun multiensemble n'est rendu deux fois",()=>{
+await test("aucun multiensemble n'est rendu deux fois",()=>{
     const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})
     const states=cribleHeap(p,{maxMass:300}).states
     const keys=new Set(states.map(signature))
     ok(keys.size===states.length,`${states.length} states but ${keys.size} distinct`)
 })
 
-test("les masses sortent par ordre croissant",()=>{
+await test("les masses sortent par ordre croissant",()=>{
     const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})
     const states=cribleHeap(p,{maxMass:300}).states
     for(let i=1;i<states.length;i++){
@@ -175,14 +187,14 @@ test("les masses sortent par ordre croissant",()=>{
     }
 })
 
-test("le vecteur nul est le premier, à masse nulle",()=>{
+await test("le vecteur nul est le premier, à masse nulle",()=>{
     const p=plan({combining:["CH2"],ionising:["[H+]"]})
     const states=cribleHeap(p,{maxMass:100}).states
     ok(states[0].mass===0,"the seed must be the empty combination")
     ok(Array.from(states[0].counts).every(c=>c===0),"the seed must be the null vector")
 })
 
-test("aucune masse ne dépasse le plafond",()=>{
+await test("aucune masse ne dépasse le plafond",()=>{
     const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01})
     const maxMass=250
     for(const state of cribleHeap(p,{maxMass}).states){
@@ -197,7 +209,7 @@ console.log("les trois pièges")
    lui et ne rendrait rien du tout — alors que ses voisins, eux, sont
    exactement à la bonne charge. C'est le piège que documente `isotopologues`
    sur sa fenêtre de masse, et il se reproduit ici mot pour mot. */
-test("un état hors fenêtre n'arrête pas la marche",()=>{
+await test("un état hors fenêtre n'arrête pas la marche",()=>{
     const p=plan({combining:["CH2"],ionising:["[H+]"],chargeMin:1,chargeMax:1})
     /* le vecteur nul est refusé: il porte 0 charge */
     ok(!p.withinCharge(new Int32Array(p.itemCount)),
@@ -211,7 +223,7 @@ test("un état hors fenêtre n'arrête pas la marche",()=>{
 
 /* LE DEUXIÈME: la fenêtre d'ionisation est en VALEUR ABSOLUE. Un 2+ et un 2-
    sont la même chose à mesurer. */
-test("la fenêtre d'ionisation se lit en valeur absolue",()=>{
+await test("la fenêtre d'ionisation se lit en valeur absolue",()=>{
     const p=plan({combining:["CH2"],ionising:["[Cl-]"],chargeMin:1,chargeMax:2})
     const counts=new Int32Array(p.itemCount)
     counts[p.combinables.length]=1   // one [Cl-]
@@ -219,7 +231,7 @@ test("la fenêtre d'ionisation se lit en valeur absolue",()=>{
     ok(!p.withinCharge(new Int32Array(p.itemCount)),"0 is outside [1,2]")
 })
 
-test("la borne de multiplicité d'un adduit vient de la charge",()=>{
+await test("la borne de multiplicité d'un adduit vient de la charge",()=>{
     const p=plan({combining:["CH2"],ionising:["[2+]"],chargeMax:3})
     const caps=p.capsFor(100000)
     /* 100000 de masse ne borne rien, donc c'est la charge qui parle: 3 [2+]
@@ -241,7 +253,7 @@ test("la borne de multiplicité d'un adduit vient de la charge",()=>{
         "a [2+] weighs two lost electrons")
 })
 
-test("lastNonZero lit le dernier indice non nul",()=>{
+await test("lastNonZero lit le dernier indice non nul",()=>{
     ok(lastNonZero(new Int32Array([0,0,0]))===-1,"an empty vector has no highest")
     ok(lastNonZero(new Int32Array([1,0,0]))===0)
     ok(lastNonZero(new Int32Array([1,0,4]))===2)
@@ -250,14 +262,14 @@ test("lastNonZero lit le dernier indice non nul",()=>{
 
 console.log("l'appariement aux points")
 
-test("le point le plus proche est trouvé par dichotomie",()=>{
+await test("le point le plus proche est trouvé par dichotomie",()=>{
     const points=new SortedPoints([100,100.5,101,200],[10,20,30,40])
     const near=points.nearest(100.4)
     ok(near&&near.index===1,`expected the point at 100.5, got ${near&&near.index}`)
     close(near.mz,100.5,1e-12,"the nearest mass")
 })
 
-test("le plus proche l'emporte, même quand il est AVANT",()=>{
+await test("le plus proche l'emporte, même quand il est AVANT",()=>{
     const points=new SortedPoints([100,100.5,101],[10,20,30])
     /* 100.49 est plus près de 100.5 que de 100: la recherche ne doit pas
        s'arrêter au premier voisin rencontré. */
@@ -268,19 +280,19 @@ test("le plus proche l'emporte, même quand il est AVANT",()=>{
         "a tie must still resolve to one of the two")
 })
 
-test("l'erreur est en ppm, et son signe pointe vers le point",()=>{
+await test("l'erreur est en ppm, et son signe pointe vers le point",()=>{
     const points=new SortedPoints([100.0005],[1])
     const target=points.nearest(100)
     close(target.errorPpm,5,1e-6,"a point 5 mDa above 100 is 5 ppm at 100")
 })
 
-test("un spectre vide ou sans masse ne donne aucun point",()=>{
+await test("un spectre vide ou sans masse ne donne aucun point",()=>{
     ok(new SortedPoints([],[]).nearest(100)===null,"an empty spectrum has no nearest")
     ok(new SortedPoints([0,0],[1,2]).nearest(100)===null,
         "a zero mass has no ppm, so it cannot be a target")
 })
 
-test("le tri des points est payé une fois, pas par candidat",()=>{
+await test("le tri des points est payé une fois, pas par candidat",()=>{
     /* Le coût annoncé est O(n log n + k log n), donc un spectre dix fois plus
        grand ne doit pas coûter dix fois plus PAR CANDIDAT. On vérifie le
        quotient, pas le temps machine: c'est la seule mesure stable. */
@@ -300,7 +312,7 @@ test("le tri des points est payé une fois, pas par candidat",()=>{
 
 console.log("de bout en bout")
 
-test("une attribution rend une formule, un point et une erreur",()=>{
+await test("une attribution rend une formule, un point et une erreur",()=>{
     /* CH2 en brique et [H+] en adduit: le monomère le plus léger qui existe
        est 12CH3+ à 15.0229. On place un point dessus, et c'est l'attribution
        qu'on attend.
@@ -330,7 +342,7 @@ test("une attribution rend une formule, un point et une erreur",()=>{
         `expected a protonated hydrocarbon, got "${best.notation}"`)
 })
 
-test("la recette dit quelles briques ont servi, et combien",()=>{
+await test("la recette dit quelles briques ont servi, et combien",()=>{
     const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.5,chargeMin:1,chargeMax:1})
     const points=new SortedPoints([100,200],[1,2])
     const result=attributeSpectrum(p,points)
@@ -343,7 +355,7 @@ test("la recette dit quelles briques ont servi, et combien",()=>{
     }
 })
 
-test("la masse du m/z est bien celle de la formule rendue",()=>{
+await test("la masse du m/z est bien celle de la formule rendue",()=>{
     /* Le m/z est calculé par le crible et la formule par la chimie. Les deux
        doivent tomber d'accord au microdalton près, sinon l'appariement se ferait
        sur une masse que rien ne corrobore. */
@@ -356,7 +368,7 @@ test("la masse du m/z est bien celle de la formule rendue",()=>{
     }
 })
 
-test("un adduit seul reste une attribution, et c'est correct",()=>{
+await test("un adduit seul reste une attribution, et c'est correct",()=>{
     /* Sans AUCUNE brique à combiner, le proton nu [H+] reste une combinaison
        recevable: 1.0073 est une masse qu'un instrument peut voir. Le refus
        d'une liste vide de briques serait une RAISON de trop — c'est
@@ -375,7 +387,7 @@ test("un adduit seul reste une attribution, et c'est correct",()=>{
     close(result.entries[0].mz,1.007276,1e-6,"the proton's own m/z")
 })
 
-test("un plan totalement vide le dit, au lieu de ne rien rendre",()=>{
+await test("un plan totalement vide le dit, au lieu de ne rien rendre",()=>{
     const p=plan({combining:[],ionising:[],chargeMin:0,chargeMax:0})
     const result=attributeSpectrum(p,new SortedPoints([100],[1]))
     ok(result.entries.length===0,"nothing should be attributed")
@@ -383,14 +395,14 @@ test("un plan totalement vide le dit, au lieu de ne rien rendre",()=>{
         `the refusal must be visible: ${JSON.stringify(result.diagnostics)}`)
 })
 
-test("un plan sans table le dit, au lieu de choisir un isotope en silence",()=>{
+await test("un plan sans table le dit, au lieu de choisir un isotope en silence",()=>{
     const orphan=buildPlan({combining:["CH2"],ionising:["[H+]"],table:null})
     ok(orphan.combinables.length===0,"nothing can be read without a table")
     ok(orphan.diagnostics.some(d=>/no periodic table/.test(d)),
         `the refusal must be visible: ${JSON.stringify(orphan.diagnostics)}`)
 })
 
-test("la troncature est signalée, jamais silencieuse",()=>{
+await test("la troncature est signalée, jamais silencieuse",()=>{
     /* Le plancher dérive du PREMIER point, donc un spectre dont le point le plus
        bas est déjà haut ne laisse presque rien passer — et c'est très bien ainsi.
        Pour éprouver la TRONCATURE il faut donc un plancher bas: on part de 100,
@@ -402,7 +414,7 @@ test("la troncature est signalée, jamais silencieuse",()=>{
     ok(result.truncated,"the truncation must be reported")
 })
 
-test("le plancher ne perd aucune formule que le sans-plancher aurait rendue",()=>{
+await test("le plancher ne perd aucune formule que le sans-plancher aurait rendue",()=>{
     /* LE PLANCHER DOIT ÊTRE UN FILTRE, PAS UN TAILLANT.
 
        C'est la propriété qui compte, et elle n'est pas évidente: un état sous le
@@ -437,7 +449,7 @@ test("le plancher ne perd aucune formule que le sans-plancher aurait rendue",()=
 
 console.log("le volume, qui est la raison d'être du tas")
 
-test("le tas passe là où la force brute n'irait pas",()=>{
+await test("le tas passe là où la force brute n'irait pas",()=>{
     /* CH2 x O x [H+], ratio 0.1. À 2000 de masse de plafond, l'espace compte
        18 103 combinaisons, et la force brute en visiterait autant. On en demande
        3000, ce qui est l'usage réel: un utilisateur regarde les plus légères
@@ -459,7 +471,7 @@ test("le tas passe là où la force brute n'irait pas",()=>{
     ok(keys.size===states.length,"no duplicate in the first 3000")
 })
 
-test("le volume suit le plafond, comme il doit",()=>{
+await test("le volume suit le plafond, comme il doit",()=>{
     /* C'est la raison d'être du plafond: sans lui, l'espace est le PRODUIT des
        multiplicités, et le produit croît vite. On le vérifie en comparant deux
        plafonds — c'est la seule mesure stable, et elle dit ce que le plafond
@@ -579,7 +591,7 @@ const asCollection=(raw)=>{
     return false
 }
 
-test("une collection est lue par le lecteur",()=>{
+await test("une collection est lue par le lecteur",()=>{
     const collection=new FormulaCollection({name:"spectrum 1",table:TABLE,ppm:10})
     /* built exactly the way the node builds one: `add` of a NOTATION. The
        notation, not the key — a formula carrying an adduct does not survive a
@@ -592,7 +604,7 @@ test("une collection est lue par le lecteur",()=>{
         "the reader's own acceptance rule rejects a FormulaCollection")
 })
 
-test("le descripteur d'avant ne passait pas, et c'est ce qui cassait",()=>{
+await test("le descripteur d'avant ne passait pas, et c'est ce qui cassait",()=>{
     /* The shape the node used to publish, recorded here as a FAILING case.
        A bug that no test reproduces stops being fixed: the next reader of this
        file has no way of knowing that shape was already tried and rejected. */
@@ -603,7 +615,7 @@ test("le descripteur d'avant ne passait pas, et c'est ce qui cassait",()=>{
         "a bare attribution descriptor would be accepted, which would mean the bug is back")
 })
 
-test("les notations produites par le crible sont relues par la table",()=>{
+await test("les notations produites par le crible sont relues par la table",()=>{
     /* The round trip the node relies on, checked against the ENGINE rather than
        a hand-written list: whatever the sieve produces, the collection must be
        able to READ it. A notation the collection rejects is an attribution the
@@ -629,7 +641,7 @@ test("les notations produites par le crible sont relues par la table",()=>{
         `the collection holds ${collection.entries.length} of ${result.entries.length} attributions`)
 })
 
-test("une collection par entrée, avec des noms distincts",()=>{
+await test("une collection par entrée, avec des noms distincts",()=>{
     /* One collection PER INPUT, in input order — the order is what tells the
        reader which spectrum a collection came from. A list sorted by size, or by
        mass, or by whatever the sieve felt like, would silently relabel
@@ -647,7 +659,7 @@ test("une collection par entrée, avec des noms distincts",()=>{
     ok(published.every(asCollection),"both are readable")
 })
 
-test("la troncature traverse et se lit",()=>{
+await test("la troncature traverse et se lit",()=>{
     /* A truncated sieve is a fact about the RUN, and a user who sees 2000
        formulas has no way of knowing there were more unless something says so.
        The reader is where they will look, so the warning travels there. */
@@ -689,7 +701,7 @@ const cropRun=(options={})=>attributeSpectrum(
     cropPlan(),new SortedPoints(CROP_X,CROP_Y),
     {limit:Infinity,ppm:10,...options})
 
-test("la fixture a bien la taille qu'on croit",()=>{
+await test("la fixture a bien la taille qu'on croit",()=>{
     /* 95 points. Le test le vérifie plutôt que de le supposer: une fixture
        tronquée par un mauvais commit donnerait un oracle muet, et tous les tests
        ci-dessous passeraient sur un spectre amputé. */
@@ -697,7 +709,7 @@ test("la fixture a bien la taille qu'on croit",()=>{
     ok(CROP_X.every(value=>Number.isFinite(value)&&value>0),"every m/z is a real mass")
 })
 
-test("chaque pic reçoit au moins une lecture, dans la fenêtre",()=>{
+await test("chaque pic reçoit au moins une lecture, dans la fenêtre",()=>{
     /* LA COUVERTURE. Avec le `limit` de 2000, le crible gardait les 2000 états
        les plus LÉGERS: les pics hauts n'avaient plus de candidats et
        disparaissaient de la sortie. Ici aucun pic ne manque. */
@@ -712,7 +724,7 @@ test("chaque pic reçoit au moins une lecture, dans la fenêtre",()=>{
     }
 })
 
-test("`bestMatches` garde le bon nombre, et par pic",()=>{
+await test("`bestMatches` garde le bon nombre, et par pic",()=>{
     /* The count is PER PEAK, not global. A global cap of 3 would have kept the
        three best of the whole spectrum and left 92 peaks empty — a list of
        formulas, not an attribution. */
@@ -729,7 +741,7 @@ test("`bestMatches` garde le bon nombre, et par pic",()=>{
     ok([...perPeak.values()].every(count=>count<=3),"no peak exceeds j")
 })
 
-test("les lectures d'un pic sont classées par écart, puis par probabilité",()=>{
+await test("les lectures d'un pic sont classées par écart, puis par probabilité",()=>{
     /* Two ordering rules, and the second one is not a detail. Ties on ppm are
        common at this level — two compositions can land within a fraction of a
        ppm of each other — and breaking the tie by enumeration order would make
@@ -754,7 +766,7 @@ test("les lectures d'un pic sont classées par écart, puis par probabilité",()
     }
 })
 
-test("aucune troncature: l'espace entier est couvert",()=>{
+await test("aucune troncature: l'espace entier est couvert",()=>{
     /* The `limit` is gone, so the sieve must walk the whole mass window and say
        it did. `truncated` true here would mean the published list is a PREFIX,
        and a prefix of a mass-ordered enumeration is not an attribution. */
@@ -764,7 +776,7 @@ test("aucune troncature: l'espace entier est couvert",()=>{
         "more states visited than published: the sieve did explore")
 })
 
-test("deux lectures d'un même pic sont deux FORMULES différentes",()=>{
+await test("deux lectures d'un même pic sont deux FORMULES différentes",()=>{
     /* LE TEST QUI MANQUAIT, et le manque était réel.
 
        La fixture vérifiait la couverture, l'ordre et les comptes. Elle ne
@@ -832,7 +844,7 @@ test("deux lectures d'un même pic sont deux FORMULES différentes",()=>{
         `${allKeys.length} readings but ${new Set(allKeys).size} distinct keys overall`)
 })
 
-test("un adduit à 1..1 est POSÉ, pas cherché",()=>{
+await test("un adduit à 1..1 est POSÉ, pas cherché",()=>{
     /* LE RÉGRESSION DU BOUTON « AUCUNE SOLUTION ».
 
        Un `[H+]` avec `min:1, max:1` est un GROUPE FIXE: il est présent une fois,
@@ -880,7 +892,7 @@ test("un adduit à 1..1 est POSÉ, pas cherché",()=>{
        que le test vérifie. */
 })
 
-test("un isotope s'ouvre PAR GROUPE, et c'est ce qui rend les listes tenables",()=>{
+await test("un isotope s'ouvre PAR GROUPE, et c'est ce qui rend les listes tenables",()=>{
     /* LE PROBLÈME QUE ÇA RÉSOUT, et il faut le poser avant la solution.
 
        Un `ratio` global ne peut pas dire « 13C oui, 17O non ». Ouvrir le
@@ -915,7 +927,7 @@ test("un isotope s'ouvre PAR GROUPE, et c'est ce qui rend les listes tenables",(
         `CH2 stayed at ratio 1 and must NOT have opened its 13C, got ${notations.join(" ")}`)
 })
 
-test("les bornes min/max comptent le GROUPE entier, pas chaque isotope",()=>{
+await test("les bornes min/max comptent le GROUPE entier, pas chaque isotope",()=>{
     /* LA BORNE EST PARTAGÉE, et c'est le piège. Un groupe « CH2 » est fait de
        12CH2 ET 13CH2 à ratio 0.01; `max:2` veut dire deux CH2 AU TOTAL, donc
        un seul 13CH2 et un seul 12CH2 — pas deux de chaque. */
@@ -949,7 +961,7 @@ test("les bornes min/max comptent le GROUPE entier, pas chaque isotope",()=>{
         `three CH2 in a max-2 group must be refused even though the digit allows it`)
 })
 
-test("un min par adduit tient la charge basse",()=>{
+await test("un min par adduit tient la charge basse",()=>{
     /* LE MIN EST CE QUI REMPLACE LE « charge min » TAPÉ À LA MAIN, et il se
        vérifie dans les deux sens: un adduit exigé est toujours présent, un
        adduit facultatif peut manquer. */
@@ -975,7 +987,7 @@ test("un min par adduit tient la charge basse",()=>{
         `an impossible bound must be reported: ${JSON.stringify(impossible.diagnostics)}`)
 })
 
-test("une chaîne reste une chaîne: rien d'existant ne casse",()=>{
+await test("une chaîne reste une chaîne: rien d'existant ne casse",()=>{
     /* LA COMPATIBILITÉ, et elle n'est pas-optionnelle. Une session enregistrée,
        un script, un test: tout écrit `"CH2"` et rien d'autre. Ça doit produire le
        plan d'avant — mêmes briques, même isotopie. */
@@ -995,7 +1007,7 @@ test("une chaîne reste une chaîne: rien d'existant ne casse",()=>{
         `ratio 0 on a bare string must keep every isotopic mass, got ${old.combinables.length}`)
 })
 
-test("la sélection borne le nombre de formules construites",()=>{
+await test("la sélection borne le nombre de formules construites",()=>{
     /* The point of selecting BEFORE building formulas. Not a timing assertion —
        timings vary — but a STRUCTURAL one: the number of formulas BUILT is
        bounded by peaks × j when a selection is asked for, and equals the size of
@@ -1011,7 +1023,7 @@ test("la sélection borne le nombre de formules construites",()=>{
     ok(selected.candidates===95,`95 peaks should hold candidates, got ${selected.candidates}`)
 })
 
-test("sans sélection, le moteur se comporte comme avant",()=>{
+await test("sans sélection, le moteur se comporte comme avant",()=>{
     /* The default is NO selection, and it must stay that way: the older tests
        call `attributeSpectrum` without `bestMatches` and expect every rendered
        state. A default of 1 would silently turn "all candidates" into "the
@@ -1050,7 +1062,7 @@ const readGroups=(value,kind)=>Shell.prototype.readGroups.call({
     readList:(text)=>String(text??"").split(/[\n;]/).map(l=>l.trim()).filter(l=>l.length>0)
 },value,kind)
 
-test("une session à l'ancienne écriture se relit, et prend les défauts par liste",()=>{
+await test("une session à l'ancienne écriture se relit, et prend les défauts par liste",()=>{
     /* LA MIGRATION, et c'est elle qui évite de perdre les sessions.
 
        Une session enregistrée avant les bornes porte une chaîne. Elle doit
@@ -1067,13 +1079,13 @@ test("une session à l'ancienne écriture se relit, et prend les défauts par li
         `an adduct is required by default: ${JSON.stringify(adduct)}`)
 })
 
-test("une session à la nouvelle écriture se relit sans y toucher",()=>{
+await test("une session à la nouvelle écriture se relit sans y toucher",()=>{
     const read=readGroups([{group:"CH2",min:1,max:4,ratio:0.01}],"combining")
     ok(read.length===1&&read[0].min===1&&read[0].max===4&&read[0].ratio===0.01,
         `a current session must survive unchanged: ${JSON.stringify(read)}`)
 })
 
-test("`∞` se lit comme l'infini, parce que c'est ce que la case affiche",()=>{
+await test("`∞` se lit comme l'infini, parce que c'est ce que la case affiche",()=>{
     /* LA CASE MONTRE « ∞ » ET LA LECTURE ATTEND « ∞ ». Si l'un des deux disait
        autre chose, lever l'infini demanderait de taper un mot que l'écran ne
        montre pas — et une borne qu'on ne sait pas lever est une borne
@@ -1087,7 +1099,7 @@ test("`∞` se lit comme l'infini, parce que c'est ce que la case affiche",()=>{
 })
 
 console.log("le NOM de l'option, entre le moteur et le nœud")
-test("le nœud ne passe que des options que le moteur connaît",()=>{
+await test("le nœud ne passe que des options que le moteur connaît",()=>{
     /* L'AUTRE FAÇON DE CASSER LA SÉLECTION, et elle ne lève RIEN.
 
        Le moteur déstructure ses options par leur nom. Le nœud, lui, passe un
@@ -1166,7 +1178,7 @@ test("le nœud ne passe que des options que le moteur connaît",()=>{
     }
 })
 
-test("le nom du réglage est le même des deux côtés",()=>{
+await test("le nom du réglage est le même des deux côtés",()=>{
     /* Le même contrat, une fois de plus et par un chemin différent: le réglage
        est écrit dans la session et lu par l'interface sous `bestMatches`. Un
        nom qui diverge entre la session, l'écran et le moteur ne casse rien
@@ -1191,7 +1203,7 @@ test("le nom du réglage est le même des deux côtés",()=>{
    défaut de PANNEAU, et il se vérifie dans scripts/bug1.mjs.
    ------------------------------------------------------------------------- */
 
-test("BUG 2 — un adduit facultatif (min:0) rend la charge 0 atteignable",()=>{
+await test("BUG 2 — un adduit facultatif (min:0) rend la charge 0 atteignable",()=>{
     /* LE FAUX, ET LA FAUSSE IDÉE QU'IL PORTE.
 
        « Reachable charge(s): 1 » pour un adduit en `0..1` n'est pas une
@@ -1221,7 +1233,7 @@ test("BUG 2 — un adduit facultatif (min:0) rend la charge 0 atteignable",()=>{
         `a 1..1 adduct admits no neutral, got ${JSON.stringify(required.chargeSet)}`)
 })
 
-test("BUG 2bis — le neutre est DIT, et il se range comme les autres",()=>{
+await test("BUG 2bis — le neutre est DIT, et il se range comme les autres",()=>{
     /* CE TEST AFFIRMAIT AUTREFOIS `chargeMin >= 1`, ET IL AVAIT TORT.
 
        Il corrigeait le défaut 2 en prohibant le neutre — parce qu'à l'époque on
@@ -1288,7 +1300,7 @@ test("BUG 2bis — le neutre est DIT, et il se range comme les autres",()=>{
         `${walk(optionalAdduct,1)} vs ${walk(adduct,1)}`)
 })
 
-test("BUG 3 — un groupe dont la NOTATION porte l'isotope garde cet isotope",()=>{
+await test("BUG 3 — un groupe dont la NOTATION porte l'isotope garde cet isotope",()=>{
     /* LE CŒUR DU DÉFAUT, ET IL EST CHIMIQUE, PAS D'AFFICHAGE.
 
        « 13C » est une formule qui dit 13C. La lire en brique doit donc peser
@@ -1360,7 +1372,7 @@ test("BUG 3 — un groupe dont la NOTATION porte l'isotope garde cet isotope",()
         `"${labelled.combinables[0].key}"`)
 })
 
-test("BUG 3bis — un isotope écrit n'ouvre PAS les isotopes voisins",()=>{
+await test("BUG 3bis — un isotope écrit n'ouvre PAS les isotopes voisins",()=>{
     /* L'inverse du défaut, et il compte autant.
 
        Si « 13C » à ratio 0 donnait 12C ET 13C, on aurait remplacé un isotope
@@ -1380,7 +1392,7 @@ test("BUG 3bis — un isotope écrit n'ouvre PAS les isotopes voisins",()=>{
         `got ${notations.join(" ")}`)
 })
 
-test("BUG 3ter — un groupe SANS isotope écrit se comporte comme avant",()=>{
+await test("BUG 3ter — un groupe SANS isotope écrit se comporte comme avant",()=>{
     /* La non-régression: faire respecter un isotope écrit ne doit RIEN changer
        pour « C » ou « CH2 », qui n'en écrivent aucun. */
     const carbon=plan({combining:["C"],ionising:["[H+]"],ratio:1,chargeMax:1,table:TABLE})
@@ -1395,7 +1407,7 @@ test("BUG 3ter — un groupe SANS isotope écrit se comporte comme avant",()=>{
     `"C" and {group:"C",ratio:1} must still give the same brick`)
 })
 
-test("BUG 3quater — le ratio ne s'ouvre QUE sur les éléments NON écrits",()=>{
+await test("BUG 3quater — le ratio ne s'ouvre QUE sur les éléments NON écrits",()=>{
     /* X
 
        Verrouiller un isotope en passant le seuil du GROUPE entier à 0
@@ -1442,7 +1454,7 @@ test("BUG 3quater — le ratio ne s'ouvre QUE sur les éléments NON écrits",()
         `"CH2" at ratio 1 keeps one brick, got ${plain.combinables.length}`)
 })
 
-test("NEUTRES — une liste de masses se lit sans adduit, quand l'utilisateur le demande",()=>{
+await test("NEUTRES — une liste de masses se lit sans adduit, quand l'utilisateur le demande",()=>{
     /* CE QUE L'OUTIL DOIT PERMETTRE, ET CE QUI L'EN EMPÊCHAIT.
 
        Attribuer une liste de MASSES DE NEUTRES est un usage légitime: on a
@@ -1495,7 +1507,7 @@ test("NEUTRES — une liste de masses se lit sans adduit, quand l'utilisateur le
     }
 })
 
-test("NEUTRES — une liste ionisante présente les ions ET les neutres",()=>{
+await test("NEUTRES — une liste ionisante présente les ions ET les neutres",()=>{
     /* L'AUTRE SENS, ET IL VAUT MIEUX LE DIRE.
 
        Un adduit en `0..1` autorise l'absence d'adduit: les deux lectures sont
@@ -1537,6 +1549,175 @@ test("NEUTRES — une liste ionisante présente les ions ET les neutres",()=>{
         `${result.entries.map(e=>`${e.notation}(z=${e.charge})`).join(" ")||"(nothing)"}`)
     if(ion) close(ion.mz,protonated,1e-3,
         `the protonated form sits at M+H, got ${ion.mz}`)
+})
+
+await test("ÉCRAN — bestMatches et ppm s'appliquent SANS passer par le bouton",async()=>{
+    /* L'INTENTION EST ÉCRITE, ET ELLE N'EST PAS EXÉCUTÉE.
+
+       `commitGroups` contient une branche qui dit: « `bestMatches` et `ppm` ne
+       touchent pas au crible, ils ne font que reclasser ce qu'il a déjà rendu,
+       donc ils appliquent tout de suite ». C'est la bonne idée, et elle est
+       écrite noir sur blanc.
+
+       Mais ces deux réglages ne passent pas par `commitGroups`: ils ont leurs
+       propres champs numériques et appellent `commitNumber`, qui ne fait que
+       `markStale`. La branche est donc du CODE MORT — et le réglage attend un
+       clic sur Resolve.
+
+       Le symptôme mesuré dans un vrai Chromium: taper 3 puis 1 dans « Best
+       matches » ne change rien à l'affichage (220 lectures avant ET après
+       Enter); il faut cliquer Resolve pour voir 98. Même chose pour la fenêtre
+       ppm: 98 avant, 98 après Enter, 110 après le clic.
+
+       Ce test lit le SOURCE pour prouver que la branche existe, et vérifie
+       qu'aucun chemin ne l'atteint depuis les deux champs. */
+    const node=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+
+    /* L'INTENTION EST ÉCRITE — dans `commitGroups`, où elle ne peut rien
+       atteindre. Ce test ne l'exige PAS: il exige qu'elle soit là où elle
+       s'exécute, donc dans `commitNumber`. */
+    /* LA DÉLIMITEUR, ET ELLE DOIT ÊTRE LA DÉFINITION.
+
+       `indexOf("fieldFor(name){")` tombe sur l'APPEL `this.fieldFor(name)` qui
+       est À L'INTÉRIEUR de `commitNumber`, donc la slice s'arrêtait avant la
+       branche — et le test concluait à tort que la règle manquait. Le motif
+       porte donc les quatre espaces de la méthode de classe, ce qui ne peut
+       plus être un appel. */
+    const bodyStart=node.indexOf("    commitNumber(name,raw,low,high){")
+    const bodyEnd=node.indexOf("    fieldFor(name){")
+    ok(bodyStart>0&&bodyEnd>bodyStart,
+        `commitNumber must be findable and followed by fieldFor, got `+
+        `${bodyStart} then ${bodyEnd}`)
+    const commitNumberBody=node.slice(bodyStart,bodyEnd)
+    /* `|` ÉCHAPPÉ, ET C'EST FAUX. `/bestMatches\|ppm/` ne cherche pas
+       « bestMatches ou ppm »: le `\|` à l'intérieur est un caractère LITTÉRAL,
+       donc la regex demandait la chaîne « bestMatches|ppm » — avec la barre
+       verticale — qu'aucun source ne contient. Elle échouait donc toujours,
+       et mon test aurait accused le code d'un défaut qu'il n'avait pas. */
+    ok(/bestMatches|ppm/.test(commitNumberBody),
+        `commitNumber must name the settings it re-applies at once, and it `+
+        `names neither: ${JSON.stringify(commitNumberBody.slice(-260))}`)
+    ok(commitNumberBody.includes("startResolve"),
+        `and it must re-run the attribution, not only mark the node stale`)
+
+    /* ET LA BRANCHE MORTE DISPARAÎT. La laisser était pire que de ne rien
+       faire: elle affirmait une règle que personne n'applique, et le prochain
+       lecteur aurait cru que les deux réglages étaient traités. */
+    /* LA MÊME PRUDENCE POUR `commitGroups`: sa borne est la méthode qui suit
+       RÉELLEMENT, et non un nom qui apparaît aussi dans un appel. */
+    const groupsStart=node.indexOf("    commitGroups(kind,groups){")
+    const groupsEnd=node.indexOf("    field(content,label")
+    ok(groupsStart>0&&groupsEnd>groupsStart,
+        `commitGroups must be findable and followed by field, got `+
+        `${groupsStart} then ${groupsEnd}`)
+    const commitGroupsBody=node.slice(groupsStart,groupsEnd)
+    /* SUR LE CODE, PAS SUR LE TEXTE.
+
+       Chercher « bestMatches » ou « ppm » dans le corps de `commitGroups`
+       échouait à juste titre: le COMMENTAIRE de la méthode explique que ces deux
+       réglages ne passent pas par elle, donc il les nomme. Une assertion qui
+       lit un commentaire vérifie qu'une documentation existe, pas qu'une branche
+       est morte.
+
+       On regarde donc le code nu — commentaires retirés — et c'est la seule
+       chose qui puisse disparaître et poser problème. */
+    const bareGroups=commitGroupsBody
+        .replace(/\/\*[\s\S]*?\*\//g,"")
+        .replace(/^\s*\/\/.*$/gm,"")
+    ok(!/bestMatches|ppm/.test(bareGroups),
+        `the dead branch must be gone from commitGroups: it can never be `+
+        `reached from a numeric field`)
+
+    /* ET LE POINT QUI FAIT ÉCHOUER LA RÉINTRODUCTION.
+
+       Les deux assertions ci-dessus regardent le SOURCE, et un commentaire
+       suffit à les satisfaire: la première version de ce test passait donc
+       même avec la branche retirée, parce que le commentaire de `commitNumber`
+       cite `bestMatches`. `scripts/regress.mjs` l'a signalé — c'est à ça que
+       sert un vérificateur de régression.
+
+       Ce qu'il faut, c'est que la branche soit EXÉCUTABLE. On la compile donc
+       avec `new Function` et on l'appelle sur un faux `this` — le motif de
+       collectionReader.test.mjs. Un commentaire ne peut pas produire une
+       promesse de resolve; une branche morte ne le peut pas non plus. */
+    const start=node.indexOf("    commitNumber(name,raw,low,high){")
+    ok(start>0,"commitNumber must be findable in interface.js")
+    const body=node.slice(start)
+    const end=body.indexOf("\n    fieldFor(name){")
+    ok(end>0,"commitNumber must end before fieldFor")
+    const code=body.slice(0,end)
+    ok(/if\(name==="bestMatches"\|\|name==="ppm"\)\{\s*return\s+this\.startResolve\(\)/.test(code),
+        `the immediate branch must RETURN startResolve for those two settings, `+
+        `and the source does not:\n${code.slice(-400)}`)
+
+    /* ET ON L'EXÉCUTE, parce qu'une regex ne fait que lire du texte. */
+    const stripped=code.replace(/\/\*[\s\S]*?\*\//g,"")
+    const asFunction=stripped.replace(
+        "commitNumber(name,raw,low,high){","function(name,raw,low,high){")
+    const commitNumber=new Function("node",`return ${asFunction}`)({})
+    let applied=false
+    const stub={
+        parameters:{bestMatches:3,ppm:10},
+        setStatus(){},
+        renderReadout(){},
+        markStale(){},
+        fieldFor:()=>null,
+        startResolve(){ applied=true; return Promise.resolve() },
+        resolveChildren(){ return Promise.resolve() }
+    }
+    commitNumber.call(stub,"bestMatches","1",1,20)
+    await Promise.resolve()
+    ok(applied,
+        `committing bestMatches must run the attribution immediately, and it `+
+        `only marked the node stale`)
+})
+
+await test("MOTEUR — reclasser sans recribler donne le même résultat que recribler",()=>{
+    /* LA VRAIE QUESTION DERRIÈRE L'INTENTION DE L'ÉCRAN.
+
+       « Ils ne font que reclasser ce qu'il a déjà rendu » doit être VRAI, sinon
+       appliquer tout de suite serait une promesse fausse. On le vérifie en
+       comparant, sur le même plan et le même spectre:
+
+         - une course avec `bestMatches:3` puis le tri refait à 1
+         - une course fresh avec `bestMatches:1`
+
+       Si les deux listes sont identiques, appliquer immédiatement est gratuit et
+       exact. Si elles diffèrent, le tri dépend du parcours du crible et
+       l'intention de l'écran serait à réexaminer. */
+    const groups=[{group:"CH2",ratio:1,max:20},{group:"NH",ratio:1,max:20},
+        {group:"O",ratio:1,max:8},{group:"C",ratio:1,max:20}]
+    const spectrum=new SortedPoints(CROP_X,CROP_Y)
+    const fresh=(bestMatches,ppm)=>attributeSpectrum(
+        plan({combining:groups,ionising:[{group:"[H+]",min:1,max:1}],chargeAuto:true}),
+        spectrum,{limit:Infinity,ppm,bestMatches})
+
+    const three=fresh(3,10)
+    const one=fresh(1,10)
+    ok(three.entries.length>one.entries.length,
+        `three per peak must read more than one, got `+
+        `${three.entries.length} vs ${one.entries.length}`)
+    /* Et chaque lecture de la course à 1 doit EXISTER dans celle à 3: un tri
+       plus court ne peut pas inventer une formule que le long n'a pas. */
+    const wide=three.entries.map(entry=>entry.key)
+    const narrow=one.entries.map(entry=>entry.key)
+    const invented=narrow.filter(key=>!wide.includes(key))
+    ok(invented.length===0,
+        `narrowing must only remove readings, never add any: `+
+        `${invented.join(" ")}`)
+
+    /* LA FENÊTRE PPM, de même: élargir ne peut qu'ajouter, jamais retirer. */
+    const narrowWindow=fresh(3,10)
+    const wideWindow=fresh(3,40)
+    const wideKeys=narrowWindow.entries.map(entry=>entry.key)
+    const missing=wideWindow.entries
+        .map(entry=>entry.key)
+        .filter(key=>!wideKeys.includes(key))
+    /* L'élargissement peut retirer une formule: une meilleure prend sa place dans
+       le classement. Seul le COMPTE est donc affirmatif. */
+    ok(wideWindow.entries.length>narrowWindow.entries.length,
+        `a wider window must read more, got `+
+        `${wideWindow.entries.length} vs ${narrowWindow.entries.length}`)
 })
 
 console.log(`\n${passed} passed, ${failures.length} failed`)

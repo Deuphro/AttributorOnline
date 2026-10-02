@@ -15,7 +15,7 @@
    serveur de production sert une liste blanche.
    ------------------------------------------------------------------------- */
 import {createServer} from "http"
-import {readFile} from "fs/promises"
+import {readFile,writeFile} from "fs/promises"
 import {existsSync,mkdirSync} from "fs"
 import path from "path"
 import {fileURLToPath} from "url"
@@ -56,6 +56,18 @@ const shots=process.argv.includes("--shots")?path.join(ROOT,"shots"):null
 if(shots&&!existsSync(shots)) mkdirSync(shots)
 
 export const log=(...parts)=>console.log(...parts)
+
+/* Un diagnostic ponctuel, à lancer quand une slice semble cortailler. */
+if(process.argv.includes("--slice")){
+    const node=await readFile(path.join(ROOT,"scripts/interface.js"),"utf8")
+    const start=node.indexOf("    commitNumber(name,raw,low,high){")
+    const end=node.indexOf("    fieldFor(name){")
+    const slice=node.slice(start,end)
+    log(`start=${start} end=${end} length=${slice.length}`)
+    log(`has bestMatches|ppm: ${/bestMatches|ppm/.test(slice)}`)
+    log(`has startResolve   : ${slice.includes("startResolve")}`)
+    log(`tail: ${JSON.stringify(slice.slice(-140))}`)
+}
 
 export async function open(){
     const server=await serve(ROOT,PORT)
@@ -121,4 +133,32 @@ export async function dump(label,state){
 export async function shutdown({browser,server}){
     await browser.close()
     server.close()
+}
+
+/* Réintroduire une faute, vérifier qu'un test la voit, puis restaurer.
+
+   C'est le seul moyen honnête de dire qu'un test protège quelque chose: sans
+   ça, « 64 passed » ne prouve que que le test passe sur le code qu'il décrit.
+   Le motif est celui de collectionReader.test.mjs — lire, découper, évaluer —
+   et ici il s'agit de remettre une ligne en place puis de la retirer. */
+/* Les fins de ligne du fichier, lues et non supposées. Windows les écrit en
+   CRLF, donc chercher `\n` seul dans un motif multiligne ne trouve rien — et
+   un motif introuvable doit être une ERREUR, jamais un test qui passe. */
+export async function reintroduce(file,from,to){
+    /* `target`, et non `path`: le nom du module `path` est déjà pris dans cette
+       portée, et le déclarer ici en `const path` le rendrait inaccessible —
+       exactement le genre de faute que cette fonction sert à attraper. */
+    const target=path.join(ROOT,file)
+    const original=await readFile(target,"utf8")
+    /* On tente le motif tel quel, puis avec les fins de ligne du fichier. Un
+       seul des deux doit exister; sinon le test vérifierait du vide. */
+    const crlf=original.includes("\r\n")
+    const pattern=crlf?from.replace(/\n/g,"\r\n"):from
+    if(!original.includes(pattern)){
+        throw new Error(`cannot reintroduce: the pattern is not in ${file}`+
+            `${crlf?" (CRLF)":""}:\n${from}`)
+    }
+    await writeFile(target,original.replace(pattern,
+        crlf?to.replace(/\n/g,"\r\n"):to))
+    return async ()=>{ await writeFile(target,original) }
 }
