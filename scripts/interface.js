@@ -536,14 +536,7 @@ class Node{
     }
     suicide({skipHistory=false}={}){
         const flow=this.destination
-        const linkedDescriptors=flow.linkList
-            .filter(link=>link.inputNode===this||link.outputNode===this)
-            .map(link=>({
-                inputNode:link.inputNode,
-                inputIndex:Number(link.inputAnchor.id),
-                outputNode:link.outputNode,
-                outputIndex:Number(link.outputAnchor.id)
-            }))
+        const linkedDescriptors=flow.linkDescriptorsFor(this)
         const restoreData=nodeRestoreData(this)
         //forget stale replacements pointing at the node being killed
         for(const [deadOriginal,replacement] of flow.replacements){
@@ -580,14 +573,13 @@ class Node{
                 label:`Delete node ${this.title}`,
                 undo:()=>{
                     restoredNode=createNodeForHistory(this.origin,flow,restoreData)
-                    restoredLinks=linkedDescriptors.map(link=>flow.createLink(
-                        link.inputNode===this?restoredNode:link.inputNode,
-                        link.inputIndex,
-                        link.outputNode===this?restoredNode:link.outputNode,
-                        link.outputIndex
-                    )).filter(Boolean)
-                    restoredNode.refreshFromLinks?.()
+                    /* AVANT le recâblage, et pas après: c'est cette entrée qui
+                       dit à `rebuildLinks` que l'extrémité morte est désormais
+                       cette instance-ci. Posée après, le câble partirait sur un
+                       nœud qui n'existe plus. */
                     flow.replacements.set(this,restoredNode)
+                    restoredLinks=flow.rebuildLinks(linkedDescriptors)
+                    restoredNode.refreshFromLinks?.()
                 },
                 redo:()=>{
                     for(const link of [...restoredLinks]){
@@ -9005,6 +8997,48 @@ class Flow{
     toggleSelection(node){
         this.select(node,{additive:true})
     }
+    /* LES LIENS D'UN GESTE, PHOTOGRAPHIÉS.
+
+       Un lien ne se décrit que par ses INDEX D'ANCRE: les deux instances qu'il
+       relient sont des objets, et un undo en fabrique d'autres. Il n'y a rien
+       d'autre à quoi les reconnaître — pas d'id, pas de titre.
+
+       La méthode prend UN nœud ou une liste, parce que les deux appelants en
+       ont besoin pour des raisons OPPOSÉES. `suicide` photographie les liens
+       d'un seul nœud, dont ceux qui sortent vers l'extérieur du groupe. La
+       suppression de groupe photographie les liens de TOUS ses nœuds d'un
+       coup, parce qu'un câble entre deux nœuds du groupe n'appartient
+       qu'à moitié à chacun: pris nœud par nœud, il est compté deux fois, et
+       lu dans l'un après la mort de l'autre, il n'est vu qu'une fois. */
+    linkDescriptorsFor(nodes){
+        const set=new Set(Array.isArray(nodes)?nodes:[nodes])
+        return this.linkList
+            .filter(link=>set.has(link.inputNode)||set.has(link.outputNode))
+            .map(link=>({
+                inputNode:link.inputNode,
+                inputIndex:Number(link.inputAnchor.id),
+                outputNode:link.outputNode,
+                outputIndex:Number(link.outputAnchor.id)
+            }))
+    }
+    /* LE CHEMIN INVERSE, et c'est là que se décide le bug.
+
+       Chaque extrémité passe par `replacements`: un nœud mort est remplacé
+       par celui que l'undo vient de recréer, et un lien dont UNE extrémité
+       est morte est donc recâblé sur le nouveau. Un lien dont les DEUX
+       extrémités sont mortes — deux nœuds supprimés ensemble — est recâblé
+       des deux côtés, ce qui est précisément ce que la suppression de
+       groupe faisait perdre. */
+    rebuildLinks(descriptors){
+        const live=node=>this.replacements.get(node)??node
+        return descriptors
+            .map(link=>this.createLink(
+                live(link.inputNode),
+                link.inputIndex,
+                live(link.outputNode),
+                link.outputIndex))
+            .filter(Boolean)
+    }
     /* EFFACE TOUT CE QUI EST SÉLECTIONNÉ, and it is ONE undo step.
 
        The alternative — letting each node's own suicide() record its own
@@ -9022,17 +9056,50 @@ class Flow{
             return
         }
         const flow=this
+        /* LA PHOTO, AVANT. Les deux, et pas l'état seulement.
+
+           `nodeRestoreData(node)` lisait un nœud déjà MORT, depuis l'undo. Ça
+           marchait par chance: les champs sont encore là après un suicide.
+           Et les LIENS n'étaient pas photographiés du tout — ils ne se
+           lisent pas dans un nœud, ils se dessinent. Un Ctrl+Z ramenait donc
+           les boîtes et laissait les câbles par terre: deux nœuds reliés,
+           supprimés d'un geste, revenaient orphelins. */
+        const snapshot=nodes.map(node=>({origin:node.origin,data:nodeRestoreData(node)}))
+        const linkedDescriptors=flow.linkDescriptorsFor(nodes)
         /* The whole batch as ONE command. Each suicide() below runs with
            `skipHistory`, so none of them pushes its own entry; this one stands
            for all of them. */
         if(!this.origin.history.replaying){
+            let restored=[]
             this.origin.history.record(new Command({
                 label:nodes.length===1
                     ?`Delete node ${nodes[0].title}`
                     :`Delete ${nodes.length} nodes`,
                 undo:()=>{
-                    const restored=nodes.map(node=>createNodeForHistory(node.origin,flow,nodeRestoreData(node)))
+                    restored=snapshot.map(entry=>createNodeForHistory(entry.origin,flow,entry.data))
+                    /* Les remplacements d'abord, le recâblage ensuite: ce sont
+                       eux qui diront où va une extrémité morte. */
+                    for(const [dead,fresh] of nodes.map((dead,index)=>[dead,restored[index]])){
+                        flow.replacements.set(dead,fresh)
+                    }
+                    flow.rebuildLinks(linkedDescriptors)
+                    for(const node of restored){
+                        node.refreshFromLinks?.()
+                    }
                     flow.selectOnly(restored[restored.length-1]??null)
+                },
+                /* LE REDO, qui n'existait pas. Un Ctrl+Y après le Ctrl+Z ne
+                   faisait RIEN: le geste était retiré de l'historique sans
+                   jamais être rejoué, et le nœud restait là jusqu'au prochain
+                   undo. Il n'a rien de subtil — c'est la suppression, rendue
+                   par le suicide de chaque nœud revenu, qui coupe ses propres
+                   liens et nettoie ses propres remplacements. */
+                redo:()=>{
+                    for(const node of restored){
+                        node.suicide({skipHistory:true})
+                    }
+                    restored=[]
+                    flow.clearSelection()
                 }
             }))
         }
