@@ -163,11 +163,19 @@ div{
 #mainInterface{
     border:0px solid red;
     display:grid;
-    grid-template-rows:125px 5px 1fr 5px 100px;
+    /* `minmax(0,1fr)`, PAS `1fr` nu — voir l'explication à .app, plus bas.
+
+       La rangée du milieu ne doit jamais pouvoir grow: c'est 1fr qui décide
+       de ce qu'il y a entre le panneau du haut et celui du bas. */
+    grid-template-rows:125px 5px minmax(0,1fr) 5px 100px;
     justify-items: stretch;
     justify-content: stretch;
     transition:300ms;
     overflow:hidden;
+    /* Le filet: même avec la rangée ci-dessus verrouillée, l'item ne doit pas
+       avoir de taille minimale automatique. `body.menu-open` le rend visible,
+       et visible la réinstalle (voir .app). */
+    min-height:0;
 }
 
 .horizontal.mid.panel{
@@ -256,7 +264,26 @@ div{
 
 .app{
     display:grid;
-    grid-template-rows: auto 1fr;
+    /* `minmax(0,1fr)`, PAS `1fr`. C'est ICI que se joue le bug.
+
+       #mainInterface est l'item de cette rangée. Un `1fr` nu vaut
+       `minmax(auto,1fr)`, et le `auto` — la TAILLE MINIMALE AUTOMATIQUE de
+       l'item — vaut le min-content de ce dernier... sauf si l'item est un
+       conteneur de défilement, où il vaut 0. #mainInterface défile
+       (overflow:hidden), donc il restait cloué à la hauteur de la fenêtre et le
+       panneau gauche scrollait dans son .vertical.left.content, quel que soit
+       le nombre d'accordéons.
+
+       `body.menu-open` le passe en overflow:visible pour que le sous-menu du
+       flux puisse déborder par-dessus le panneau du milieu. Il perd alors son
+       minimum à zéro: le min-content de #mainInterface — la hauteur réelle de
+       son contenu, panneau gauche compris — devient le plancher de la rangée.
+       La rangée du milieu grow, et le panneau bot est poussé hors de la fenêtre.
+
+       C'est bien ce qu'on voyait: le panneau gauche « veut toute la place dont
+       il a besoin ». Il ne la veut pas — il la PREND, parce qu'on avait retiré
+       la seule règle qui l'en empêchait. */
+    grid-template-rows: auto minmax(0,1fr);
     position: absolute;
     bottom:0px;
     top:0px;

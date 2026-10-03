@@ -12769,18 +12769,24 @@ class App{
         this.channel.register('node', new Node('Display node',[{}],[],this,this.channel.get('mainFlow'),{x:400,y:10}), 'Display node')
         */
     }
+    /* Les six écritures de `grid-template-rows` ci-dessous recopient la rangée
+       du milieu. C'est du STYLE EN LIGNE: il gagne contre la feuille de style,
+       donc un `1fr` nu ici réintroduirait le bug du panneau bot poussé hors de
+       la fenêtre — mais seulement après un redimensionnement, un repli, ou une
+       session restaurée, ce qui le rend beaucoup plus dur à relier à sa cause.
+       `minmax(0,1fr)` partout, comme dans main.css. */
     foldTop(v){
         if(v){
             this.parameters.topContent.folded=true;
-            this.mainInterface.style["grid-template-rows"]=`0px 5px 1fr 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
+            this.mainInterface.style["grid-template-rows"]=`0px 5px minmax(0,1fr) 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
         }else{
             this.parameters.topContent.folded=false;
-            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height}px 5px 1fr 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
+            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height}px 5px minmax(0,1fr) 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
         }
     }
     resizeHeightTop(v){
         this.parameters.topContent.height=v
-        this.mainInterface.style["grid-template-rows"]=`${v}px 5px 1fr 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
+        this.mainInterface.style["grid-template-rows"]=`${v}px 5px minmax(0,1fr) 5px ${this.parameters.botContent.height*(!this.parameters.botContent.folded)}px`
     }
     resizerHookTop(e){
         e.preventDefault();
@@ -12800,15 +12806,15 @@ class App{
     foldBot(v){
         if(v){
             this.parameters.botContent.folded=true;
-            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px 1fr 5px 0px`
+            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px minmax(0,1fr) 5px 0px`
         }else{
             this.parameters.botContent.folded=false;
-            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px 1fr 5px ${this.parameters.botContent.height}px`
+            this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px minmax(0,1fr) 5px ${this.parameters.botContent.height}px`
         }
     }
     resizeHeightBot(v){
         this.parameters.botContent.height=v;
-        this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px 1fr 5px ${v}px`
+        this.mainInterface.style["grid-template-rows"]=`${this.parameters.topContent.height*(!this.parameters.topContent.folded)}px 5px minmax(0,1fr) 5px ${v}px`
     }
     resizerHookBot(e){
         e.preventDefault();
