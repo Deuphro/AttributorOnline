@@ -331,6 +331,67 @@ test("parité: le nœud publie la même liste par le kernel et par le JS",()=>{
     }
 })
 
+test("isotopeBlocks: chaque bloc listé appartient bien à sa ligne de groupe",()=>{
+    /* On ne teste pas l'affichage — on teste l'ASSOCIATION dont elle dépend. Une
+       liste qui affiche les blocs d'une AUTRE ligne afficherait des masses que le
+       crible n'a jamais combinées: plausible à l'écran, faux en physique. */
+    const plan=buildPlan({
+        table:TABLE,
+        combining:[
+            {group:"CH2",min:0,max:Infinity,ratio:0.01},
+            {group:"NH",min:0,max:Infinity,ratio:0.01},
+            {group:"O",min:0,max:Infinity,ratio:0.01}
+        ],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:0.01,chargeMax:1,chargeAuto:true
+    })
+    /* La même association que `isotopeBlocks`, sans le DOM. */
+    const blocksOf=(index)=>plan.combinables
+        .filter(block=>block.groupIndex===`combining#${index}`)
+    assert.ok(blocksOf(0).length>0,"la première ligne n'a aucun bloc")
+    assert.ok(blocksOf(1).length>0,"la deuxième ligne n'a aucun bloc")
+    /* AUCUNE LIGNE NE PARTAGE SES BLOCS. Si deux lignes se retrouvaient avec les
+       mêmes blocs, l'utilisateur lirait deux fois les mêmes masses et croirait
+       qu'il y a plus d'isotopes qu'il n'y en a. */
+    const keysOfFirst=new Set(blocksOf(0).map(block=>block.key))
+    const keysOfSecond=new Set(blocksOf(1).map(block=>block.key))
+    for(const key of keysOfFirst){
+        assert.ok(!keysOfSecond.has(key),
+            `le bloc ${key} est attribué aux deux premières lignes`)
+    }
+    /* ET CHAQUE BLOC A LA MASSE ET LA NOTATION QU'IL FAUT AFFICHER: sans elles,
+       la ligne ne peut ni nommer le bloc ni dire ce qu'il pèse. */
+    for(const block of blocksOf(0)){
+        assert.equal(typeof block.notation,"string")
+        assert.ok(Number.isFinite(block.atomicMass),
+            `le bloc ${block.key} n'a pas de masse exploitable`)
+        assert.ok(Number.isFinite(block.logProbability),
+            `le bloc ${block.key} n'a pas de probabilité exploitable`)
+    }
+})
+
+test("isotopeBlocks: le ratio borne réellement le nombre de blocs",()=>{
+    /* C'est le point comfort of life: une liste qui ne changerait pas quand on
+       change le ratio ne renseignerait personne. On vérifie donc que le ratio
+       PRODUIT des listes différentes — donc que tatonner est utile. */
+    const build=ratio=>buildPlan({
+        table:TABLE,
+        combining:[{group:"CH2",min:0,max:Infinity,ratio}],
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio,chargeMax:1,chargeAuto:true
+    })
+    const narrow=build(1)
+    const open=build(0)
+    const countOf=plan=>plan.combinables.filter(b=>b.groupIndex==="combining#0").length
+    assert.ok(countOf(narrow)>0,`ratio 1 ne rend aucun bloc (${countOf(narrow)})`)
+    assert.ok(countOf(open)>countOf(narrow),
+        `ouvrir le ratio n'a rien ajouté: ${countOf(open)} contre ${countOf(narrow)}`)
+    /* LE RATIO 1 NE GARDE QUE LE PLUS PROBABLE — un seul bloc, sauf isotopes de
+       masse égale, que la règle ne départage pas. */
+    assert.ok(countOf(narrow)<=2,
+        `ratio 1 garde ${countOf(narrow)} blocs: il ne devrait garder que le plus probable`)
+})
+
 /* LE TEST NE DOIT PAS ÊTRE VERT PAR VACUITÉ.
 
    Un spectre à pics arbitraires ne rencontre aucune formule: les deux circuits

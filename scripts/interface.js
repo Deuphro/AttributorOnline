@@ -3555,20 +3555,84 @@ class AttributionNode extends NodeWithAccordion{
         }
     }
 
+    /* UN ENCADRE PAR LISTE, et c'est ce qui rend la séparation lisible.
+
+       Les deux listes se ressemblaient — même grille, mêmes colonnes, même
+       police — et rien ne disait à l'œil que « combining » et « ionising » sont
+       deux étapes différentes, avec deux conséquences différentes. Une ligne mal
+       placée ne se voyait qu'à la lecture du texte.
+
+       Le cadre ne sert qu'à ça. Les deux cadres se ressemblent parce que le code qui
+       les dessine est le même: l'égalité des formes est donc lisible, et non un
+       hasard de décoration. */
     groupTable(content,kind,label){
         const box=CE("div",{className:"an-group-table"},[])
         const caption=CE("div",{className:"an-caption"},[label])
         const head=CE("div",{},["group","min","max","isotope",""])
         const rows=CE("div",{className:"an-group-rows"},[])
-        stylize(caption,{fontSize:"0.8em",opacity:"0.8",marginTop:"4px"})
+        stylize(caption,{fontSize:"0.8em",opacity:"0.85"})
         stylize(head,this.groupRowStyle())
         for(const cell of head.children) stylize(cell,{
             fontSize:"0.7em",opacity:"0.7",textAlign:"center",overflow:"hidden"
         })
-        stylize(box,{display:"flex",flexDirection:"column",gap:"2px"})
+        /* L'ENCADRE: une bordure, un fond à peine détaché, et de la marge en bas
+           pour que deux cadres voisins ne se touchent pas. Le fond est presque
+           nul — il n'est là que pour que la bordure se lise sans dépendre du
+           contraste du texte. */
+        stylize(box,{
+            display:"flex",flexDirection:"column",gap:"3px",
+            padding:"5px 6px 6px",
+            border:"1px solid rgba(255,255,255,0.14)",borderRadius:"4px",
+            background:"rgba(255,255,255,0.025)",
+            marginBottom:"8px"
+        })
+        /* L'ADDUIT EST ENCADRÉ DIFFÉREMMENT, et c'est délibéré: c'est la seule
+           liste où la ligne doit exister. `min:1` signifie « un adduit est
+           obligatoire » — une liste ionisante vide ne rend aucun m/z, donc le
+           nœud ne trouve rien. Un cadre différent dit « attention ici » avant
+           même d'avoir lu le mode d'emploi. */
+        if(kind==="ionising"){
+            stylize(box,{
+                borderColor:"rgba(120,180,255,0.34)",
+                background:"rgba(120,180,255,0.055)"
+            })
+        }
         box.append(caption,head,rows)
         content.appendChild(box)
         return {box,rows,kind}
+    }
+
+    /* LES BLOCS ISOTOPIQUES DE LA LIGNE, et c'est l'info qui rend le `ratio`
+       pilotable au lieu d'être deviné.
+
+       Le `ratio` de la troisième case ne prend son sens qu'une fois qu'on voit ce
+       qu'il a produit: `0.01` ne veut rien dire tant qu'on ne sait pas si ça a
+       ouvert le 13C, le deutérium, ou les deux. L'utilisateur qui tatonne n'a pas
+       besoin d'une nouvelle notion — la profondeur — il a besoin de la LISTE, qui
+       est déjà calculée.
+
+       On lit donc `plan.combinables` / `plan.ionisers` et on regroupe par
+       `groupIndex`, qui est la clé de LIGNE (`combining#2`), pas la clé de groupe:
+       c'est ce qui permet de rattacher chaque bloc à la ligne qu'il vient, y
+       compris quand deux lignes nomment le même groupe.
+
+       UNE LIGNE SANS AUCUN BLOC EST UN CAS RÉEL — un `ratio` trop serré sur un
+       groupe isotopiquement pauvre, ou un groupe qui ne parse pas. On l'affiche
+       donc quand même, sinon l'utilisateur verrait une ligne muette et ne
+       comprendrait pas pourquoi elle ne contribue rien. */
+    isotopeBlocks(table,index){
+        const key=(table.kind==="ionising"?"ionising#":"combining#")+index
+        const source=table.kind==="ionising"
+            ?(this.plan?.ionisers??[])
+            :(this.plan?.combinables??[])
+        return source
+            .filter(block=>block.groupIndex===key)
+            .map(block=>({
+                notation:block.notation,
+                key:block.key,
+                mass:block.atomicMass,
+                logProbability:block.logProbability
+            }))
     }
 
     /* UNE LIGNE, neuve à chaque redessin — donc aucun état ne survit à la
@@ -3612,6 +3676,46 @@ class AttributionNode extends NodeWithAccordion{
             this.commitGroups(table.kind,groups)
         })
         row.appendChild(remove)
+        /* LA LIGNE DES BLOCS, ET ELLE EST DANS LA CELLULE DU GROUPE.
+
+           Elle ne devient pas une colonne: elle n'a pas de titre et n'en veut pas,
+           n'étant pas une donnée saisie mais la CONSÉQUENCE du `ratio` de cette
+           ligne. Elle passe donc sur la rangée suivante, en pleine largeur, pour
+           qu'on la lise comme le prolongement du groupe. */
+        const blocks=this.isotopeBlocks(table,index)
+        const listing=CE("div",{},[
+            blocks.length
+                ? blocks.map(block=>block.notation).join("  ·  ")
+                : "— no isotope block —"
+        ])
+        stylize(listing,{
+            /* LA GRILLE A 5 COLONNES, et c'est elle qui décide de la forme. Une ligne
+               sur toute la largeur se déclare `gridColumn: "1 / -1"`. Un `flexBasis`
+               n'aurait rien fait ici, et la liste se serait retrouvée tassée dans la
+               colonne du nom du groupe.
+
+               Le `minWidth:0` est nécessaire: sans lui, une liste longue refuse de
+               rétrécir et pousse les colonnes min/max/isotope hors du panneau. */
+            gridColumn:"1 / -1",
+            minWidth:0,
+            fontSize:"0.72em",fontFamily:"monospace",
+            opacity:"0.72",paddingTop:"1px",paddingBottom:"3px",
+            lineHeight:"1.5",wordBreak:"break-word",textAlign:"left"
+        })
+        if(!blocks.length){
+            stylize(listing,{fontStyle:"italic"})
+        }
+        /* Le titre porte le DÉTAIL que la ligne seule ne montre pas: les masses et
+           les probabilités relatives, qui sont ce qui permet de juger si un bloc vaut
+           le coup d'être gardé. */
+        listing.title=blocks.length
+            ? blocks.map(block=>
+                `${block.notation} — ${block.mass.toFixed(4)} Da`+
+                `, P relative ${Math.exp(block.logProbability).toExponential(2)}`
+            ).join("\n")
+            : "This group produced no combinable mass: check its spelling, or loosen "+
+              "its isotopic window"
+        row.appendChild(listing)
         return row
     }
 
