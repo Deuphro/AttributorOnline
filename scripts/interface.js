@@ -11,7 +11,7 @@ import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 import {Formula,Stoichiometry,FormulaCollection,loadTable} from "./chemistry.js"
 //the attribution engine: the two group lists, the isotopic and ionisation
 //windows, and the sieve. Pure, and tested without a DOM (attribution.test.mjs).
-import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio} from "./attribution.js"
+import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula} from "./attribution.js"
 //where the nodes go, and which two of them get wired together by themselves.
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
@@ -2843,6 +2843,136 @@ class AttributionNode extends NodeWithAccordion{
         result.peakList=points
         return result
     }
+    /* LE CRIBLE, PAR LE WORKER — puis le même crible en JS si le worker ne répond pas.
+
+       `attributeWave` appelait `attributeSpectrum` en direct. C'était synchrone, donc
+       le thread principal restait occupé pendant tout le parcours: le navigateur ne
+       pouvait pas peindre, et le nœud ne pouvait pas afficher qu'il calcule. Le
+       kernel Rust fait le même calcul HORS du thread principal.
+
+       LE REPLI EST LE MÊME CRIBLE, pas une approximation. En cas de wasm
+       indisponible, de worker en erreur ou de délai dépassé, on repasse par
+       `attributeSpectrum` — le chemin d'origine, dont la parité avec le kernel est
+       prouvée par `attributionParity.test.mjs`. Un repli « approché » laisserait
+       deux physiques dans le programme, et celle qui répondrait serait celle qu'on
+       ne testerait pas. */
+    async attributeWaveAsync(wave){
+        const half=wave.size/2
+        const x=new Float64Array(half)
+        const y=new Float64Array(half)
+        if(wave.core.length>=wave.size){
+            for(let i=0;i<half;i++) x[i]=wave.core[i]
+            for(let i=0;i<half;i++) y[i]=wave.core[i+half]
+        }
+        const points=new SortedPoints(x,y)
+        const bestMatches=Math.max(1,Math.trunc(Number(this.parameters.bestMatches))||3)
+        const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):null
+        const bridge=planForKernel(this.plan)
+        const payload={params:{
+            plan:{
+                itemMasses:bridge.itemMasses,
+                itemCharges:bridge.itemCharges,
+                logProbs:bridge.logProbs,
+                fixed:bridge.fixed,
+                /* LA CLÉ EST OMISE SANS DÉPENDANCE: le kernel distingue l'absence
+                   d'un `null`, et un plan valide n'en a pas toujours. */
+                ...(bridge.dependence?{dependence:bridge.dependence}:{})
+            },
+            /* LE SPECTRE TRIÉ, et non `x`: la dichotomie du kernel suppose les
+               masses CROISSANTES. Passer `x` brut lui donnerait un point voisin
+               faux — donc un ppm faux, sans aucun signal d'erreur. */
+            masses:Array.from(points.order.map(index=>points.x[index])),
+            caps:Array.from(this.plan.capsFor(this.plan.massCeiling(points))),
+            maxMass:this.plan.massCeiling(points),
+            minMass:this.plan.massFloor(points),
+            ppm,
+            bestMatches
+        }}
+        let rows=null
+        try{
+            const answer=await computePool.run("attributionCriblemixed",payload)
+            rows=answer?.rows??null
+            if(rows===null) throw new Error(answer?.fallback??"le kernel n'a rien rendu")
+        }catch(error){
+            /* LE MOTIF EST NOMMÉ, puis on retombe. Un nœud qui perd le kernel en
+               silence doit être indiscernable d'un nœud qui n'en a jamais eu — or il
+               en a un, et l'utilisateur a le droit de le savoir. */
+            console.warn("[attribution] mixed sieve unavailable, JS fallback:",error)
+            rows=null
+        }
+        if(rows===null){
+            const result=attributeSpectrum(this.plan,points,{limit:Infinity,bestMatches,ppm})
+            result.peakList=points
+            result.strategy="mixedRadix/js"
+            return result
+        }
+        return this.publishableRows(rows,points,bestMatches,ppm)
+    }
+    /* LES LIGNES DU KERNEL, TRANSFORMÉES EN CE QUE LE NŒUD PUBLIE.
+
+       Le kernel rend des MULTIPLICITÉS, et le nœud publie des FORMULES. La
+       conversion se fait ici, en JS, par le même `stateToFormula` que le chemin
+       synchrone — donc les deux produisent la même forme de résultat, et le panneau
+       en aval ne peut pas distinguer les deux origines.
+
+       Le pic est ramené de l'ordre TRIÉ à l'ordre du SPECTRE: le kernel ne voit que
+       `masses`, trié, et rend donc un rang de tri, tandis que `SortedPoints` et ses
+       cibles parlent d'indices de `x`. Sans cette conversion, chaque formule
+       pointerait sur le mauvais pic — silencieusement, puisque l'indice serait
+       bien un nombre. */
+    publishableRows(rows,points,bestMatches,ppm){
+        const attribution={
+            entries:[],
+            diagnostics:[...this.plan.diagnostics],
+            visited:0,
+            truncated:false,
+            matched:0,
+            pointCount:points.length,
+            keptMatches:bestMatches,
+            elapsedMs:0,
+            strategy:"mixedRadix/rust"
+        }
+        const {order,x}=points
+        for(const row of rows){
+            const built=stateToFormula(this.plan,{
+                counts:row.counts,
+                mass:row.mass
+            })
+            if(!built) continue
+            const {formula,recipe}=built
+            const mz=formula.mz
+            /* Un m/z non fini ne se range nulle part: une charge nulle donnerait une
+               division par zéro, et une masse négative n'est pas un ion. */
+            if(!Number.isFinite(mz)||mz<=0) continue
+            const index=order[row.peak]
+            attribution.entries.push({
+                formula,
+                key:formula.key,
+                notation:String(formula),
+                mz,
+                mass:formula.mass,
+                charge:formula.charge,
+                molecule:formula.moleculeKey,
+                logProbability:built.logProbability??row.logProbability,
+                recipe,
+                target:{
+                    index,
+                    mz:x[index],
+                    intensity:points.y[index]??0,
+                    /* L'ÉCART VIENT DU KERNEL et n'est PAS recalculé: le classement se
+                       ferait sur une valeur et l'affichage en montrerait une autre. Le
+                       kernel l'a calculé sur le m/z estimé, donc c'est celle-là. */
+                    errorPpm:row.errorPpm
+                },
+                errorPpm:row.errorPpm,
+                inWindow:row.errorPpm!==null&&ppm!==null&&Math.abs(row.errorPpm)<=ppm
+            })
+            attribution.matched++
+        }
+        attribution.survived=attribution.entries.length
+        attribution.peakList=points
+        return attribution
+    }
     /* THE RESOLVE: one attribution list per input.
 
        SEQUENTIAL, and the pattern is FKMDNode's. A spectrum that fails is not a
@@ -2865,26 +2995,20 @@ class AttributionNode extends NodeWithAccordion{
             const wave=waves[i]
             /* LAISSER RESPIRER LE NAVIGATEUR ENTRE DEUX SPECTRES.
 
-               `attributeWave` est SYNCHRONE: plusieurs centaines de
-               millisecondes, deux ou trois secondes sur un gros signal. Pendant
-               ce temps le thread principal est occupé, donc rien ne se
-               redessine — le curseur se fige, on ne peut pas cliquer, et surtout
-               le nœud ne peut pas passer en « calcul » parce que le navigateur
-               n'a aucune occasion de peindre quoi que ce soit.
+               C'était nécessaire parce que `attributeWave` était SYNCHRONE:
+               plusieurs centaines de millisecondes, deux ou trois secondes sur un
+               gros signal, pendant lesquelles le thread principal était occupé —
+               donc rien ne se redessinait, le curseur se figeait, et le nœud ne
+               pouvait même pas passer en « calcul ».
 
-               Rendre la main entre deux spectres ne coûte presque rien et
-               répare les deux: le nœud peut repeindre son état, et l'utilisateur
-               voit où il en est. Le `setTimeout(0)` suffit — c'est la file de
-               rendu qui doit être vidée, et elle l'est au tour de boucle suivant.
-
-               On ne rend PAS la main AU MILIEU d'un spectre: le crible ne se
-               suspend pas, et le découpage se ferait au prix d'une contadorisation
-               plus coûteuse que le temps qu'on cherche à sauver. Le
-               spectrographe est la seule unité de travail. */
+               Le kernel Rust travaille dans le WORKER, donc le thread principal est
+               libre: l'interface redessine pendant que le crible avance. On rend
+               donc la main entre deux spectres sans que ce soit une réparation —
+               c'est une politesse qui garde la file de rendu dans un ordre connu. */
             if(i>0) await new Promise(resolve=>setTimeout(resolve,0))
             if(run!==this.run) return
             try{
-                const result=this.attributeWave(wave)
+                const result=await this.attributeWaveAsync(wave)
                 published.push(result)
                 for(const line of result.diagnostics??[]){
                     errors.push(`${wave.metadata?.title??"wave"}: ${line}`)

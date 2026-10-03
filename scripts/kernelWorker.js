@@ -269,6 +269,60 @@ const kernels={
             return {flat,stride:ATTRIBUTION_STRIDE,truncated:flat.length%ATTRIBUTION_STRIDE!==0}
         }
     },
+    /* THE MIXED-RADIX SIEVE — the kernel the attribution node actually uses.
+
+       Unlike `attributionCrible` above, which drives the HEAP, this one drives
+       `crible_mixed_radix`: the same recursion the JS `cribleMixedRadix` runs, with
+       the per-peak selection INSIDE. They are not interchangeable — the heap is a
+       different algorithm — so they are two named tasks, never one behind a flag.
+
+       WHAT COMES BACK IS NOT A STATE LIST. The kernel renders at most
+       `masses.length() * best_matches` rows, whatever the size of the space it
+       walked: that is what makes it usable on a 1000 Da peak list, where the JS
+       state array is what exhausted the browser.
+
+       The rows carry COUNTS, not formulas. Chemistry stays in JS, where it already
+       lives: `stateToFormula` turns counts into a formula, so the kernel needs no
+       table, no notation and no knowledge of groups by name.
+
+       The JS fallback runs the REAL JS sieve, through `attributeSpectrum`, so a
+       stale or failed wasm build degrades to the previous behaviour instead of
+       producing something subtly different. */
+    async attributionCriblemixed({params}){
+        const {plan,masses,maxMass,minMass,ppm,bestMatches}=params??{}
+        try{
+            await ensureWasm()
+            if(typeof rust.crible_mixed_radix!=="function"){
+                throw new Error("rust crible_mixed_radix is missing (stale pkg build?)")
+            }
+            const rows=rust.crible_mixed_radix(
+                Float64Array.from(plan.itemMasses),
+                Float64Array.from(plan.itemCharges),
+                Float64Array.from(plan.logProbs),
+                Uint32Array.from(params.caps),
+                Float64Array.from(masses),
+                maxMass,minMass,ppm,bestMatches,
+                {fixed:plan.fixed??[],...(plan.dependence?{dependence:plan.dependence}:{})}
+            )
+            /* `Reading` is a wasm-bindgen class, so it does NOT survive
+               structuredClone: the worker would throw on postMessage. It is turned
+               into plain rows HERE, and the counts into a plain array — which is
+               also cheaper than moving a wasm view around. */
+            return {
+                rows:rows.map(row=>({
+                    peak:row.peak,
+                    errorPpm:row.error_ppm,
+                    logProbability:row.log_probability,
+                    mass:row.mass,
+                    charge:row.charge,
+                    counts:Array.from(row.counts)
+                }))
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust mixed sieve unavailable, JS fallback:",err)
+            return {rows:null,fallback:err?.message??String(err)}
+        }
+    },
     async trimHistogram({core,params}){
         const stride=params?.stride??1
         const bins=Math.max(1,params?.bins??64)

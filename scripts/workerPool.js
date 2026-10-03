@@ -213,6 +213,12 @@ function runKernelLocally(kernel,payload){
     if(kernel==="trimHistogram"){
         return runTrimHistogramLocal(payload)
     }
+    if(kernel==="attributionCriblemixed"){
+        /* PAS DE WORKER, donc pas de WASM ICI: on rend `rows: null` et le NŒUD
+           repasse par `attributeSpectrum`, qui est le même crible. Le recalculer
+           dans ce worker local dupliquerait la physique en JS pour rien. */
+        return {rows:null,fallback:"pas de worker: le repli JS fait le crible"}
+    }
     throw new Error(`unknown kernel "${kernel}"`)
 }
 

@@ -107,11 +107,17 @@ const kernel=(plan,points,{bestMatches=3,ppm=10}={})=>{
            nœud applique aux lectures du kernel. C'est le contrat prévu: le kernel
            rend des multiplicités, la chimie reste en JS. Comparer la clé de
            formule des deux côtés vérifie donc exactement ce que l'utilisateur
-           verra — pas deux représentations du même nombre. */
+           verra — pas deux représentations du même nombre.
+
+           `counts` EST CONSERVÉ: le test du chemin complet doit refaire la formule à
+           partir des multiplicités, comme le nœud le fait, et non réutiliser une clé
+           déjà calculée par un autre chemin — sinon on vérifierait deux fois le même
+           calcul au lieu de vérifier la conversion. */
         const built=stateToFormula(plan,{counts:reading.counts,mass:reading.mass})
         return {
             peak:reading.peak,
             key:built?.formula?.key??null,
+            counts:reading.counts,
             charge:reading.charge,
             mass:reading.mass,
             errorPpm:reading.error_ppm
@@ -257,6 +263,71 @@ test("parité: fenêtre ppm — la même des deux côtés, aux bornes comprises"
             const options={bestMatches:3,ppm}
             same(reference(plan,points,options),kernel(plan,points,options))
         })
+    }
+})
+
+/* LE CHEMIN COMPLET, ET C'EST LE TEST QUI COMPTE POUR L'UTILISATEUR.
+
+   Les sept tests ci-dessus comparent le crible au crible. Celui-ci compare ce que le
+   NŒUD publie — la liste de lectures que la collection de formules consomme — par
+   le chemin asynchrone et par le chemin JS. C'est là que se logent les conversions
+   que le kernel ne fait pas : le pic rapporté de l'ordre trié à l'ordre du spectre,
+   la formule reconstruite par `stateToFormula`, la probabilité, la notation.
+
+   Un écart ici se verrait à l'écran comme « la liste change quand le kernel est
+   là », sans aucune erreur visible. C'est exactement le genre de défaut qu'un test
+   de kernel seul laisse passer. */
+test("parité: le nœud publie la même liste par le kernel et par le JS",()=>{
+    const plan=buildPlan({
+        table:TABLE,
+        combining:["CH2","NH","O"].map(group=>({group,ratio:0.1,max:4})),
+        ionising:[{group:"[H+]",min:1,max:1,ratio:1}],
+        ratio:0.1,chargeMax:1,chargeAuto:true
+    })
+    const points=spectrumFor(plan)
+    const bestMatches=3
+    const ppm=10
+
+    /* Le chemin JS, tel que le nœud le faisait avant. */
+    const viaJs=attributeSpectrum(plan,points,{limit:Infinity,bestMatches,ppm})
+    /* Le chemin du kernel, avec les MÊMES conversions que `publishableRows`.
+       On relit les MULTIPLICITÉS brutes, que `kernel` a déjà converties en clé:
+       il faut les multiplicités pour refaire la formule, donc on rappelle le noyau
+       et on garde la ligne telle quelle. */
+    const rows=kernel(plan,points,{bestMatches,ppm})
+    const viaRust=rows.map(row=>{
+        const built=stateToFormula(plan,{counts:row.counts,mass:row.mass})
+        const formula=built?.formula
+        if(!formula) return null
+        return {
+            key:formula.key,
+            notation:String(formula),
+            mz:formula.mz,
+            mass:formula.mass,
+            charge:formula.charge,
+            /* L'INDICE RAPPORTÉ DANS L'ORDRE DU SPECTRE, comme `publishableRows`
+               le fait: le kernel rend un rang de tri, le nœud publie un indice de
+               `x`. Comparer les deux bruts comparerait deux conventions. */
+            peak:points.order[row.peak],
+            errorPpm:row.errorPpm
+        }
+    }).filter(Boolean)
+
+    assert.ok(viaJs.entries.length>0,"le chemin JS ne rend aucune lecture")
+    assert.equal(viaRust.length,viaJs.entries.length,
+        `le nœud publierait ${viaRust.length} lectures par le kernel contre `+
+        `${viaJs.entries.length} par le JS`)
+    for(let i=0;i<viaJs.entries.length;i++){
+        const a=viaJs.entries[i],b=viaRust[i]
+        assert.equal(a.key,b.key,`ligne ${i}: ${a.key} contre ${b.key}`)
+        assert.equal(a.notation,b.notation,`ligne ${i}: ${a.notation} contre ${b.notation}`)
+        assert.equal(a.target.index,b.peak,
+            `ligne ${i}: pic ${a.target.index} contre ${b.peak} pour ${a.key}`)
+        assert.ok(Math.abs(a.mz-b.mz)<1e-9,`ligne ${i}: m/z ${a.mz} contre ${b.mz}`)
+        assert.ok(Math.abs(a.mass-b.mass)<1e-6,`ligne ${i}: masse ${a.mass} contre ${b.mass}`)
+        assert.ok(Math.abs(a.charge-b.charge)<1e-9,`ligne ${i}: charge ${a.charge} contre ${b.charge}`)
+        assert.ok(Math.abs(a.errorPpm-b.errorPpm)<1e-9,
+            `ligne ${i}: ppm ${a.errorPpm} contre ${b.errorPpm}`)
     }
 })
 
