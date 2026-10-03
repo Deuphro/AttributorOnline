@@ -2449,6 +2449,36 @@ class FKMDNode extends NodeWithAccordion{
    wrong place is a node whose position has to be argued for, so it is written
    down rather than rediscovered.
    ------------------------------------------------------------------------ */
+/* LA FENÊTRE DE LA SONDE — trois points à ±0,5 du m/z interrogé.
+
+   C'est le MÊME `attributeSpectrum` que le nœud utilise sur un vrai spectre, avec le
+   même plan: la réponse est donc celle que donnerait un pic réel à cette position.
+   Seul l'entrée change.
+
+   Les deux points latéraux ne sont pas décoratifs: `nearest` a besoin d'un voisinage
+   pour choisir, et rien d'autre ne peut se glisser entre deux points distants de 0,5.
+   Le point du MILIEU est l'interrogé — c'est celui dont on lit les formules.
+
+   ELLE EST UNE `function` LIBRE, au niveau du module, et non une méthode. Deux
+   raisons, et la première est un bug qui est arrivé:
+
+   1. un corps de classe n'accepte QUE des méthodes. Écrire `function ...` dedans
+      est une SyntaxError, et une SyntaxError que `node --check` ne voit PAS: il
+      parse le fichier en CommonJS alors qu'il commence par un `import`, s'arrête
+      sur cet import, et n'atteint jamais la ligne fautive. Le contrôle honnête est
+      `import()`, qui va jusqu'au bout. J'avais gardé `node --check` parce que
+      `node --check` disait « ok » sur un fichier cassé, et c'est exactement le genre
+      de contrôle qui ment sans qu'on le remarque;
+   2. elle ne dépend d'aucun état du nœud, donc la mettre dans la classe n'apporterait
+      rien et la lierait à `this` sans raison.
+
+   Elle est placée ICI, entre les commentaires d'en-tête et `class
+   AttributionNode`, donc hors de toute classe. */
+function windowFor(mass){
+    const half=0.5
+    return new SortedPoints([mass-half,mass,mass+half],[1,1,1])
+}
+
 class AttributionNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         //one multiplexed input (XY waves), one output
@@ -3244,7 +3274,11 @@ class AttributionNode extends NodeWithAccordion{
         await this.table()
         this.buildPlan()
         await this.resolveAttributions()
-        this.renderAll()
+        /* `renderAll` est désormais async — il attend la table. On l'attend donc
+           aussi: sans cela, `saveSessionSoon` partirait avant que l'affichage soit à
+           jour, et une session relue pourrait enregistrer un état que l'écran n'a
+           pas encore montré. */
+        await this.renderAll()
         this.origin?.saveSessionSoon?.()
     }
     /* The INTERFACE, in the accordion.
@@ -3257,6 +3291,20 @@ class AttributionNode extends NodeWithAccordion{
         if(!this.accordion) return
         const content=this.accordion.DOMelt.content
         content.replaceChildren()
+        /* LE NŒUD EST ARMÉ ICI, ET C'EST SON SEUL POINT D'ENTRÉE.
+
+           `setupUI` reconstruit le panneau entier: c'est le moment où le nœud
+           apparaît, et aussi celui où il revient après une session rechargée. Or
+           rien n'attendait la table à ce moment-là — donc la table arrivait plus
+           tard, en silence, et personne ne redessinait: les blocs isotopiques
+           restaient vides et la Probe muette jusqu'au premier Resolve.
+
+           On demande donc la table dès maintenant. Elle est déjà en vol de toute
+           façon (l'App la charge au démarrage), donc ceci ne coûte rien — et
+           `armProbe` attendra qu'elle soit là pour répondre. Le nœud devient ainsi
+           utilisable seul, ce qu'il doit être: une calculette doit répondre sans
+           qu'on la connecte à quoi que ce soit. */
+        this.armProbeOnTable()
         /* "content" sizing, not "viewport": the panel is two text areas and a
            few lines, so it must be as tall as what it holds. There is no plot
            here, and a 260 px box around five lines would be mostly empty. */
@@ -3500,6 +3548,10 @@ class AttributionNode extends NodeWithAccordion{
         })
         content.appendChild(this.probeOutput)
         this.renderGroupTables()
+        /* LA SONDE PART TOUTE SEULE, après les tableaux: le plan existe donc, et si
+           elle a à attendre la table, elle attend sur un panneau déjà dessiné — pas
+           sur un panneau vide. */
+        this.armProbe()
         this.readout=CE("div",{style:{fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap"}},[])
         content.appendChild(this.readout)
     }
@@ -3719,18 +3771,71 @@ class AttributionNode extends NodeWithAccordion{
         return row
     }
 
-    /* LA SONDE DE MASSE, et elle ne passe par AUCUN chemin de résolution.
+    /* LA SONDE DE MASSE, ET ELLE EST ASYNCHRONE.
 
-       Elle construit un `SortedPoints` de trois points — bas, centre, haut — et
-       appelle le moteur dessus. Ce n'est pas un raccourci: c'est exactement le
-       même `attributeSpectrum` avec le même plan, donc la réponse est celle que
-       donnerait un pic réel à cette position. Seul l'entrée change.
+       Elle construit cette fenêtre de trois points et appelle le moteur dessus.
 
-       Le point du MILIEU est l'interrogé; les deux autres bornent la fenêtre et
-       servent à `nearest`, qui a besoin d'un voisinage pour choisir. Trois
-       points suffisent parce qu'ils sont à 0,5 d'écart et que rien d'autre ne
-       peut se glisser entre. */
-    probeMass(raw){
+       ELLE ATTEND LA TABLE, parce qu'elle doit RÉPONDRE. Sans table, le plan n'a
+       aucune masse, le crible ne trouve rien, et la sonde affichait « no formula
+       within 10 ppm » — un résultat FAUX, prononcé avec l'apparence d'un calcul
+       fait. C'est le pire genre de défaut pour une calculette: l'utilisateur tape
+       46.04186, lit « aucune formule », et conclut que sa masse n'existe pas.
+
+       Un nœud d'attribution se doit d'être opérationnel SEUL, pour son seul Probe,
+       sans spectre et sans resolve. Donc la sonde attend `tableReady`, puis
+       reconstruit le plan sur la table obtenue, puis répond. Elle est donc
+       `async` — et c'est le seul endroit du nœud qui l'est pour cette raison. */
+    /* LE NŒUD SE REMPLIT TOUT SEUL, et c'est ce qui le rend utilisable sans rien.
+
+       La table arrive en arrière-plan: au moment où le panneau se dessine, elle
+       n'est pas encore là. Attendre ici — et redessiner quand elle est arrivée —
+       est donc la seule façon que la Probe réponde et que les blocs isotopiques
+       s'affichent SANS qu'aucun clic n'ait eu lieu.
+
+       Sans cela, le nœud posé était visuellement mort: deux cadres vides et une
+       Probe muette, alors qu'il était prêt. C'est exactement ce qu'il ne faut pas
+       à une calculette.
+
+       CET APPEL EST FAIT EN TÊTE DE `setupUI`, donc AVANT que le champ et la
+       sortie de la sonde existent. C'est sans conséquence: la fonction est async,
+       elle rend la main à l'instant de l'appel, et le `await this.table()` se
+       résout après que le panneau a été construit. Le test ci-dessous n'en est pas
+       moins nécessaire — une table déjà en cache se résout dans la microtâche
+       suivante, ce qui peut donc arriver avant la fin du montage. */
+    async armProbeOnTable(){
+        await this.table()
+        /* LE PANNEAU EXISTE-T-IL ENCORE? Il a pu être redessiné ou détruit pendant
+           l'attente — une session rechargée, un nœud retiré du graphe. Sans ce
+           test, on écrirait dans un `probeOutput` détaché: sans effet, et sans
+           erreur. Le nœud resterait muet sans jamais rien signaler. */
+        if(!this.probeOutput) return
+        this.buildPlan()
+        this.renderGroupTables()
+        this.armProbe()
+    }
+
+    /* LA SONDE EST ARMÉE À LA CRÉATION, et c'est ce qui rend le nœud utilisable SEUL.
+
+       Un nœud d'attribution est une petite calculette autant qu'un lecteur de
+       spectres: on doit pouvoir y taper une masse et lire une formule, sans
+       connecter d'entrée, sans cliquer Resolve, et sans attendre quoi que ce soit.
+       Or la sonde ne répondait qu'après une frappe — donc un nœud fraîchement posé
+       était visuellement mort, alors qu'il était prêt.
+
+       On la déclenche donc ici, au montage, si bien sûr il y a une masse à sonder.
+       Elle attend la table toute seule, et affiche « Loading the periodic
+       table… » pendant ce temps — donc le nœud se remplit tout seul, sans que
+       l'utilisateur ait rien demandé.
+
+       L'absence de masse est un CAS NORMAL, pas un oubli: une session relue peut
+       avoir un champ vide. On n'invente donc rien, et on attend la saisie. */
+    armProbe(){
+        const raw=this.parameters.probeMass
+        if(raw===undefined||raw===null||raw==="") return
+        this.probeMass(raw)
+    }
+
+    async probeMass(raw){
         const mass=Number(raw)
         const output=this.probeOutput
         if(!Number.isFinite(mass)||mass<=0){
@@ -3740,11 +3845,35 @@ class AttributionNode extends NodeWithAccordion{
             return
         }
         this.parameters.probeMass=mass
-        const half=0.5
-        const window=new SortedPoints([mass-half,mass,mass+half],[1,1,1])
+        /* L'ATTENTE EST VISIBLE. Un champ vide pendant 400 ms ressemblerait à un
+           nœud mort; on dit donc ce qui se passe, plutôt que de laisser l'utilisateur
+           deviner s'il a mal tapé. */
+        if(output&&!this.loadedTable){
+            output.textContent="Loading the periodic table…"
+        }
+        /* On attend SI, ET SEULEMENT SI, la table manque. Quand elle est là — cas
+           ordinaire après le premier chargement — la sonde reste synchrone et ne
+           coûte aucun tour de boucle. */
+        if(!this.loadedTable){
+            await this.table()
+        }
+        /* Si la table a ÉCHOUÉ, on le dit, au lieu de SONDER SUR UN PLAN VIDE. Le
+           solveur serait muet, donc la réponse « aucune formule » serait à nouveau
+           fausse — cette fois pour une cause qu'on connaît. */
+        if(!this.loadedTable){
+            if(output){
+                output.textContent="The periodic table did not load, so no formula "+
+                    "can be attributed to this mass."
+            }
+            return
+        }
+        /* LE PLAN EST RECONSTRUIT ICI, et pas réutilisé tel quel: il a pu être
+           bâti sans table, au premier dessin des tableaux. Reconstruire sur la
+           table obtenue est une fraction de milliseconde, et garantit que la sonde
+           répond avec les réglages ET la table réellement en vigueur. */
         let result
         try{
-            result=attributeSpectrum(this.plan??this.buildPlan(),window,{
+            result=attributeSpectrum(this.buildPlan(),windowFor(mass),{
                 limit:Infinity,ppm:this.parameters.ppm,
                 bestMatches:this.parameters.bestMatches
             })
@@ -3770,7 +3899,35 @@ class AttributionNode extends NodeWithAccordion{
     /* LE TABLEAU, encore. Il est redessiné après chaque resolve parce que le plan
        peut avoir changé sous les pieds du lecteur — une session relue avec des
        groupes que le plan ne connaît pas doit le montrer. */
+    /* LE PLAN EXISTE AVANT LES TABLEAUX, et c'est ce qui rend les blocs isotopiques
+       visibles dès le premier affichage.
+
+       Le tableau se dessine au montage du panneau, alors que le plan ne naissait
+       qu'au resolve: la ligne des blocs était donc vide — ou absente — tant que
+       l'utilisateur n'avait pas lancé un calcul. C'est absurde, parce que les
+       blocs isotopiques ne dépendent QUE des listes de groupes: ils ne demandent ni
+       spectre, ni attribution, ni résolution. Les fabriquer est le travail même de
+       `buildPlan`, qui est une fraction de milliseconde.
+
+       On construit donc le plan si besoin, ici, et seulement s'il manque. Le plan
+       du resolve reste maître : quand il existe déjà, c'est lui qu'on affiche, donc
+       l'affichage et la résolution ne peuvent pas diverger. */
     renderGroupTables(){
+        if(!this.plan){
+            try{
+                this.buildPlan()
+            }catch(error){
+                /* LE PANNEAU DOIT S'AFFICHER QUAND MÊME. Un plan qui échoue — pas de
+                   table périodique chargée, un groupe illisible — est un PROBLÈME À
+                   PARTIR, pas une raison de laisser un cadre vide à l'écran: le
+                   défaut serait invisible, et l'utilisateur croirait l'application
+                   cassée alors que c'est sa liste qui l'est.
+
+                   On laisse donc `this.plan` à null: les tableaux se rendent sans
+                   blocs, et le resolve, lui, refusera proprement plus tard. */
+                this.plan=null
+            }
+        }
         for(const table of [this.combiningTable,this.ionisingTable]){
             if(!table) continue
             table.rows.replaceChildren()
@@ -4141,7 +4298,34 @@ class AttributionNode extends NodeWithAccordion{
         this.readout.textContent=lines.join("\n")
     }
 
-    renderAll(){
+    async renderAll(){
+        /* LA TABLE EST ATTENDUE ICI, ET C'EST LE SEUL ENDROIT DU NŒUD OÙ ÇA
+           COMPTE.
+
+           Ce nœud est une calculette autant qu'un lecteur de spectres: taper une
+           masse et lire une formule doit suffire, sans entrée, sans Resolve. Or la
+           table arrive en arrière-plan, et rien ne l'attendait au démarrage — donc
+           les blocs isotopiques étaient vides et la sonde muette jusqu'au premier
+           resolve, alors que le nœud était prêt depuis le début.
+
+           On attend donc la table ICI, parce que `renderAll` est appelé au montage
+           comme après chaque resolve: c'est le seul moment où les deux ont lieu, et
+           donc le seul où les remettre à jour ne coûte rien.
+
+           L'attente est silencieuse en cas d'échec: le plan se construira sans table,
+           les cadres resteront visibles, et la sonde dira pourquoi elle ne répond
+           pas. Un nœud qui refuse de s'afficher parce qu'un fichier manque serait
+           pire qu'un nœud qui s'affiche et l'explique. */
+        await this.table()
+        this.buildPlan()
+        /* LES TABLEAUX ET LA SONDE, ICI ET PAS SEULEMENT AU RESOLVE.
+
+           Le plan vient d'être rebâti sur la table enfin disponible: les blocs
+           isotopiques sous chaque groupe, et la réponse de la sonde, sont donc
+           à jour. Sans ces deux lignes, un nœud posé depuis une session attendait
+           le premier clic pour se remplir — alors qu'il était prêt. */
+        this.renderGroupTables()
+        this.armProbe()
         this.renderReadout()
         /* LE BOUTON EST REPEINT ICI, ET C'EST LA SEULE FIN DE RESOLVE.
 
