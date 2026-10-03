@@ -42,3 +42,4 @@ node_modules/yargs-parser/
 node_modules/get-east-asian-width/
 node_modules/.bin/
 node_modules/y18n/
+XOP/rust-extension/pkg-node/

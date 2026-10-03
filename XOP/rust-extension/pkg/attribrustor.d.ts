@@ -1,6 +1,77 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+* LE KERNEL: le crible mixte du nœud, avec la sélection par pic à l'intérieur.
+*
+* Les tableaux viennent du plan et sont déjà triés; le kernel ne les retrie pas.
+* Il rend un `Vec<Reading>` de TAILLE FIXE — au plus `masses.len() * best_matches`
+* — quel que soit l'espace exploré. C'est le point: le JS rendait TOUS les
+* états, et c'est ce tableau-là qui épuisait la mémoire du navigateur.
+* @param {Float64Array} item_masses
+* @param {Float64Array} item_charges
+* @param {Float64Array} log_probs
+* @param {Uint32Array} caps
+* @param {Float64Array} masses
+* @param {number} max_mass
+* @param {number} min_mass
+* @param {number} ppm
+* @param {number} best_matches
+* @param {any} plan
+* @returns {(Reading)[]}
+*/
+export function crible_mixed_radix(item_masses: Float64Array, item_charges: Float64Array, log_probs: Float64Array, caps: Uint32Array, masses: Float64Array, max_mass: number, min_mass: number, ppm: number, best_matches: number, plan: any): (Reading)[];
+/**
+* Les bornes de multiplicité ne sont PAS calculées ici.
+*
+* Elles viennent de `AttributionPlan.capsFor`, en JS, et c'est la seule façon
+* d'avoir raison: la borne d'un ADDUCT dépend de la FENÊTRE D'IONISATION, que
+* seul le plan connaît. Une brique est bornée par `maxMass // mass`; un adduit
+* est borné par la charge maximale autorisée, parce qu'un [2+] en fenêtre ±10
+* donnerait sinon un volume absurde.
+*
+* Le calcul ici serait un second endroit où décider, donc un second endroit où
+* se tromper — et l'erreur serait invisible: le crible rendrait des
+* combinaisons, dans le mauvais ordre peut-être, sans qu'aucun test le voie.
+*
+* `caps_for` a longtemps existé ici et faisait ce calcul. Elle a été retirée
+* après qu'un test eut Tourné en boucle indéfiniment: un adduit SANS ATOME a
+* une masse négative, donc `maxMass / mass` est négatif, donc `max(0)` donne
+* 0… et un `[2+]` en fenêtre ±3 rendait zéro combinaison, alors qu'il est
+* l'adduit le plus utile d'un plan. La borne par la charge ne se devine pas
+* depuis les masses, et c'est exactement pour ça qu'elle vit dans le plan.
+* Le crible exhaustif, par tas.
+*
+* * `item_masses` la masse de chaque brique: somme des atomes pour une brique
+*   de masse, masse de l'ION pour un adduit
+* * `item_charges` la charge de chaque brique; 0 pour une brique de masse
+* * `caps` la multiplicité maximale de chaque brique, calculée par le plan
+* * `max_mass` le plafond de masse totale
+* * `limit` le nombre maximal d'états rendus
+*
+* La sortie est un `Vec<f64>` PLAT de `STRIDE` valeurs par état, dans l'ordre
+* du tas — donc par masse croissante. Un seul `Vec` et non un struct à getters:
+* c'est le format que le projet utilise partout (`fkmd`,
+* `persistent_homology_0d`), il n'alloue rien côté JS, et il évite le `Copy`
+* que `#[wasm_bindgen(getter)]` exige sur un champ `Vec` dans la version de
+* wasm-bindgen d'ici.
+*
+* La charge totale d'un état est la SOMME des charges des briques employées, et
+* c'est elle que la fenêtre d'ionisation filtrera côté JS. Le kernel ne connaît
+* pas la fenêtre: il rend ce qui existe, et le shell décide ce qui compte — la
+* même séparation que partout ailleurs dans le projet.
+*
+* Le plafond borne à la fois le nombre de COPIES d'une brique et la somme. La
+* masse ne peut qu'augmenter en ajoutant une brique, donc un état trop lourd ne
+* peut jamais s'alléger en remontant, et l'élagage est sûr.
+* @param {Float64Array} item_masses
+* @param {Float64Array} item_charges
+* @param {Uint32Array} caps
+* @param {number} max_mass
+* @param {number} limit
+* @returns {Float64Array}
+*/
+export function crible_heap(item_masses: Float64Array, item_charges: Float64Array, caps: Uint32Array, max_mass: number, limit: number): Float64Array;
+/**
 * Computes one H0 interval per input point. `core` is canonical:
 * [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
 * Superlevel activates points by decreasing Y; sublevel by increasing Y.
@@ -78,72 +149,6 @@ export function trim_apply(core: Float64Array, stride: number, low_bound: number
 * @returns {TrimHistogram}
 */
 export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
-/**
-* Les bornes de multiplicité ne sont PAS calculées ici.
-*
-* Elles viennent de `AttributionPlan.capsFor`, en JS, et c'est la seule façon
-* d'avoir raison: la borne d'un ADDUCT dépend de la FENÊTRE D'IONISATION, que
-* seul le plan connaît. Une brique est bornée par `maxMass // mass`; un adduit
-* est borné par la charge maximale autorisée, parce qu'un [2+] en fenêtre ±10
-* donnerait sinon un volume absurde.
-*
-* Le calcul ici serait un second endroit où décider, donc un second endroit où
-* se tromper — et l'erreur serait invisible: le crible rendrait des
-* combinaisons, dans le mauvais ordre peut-être, sans qu'aucun test le voie.
-*
-* `caps_for` a longtemps existé ici et faisait ce calcul. Elle a été retirée
-* après qu'un test eut Tourné en boucle indéfiniment: un adduit SANS ATOME a
-* une masse négative, donc `maxMass / mass` est négatif, donc `max(0)` donne
-* 0… et un `[2+]` en fenêtre ±3 rendait zéro combinaison, alors qu'il est
-* l'adduit le plus utile d'un plan. La borne par la charge ne se devine pas
-* depuis les masses, et c'est exactement pour ça qu'elle vit dans le plan.
-* Le crible exhaustif, par tas.
-*
-* * `item_masses` la masse de chaque brique: somme des atomes pour une brique
-*   de masse, masse de l'ION pour un adduit
-* * `item_charges` la charge de chaque brique; 0 pour une brique de masse
-* * `caps` la multiplicité maximale de chaque brique, calculée par le plan
-* * `max_mass` le plafond de masse totale
-* * `limit` le nombre maximal d'états rendus
-*
-* La sortie est un `Vec<f64>` PLAT de `STRIDE` valeurs par état, dans l'ordre
-* du tas — donc par masse croissante. Un seul `Vec` et non un struct à getters:
-* c'est le format que le projet utilise partout (`fkmd`,
-* `persistent_homology_0d`), il n'alloue rien côté JS, et il évite le `Copy`
-* que `#[wasm_bindgen(getter)]` exige sur un champ `Vec` dans la version de
-* wasm-bindgen d'ici.
-*
-* La charge totale d'un état est la SOMME des charges des briques employées, et
-* c'est elle que la fenêtre d'ionisation filtrera côté JS. Le kernel ne connaît
-* pas la fenêtre: il rend ce qui existe, et le shell décide ce qui compte — la
-* même séparation que partout ailleurs dans le projet.
-*
-* Le plafond borne à la fois le nombre de COPIES d'une brique et la somme. La
-* masse ne peut qu'augmenter en ajoutant une brique, donc un état trop lourd ne
-* peut jamais s'alléger en remontant, et l'élagage est sûr.
-* @param {Float64Array} item_masses
-* @param {Float64Array} item_charges
-* @param {Uint32Array} caps
-* @param {number} max_mass
-* @param {number} limit
-* @returns {Float64Array}
-*/
-export function crible_heap(item_masses: Float64Array, item_charges: Float64Array, caps: Uint32Array, max_mass: number, limit: number): Float64Array;
-/**
-* Applies the F-KMD transform to a canonical core.
-*
-* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
-* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
-* without a second reshape.
-*
-* The output y is the DEFECT, and the input y (the intensities) is not carried
-* over: the caller asked for one value per point, and the defect is that value.
-* Intensities stay reachable on the input wave, which the caller still holds.
-* @param {Float64Array} core
-* @param {number} mz
-* @returns {Float64Array}
-*/
-export function fkmd(core: Float64Array, mz: number): Float64Array;
 /**
 * A z READ FROM THE DATA, which is a different thing from the 3σ convention.
 *
@@ -230,6 +235,21 @@ export function zeros_matrix(n: number): Int32Array;
 * @returns {Float64Array}
 */
 export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
+/**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core: Float64Array, mz: number): Float64Array;
 /**
 */
 export class PersistenceAnalysis {
@@ -325,6 +345,35 @@ export class RadioDecision {
   readonly widths_ppm: Float64Array;
 }
 /**
+* Ce que le kernel rend, par lecture gardée.
+*
+* `peak` est l'INDICE du point le plus proche dans le tableau de masses,
+* `error_ppm` l'écart signé, et `counts` les multiplicités — les « coefficients
+* du radix », qui suffisent à JS pour reconstruire la formule sans refaire le
+* crible.
+*/
+export class Reading {
+  free(): void;
+/**
+*/
+  readonly charge: number;
+/**
+*/
+  readonly counts: Uint32Array;
+/**
+*/
+  readonly error_ppm: number;
+/**
+*/
+  readonly log_probability: number;
+/**
+*/
+  readonly mass: number;
+/**
+*/
+  readonly peak: number;
+}
+/**
 * One histogram bar: the graph needs centres and counts, nothing else.
 */
 export class TrimHistogram {
@@ -379,6 +428,15 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
+  readonly __wbg_reading_free: (a: number) => void;
+  readonly reading_peak: (a: number) => number;
+  readonly reading_error_ppm: (a: number) => number;
+  readonly reading_log_probability: (a: number) => number;
+  readonly reading_mass: (a: number) => number;
+  readonly reading_charge: (a: number) => number;
+  readonly reading_counts: (a: number, b: number) => void;
+  readonly crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
+  readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
   readonly __wbg_persistenceanalysis_free: (a: number) => void;
   readonly persistenceanalysis_births: (a: number, b: number) => void;
   readonly persistenceanalysis_deaths: (a: number, b: number) => void;
@@ -418,8 +476,6 @@ export interface InitOutput {
   readonly trimresult_low_bound: (a: number) => number;
   readonly trimresult_high_bound: (a: number) => number;
   readonly trimresult_kept_count: (a: number) => number;
-  readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
-  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
   readonly __wbg_radiodecision_free: (a: number) => void;
   readonly radiodecision_points_x: (a: number, b: number) => void;
   readonly radiodecision_points_y: (a: number, b: number) => void;
@@ -439,10 +495,12 @@ export interface InitOutput {
   readonly sieve: (a: number) => void;
   readonly zeros_matrix: (a: number, b: number) => void;
   readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_exn_store: (a: number) => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;

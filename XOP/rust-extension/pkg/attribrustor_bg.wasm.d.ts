@@ -1,6 +1,15 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export function __wbg_reading_free(a: number): void;
+export function reading_peak(a: number): number;
+export function reading_error_ppm(a: number): number;
+export function reading_log_probability(a: number): number;
+export function reading_mass(a: number): number;
+export function reading_charge(a: number): number;
+export function reading_counts(a: number, b: number): void;
+export function crible_mixed_radix(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number): void;
+export function crible_heap(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number): void;
 export function __wbg_persistenceanalysis_free(a: number): void;
 export function persistenceanalysis_births(a: number, b: number): void;
 export function persistenceanalysis_deaths(a: number, b: number): void;
@@ -40,8 +49,6 @@ export function trim_histogram(a: number, b: number, c: number, d: number, e: nu
 export function trimresult_low_bound(a: number): number;
 export function trimresult_high_bound(a: number): number;
 export function trimresult_kept_count(a: number): number;
-export function crible_heap(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number): void;
-export function fkmd(a: number, b: number, c: number, d: number): void;
 export function __wbg_radiodecision_free(a: number): void;
 export function radiodecision_points_x(a: number, b: number): void;
 export function radiodecision_points_y(a: number, b: number): void;
@@ -61,7 +68,9 @@ export function bench(a: number): number;
 export function sieve(a: number): void;
 export function zeros_matrix(a: number, b: number): void;
 export function persistent_homology_0d(a: number, b: number, c: number, d: number, e: number): void;
+export function fkmd(a: number, b: number, c: number, d: number): void;
 export function __wbindgen_add_to_stack_pointer(a: number): number;
 export function __wbindgen_free(a: number, b: number, c: number): void;
 export function __wbindgen_malloc(a: number, b: number): number;
 export function __wbindgen_realloc(a: number, b: number, c: number, d: number): number;
+export function __wbindgen_exn_store(a: number): void;

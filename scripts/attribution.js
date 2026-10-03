@@ -1995,6 +1995,44 @@ function buildPlan({combining=[],ionising=[],ratio=0,chargeMin=1,chargeMax=1,tab
     return plan
 }
 
+/* LE PONT: ce que le plan transmet au kernel, et RIEN D'AUTRE.
+
+   Le kernel ne connaît ni la chimie, ni les groupes par leur nom, ni les
+   estimateurs: il reçoit les nombres que le plan a DÉJÀ résolus. Les recomposer
+   ici serait un second oracle — et le test de parité le verrait tout de suite,
+   puisque deux estimateurs qui divergent à l'arrondi donnent deux classements
+   différents sur une égalité de ppm. */
+function planForKernel(plan){
+    const fixedGroups=new Map()
+    for(const [index,item] of plan.items.entries()){
+        const group=item.groupIndex
+        if(fixedGroups.has(group)) continue
+        const min=item.groupMin??0
+        const max=item.groupMax??Infinity
+        if(!Number.isFinite(max)||min!==max) continue
+        const members=[]
+        for(let i=0;i<plan.items.length;i++) if(plan.items[i].groupIndex===group) members.push(i)
+        fixedGroups.set(group,{count:min,members})
+    }
+    const bridge={
+        itemMasses:plan.items.map(item=>item.atomicMass),
+        itemCharges:plan.items.map(item=>item.charge),
+        logProbs:plan.items.map(item=>item.logProbability),
+        /* Les MEMBRES par groupe, la tête en PREMIER — c'est la convention que le
+           kernel attend, et elle est la même que celle du crible JS. */
+        fixed:[...fixedGroups.values()]
+    }
+    /* LA CLÉ EST OMISE, PAS MISE À NULLE: le kernel distingue « pas de
+       dépendance » de « dépendance présente mais illisible ». Un `null` ferait
+       échouer le kernel sur un plan parfaitement valide — et le message dirait
+       « dépendance vide », ce qui enverrait chercher un bug de plan inexistant.
+       C'est le même soin que `plan.dependence` à null côté plan. */
+    if(plan.dependence){
+        bridge.dependence={take:plan.dependence.take,give:plan.dependence.give}
+    }
+    return bridge
+}
+
 export {
     AttributionPlan,
     SortedPoints,
@@ -2009,5 +2047,6 @@ export {
     cribleMixedRadix,
     stateToFormula,
     attributeSpectrum,
+    planForKernel,
     buildPlan
 }

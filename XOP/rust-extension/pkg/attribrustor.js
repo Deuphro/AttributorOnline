@@ -1,5 +1,9 @@
 let wasm;
 
+const cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : { decode: () => { throw Error('TextDecoder not available') } } );
+
+if (typeof TextDecoder !== 'undefined') { cachedTextDecoder.decode(); };
+
 let cachedUint8Memory0 = null;
 
 function getUint8Memory0() {
@@ -9,18 +13,27 @@ function getUint8Memory0() {
     return cachedUint8Memory0;
 }
 
-function getArrayU8FromWasm0(ptr, len) {
+function getStringFromWasm0(ptr, len) {
     ptr = ptr >>> 0;
-    return getUint8Memory0().subarray(ptr / 1, ptr / 1 + len);
+    return cachedTextDecoder.decode(getUint8Memory0().subarray(ptr, ptr + len));
 }
 
 const heap = new Array(128).fill(undefined);
 
 heap.push(undefined, null, true, false);
 
-function getObject(idx) { return heap[idx]; }
-
 let heap_next = heap.length;
+
+function addHeapObject(obj) {
+    if (heap_next === heap.length) heap.push(heap.length + 1);
+    const idx = heap_next;
+    heap_next = heap[idx];
+
+    heap[idx] = obj;
+    return idx;
+}
+
+function getObject(idx) { return heap[idx]; }
 
 function dropObject(idx) {
     if (idx < 132) return;
@@ -34,22 +47,8 @@ function takeObject(idx) {
     return ret;
 }
 
-const cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : { decode: () => { throw Error('TextDecoder not available') } } );
-
-if (typeof TextDecoder !== 'undefined') { cachedTextDecoder.decode(); };
-
-function getStringFromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return cachedTextDecoder.decode(getUint8Memory0().subarray(ptr, ptr + len));
-}
-
-let cachedInt32Memory0 = null;
-
-function getInt32Memory0() {
-    if (cachedInt32Memory0 === null || cachedInt32Memory0.byteLength === 0) {
-        cachedInt32Memory0 = new Int32Array(wasm.memory.buffer);
-    }
-    return cachedInt32Memory0;
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 let cachedFloat64Memory0 = null;
@@ -61,9 +60,32 @@ function getFloat64Memory0() {
     return cachedFloat64Memory0;
 }
 
-function getArrayF64FromWasm0(ptr, len) {
+let cachedInt32Memory0 = null;
+
+function getInt32Memory0() {
+    if (cachedInt32Memory0 === null || cachedInt32Memory0.byteLength === 0) {
+        cachedInt32Memory0 = new Int32Array(wasm.memory.buffer);
+    }
+    return cachedInt32Memory0;
+}
+
+function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
-    return getFloat64Memory0().subarray(ptr / 8, ptr / 8 + len);
+    return getUint8Memory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
+let cachedUint32Memory0 = null;
+
+function getUint32Memory0() {
+    if (cachedUint32Memory0 === null || cachedUint32Memory0.byteLength === 0) {
+        cachedUint32Memory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32Memory0;
+}
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32Memory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 let WASM_VECTOR_LEN = 0;
@@ -73,6 +95,145 @@ function passArrayF64ToWasm0(arg, malloc) {
     getFloat64Memory0().set(arg, ptr / 8);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32Memory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getUint32Memory0();
+    const slice = mem.subarray(ptr / 4, ptr / 4 + len);
+    const result = [];
+    for (let i = 0; i < slice.length; i++) {
+        result.push(takeObject(slice[i]));
+    }
+    return result;
+}
+/**
+* LE KERNEL: le crible mixte du nœud, avec la sélection par pic à l'intérieur.
+*
+* Les tableaux viennent du plan et sont déjà triés; le kernel ne les retrie pas.
+* Il rend un `Vec<Reading>` de TAILLE FIXE — au plus `masses.len() * best_matches`
+* — quel que soit l'espace exploré. C'est le point: le JS rendait TOUS les
+* états, et c'est ce tableau-là qui épuisait la mémoire du navigateur.
+* @param {Float64Array} item_masses
+* @param {Float64Array} item_charges
+* @param {Float64Array} log_probs
+* @param {Uint32Array} caps
+* @param {Float64Array} masses
+* @param {number} max_mass
+* @param {number} min_mass
+* @param {number} ppm
+* @param {number} best_matches
+* @param {any} plan
+* @returns {(Reading)[]}
+*/
+export function crible_mixed_radix(item_masses, item_charges, log_probs, caps, masses, max_mass, min_mass, ppm, best_matches, plan) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(item_masses, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(item_charges, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(log_probs, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArray32ToWasm0(caps, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArrayF64ToWasm0(masses, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        wasm.crible_mixed_radix(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, max_mass, min_mass, ppm, best_matches, addHeapObject(plan));
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var r2 = getInt32Memory0()[retptr / 4 + 2];
+        var r3 = getInt32Memory0()[retptr / 4 + 3];
+        if (r3) {
+            throw takeObject(r2);
+        }
+        var v6 = getArrayJsValueFromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 4, 4);
+        return v6;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+function getArrayF64FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat64Memory0().subarray(ptr / 8, ptr / 8 + len);
+}
+/**
+* Les bornes de multiplicité ne sont PAS calculées ici.
+*
+* Elles viennent de `AttributionPlan.capsFor`, en JS, et c'est la seule façon
+* d'avoir raison: la borne d'un ADDUCT dépend de la FENÊTRE D'IONISATION, que
+* seul le plan connaît. Une brique est bornée par `maxMass // mass`; un adduit
+* est borné par la charge maximale autorisée, parce qu'un [2+] en fenêtre ±10
+* donnerait sinon un volume absurde.
+*
+* Le calcul ici serait un second endroit où décider, donc un second endroit où
+* se tromper — et l'erreur serait invisible: le crible rendrait des
+* combinaisons, dans le mauvais ordre peut-être, sans qu'aucun test le voie.
+*
+* `caps_for` a longtemps existé ici et faisait ce calcul. Elle a été retirée
+* après qu'un test eut Tourné en boucle indéfiniment: un adduit SANS ATOME a
+* une masse négative, donc `maxMass / mass` est négatif, donc `max(0)` donne
+* 0… et un `[2+]` en fenêtre ±3 rendait zéro combinaison, alors qu'il est
+* l'adduit le plus utile d'un plan. La borne par la charge ne se devine pas
+* depuis les masses, et c'est exactement pour ça qu'elle vit dans le plan.
+* Le crible exhaustif, par tas.
+*
+* * `item_masses` la masse de chaque brique: somme des atomes pour une brique
+*   de masse, masse de l'ION pour un adduit
+* * `item_charges` la charge de chaque brique; 0 pour une brique de masse
+* * `caps` la multiplicité maximale de chaque brique, calculée par le plan
+* * `max_mass` le plafond de masse totale
+* * `limit` le nombre maximal d'états rendus
+*
+* La sortie est un `Vec<f64>` PLAT de `STRIDE` valeurs par état, dans l'ordre
+* du tas — donc par masse croissante. Un seul `Vec` et non un struct à getters:
+* c'est le format que le projet utilise partout (`fkmd`,
+* `persistent_homology_0d`), il n'alloue rien côté JS, et il évite le `Copy`
+* que `#[wasm_bindgen(getter)]` exige sur un champ `Vec` dans la version de
+* wasm-bindgen d'ici.
+*
+* La charge totale d'un état est la SOMME des charges des briques employées, et
+* c'est elle que la fenêtre d'ionisation filtrera côté JS. Le kernel ne connaît
+* pas la fenêtre: il rend ce qui existe, et le shell décide ce qui compte — la
+* même séparation que partout ailleurs dans le projet.
+*
+* Le plafond borne à la fois le nombre de COPIES d'une brique et la somme. La
+* masse ne peut qu'augmenter en ajoutant une brique, donc un état trop lourd ne
+* peut jamais s'alléger en remontant, et l'élagage est sûr.
+* @param {Float64Array} item_masses
+* @param {Float64Array} item_charges
+* @param {Uint32Array} caps
+* @param {number} max_mass
+* @param {number} limit
+* @returns {Float64Array}
+*/
+export function crible_heap(item_masses, item_charges, caps, max_mass, limit) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(item_masses, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(item_charges, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray32ToWasm0(caps, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.crible_heap(retptr, ptr0, len0, ptr1, len1, ptr2, len2, max_mass, limit);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v4 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v4;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
 }
 
 const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder('utf-8') : { encode: () => { throw Error('TextEncoder not available') } } );
@@ -254,121 +415,6 @@ export function trim_histogram(core, stride, bins, scale) {
     return TrimHistogram.__wrap(ret);
 }
 
-let cachedUint32Memory0 = null;
-
-function getUint32Memory0() {
-    if (cachedUint32Memory0 === null || cachedUint32Memory0.byteLength === 0) {
-        cachedUint32Memory0 = new Uint32Array(wasm.memory.buffer);
-    }
-    return cachedUint32Memory0;
-}
-
-function passArray32ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 4, 4) >>> 0;
-    getUint32Memory0().set(arg, ptr / 4);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
-}
-/**
-* Les bornes de multiplicité ne sont PAS calculées ici.
-*
-* Elles viennent de `AttributionPlan.capsFor`, en JS, et c'est la seule façon
-* d'avoir raison: la borne d'un ADDUCT dépend de la FENÊTRE D'IONISATION, que
-* seul le plan connaît. Une brique est bornée par `maxMass // mass`; un adduit
-* est borné par la charge maximale autorisée, parce qu'un [2+] en fenêtre ±10
-* donnerait sinon un volume absurde.
-*
-* Le calcul ici serait un second endroit où décider, donc un second endroit où
-* se tromper — et l'erreur serait invisible: le crible rendrait des
-* combinaisons, dans le mauvais ordre peut-être, sans qu'aucun test le voie.
-*
-* `caps_for` a longtemps existé ici et faisait ce calcul. Elle a été retirée
-* après qu'un test eut Tourné en boucle indéfiniment: un adduit SANS ATOME a
-* une masse négative, donc `maxMass / mass` est négatif, donc `max(0)` donne
-* 0… et un `[2+]` en fenêtre ±3 rendait zéro combinaison, alors qu'il est
-* l'adduit le plus utile d'un plan. La borne par la charge ne se devine pas
-* depuis les masses, et c'est exactement pour ça qu'elle vit dans le plan.
-* Le crible exhaustif, par tas.
-*
-* * `item_masses` la masse de chaque brique: somme des atomes pour une brique
-*   de masse, masse de l'ION pour un adduit
-* * `item_charges` la charge de chaque brique; 0 pour une brique de masse
-* * `caps` la multiplicité maximale de chaque brique, calculée par le plan
-* * `max_mass` le plafond de masse totale
-* * `limit` le nombre maximal d'états rendus
-*
-* La sortie est un `Vec<f64>` PLAT de `STRIDE` valeurs par état, dans l'ordre
-* du tas — donc par masse croissante. Un seul `Vec` et non un struct à getters:
-* c'est le format que le projet utilise partout (`fkmd`,
-* `persistent_homology_0d`), il n'alloue rien côté JS, et il évite le `Copy`
-* que `#[wasm_bindgen(getter)]` exige sur un champ `Vec` dans la version de
-* wasm-bindgen d'ici.
-*
-* La charge totale d'un état est la SOMME des charges des briques employées, et
-* c'est elle que la fenêtre d'ionisation filtrera côté JS. Le kernel ne connaît
-* pas la fenêtre: il rend ce qui existe, et le shell décide ce qui compte — la
-* même séparation que partout ailleurs dans le projet.
-*
-* Le plafond borne à la fois le nombre de COPIES d'une brique et la somme. La
-* masse ne peut qu'augmenter en ajoutant une brique, donc un état trop lourd ne
-* peut jamais s'alléger en remontant, et l'élagage est sûr.
-* @param {Float64Array} item_masses
-* @param {Float64Array} item_charges
-* @param {Uint32Array} caps
-* @param {number} max_mass
-* @param {number} limit
-* @returns {Float64Array}
-*/
-export function crible_heap(item_masses, item_charges, caps, max_mass, limit) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(item_masses, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(item_charges, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArray32ToWasm0(caps, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        wasm.crible_heap(retptr, ptr0, len0, ptr1, len1, ptr2, len2, max_mass, limit);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        var v4 = getArrayF64FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_free(r0, r1 * 8, 8);
-        return v4;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
-* Applies the F-KMD transform to a canonical core.
-*
-* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
-* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
-* without a second reshape.
-*
-* The output y is the DEFECT, and the input y (the intensities) is not carried
-* over: the caller asked for one value per point, and the defect is that value.
-* Intensities stay reachable on the input wave, which the caller still holds.
-* @param {Float64Array} core
-* @param {number} mz
-* @returns {Float64Array}
-*/
-export function fkmd(core, mz) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.fkmd(retptr, ptr0, len0, mz);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        var v2 = getArrayF64FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_free(r0, r1 * 8, 8);
-        return v2;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
 /**
 * A z READ FROM THE DATA, which is a different thing from the 3σ convention.
 *
@@ -450,14 +496,6 @@ export function add(a, b) {
     return ret;
 }
 
-function addHeapObject(obj) {
-    if (heap_next === heap.length) heap.push(heap.length + 1);
-    const idx = heap_next;
-    heap_next = heap[idx];
-
-    heap[idx] = obj;
-    return idx;
-}
 /**
 * @param {Float64Array} data
 */
@@ -552,6 +590,44 @@ export function persistent_homology_0d(data, mode) {
         return v3;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core, mz) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.fkmd(retptr, ptr0, len0, mz);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v2 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+function handleError(f, args) {
+    try {
+        return f.apply(this, args);
+    } catch (e) {
+        wasm.__wbindgen_exn_store(addHeapObject(e));
     }
 }
 
@@ -1011,6 +1087,91 @@ export class RadioDecision {
     }
 }
 
+const ReadingFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_reading_free(ptr >>> 0));
+/**
+* Ce que le kernel rend, par lecture gardée.
+*
+* `peak` est l'INDICE du point le plus proche dans le tableau de masses,
+* `error_ppm` l'écart signé, et `counts` les multiplicités — les « coefficients
+* du radix », qui suffisent à JS pour reconstruire la formule sans refaire le
+* crible.
+*/
+export class Reading {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(Reading.prototype);
+        obj.__wbg_ptr = ptr;
+        ReadingFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        ReadingFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_reading_free(ptr);
+    }
+    /**
+    * @returns {number}
+    */
+    get peak() {
+        const ret = wasm.reading_peak(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get error_ppm() {
+        const ret = wasm.reading_error_ppm(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get log_probability() {
+        const ret = wasm.reading_log_probability(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get mass() {
+        const ret = wasm.reading_mass(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {number}
+    */
+    get charge() {
+        const ret = wasm.reading_charge(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * @returns {Uint32Array}
+    */
+    get counts() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.reading_counts(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayU32FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 4, 4);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+}
+
 const TrimHistogramFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_trimhistogram_free(ptr >>> 0));
@@ -1234,11 +1395,59 @@ async function __wbg_load(module, imports) {
 function __wbg_get_imports() {
     const imports = {};
     imports.wbg = {};
-    imports.wbg.__wbindgen_copy_to_typed_array = function(arg0, arg1, arg2) {
-        new Uint8Array(getObject(arg2).buffer, getObject(arg2).byteOffset, getObject(arg2).byteLength).set(getArrayU8FromWasm0(arg0, arg1));
+    imports.wbg.__wbindgen_string_new = function(arg0, arg1) {
+        const ret = getStringFromWasm0(arg0, arg1);
+        return addHeapObject(ret);
     };
     imports.wbg.__wbindgen_object_drop_ref = function(arg0) {
         takeObject(arg0);
+    };
+    imports.wbg.__wbindgen_is_undefined = function(arg0) {
+        const ret = getObject(arg0) === undefined;
+        return ret;
+    };
+    imports.wbg.__wbindgen_is_null = function(arg0) {
+        const ret = getObject(arg0) === null;
+        return ret;
+    };
+    imports.wbg.__wbindgen_number_get = function(arg0, arg1) {
+        const obj = getObject(arg1);
+        const ret = typeof(obj) === 'number' ? obj : undefined;
+        getFloat64Memory0()[arg0 / 8 + 1] = isLikeNone(ret) ? 0 : ret;
+        getInt32Memory0()[arg0 / 4 + 0] = !isLikeNone(ret);
+    };
+    imports.wbg.__wbg_reading_new = function(arg0) {
+        const ret = Reading.__wrap(arg0);
+        return addHeapObject(ret);
+    };
+    imports.wbg.__wbindgen_copy_to_typed_array = function(arg0, arg1, arg2) {
+        new Uint8Array(getObject(arg2).buffer, getObject(arg2).byteOffset, getObject(arg2).byteLength).set(getArrayU8FromWasm0(arg0, arg1));
+    };
+    imports.wbg.__wbg_get_bd8e338fbd5f5cc8 = function(arg0, arg1) {
+        const ret = getObject(arg0)[arg1 >>> 0];
+        return addHeapObject(ret);
+    };
+    imports.wbg.__wbg_length_cd7af8117672b8b8 = function(arg0) {
+        const ret = getObject(arg0).length;
+        return ret;
+    };
+    imports.wbg.__wbg_get_e3c254076557e348 = function() { return handleError(function (arg0, arg1) {
+        const ret = Reflect.get(getObject(arg0), getObject(arg1));
+        return addHeapObject(ret);
+    }, arguments) };
+    imports.wbg.__wbg_isArray_2ab64d95e09ea0ae = function(arg0) {
+        const ret = Array.isArray(getObject(arg0));
+        return ret;
+    };
+    imports.wbg.__wbg_instanceof_Object_71ca3c0a59266746 = function(arg0) {
+        let result;
+        try {
+            result = getObject(arg0) instanceof Object;
+        } catch (_) {
+            result = false;
+        }
+        const ret = result;
+        return ret;
     };
     imports.wbg.__wbindgen_throw = function(arg0, arg1) {
         throw new Error(getStringFromWasm0(arg0, arg1));
