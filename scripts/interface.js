@@ -2750,7 +2750,9 @@ class FKMDNode extends NodeWithAccordion{
                     //the key, and the m/z the transform came from
                     "f-kmd":true,
                     key:this.parameters.notation,
-                    mz
+                    mz,
+                    sourceWave:wave.metadata?.title??"unknown",
+                    traceMode:"points"
                 },["x","y"]))
             }catch(err){
                 if(run!==this.kernelRun) return
@@ -5670,7 +5672,9 @@ class PeakPickingNode extends NodeWithAccordion{
             z,
             kept,
             total:this.persistenceKeptCount??kept,
-            source
+            source,
+            sourceWave:source??this.lastInputWave?.metadata?.title??"unknown",
+            traceMode:"sticks-to-zero"
         },["x","y"])
     }
     /* Publishes ONE result on the output slot — the single-input case's own
@@ -8707,7 +8711,9 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                 collectionIndex:published.length-1,
                 formulas:formulas.length,
                 unmatched:unattributed,
-                dropped
+                dropped,
+                sourceWave:collection.name,
+                traceMode:"sticks-to-zero"
             },["mz","intensity"]))
         }
         this.outputs[0]=published
@@ -9727,11 +9733,15 @@ class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
                     for(const wave of waves){
                         if(wave instanceof Wave){
                             const traceIndex=traces.length
+                            const options={color:colors[traceIndex%colors.length]}
+                            if(wave.metadata?.traceMode){
+                                options.mode=wave.metadata.traceMode
+                            }
                             traces.push(new XYTrace({
                                 id:`${parent.events?.registrationId??parent.title}:${traceIndex}`,
                                 title:wave.metadata.title??parent.title,
                                 wave,
-                                options:{color:colors[traceIndex%colors.length]}
+                                options
                             }))
                         }
                     }

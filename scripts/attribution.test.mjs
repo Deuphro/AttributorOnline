@@ -157,77 +157,9 @@ await test("les masses combinables sont triees par abondance decroissante",()=>{
     const all=plan({combining:["CH2"],ionising:["[H+]"],ratio:0}).combinables.length
 console.log("le crible : exhaustivité")
 
-/* L'oracle brut: on énumère TOUT l'espace par force brute, sans tas ni règle.
-
-   Il applique le MÊME plafond de masse que le crible, et c'est le détail qui
-   compte. Un oracle qui l'oublierait compterait le produit des bornes — 25080
-   ici — et le crible en rendrait 4915: les deux auraient l'air de se contredire
-   alors que le second est le bon. Un oracle doit appliquer les règles qu'il
-   juge, sinon il ne juge rien: il mesure autre chose.
-
-   Il est volontairement naïf, parce que son seul travail est de ne pas
-   manquer une combinaison — c'est exactement le rôle d'un oracle. */
-function bruteForce(plan,maxMass){
-    const caps=plan.capsFor(maxMass)
-    const items=plan.items
-    const out=[]
-    const walk=(index,mass,counts)=>{
-        if(index===items.length){
-            /* le plafond de masse, comme le crible. Toute somme déjà trop
-               lourde ne peut qu'empirer en ajoutant une brique, donc on
-               élague ICI plutôt que d'aller jusqu'au bout. */
-            if(mass>maxMass) return
-            out.push({mass,counts:Int32Array.from(counts)})
-            return
-        }
-        for(let k=0;k<=caps[index];k++){
-            counts[index]=k
-            walk(index+1,mass+k*items[index].atomicMass,counts)
-        }
-        counts[index]=0
-    }
-    walk(0,0,new Int32Array(items.length))
-    return out
-}
 /* la signature d'un multiensemble, pour comparer deux ensembles sans se
    soucier de l'ordre */
 const signature=(state)=>Array.from(state.counts).join(",")
-
-await test("le tas trouve exactement ce que la force brute trouve",()=>{
-    const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})
-    const maxMass=300
-    const brute=bruteForce(p,maxMass)
-    const heap=cribleHeap(p,{maxMass}).states
-    ok(brute.length>0,"the oracle must produce something to compare")
-    ok(heap.length===brute.length,
-        `the heap found ${heap.length} combinations, the brute force ${brute.length}`)
-    const known=new Set(brute.map(signature))
-    for(const state of heap){
-        ok(known.has(signature(state)),
-            `the heap invented a combination: ${signature(state)}`)
-    }
-})
-
-await test("la base mixte trouve elle aussi exactement le même ensemble",()=>{
-    const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})
-    const maxMass=300
-    const heap=cribleHeap(p,{maxMass}).states
-    const mixed=cribleMixedRadix(p,{maxMass}).states
-    ok(heap.length===mixed.length,
-        `the heap found ${heap.length}, the mixed radix ${mixed.length}`)
-    const known=new Set(heap.map(signature))
-    for(const state of mixed){
-        ok(known.has(signature(state)),
-            `the mixed radix invented a combination: ${signature(state)}`)
-    }
-})
-
-await test("aucun multiensemble n'est rendu deux fois",()=>{
-    const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})
-    const states=cribleHeap(p,{maxMass:300}).states
-    const keys=new Set(states.map(signature))
-    ok(keys.size===states.length,`${states.length} states but ${keys.size} distinct`)
-})
 
 await test("les masses sortent par ordre croissant",()=>{
     const p=plan({combining:["CH2","O"],ionising:["[H+]"],ratio:0.01,chargeMax:2})

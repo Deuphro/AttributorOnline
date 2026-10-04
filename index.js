@@ -75,6 +75,7 @@ function serveStaticFileLimited(req, res) {
         "/resources/pattern.svg":"resources/pattern.svg",
         "/scripts/sessions.js":"scripts/sessions.js",
         "/scripts/plot2d-gl.js":"scripts/plot2d-gl.js",
+        "/scripts/plot2d-hit.js":"scripts/plot2d-hit.js",
         "/scripts/sessionStore.js":"scripts/sessionStore.js"
     }
     const filePath = filePathMap[req.url]
@@ -93,21 +94,27 @@ function serveStaticFileLimited(req, res) {
     }
 }
 
-function serveStaticFile(req, res) {
-    const filePath = req.url
-    console.log("This file is served by serveStaticFile: ",req.url)
-    if(req.url){
-        fs.readFile(path.join(__dirname, filePath), (err, data) => {
-            if (err) {
-                res.writeHead(404, { 'Content-Type': 'text/plain' });
-                res.end('File not found');
-            } else {
-                const mimeType = getMimeType(filePath);
-                res.writeHead(200, { 'Content-Type': mimeType });
-                res.end(data);
-            }
-        });
+function serveUploadsFile(req, res) {
+    const urlPath = req.url.replace(/^\/uploads\/outputs\//, '')
+    const safePath = path.basename(urlPath)
+    const filePath = path.join(__dirname, 'uploads', 'outputs', safePath)
+    const uploadsDir = path.join(__dirname, 'uploads', 'outputs')
+    if (!filePath.startsWith(uploadsDir)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' })
+        res.end('Forbidden')
+        return
     }
+    console.log("This file is served by serveUploadsFile: ", req.url)
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('File not found');
+        } else {
+            const mimeType = getMimeType(filePath);
+            res.writeHead(200, { 'Content-Type': mimeType });
+            res.end(data);
+        }
+    });
 }
 
 // Création du serveur HTTP principal
@@ -123,7 +130,7 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET') {
         console.log(req.url)
         if(req.url.match("/uploads/outputs")){
-            serveStaticFile(req,res)
+            serveUploadsFile(req,res)
         }else{
             serveStaticFileLimited(req, res)
         }
@@ -131,8 +138,8 @@ const server = http.createServer((req, res) => {
         console.log(req.url)
         if(req.url.match("/uploads/outputs")){
             console.log("on est bien dans le Post avec l'url pour DL")
-            serveStaticFile(req,res)
-        }else if(req.headers['content-type'].includes('multipart/form-data')){
+            serveUploadsFile(req,res)
+        }else if(req.headers['content-type']?.includes('multipart/form-data')){
             let boundary=Buffer.from('--'+req.headers['content-type'].split('boundary=')[1])
             let chunks=[]
             req.on('data',chunk=>{chunks.push(chunk)})
@@ -149,8 +156,19 @@ const server = http.createServer((req, res) => {
                             const filenameMatch=header.match(/filename="([^"]+)"/)
                             const contentTypeMatch=header.match(/Content-Type: (.+)/)
                             if(filenameMatch && contentTypeMatch){
-                                const fileName=filenameMatch[1]
-                                const filePath=path.join(__dirname,'uploads',fileName)
+                                const safeName=path.basename(filenameMatch[1])
+                                if(!safeName.toLowerCase().endsWith('.raw')){
+                                    res.writeHead(400, { 'Content-Type': "text/html" })
+                                    res.end('Only .raw files are accepted')
+                                    return
+                                }
+                                const filePath=path.join(__dirname,'uploads',safeName)
+                                const uploadsDir=path.join(__dirname,'uploads')
+                                if(!filePath.startsWith(uploadsDir)){
+                                    res.writeHead(403, { 'Content-Type': "text/html" })
+                                    res.end('Forbidden')
+                                    return
+                                }
                                 fs.writeFileSync(filePath,content)//,{encoding:'binary'})
                                 res.writeHead(201, { 'Content-Type': "text/html" })
                                 res.write(`${fileName} is on the server waiting for msConvert.\r\n`)

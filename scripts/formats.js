@@ -461,6 +461,11 @@ class Wave{
                                 iterables.ranges[k]=1
                                 complexity--
                             }else{
+                                // DANGER: new Function() executes arbitrary code from string.
+                                // This is a security risk if wave content is user-controlled.
+                                // TODO: replace with a safe math expression parser (e.g. mathjs)
+                                // For now, this branch is disabled to prevent code injection.
+                                /*
                                 let regex=/\(((?:(?:(?:\s*[\w$]+(?:\s*=\s*.+)?\s*,)*\s*[\w$]+(?:\s*=\s*.+)?\s*,\s*)?\.{3}[\w$]+|(?:(?:\s*[\w$]+(?:\s*=\s*.+)?\s*,)*\s*[\w$]+(?:\s*=\s*.+)?)?))\)(?:\s*=>\s*)(?:(?:\{(?:return)?\s*(.*)\})|(.+))/
                                 let match=regex.exec(res[k])
                                 if(match){
@@ -479,6 +484,31 @@ class Wave{
                                         iterables[k]=target.iterables[k]
                                         iterables.ranges[k]=target.iterables[k].range
                                     }else{
+                                        let commaSplit=res[k].split(",")
+                                        let dotSplit=commaSplit.map((e)=>{return e.split(".")})
+                                        let indices=new Set()
+                                        for(let range of dotSplit){
+                                            for(let k=parseInt(range[0]);k<parseInt(range[range.length-1])+1;k++){
+                                                indices.add(k)
+                                            }
+                                        }
+                                        iterables[k]=Array.from(indices)
+                                        iterables.ranges[k]=indices.size
+                                        coordifier[k]=(...c)=>{return iterables[k][c[k]]}
+                                    }
+                                }
+                                */
+                                let commaSplit=res[k].split(",")
+                                let dotSplit=commaSplit.map((e)=>{return e.split(".")})
+                                let indices=new Set()
+                                for(let range of dotSplit){
+                                    for(let k=parseInt(range[0]);k<parseInt(range[range.length-1])+1;k++){
+                                        indices.add(k)
+                                    }
+                                }
+                                iterables[k]=Array.from(indices)
+                                iterables.ranges[k]=indices.size
+                                coordifier[k]=(...c)=>{return iterables[k][c[k]]}
                                         let commaSplit=res[k].split(",")
                                         let dotSplit=commaSplit.map((e)=>{return e.split(".")})
                                         let indices=new Set()
