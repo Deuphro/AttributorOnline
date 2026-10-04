@@ -323,10 +323,23 @@ test("le seuil annoncé est bien le point de bascule du chemin",()=>{
         "les deux tailles doivent être de part et d'autre du seuil")
 })
 
-test("les plans de coordonnées sont gardés, mais à la taille exacte",()=>{
-    //la grille les garde (nearest() mesure avec), mais le tampon grandit
-    //par paliers de 1.5x: sans trame ici, un million de points garderait
-    //1.5 fois sa mémoire pour rien
+test("les plans adoptés ne sont jamais recopiés",()=>{
+    //le calque GL remplit les deux plans et les confie: ils sont déjà
+    //à la taille exacte, donc seal() doit les ADOPTER. Un rechargement de
+    //16 Mio sur un million de points pour rien serait le prix d'une copie
+    const uv=makeRandomPoints(5000,4)
+    const {coordsU,coordsV}=planesOf(uv)
+    const grid=new PointGrid(32,32)
+    grid.seal(uv.length,[0,uv.length],coordsU,coordsV)
+    //identity, not equality: the very same arrays must have been kept
+    ok(grid._coordsU===coordsU,"le plan U doit être adopté, pas recopié")
+    ok(grid._coordsV===coordsV,"le plan V doit être adopté, pas recopié")
+})
+
+test("les plans parqués sont gardés, mais à la taille exacte",()=>{
+    //ce chemin-là passe par accumulate(), dont le tampon grandit par paliers
+    //de 1.5x: sans trame ici, un million de points garderait 1.5 fois sa
+    //mémoire pour rien
     const uv=makeRandomPoints(5000,4)
     const grid=buildGrid(uv,32,32)
     close(grid._coordsU.length,uv.length,1e-9,"le plan U doit être taillé au juste")
@@ -334,6 +347,21 @@ test("les plans de coordonnées sont gardés, mais à la taille exacte",()=>{
     //et les valeurs doivent survivre à la trame
     close(grid._coordsU[0],uv[0][0],1e-12)
     close(grid._coordsV[uv.length-1],uv[uv.length-1][1],1e-12)
+})
+
+test("l'étendue est mesurée sur les coordonnées, jamais supposée",()=>{
+    //accumulate() ne tient PLUS l'étendue. Une grille bâtie par adoption
+    //doit donc la lire dans les plans, sinon la taille de cellule reste
+    // nulle et tous les points tombent sur la cellule NaN
+    const uv=[[3,-7],[9,2],[-4,11],[5,5]]
+    const {coordsU,coordsV}=planesOf(uv)
+    const grid=new PointGrid(8,8)
+    grid.seal(uv.length,[0,uv.length],coordsU,coordsV)
+    close(grid.extent.minU,-4,1e-12,"minU")
+    close(grid.extent.maxU,9,1e-12,"maxU")
+    close(grid.extent.minV,-7,1e-12,"minV")
+    close(grid.extent.maxV,11,1e-12,"maxV")
+    ok(grid._inverseU>0&&grid._inverseV>0,"la taille de cellule doit être finie et non nulle")
 })
 
 test("memoryBytes rend compte de ce qui est réellement alloué",()=>{

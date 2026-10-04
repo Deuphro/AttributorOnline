@@ -144,8 +144,13 @@ export class PointGrid{
 
     /* ---- build: one walk to park, one to bucket ---- */
 
-    //park a point and widen the extent. Growable, so the caller never has
-    //to know the point count in advance
+    //park a point. Growable, so the caller never has to know the point
+    //count in advance.
+    //NOTE: it deliberately does NOT touch the extent. The extent is derived
+    //from the coordinates by seal(), and only there: keeping a second copy
+    //of it here meant a caller that filled the planes itself (plot2d-gl.js
+    //does) left the extent at Infinity, the cell size came out null, every
+    //point landed on cell NaN, and the scatter silently counted nothing.
     accumulate(u,v){
         if(this._pending>=this._coordsU.length){
             const grown=Math.max(1024,Math.ceil(this._coordsU.length*1.5))
@@ -159,10 +164,31 @@ export class PointGrid{
         this._coordsU[this._pending]=u
         this._coordsV[this._pending]=v
         this._pending++
-        if(u<this._minU) this._minU=u
-        if(u>this._maxU) this._maxU=u
-        if(v<this._minV) this._minV=v
-        if(v>this._maxV) this._maxV=v
+    }
+
+    /* THE extent, read off the coordinates and off nothing else.
+       One linear pass, and it replaces the bookkeeping accumulate() used to
+       do — so the coordinates are the single source of truth, whichever way
+       they got here. */
+    _measureExtent(){
+        const us=this._coordsU
+        const vs=this._coordsV
+        let minU=Infinity
+        let maxU=-Infinity
+        let minV=Infinity
+        let maxV=-Infinity
+        for(let index=0;index<this.count;index++){
+            const u=us[index]
+            const v=vs[index]
+            if(u<minU) minU=u
+            if(u>maxU) maxU=u
+            if(v<minV) minV=v
+            if(v>maxV) maxV=v
+        }
+        this._minU=minU
+        this._maxU=maxU
+        this._minV=minV
+        this._maxV=maxV
     }
 
     /* Sizes every array, counts the cells, prefix-sums them and scatters.
@@ -178,7 +204,10 @@ export class PointGrid{
         this.count=Math.max(0,total|0)
         this.traceCount=Math.max(0,(traceStarts?traceStarts.length:1)-1)
         this._traceStarts=traceStarts?Uint32Array.from(traceStarts):Uint32Array.of(0,this.count)
-        if(coordsU&&coordsV){
+        //ADOPTED planes: the caller already built them at the exact size, so
+        //they are taken as they are — no copy, and no trim further down
+        const adopted=Boolean(coordsU&&coordsV)
+        if(adopted){
             this._coordsU=coordsU
             this._coordsV=coordsV
             this._pending=this.count
@@ -196,6 +225,10 @@ export class PointGrid{
             this._pending=0
             return this
         }
+        //the extent is measured HERE, from the coordinates that were just
+        //adopted or parked — never from a value some other method happened
+        //to leave behind
+        this._measureExtent()
         this.extent={minU:this._minU,maxU:this._maxU,minV:this._minV,maxV:this._maxV}
         //a degenerate extent (every point on the same abscissa) would give
         //an infinite cell size: the grid then collapses to one column,
@@ -229,15 +262,19 @@ export class PointGrid{
         for(let index=0;index<this.count;index++){
             this._items[this._fill[this._cell(this._coordsU[index],this._coordsV[index])]++]=index
         }
-        //the coordinates are KEPT (nearest() measures with them), but the
-        //arrays are grown with slack, so they are trimmed to the exact size
-        //here: a million points would otherwise hold up to 1.5x its memory
-        const exactU=new Float64Array(this.count)
-        exactU.set(this._coordsU.subarray(0,this.count))
-        const exactV=new Float64Array(this.count)
-        exactV.set(this._coordsV.subarray(0,this.count))
-        this._coordsU=exactU
-        this._coordsV=exactV
+        //the coordinates are KEPT (nearest() measures with them). They are
+        //only reallocated when THEY had to grow by slack: a buffer grown in
+        //steps of 1.5x would otherwise hold up to 1.5x its memory. Planes
+        //the caller handed over are already exact, and re-copying them would
+        //cost 16 MiB on a million points for nothing.
+        if(!adopted){
+            const exactU=new Float64Array(this.count)
+            exactU.set(this._coordsU.subarray(0,this.count))
+            const exactV=new Float64Array(this.count)
+            exactV.set(this._coordsV.subarray(0,this.count))
+            this._coordsU=exactU
+            this._coordsV=exactV
+        }
         this._pending=0
         return this
     }
