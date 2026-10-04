@@ -70,6 +70,7 @@ function serveStaticFileLimited(req, res) {
         "/scripts/formats.js":"scripts/formats.js",
         "/scripts/chemistry.js":"scripts/chemistry.js",
         "/scripts/valence.js":"scripts/valence.js",
+        "/scripts/attribution.js":"scripts/attribution.js",
         //where the flow arranges its nodes and wires the new ones by itself
         "/scripts/layout.js":"scripts/layout.js",
         "/resources/pattern.svg":"resources/pattern.svg",

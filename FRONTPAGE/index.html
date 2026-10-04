@@ -1150,6 +1150,399 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             </li>
         </ul>
 
+        <h4>Attribution <span class="badge">exhaustive</span> <span class="badge">mixed-radix</span></h4>
+        <p>
+            Given a spectrum (XY peaks), a list of <strong>combining groups</strong> (neutral bricks:
+            CH<sub>2</sub>, O, NH, C…) and a list of <strong>ionising groups</strong> (adducts:
+            [H+], [Na+], [2+]…), this node enumerates <strong>every valid combination</strong> of those
+            groups whose mass falls inside a ppm window around each peak. It is <strong>not a random
+            sampler</strong> and not a heuristic: the space is walked <strong>exhaustively</strong> by a
+            <strong>mixed-radix counter</strong> (odometer-style iteration over the Cartesian product of
+            each group's allowed multiplicities), with a canonical form that guarantees <strong>each
+            chemical formula is reached exactly once</strong> despite isotopic dependencies.
+        </p>
+        <p>
+            The engine is written in <strong>Rust</strong>, compiled to <strong>WebAssembly</strong>, and runs
+            in a <strong>dedicated worker pool</strong> — the main thread never blocks. A JavaScript
+            fallback implements the identical algorithm (proven by parity tests) for environments without
+            WASM or workers. An alternative <strong>heap-based</strong> strategy (`cribleHeap`) exists
+            for best-first enumeration but is not the default.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>1 input</strong> — one or more 2D XY waves (X = mass, Y = intensity).<br>
+                    <span class="badge">several links</span>
+                    more than one link may target input <code>0</code>; each wave is attributed
+                    independently and produces its own attribution list.
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — <em>one FormulaCollection per input wave</em>, in input order.
+                    Each collection contains the attributed formulas with their matched peaks, errors in ppm,
+                    log-probabilities, and the recipes (which groups were combined how many times).
+                    <span class="badge">several links</span>
+                    the output may feed any number of consumers (e.g. a FormulaCollectionNode for browsing,
+                    a plot for visualisation).
+                </td>
+            </tr>
+            <tr>
+                <td>Input layout</td>
+                <td>
+                    2D only: <code>[x0, x1, ..., y0, y1, ...]</code> where <em>x</em> is mass and <em>y</em>
+                    is intensity. A 1D wave is counted and skipped (no mass axis to match against).
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <strong>Combining groups</strong> — a table, one row per group. Each row:
+                    <code>group</code> (formula text, e.g. <code>CH2</code>, <code>13CH2</code>),
+                    <code>min</code> (integer, default 0), <code>max</code> (integer or <code>∞</code>,
+                    default <code>∞</code>), <code>ratio</code> (0–1, default 1 = most probable isotope
+                    only).<br>
+                    <strong>Ionising groups</strong> — same row structure; default <code>min:1, max:1</code>
+                    (an adduct is required, otherwise the combination has no m/z).<br>
+                    <strong>Global ratio</strong> — fallback when a row omits <code>ratio</code> (default
+                    <code>0.1</code>).<br>
+                    <strong>Charge window</strong> — <code>chargeMin</code>, <code>chargeMax</code> (absolute
+                    values, default 1..1). Can be <em>derived automatically</em> from the adduct min/max.<br>
+                    <strong>Best matches per peak</strong> — <code>bestMatches</code> (default 3). How many
+                    <em>distinct</em> formulas to keep per peak, ranked by log-probability.<br>
+                    <strong>Match window</strong> — <code>ppm</code> (default 10). A formula outside this
+                    window is not proposed at all.
+                </td>
+            </tr>
+        </table>
+
+        <h4>The enumeration — mixed-radix counter (odometer)</h4>
+        <p>
+            The combining groups and ionising groups each define a <strong>radix</strong> (the number of
+            allowed counts for that group, from <code>min</code> to <code>max</code>). A combination is a
+            vector of indices <code>[i₀, i₁, …, iₙ]</code>. The mass of a vector is the dot product of
+            its counts with the precomputed group masses (including the chosen isotope per group).
+            The <strong>caps</strong> are precomputed per-group maxima derived from the global <code>maxMass</code>
+            (highest peak + ppm window), so groups that cannot possibly fit are capped at 0.
+        </p>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li><strong>Fixed groups (min=max) are eliminated from the iteration.</strong> Their mass is
+                added as a constant offset; only their isotope choice (if ratio<1) is iterated. This
+                removes entire dimensions from the counter.</li>
+            <li><strong>Recursive odometer.</strong> A depth-first recursion steps through each group's
+                allowed counts (0..cap). At the leaf (all groups decided), the total mass is checked
+                against <code>minMass</code> (floor) and <code>maxMass</code> (ceiling). States within
+                the window are emitted.</li>
+            <li><strong>Canonical form for isotopic dependence.</strong> When the plan contains a group
+                and one of its sub-groups (e.g. <code>CH2</code> and <code>C</code>, or <code>13CH2</code>
+                and <code>13C</code>), different index vectors can yield the <em>same chemical
+                formula</em> (e.g. <code>13CH2 + 12C == 13C + 12CH2</code>). The engine detects the
+                dependence by comparing <strong>signed, unreduced composition difference vectors</strong>
+                between pairs of bricks. If two distinct pairs share the same delta <strong>and all four
+                bricks have distinct compositions</strong>, a canonical form is enforced at the
+                <code>decidedAt</code> digit (the highest index of the four bricks): one of the two
+                <code>take</code> bricks is forced to zero. This removes duplicate formulas without
+                discarding valid combinations.</li>
+            <li><strong>Mass window per peak.</strong> For each peak mass <code>m</code>, the floor and
+                ceiling are <code>m ± ppm × m / 1e6</code> (with a <code>1e-3</code> Da absolute floor
+                tolerance so a formula sitting exactly on the boundary is kept). The global ceiling
+                (highest peak + window) drives the per-group caps. The floor is applied only at the leaf
+                (final mass is definitive).</li>
+            <li><strong>Sorting & matching.</strong> Emitted states are sorted by mass at the end
+                (<code>O(k log k)</code>). The spectrum's peaks are sorted once by mass. Each formula is
+                matched to its nearest peak by binary search (<code>O(log n)</code>). If the error in
+                ppm is within the window, the formula is a candidate. The <code>bestMatches</code>
+                parameter keeps the top-N distinct formulas per peak by log-probability (the probability
+                comes from the product of group log-probabilities, where <code>ratio</code> controls the
+                isotope distribution).</li>
+        </ol>
+        <p>
+            <strong>Alternative strategy: heap-based best-first (<code>cribleHeap</code>).</strong> A
+            min-heap on mass expands the lightest state first, using a bitmap/Set for deduplication
+            (canonical form applied at push time). It visits states in strictly increasing mass order
+            and can stop early, but requires a visited set. The mixed-radix counter is the default
+            because it avoids the visited-set overhead and is faster for full-window enumeration.
+        </p>
+
+        <h4>Why not naïve brute force?</h4>
+        <p>
+            A naïve Cartesian product of all group counts explodes combinatorially. With 4 combining groups
+            each allowed 0..50 and 1 adduct 1..1, the raw space is 51⁴ ≈ 6.7 million combinations — but
+            the <strong>mass window</strong> (via per-group `caps` computed from `maxMass`) restricts it to a
+            thin shell. The mixed-radix counter iterates only combinations within those caps, skipping
+            fixed groups (min=max) entirely. On a 95-peak spectrum (175–389 Da, [H+]) with groups
+            CH<sub>2</sub>, NH, O, C the engine visits ~29,000 states and produces ~300 attributed formulas
+            in <strong>~10 ms (Rust/WASM)</strong> or ~50 ms (JS fallback) — compared to seconds or memory
+            exhaustion for an unbounded product.
+        </p>
+
+        <h4>Interactive behaviour</h4>
+        <ul>
+            <li>The panel shows <strong>two tables</strong> (combining / ionising) with inline editing of
+                min, max, ratio per row. A text field above each table adds a new row (Enter applies).</li>
+            <li>Changing any parameter marks the node <strong>stale</strong> (yellow badge) but does not
+                re-run: press <strong>Resolve</strong> to recompute. This allows tuning ten groups without
+                paying ten sieves.</li>
+            <li>The readout reports: <em>plan size</em> (number of bricks), <em>charge set</em> (reachable
+                |z|), <em>visited states</em>, <em>attributed formulas</em>, <em>matched peaks</em>,
+                <em>elapsed time</em>, and <em>strategy</em> (<code>mixedRadix/rust</code> or
+                <code>mixedRadix/js</code>).</li>
+            <li>Diagnostics surface: refused adducts (e.g. min:0 making neutral possible but
+                non-measurable), dependence canonicalisations, truncation warnings (if a caller ever
+                reintroduces a limit on enumeration states).</li>
+            <li>Multiplexing: several input waves → one collection per wave, each resolved with the
+                <strong>same plan</strong> but its own peak list. The readout sums across the batch.</li>
+        </ul>
+
+        <h4>Error conditions</h4>
+        <ul>
+            <li><span class="badge req">error</span> no periodic table loaded (awaited on demand).</li>
+            <li><span class="badge req">error</span> the plan has zero items (empty group lists).</li>
+            <li><span class="badge warn">floating</span> no wave connected, or no usable XY wave.</li>
+            <li><span class="badge warn">skipped</span> a 1D wave reached the anchor — counted, not
+                attributed.</li>
+            <li><span class="badge warn">fallback</span> WASM/worker unavailable: JS implementation used,
+                same results, slower.</li>
+            <li><span class="badge warn">kernel error</span> one spectrum failed — others still resolve;
+                node turns red only if <em>all</em> spectra failed.</li>
+        </ul>
+
+        <h4>Session behaviour</h4>
+        <p>
+            The two group tables (combining, ionising), global ratio, charge min/max, bestMatches, ppm,
+            and the stale flag are serialised. The periodic table is NOT serialised (it is loaded from
+            the origin at runtime). The computed attributions are NOT serialised — they are rebuilt from
+            the plan and the input waves on the next resolve, so a restored session always reflects the
+            current data.
+        </p>
+
+        <h4>Data flow</h4>
+        <pre>input XY waves (per wave)
+    → buildPlan(combining[], ionising[], ratio, chargeMin, chargeMax, table)
+    → plan: itemMasses[], itemCharges[], logProbs[], fixed[], caps[], dependence?
+    → attributeWaveAsync(wave)
+        → SortedPoints(x[], y[])          // peak list, sorted by mass
+        → payload {plan, masses[], caps[], minMass, maxMass, ppm, bestMatches}
+        → worker: attributionCriblemixed(payload)  // cribleMixedRadix in Rust
+        → rows: {counts[], mass, peak, errorPpm, logProbability}
+        → stateToFormula(plan, row) → Formula + recipe
+        → publishableRows → attribution list
+    → FormulaCollection per wave (addAll + setPoints + match)
+    → output: FormulaCollection[]</pre>
+        <p>
+            The kernel receives only flat <code>Float64Array</code> buffers (masses, caps, itemMasses,
+            itemCharges, logProbs). The plan's <code>dependence</code> (if any) is a single object
+            <code>{take:[i,j], give:[k,l]}</code> encoding the canonical form constraint. The worker
+            runs <strong>cribleMixedRadix</strong> (mixed-radix odometer) and returns <code>rows</code> —
+            one per attributed formula — which the node converts to <code>Formula</code> objects and wraps
+            in a live <code>FormulaCollection</code>. An alternative <code>cribleHeap</code> strategy
+            exists but is not used by default.
+        </p>
+
+        <h4>FormulaCollection <span class="badge">named set</span> <span class="badge">ppm matching</span> <span class="badge">molecule folding</span></h4>
+        <p>
+            A <strong>FormulaCollection</strong> is a named, deduplicated set of formulas with their
+            measured peaks attached. It is the <strong>currency of attribution</strong>: the Attribution
+            node publishes one per input spectrum; the FormulaCollectionNode reads, displays, edits,
+            folds by molecule family, and exports them. It is a pure data class (no DOM, no flow
+            dependency) — the same class is used by the producer and the consumer, guaranteeing identical
+            semantics.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Construction</td>
+                <td>
+                    <code>new FormulaCollection({name, table, entries, points, ppm})</code>.
+                    <code>table</code> (periodic table) is only needed to <em>read</em> formula strings;
+                    a collection built from already-parsed <code>Formula</code> objects needs no table.
+                    <code>ppm</code> (default 5) is the matching window for attaching points to formulas.
+                </td>
+            </tr>
+            <tr>
+                <td>Deduplication</td>
+                <td>
+                    Identity is the formula <strong>key</strong> (canonical composition + charge string).
+                    Two entries with the same key are the same formula — the second is ignored. This
+                    applies across <code>add</code>, <code>addFormula</code>, <code>addAll</code>, and
+                    session restoration.
+                </td>
+            </tr>
+            <tr>
+                <td>Adding formulas</td>
+                <td>
+                    <code>add(string)</code> — parses via table, remembers the <strong>source text</strong>
+                    for round-tripping (critical for group adducts: <code>C6H12O6[H+]</code> re-read from
+                    its key gains an extra H).<br>
+                    <code>addFormula(Formula, sourceText)</code> — fast path for producers (attribution
+                    node): takes a pre-built Formula and its notation; <strong>no re-parsing</strong>.<br>
+                    <code>addAll([{formula, sourceText}])</code> — batch version: builds all entries,
+                    then calls <code>match()</code> <strong>once</strong>. Avoids O(N² log N) from
+                    per-add matching.
+                </td>
+            </tr>
+            <tr>
+                <td>Points & matching</td>
+                <td>
+                    <code>setPoints([{mz, intensity, key?}])</code> — replaces the measured points and
+                    re-matches. <code>match()</code> sorts entries by m/z, then for each point finds the
+                    nearest formula by binary search (<code>O(log n)</code>). A point with a <code>key</code>
+                    is matched by identity (producer's decision), otherwise by proximity. A point outside
+                    <code>ppm</code> of every formula is recorded as a diagnostic, not silently dropped.
+                </td>
+            </tr>
+            <tr>
+                <td>Molecule folding</td>
+                <td>
+                    Each formula carries <code>moleculeKey</code> (the monoisotopic root). The reader
+                    groups entries by this key — isotopologues fold under one molecule line. The graph
+                    can show <em>molecules</em>, <em>formulas</em>, or <em>peaks</em>.
+                </td>
+            </tr>
+            <tr>
+                <td>Diagnostics</td>
+                <td>
+                    Unreadable formulas, round-trip mismatches, unmatched points, truncated sieves, and
+                    producer diagnostics are accumulated in <code>diagnostics[]</code> — never thrown.
+                </td>
+            </tr>
+            <tr>
+                <td>Serialisation</td>
+                <td>
+                    <code>toDescriptor()</code> → flat object with <code>name</code>, <code>formulas[]</code>
+                    (each: <code>key, source, notation, mz, mass, charge, molecule, errorPpm, intensity,
+                    targets[]</code>). <code>Formula</code> objects are NOT serialised (they contain
+                    Maps keyed by Element). <code>static fromDescriptor(descriptor, {table, name, ppm})</code>
+                    rebuilds the collection, re-reading each key via the table and verifying the round-trip.
+                </td>
+            </tr>
+        </table>
+
+        <h4>FormulaCollectionNode — the reader</h4>
+        <p>
+            A flow node that receives one or more FormulaCollections (from AttributionNode or a parent
+            node), lets the user browse, filter, fold, annotate, add/delete formulas, create/rename/delete
+            local collections, and visualise the data in a central WebGL plot (error ppm, intensity,
+            Kendrick, mass defect…).
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>1 input</strong> — one or more FormulaCollections (the reader accepts:
+                    <code>Formula</code>, <code>Stoichiometry</code>, array of either, or
+                    <code>{name, formulas|entries|items}</code>).<br>
+                    <span class="badge">several links</span>
+                    multiple upstream nodes may publish collections; they are merged into the node's
+                    collection list.
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — the <em>current collection</em> (the one selected in the
+                    toolbar) as a FormulaCollection. Downstream nodes can consume it for further
+                    processing or export.
+                </td>
+            </tr>
+            <tr>
+                <td>Collections</td>
+                <td>
+                    <strong>Local collections</strong> — created by this node (<kbd>+ New collection</kbd>),
+                    owned, editable (add/delete formulas), persisted in the session.<br>
+                    <strong>Inherited collections</strong> — published by an upstream node (e.g.
+                    AttributionNode). Read-only: add/delete are replaced by an explanatory line. They are
+                    rebuilt at every resolve, so local edits would be overwritten.
+                </td>
+            </tr>
+            <tr>
+                <td>Views</td>
+                <td>
+                    <strong>Molecules</strong> — one row per moleculeKey, foldable to isotopologues.<br>
+                    <strong>Formulas</strong> — flat list of all formulas.<br>
+                    <strong>Peaks</strong> — one row per measured point, showing its matched formula.
+                </td>
+            </tr>
+            <tr>
+                <td>Graph modes</td>
+                <td>
+                    <code>error</code> (default), <code>intensity</code>, <code>kendrick</code>,
+                    <code>defect</code>, <code>mass</code>, <code>probability</code>. The central plot
+                    is virtualised (200k point budget), with hover details and selection sync to the list.
+                </td>
+            </tr>
+            <tr>
+                <td>Keyboard</td>
+                <td>
+                    <kbd>↑/↓</kbd> navigate, <kbd>Enter</kbd> select, <kbd>Space</kbd> toggle fold,
+                    <kbd>→/←</kbd> open/close fold, <kbd>Del</kbd> remove formula/molecule, <kbd>Home/End</kbd>
+                    jump. The list is focusable (<kbd>Tab</kbd> reaches it).
+                </td>
+            </tr>
+        </table>
+
+        <h4>Interactive behaviour</h4>
+        <ul>
+            <li><strong>Write line</strong> always visible at the top of the list. Type a formula
+                (<code>C6H12O6 [H+]</code>), press <kbd>Enter</kbd> → added to the current local
+                collection (or the first one, or a new one created quietly). Every refusal explains why
+                on the hint line.</li>
+            <li><strong>Filter & sort</strong> toolbar: text filter (matches key, notation, molecule),
+                sort by m/z, error, intensity, probability, name.</li>
+            <li><strong>Detail panel</strong> (right side) shows the selected formula's composition,
+                isotopologues, matched peaks with errors, and a free-text <em>note</em> per formula
+                (stored in the reader's copy, not the producer's).</li>
+            <li><strong>Graph ↔ list sync</strong>: clicking a point selects its formula; arrow keys in
+                the list move the graph highlight.</li>
+            <li><strong>Export</strong>: CSV of the current view (molecules, formulas, or peaks), or the
+                full collection as JSON (session-compatible descriptor).</li>
+        </ul>
+
+        <h4>Error conditions</h4>
+        <ul>
+            <li><span class="badge warn">nothing readable</span> input matched none of the accepted
+                shapes.</li>
+            <li><span class="badge warn">no table</span> a collection arrived without a periodic table
+                and contains keys that cannot be re-read — entries show key only, no mass/mz.</li>
+            <li><span class="badge warn">round-trip mismatch</span> a key re-read via the table produced
+                a different formula — reported per entry.</li>
+        </ul>
+
+        <h4>Session behaviour</h4>
+        <p>
+            Local collections (names, formulas with notes, fold states, filter/sort/view settings,
+            current collection, selection) are serialised. Inherited collections are NOT serialised —
+            they are re-published by their producer on the next resolve. The periodic table is loaded
+            from the origin at runtime.
+        </p>
+
+        <h4>Data flow</h4>
+        <pre>AttributionNode (per wave)
+    → FormulaCollection (addAll + setPoints + match)
+    → output[0] = FormulaCollection[]
+    → FormulaCollectionNode.input[0]
+    → merges into this.collections[] (local + inherited)
+    → currentCollection = selected in toolbar
+    → VirtualRowList renders visible window
+    → Graph renders currentCollection.toPairs() (mode-dependent transform)
+    → output[0] = currentCollection (for downstream)</pre>
+
     </div>
 
 </main>

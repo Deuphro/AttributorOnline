@@ -14326,9 +14326,9 @@ class Accordion{
         };
         this.DOMelt={
             folder:CE('div',{className:"accordion handler folder",pilot:this,handleClick:(e)=>e.target.pilot.toggle()},[]),
-            handler:CE('div',{className:"accordion handler"},[
+            handler:CE('div',{className:"accordion handler",pilot:this,handleDblClick:(e)=>e.target.pilot.toggle()},[
                 CE('div',{className:"accordion handler menu"},[]),
-                CE('div',{className:"accordion handler label"},[title]),
+                CE('div',{className:"accordion handler label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggle()},[title]),
             ]),
             content:CE('div',{className:"accordion content"},[]),
         }
