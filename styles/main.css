@@ -1004,11 +1004,16 @@ body.menu-open .flow.workspace .child{
    that carries the larger type without clipping the descenders. */
 .fc-row{
     display:grid;
-    grid-template-columns: minmax(0, 1fr) 5.4em 3.8em 5.6em 1.1em;
+    /* SIX columns, and the first is the HANDLE. It is sized in `em` like the
+       caret of a collection, and it is ALWAYS there — a line that cannot be
+       opened keeps the column and shows nothing in it. A column that appears
+       and disappears with the content is a column the eye cannot follow down a
+       list, and the handle is the only thing on the line that says "there is
+       something inside". */
+    grid-template-columns: 1.1em minmax(0, 1fr) 5.4em 3.8em 5.6em 1.1em;
     align-items:center;
     gap:3px;
     height:22px;
-    padding:0 2px;
     font-size:0.95em;
     cursor:pointer;
     border-bottom:1px solid rgba(255,255,255,0.04);
@@ -1018,6 +1023,28 @@ body.menu-open .flow.workspace .child{
     --fc-step:16px;
     --fc-depth:0;
     padding-left:calc(2px + var(--fc-step) * var(--fc-depth));
+}
+/* the handle: invisible until the line has something to open, and a button that
+   FILLS its column so there is nothing to aim at. `visibility:hidden` rather
+   than `display:none` because the column must keep its place either way. */
+.fc-fold{
+    background:transparent;
+    border:none;
+    color:var(--text-muted);
+    line-height:1;
+    width:100%;
+    height:100%;
+    padding:0;
+    display:grid;
+    place-items:center;
+    visibility:hidden;
+    cursor:pointer;
+}
+.fc-row.foldable .fc-fold{
+    visibility:visible;
+}
+.fc-row.foldable .fc-fold:hover{
+    color:var(--accent);
 }
 .fc-row:hover{
     background:var(--hover-bg);

@@ -6144,12 +6144,19 @@ function formulaComparator(name){
    grouping and not a guess — and unfolding hands back every key, m/z and target
    untouched.
 
-   A LINE IS FOLDABLE, and what it unfolds depends on what it IS: a formula
-   shows its measured peaks, a peak shows the formula that took it, a molecule
-   shows its formulas — and those formulas, unfolded in turn, show their peaks.
-   So the stoichiometry view ends up showing BOTH levels, which is the only way
-   a fold can be useful there: a molecule is an abstraction, and a user who
-   opens it is asking what it is made of.
+   A LINE IS FOLDABLE, and what it unfolds depends on what it IS. There is
+   a HANDLE on every line that has something inside, and opening is done on
+   the handle — never on the line itself, because reading a line and opening
+   one are two different intentions and one click cannot be both.
+
+   And a fold opens ONE thing, one level deep:
+     - Formula view      : the formulas are the lines, and a formula opens
+                           its TARGET PEAKS — the measured mass, the intensity
+                           and where the point came from. Not the formulae.
+     - Stoichiometry view: the stoichiometries are the lines, and one opens
+                           its FORMULAS.
+     - Peaks view        : the measured points are the lines, and one opens
+                           the formula that took it.
    ------------------------------------------------------------------------- */
 class FormulaCollectionNode extends NodeWithAccordionGraph{
     //how many sticks the central graph will take before it says "capped"
@@ -6258,14 +6265,17 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
     /* A row is selected by being READ, and read by being the selection: one
        gesture, no "details" button to find.
 
-       ET LE PLI EST ICI, parce qu'un clic est un clic: ouvrir une ligne et la
-       sélectionner sont le même geste, sinon il faudrait un second bouton sur
-       chaque ligne et la moitié de la place d'une ligne de 22 px y partirait.
+       ET LE PLI EST DEHORS DE CE GESTE. Un clic sur une ligne la SÉLECTIONNE;
+       c'est la POIGNÉE — ou la barre d'espace — qui la déplie. Les deux
+       confondus obligent à regarder la liste pour savoir ce qu'on est en train
+       de faire, et le pli devient un accident: on ouvre en voulant lire, et on
+       lit en voulant ouvrir. La ligne est donc lue, la poignée est actionnée,
+       et chacune dit la sienne dans son infobulle.
 
        L'ensemble dépend de ce que la ligne EST — c'est la même règle que
        `visibleRows`, et elle est écrite deux fois parce qu'elle est le contrat
-       entre les deux: si `visibleRows` et `activateRow` divergeaient sur le
-      ensemble, cliquer replierait ce qui vient de se déplier. */
+       entre les deux: si `visibleRows` et `toggleFold` divergeaient sur
+       l'ensemble, la poignée replierait ce qui vient de se déplier. */
     foldSetFor(row){
         if(row.kind==="molecule") return this.openMolecules
         if(row.kind==="peak") return this.openPeaks
@@ -6286,34 +6296,45 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
        jumped back to the top of the list.
 
        It is also what tints the peaks of the selected formula, which is worth
-       having: unfolding a formula and seeing its points lit is the answer to
-       "which points are these?" without reading a single m/z. */
+       having: opening a formula and seeing its points lit answers "which points
+       are these?" without reading a single m/z. */
     selectionKeyOf(row){
         return row.kind==="peak"?row.entry.key:row.key
     }
     isSelected(row){
         return this.parameters.selection===this.selectionKeyOf(row)
     }
-    activateRow(row){
+    /* OUVRIR OU FERMER, et RIEN D'AUTRE: la sélection ne bouge pas.
+
+       Elle ne bouge pas parce qu'ouvrir une stœchiométrie au-dessus de la
+       formule qu'on vient de lire ne doit pas vider le panneau de détail — on a
+       déployé une abstraction, on n'a pas changé de sujet. */
+    toggleFold(row){
+        /* UNE LIGNE SANS CONTENU N'A PAS DE POIGNÉE, donc pas de pli: y
+           enregistrer sa clé ferait grossir un ensemble de lignes qui ne
+           peuvent rien montrer, et la ligne afficherait une marque d'ouverture
+           sur un vide. */
+        if(!row?.childCount) return
         const set=this.foldSetFor(row)
         const foldKey=this.foldKeyFor(row)
         if(set.has(foldKey)) set.delete(foldKey)
         else set.add(foldKey)
+        this.origin?.saveSessionSoon?.()
+        this.renderRows()
+    }
+    activateRow(row){
         if(row.kind==="molecule"){
-            /* A molecule stands for no single formula, so there is nothing to
-               select and nothing for the right panel to show. The selection is
+            /* A stoichiometry stands for no single formula, so there is nothing
+               to select and nothing for the right panel to show. The selection is
                deliberately left alone rather than cleared: the user was reading
-               a formula under this molecule a moment ago, and unfolding the
-               molecule above it is not a reason to lose it. */
-        }else if(row.kind==="peak"){
-            /* A peak is a measurement OF a formula: unfolding it shows that
-               formula, and the detail panel opens on it, because the user's
-               next question is always « which formula is this? ». */
-            this.parameters.selection=row.entry.key
-            this.selectedEntry=row.entry
+               a formula a moment ago, and opening the line above it is not a
+               reason to lose it. */
         }else{
-            this.parameters.selection=row.key
-            this.selectedEntry=row.entry
+            /* A peak is a measurement OF a formula, so reading a peak line
+               selects that formula: the next question is always « which formula
+               is this? », and the detail panel is what answers it. */
+            this.parameters.selection=this.selectionKeyOf(row)
+            this.selectedEntry=row.entry??null
         }
         this.origin?.saveSessionSoon?.()
         this.renderRows()
@@ -6323,7 +6344,14 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
        list's own business — but the ARROWS are this node's, because moving
        along a list of formulas is reading it, and a user with both hands on
        the keyboard should never have to reach for the mouse to move down one
-       row. */
+       row.
+
+       ET LE PLI A SES DEUX TOUCHES, parce que la poignée est un bouton: une
+       poignée qu'on ne peut pas atteindre au clavier est une poignée qui
+       n'existe pas pour la moitié des utilisateurs. ESPACE ouvre et ferme — le
+       geste de la poignée —, ENTRÉE lit. Et les deux flèches latérales font ce
+       qu'elles font dans tous les arbres: DROITE ouvre, GAUCHE ferme, et quand
+       la ligne ne peut pas s'ouvrir elles redeviennent des flèches de déplacement. */
     onListKeyDown(event){
         const rows=this.rows??[]
         if(!rows.length) return
@@ -6348,12 +6376,33 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             event.preventDefault()
             this.deleteVisibleRow(rows[current])
             return
-        }else if(event.key==="Enter"||event.key===" "){
+        }else if(event.key===" "){
+            if(current>=0){
+                event.preventDefault()
+                this.toggleFold(rows[current])
+            }
+            return
+        }else if(event.key==="Enter"){
             if(current>=0){
                 event.preventDefault()
                 this.activateRow(rows[current])
             }
             return
+        }else if(event.key==="ArrowRight"||event.key==="ArrowLeft"){
+            const open=event.key==="ArrowRight"
+            const row=rows[current]
+            /* Une ligne fermée AVALE une flèche droite, comme un dossier fermé
+               avale un Entrée: la flèche sert d'abord à ouvrir, et ne sert
+               qu'ensuite à se déplacer. Sur une ligne sans contenu il n'y a
+               rien à ouvrir, donc elle est un simple déplacement. */
+            if(current>=0&&row?.childCount&&this.isFolded(row)!==open){
+                event.preventDefault()
+                this.toggleFold(row)
+                return
+            }
+            next=open
+                ?current<0?0:Math.min(rows.length-1,current+1)
+                :current<0?rows.length-1:Math.max(0,current-1)
         }else{
             return
         }
@@ -7355,32 +7404,70 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
            avec `?.` parce qu'une collection peut être là sans qu'aucun pli ne
            soit ouvert: une liste qu'on n'a pas dépliée ne doit pas lever. */
         const peakCount=(entry)=>(entry.targets??[]).length
+        /* LA PROVENANCE D'UN PIC, et c'est une question de traçabilité.
+
+           Un point mesuré arrive par le lien. Ce qui l'a attaché à CETTE formule
+           est soit une clé qu'il portait lui-même — le producteur l'a nommé, et
+           c'est une affirmation de l'amont — soit la proximité que NOUS avons
+           décidée, et c'est un calcul. Les deux se disent, et les confondre
+           ferait passer une décision locale pour une mesure amont.
+
+           Le `cost` est le prix que l'appariement a payé pour ce point; il ne
+           dit pas d'où il vient mais ce qu'il a coûté, et il est sur la cible
+           depuis le début — il était déjà dans le panneau de détail, où il
+           n'était visible qu'après un clic.
+
+           `named` est lu sur la cible et, à défaut, sur le point source: une cible
+           qui a survécu à un adoption peut n'avoir plus son `source`, et alors
+           la provenance se déduit de ce qu'il reste — ou se dit absente. */
+        const provenance=(target)=>{
+            if(!target) return "measured"
+            const named=target.named??(typeof target.source?.key==="string")
+            const parts=[named?"named":"nearest"]
+            if(Number.isFinite(target.cost)) parts.push(`cost ${target.cost.toFixed(3)}`)
+            return parts.join(" · ")
+        }
         /* UNE LIGNE DE PIC. Ce n'est pas la formule: c'est le point MESURÉ, tel
-           que l'appariement l'a retenu. La notation affichée est celle de la
-           formule qui l'a pris — sans elle, la ligne serait un m/z orphelin —
-           et la clé est la clé de cette formule suffixée de l'index du pic:
-           deux pics de la même formule sont deux lignes, et aucune des deux
-           n'écrase la clé de la formule, qui sert à tout le reste. */
-        const peakRow=(entry,index,depth,parentKey)=>({
-            kind:"peak",
-            depth,
-            parentKey,
-            entry,
-            target:entry.targets[index],
-            key:`${entry.key}#${index}`,
-            ownerKey:entry.key,
-            notation:entry.notation,
-            mz:entry.targets[index].mz,
-            intensity:entry.targets[index].intensity,
-            errorPpm:entry.targets[index].errorPpm,
-            /* UN pic est UN pic. L'ordre « peaks » dégénère donc en ordre du
-               m/z dans cette vue — ce qui est la seule réponse honnête: on ne
-               va pas faire passer un pic devant un autre en comptant ses voisins.
-               L'ordre par nombre de pics se choisit dans les deux autres vues,
-               où la ligne est une formule ou une molécule et le compte a un sens. */
-            peaks:1,
-            note:entry.note??""
-        })
+           que l'appariement l'a retenu.
+
+           La case large n'affiche PAS la notation de la formule qui l'a pris:
+           elle affiche la PROVENANCE du point. En vue « formula » la formule est
+           juste au-dessus, et en vue « peaks » elle est dans le pli — donc dans
+           les deux cas la ligne dit ce que la ligne ne peut pas déjà dire. Ce
+           qu'elle porte, c'est l'intensité mesurée, le m/z mesuré, l'erreur, et
+           d'où vient le point. */
+        const peakRow=(entry,index,depth,parentKey)=>{
+            const target=entry.targets[index]
+            return {
+                kind:"peak",
+                depth,
+                parentKey,
+                entry,
+                target,
+                key:`${entry.key}#${index}`,
+                ownerKey:entry.key,
+                /* La notation reste lisible — elle est dans l'infobulle et dans
+                   le filtre — mais ce n'est plus elle qui est écrite. */
+                notation:entry.notation,
+                provenance:provenance(target),
+                /* LE m/z MESURÉ, et non celui de la formule: la ligne EST le
+                   point, donc elle porte la mesure. La formule affiche déjà la
+                   sienne, et les deux se suivent ligne après ligne. */
+                mz:target.mz,
+                intensity:target.intensity,
+                errorPpm:target.errorPpm,
+                /* UN pic est UN pic. L'ordre « peaks » dégénère donc en ordre du
+                   m/z dans cette vue — ce qui est la seule réponse honnête: on ne
+                   va pas faire passer un pic devant un autre en comptant ses
+                   voisins. L'ordre par nombre de pics se choisit dans les deux
+                   autres vues, où la ligne est une formule ou une molécule et le
+                   compte a un sens. */
+                peaks:1,
+                note:entry.note??"",
+                /* UN PIC OUVRE UNE SEULE CHOSE: la formule qui l'a pris. */
+                childCount:1
+            }
+        }
         /* UNE LIGNE DE FORMULE, et la même que celle de la vue « formula ». `depth`
            vaut l'indentation, et `parentKey` nomme la ligne qui l'a ouverte:
            les deux sont posés ici plutôt que déduits à l'affichage, parce que
@@ -7405,14 +7492,30 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             intensity:entry.intensity,
             errorPpm:entry.errorPpm,
             peaks:peakCount(entry),
-            note:entry.note??""
+            note:entry.note??"",
+            /* UNE FORMULE OUVRE SES PICS CIBLES, et rien d'autre. Le compte est
+               posé ici parce que c'est lui qui décide si la ligne a une
+               poignée: une formule sans cible n'a rien à montrer, et une
+               poignée qui s'ouvre sur du vide est une poignée qui ment. */
+            childCount:peakCount(entry)
         })
-        /* LES ENFANTS, et ils dépendent de ce que la ligne EST.
+        /* LES ENFANTS, ET LA RÈGLE EST UN NIVEAU.
 
-           C'est la règle demandée, et elle tient en une phrase: une formule
-           déplie ses PICS, un pic déplie sa FORMULE, une molécule déplie ses
-           FORMULES — lesquelles déplient à leur tour leurs pics, ce qui est
-           comment la vue molécule finit par montrer les deux. */
+           Ce qu'une ligne ouvre dépend de ce qu'elle EST, et elle n'ouvre
+           QU'UNE chose:
+             - une formule déplie ses PICS CIBLES — la mesure, avec sa masse
+               mesurée, son intensité et sa provenance, et PAS les formules;
+             - une molécule déplie ses FORMULES — la stœchiométrie est la ligne,
+               ses formules sont le contenu;
+             - un pic déplie LA FORMULE qui l'a pris — le pic est la ligne, sa
+               formule est le contenu.
+
+           Un seul niveau, et c'est une règle de lecture autant qu'une sécurité:
+           la ligne dépliée est le DÉTAIL de la ligne qui la contient, et un
+           détail qui se redéplie devient une deuxième arborescence à gérer pour
+           une information qu'on lit déjà sur la ligne du dessus. La boucle
+           vicieuse que cela autorisait — pic → formule → le MÊME pic → formule —
+           devient impossible par construction, et non plus par un plafond. */
         const childrenOf=(row)=>{
             if(row.kind==="molecule") return row.entries.map(entry=>formulaRow(entry,row.depth+1,row.key))
             if(row.kind==="peak") return [formulaRow(row.entry,row.depth+1,row.key)]
@@ -7423,13 +7526,12 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             if(row.kind==="peak") return !!openPeaks?.has(row.key)
             return !!openEntries?.has(row.key)
         }
-        /* LA PROFONDEUR EST BORNÉE, et c'est une sécurité, pas une limite de
-           présentation: un pic déplié montre sa formule, cette formule déplie
-           ses pics, et l'un de ces pics est le premier. Sans plafond la liste
-           se plierait sur elle-même jusqu'à la saturation de la pile. Deux
-           niveaux suffisent à tout ce qui est demandé: molécule → formule →
-           pic. */
-        const MAX_DEPTH=2
+        /* LA PROFONDEUR EST 1, et elle n'est plus un PLAFOND de sécurité: c'est la règle
+           du pli, celle qu'on vient d'écrire. Elle reste une constante nommée
+           parce que la lire dans la boucle coûte moins cher que de la redécouvrir
+           à chaque ligne, et parce qu'un jour une vue en aura besoin d'autre
+           chose — et ce jour-là le numéro sera là, avec le test qui compte. */
+        const MAX_DEPTH=1
         let rows
         if(this.parameters.view==="peaks"){
             /* LA VUE « PICS », et c'est la troisième lecture de la même
@@ -7491,7 +7593,22 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                    collection could show CH4[H+] or CH5[+] on two machines that
                    enumerated their parents differently. */
                 notation:group.molecule,
-                mz:group.entries.reduce((n,e)=>n+e.mz,0)/group.entries.length,
+                /* LE m/z DE LA STŒCHIOMÉTRIE, et non la moyenne de ses feuilles.
+
+                   La moyenne était un nombre que rien ne mesure: elle ne
+                   correspond ni à une masse prédite, ni à une masse observée, et
+                   elle se trouvait dans la MÊME colonne que le m/z des autres
+                   lignes — donc comparable, donc fausse. La racine, elle, a une
+                   masse à elle, calculée par la même table que les feuilles.
+
+                   Elle n'est pas toujours là: une entrée reconstruite par un
+                   adoptiveur externe peut n'avoir pas de `root`, et alors on
+                   garde la moyenne — moins juste, mais présente, ce qui vaut
+                   mieux qu'un tiret sur une ligne dont la masse est connue par
+                   ses feuilles. */
+                mz:Number.isFinite(group.entries[0].root?.mz)
+                    ?group.entries[0].root.mz
+                    :group.entries.reduce((n,e)=>n+e.mz,0)/group.entries.length,
                 count:group.entries.length,
                 /* LES DEUX CHAMPS DE TRI D'UNE MOLÉCULE, et ils ne se moyennent
                    pas de la même façon — délibérément.
@@ -7517,7 +7634,9 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                    et c'est la somme qui dit ce que la molécule couvre. Une
                    moyenne répondrait « chaque isotopologue couvre autant », ce qui
                    n'est pas du tout la même question. */
-                peaks:group.entries.reduce((n,e)=>n+peakCount(e),0)
+                peaks:group.entries.reduce((n,e)=>n+peakCount(e),0),
+                /* UNE STŒCHIOMÉTRIE OUVRE SES FORMULES, et rien d'autre. */
+                childCount:group.entries.length
             }))
         }else{
             rows=entries.map(entry=>formulaRow(entry,0,null))
@@ -7553,7 +7672,17 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             rows.push(row)
             if(row.depth>=MAX_DEPTH||!isOpen(row)) continue
             const children=childrenOf(row)
-            for(let i=children.length-1;i>=0;i--) stack.push(children[i])
+            for(let i=children.length-1;i>=0;i--){
+                /* UN ENFANT EST UNE FEUILLE, et il le devient ICI, une fois pour
+                   toutes, plutôt que dans les trois constructeurs: une formule
+                   sait qu'elle a des pics, mais celle qui est déjà le contenu d'un
+                   pli n'a plus rien à ouvrir. Sans cela elle afficherait une
+                   poignée qui s'ouvrirait sur du vide — une poignée qui ment,
+                   et le pli ne s'y produirait pas puisque la boucle s'arrête
+                   au premier niveau. */
+                children[i].childCount=0
+                stack.push(children[i])
+            }
         }
         return rows
     }
@@ -7604,32 +7733,80 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
     drawRow(element,row){
         if(!element){
             const root=CE("div",{className:"fc-row"},[])
+            /* LA POIGNÉE, et elle est un BOUTON dans la ligne, pas la ligne
+               elle-même. Un clic sur le nom ne doit plus ouvrir et fermer: lire
+               une ligne et la déplier sont deux gestes, et les confondre oblige
+               à regarder la liste pour savoir si l'on lit ou si l'on navigue.
+
+               Elle est dans le flux de la ligne — la première colonne — et non
+               posée par-dessus: une poignée en surimpression vole la place du
+               texte qu'elle recouvre, et la colonne fait que toutes les lignes
+               s'alignent, poignée ou non. Une ligne sans rien à ouvrir garde la
+               colonne vide (`.fc-fold` est invisible par défaut), parce qu'une
+               colonne qui saute selon la ligne est une colonne qu'on ne peut
+               plus lire en diagonale. */
+            const fold=CE("button",{
+                type:"button",
+                className:"fc-fold",
+                title:"Open or close this line"
+            },["▸"])
             const notation=CE("span",{className:"fc-cell fc-notation"},[""])
             const mz=CE("span",{className:"fc-cell fc-num"},[""])
             const error=CE("span",{className:"fc-cell fc-num"},[""])
             const intensity=CE("span",{className:"fc-cell fc-num"},[""])
             const note=CE("span",{className:"fc-cell fc-note"},[""])
-            root.append(notation,mz,error,intensity,note)
+            root.append(fold,notation,mz,error,intensity,note)
             //one listener, not the app's delegated handleClick AND one of our
             //own: both would fire on a single click and toggle the row twice
             root.addEventListener("click",(event)=>{
                 event.stopPropagation()
                 if(root.row) this.activateRow(root.row)
             })
-            root.cells=[notation,mz,error,intensity,note]
+            /* La poignée remonte l'événement ET s'arrête là: sans ça le clic
+               remonterait jusqu'à la ligne, qui sélectionnerait la formule en
+               même temps qu'elle la déplierait — un seul clic, deux effets, et
+               la sélection qui saute sur une ligne qu'on voulait juste lire. */
+            fold.addEventListener("click",(event)=>{
+                event.stopPropagation()
+                if(root.row) this.toggleFold(root.row)
+            })
+            root.cells=[fold,notation,mz,error,intensity,note]
             root.notation=notation
+            root.fold=fold
             return root
         }
-        const [notation,mz,error,intensity,note]=element.cells
+        const [fold,notation,mz,error,intensity,note]=element.cells
         element.row=row
-        notation.textContent=prettyNotation(row.notation)
+        /* LA POIGNÉE, et elle ne se voit que sur une ligne qui a quelque chose
+           à montrer. `foldable` est posée même quand la ligne est fermée, parce
+           que la question « y a-t-il quelque chose dedans ? » se pose avant la
+           question « est-ce ouvert ? », et une poignée absente répond aux deux
+           par la négative. */
+        const foldable=(row.childCount??0)>0
+        const unfolded=this.isFolded(row)
+        element.classList.toggle("foldable",foldable)
+        fold.textContent=foldable?(unfolded?"▾":"▸"):""
+        fold.title=foldable
+            ?unfolded?"Close this line":`Open the ${row.kind==="peak"?"formula":"lines"} of this one`
+            :""
+        /* LA CASE LARGE, et elle ne dit pas la même chose selon la ligne.
+
+           Une formule s'affiche par sa notation; un pic par sa PROVENANCE,
+           parce que la formule qui l'a pris est soit la ligne juste au-dessus,
+           soit le contenu de son pli — donc toujours déjà lue. Écrire la
+           notation sur les deux ferait de la case large une colonne qui répète,
+           et c'est la colonne qui porterait alors l'information la plus
+           importante: celle qui dit d'où vient la mesure. */
+        notation.textContent=row.kind==="peak"
+            ?row.provenance
+            :prettyNotation(row.notation)
         element.notation.title=row.kind==="molecule"
-            ?`${formatCount(row.count)} formulas on this molecule — click to unfold`
+            ?`${formatCount(row.count)} formulas on this stoichiometry — open it to see them`
             :row.kind==="peak"
-                /* A peak's identity is the point, and the point is a PAIR: its own
-                   m/z and the key of the formula that took it. The notation cell
-                   already says which formula, so the title says which point. */
-                ?`measured at ${formatMz(row.mz)}, taken by\n${row.ownerKey}\nclick to unfold the formula`
+                /* A peak's identity is the PAIR: the point that was measured, and
+                   the formula that took it. The wide cell already says where the
+                   point came from, so the title says which point and whose. */
+                ?`${row.provenance}\nmeasured at ${formatMz(row.mz)}, intensity ${formatValue(row.intensity)}\ntaken by ${row.ownerKey}`
                 :row.key
         mz.textContent=formatMz(row.mz)
         if(row.kind==="molecule"){

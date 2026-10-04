@@ -518,11 +518,12 @@ test("un pic déplié montre la formule qui l'a pris",()=>{
         "only the SECOND point was opened, and it shows the formula")
     eq(rows[2].key,"a","the formula, under its own point")
 })
-test("une molécule dépliée montre ses formules ET leurs pics",()=>{
-    /* La demande explicite: dans la vue molécule, un pli montre les DEUX. Il
-       le peut parce que les deux niveaux se contaminent — la molécule ouvre ses
-       formules, et une formule ouverte parmi elles ouvre ses pics. Ce test
-       échouerait si le pli n'était lu qu'au premier niveau. */
+test("une molécule dépliée montre ses FORMULES, et rien d'autre",()=>{
+    /* La règle du pli, appliquée à la vue stœchiométrie: la LIGNE est la
+       stœchiométrie, et le pli montre ses formules. Pas les pics de ces
+       formules: ce serait un deuxième niveau, et une formule-enfant qui
+       afficherait ses propres pics se placerait dans une arborescence que
+       personne n'a demandée — la règle est UN niveau, comme partout ailleurs. */
     const entries=[
         entry("h",15,100,0.4,"CH4[H+]",[peak(15.00001,100,0.4)]),
         entry("d",17,40,1.2,"CH4[H+]",[peak(17.00003,40,1.2)]),
@@ -533,23 +534,26 @@ test("une molécule dépliée montre ses formules ET leurs pics",()=>{
         open:{openMolecules:new Set(["CH4[H+]"]),openEntries:new Set(["d"])}
     }))
     eq(rows.map(r=>`${r.kind}:${r.depth}`).join(" "),
-        "molecule:0 formula:1 formula:1 peak:2 molecule:0",
-        "the molecule, its two formulae, the peaks of the one opened in turn, H2O untouched")
-    eq(rows[3].kind,"peak","the second level really is a peak")
-    eq(rows[3].depth,2,"at the fourth line")
+        "molecule:0 formula:1 formula:1 molecule:0",
+        "the stoichiometry, its two formulae, and H2O — and no peak anywhere")
+    eq(rows.filter(r=>r.kind==="peak").length,0,
+        "even though the leaf that was left open does have a peak of its own")
+    eq(rows[1].childCount,0,"and an opened line is a leaf: it shows no handle")
 })
-test("le pli s'arrête, sinon la liste se replie sur elle-même",()=>{
-    /* Un pic déplié montre sa formule, cette formule dépliée montre ses pics, et
-       l'un de ces pics EST le premier. Sans plafond, un utilisateur qui ouvre
-       les deux construit une liste infinie — et le premier symptôme n'est pas
-       une erreur, c'est un onglet mort. */
+test("un pli n'a qu'un niveau, par construction",()=>{
+    /* Un pic déplié montre sa formule, cette formule a ses pics, et l'un de ces
+       pics EST le premier. La règle du pli — un seul niveau — rend la boucle
+       impossible, et ce test la vérifie en ouvrant LES DEUX: si la profondeur
+       redevenait variable, la liste serait infinie et le premier symptôme ne
+       serait pas une erreur, ce serait un onglet mort. */
     const entries=[entry("a",12,1,5,"CH4[H+]",[peak(12.00001,10,0.4)])]
     const rows=visibleRows.call(readerWith(entries,{
         view:"peaks",
         open:{openPeaks:new Set(["a#0"]),openEntries:new Set(["a"])}
     }))
-    eq(rows.map(r=>r.depth).join(","),"0,1,2","one level per fold, and no more")
-    eq(rows.length,3,"the point, its formula, that formula's one point — then stop")
+    eq(rows.map(r=>r.kind).join(" "),"peak formula",
+        "the point, its formula — and the formula's own point stays closed")
+    eq(rows.length,2,"two lines, whatever the user opened")
 })
 
 console.log("ce qu'une ligne de PIC affiche, qui n'est pas ce qu'affiche la formule")
@@ -567,15 +571,20 @@ const drawRow=new Function("CE","prettyNotation","formatMz","formatValue","forma
     `return ({${source.slice(drawStart,drawEnd)}}).drawRow`)(
     ()=>null,prettyNotation,formatMz,formatValue,formatCount)
 
-/* A row element, and the two things `drawRow` writes outside its cells: the
-   classes it toggles and the indent it sets. */
+/* A row element, and the three things `drawRow` writes outside its cells: the
+   classes it toggles, the indent it sets, and the handle's own glyph. The six
+   cells are named, because their order is a layout decision of the
+   stylesheet and a test that counted them would break the day a column moves
+   for a reason that has nothing to do with what it shows. */
 const paint=(row,{selection=null,folded=new Set()}={})=>{
-    const cells=[0,1,2,3,4].map(()=>({textContent:"",title:""}))
+    const cells=[0,1,2,3,4,5].map(()=>({textContent:"",title:""}))
     const classes=[]
     const properties={}
+    const [fold,notation,mz,error,intensity,note]=cells
     const element={
         cells,
-        notation:cells[0],
+        notation,
+        fold,
         row:null,
         classList:{toggle:(name,on)=>{if(on) classes.push(name)}},
         style:{setProperty:(name,value)=>{properties[name]=value}}
@@ -585,27 +594,70 @@ const paint=(row,{selection=null,folded=new Set()}={})=>{
         isSelected:(r)=>selection===(r.kind==="peak"?r.entry.key:r.key),
         isFolded:(r)=>folded.has(r.kind==="molecule"?r.molecule:r.key)
     },element,row)
-    return {cells,classes,properties}
+    return {fold,notation,mz,error,intensity,note,classes,properties}
 }
 
-test("une ligne de pic montre les nombres DU PIC, pas ceux de la formule",()=>{
+test("une ligne de pic montre la MESURE et la PROVENANCE, pas la formule",()=>{
     /* LA LIGNE ERRONÉE, ET ELLE EST CLAIRE. Une formule porte l'erreur de son
        pic le plus proche et la SOMME de ses intensités; un pic est un point, et
        il a les siens. Les afficher sur les lignes dépliées ce serait mettre le
        même nombre sur chaque ligne du pli, et faux sur toutes sauf la première
-       — le pire genre d'erreur: plausible, constante, et invisible. */
+       — le pire genre d'erreur: plausible, constante, et invisible.
+
+       Et la case large ne répète pas la notation de la formule: en vue « peaks »
+       elle est DANS le pli, en vue « formula » elle est juste au-dessus. Ce qui
+       manque à la ligne, c'est d'où vient le point — donc c'est ça qui s'écrit. */
     const entries=[
-        entry("a",12,9000,0.4,"CH4[H+]",[peak(12.00001,10,-7.5),peak(12.00002,20,3)])
+        entry("a",12,9000,0.4,"CH4[H+]",[
+            {mz:12.00001,intensity:10,errorPpm:-7.5,cost:0.42,source:{mz:12.00001,key:"a"}},
+            {mz:12.00002,intensity:20,errorPpm:3,cost:0.11,source:{mz:12.00002}}
+        ])
     ]
-    const rows=visibleRows.call(readerWith(entries,{
-        view:"peaks",
-        open:{openPeaks:new Set(["a#0"])}
-    }))
-    const head=paint(rows[0])
-    eq(head.cells[0].textContent,"a","the formula that took the point is written on the line")
-    eq(head.cells[1].textContent,"12.0000","and the m/z is the MEASURED one")
-    eq(head.cells[2].textContent,"-7.5","the error is the point's, not the formula's closest (+0.4)")
-    eq(head.cells[3].textContent,"10","and the intensity is the point's, not the formula's total (9000)")
+    const rows=visibleRows.call(readerWith(entries,{view:"peaks"}))
+    const named=paint(rows[0])
+    eq(named.notation.textContent,"named · cost 0.420",
+        "the point named its own formula upstream, and that is said out loud")
+    eq(named.mz.textContent,"12.0000","the MEASURED mass, not the formula's")
+    eq(named.error.textContent,"-7.5","the error is the point's, not the formula's closest")
+    eq(named.intensity.textContent,"10","and the intensity is the point's, not the total (9000)")
+    const nearest=paint(rows[1])
+    eq(nearest.notation.textContent,"nearest · cost 0.110",
+        "and a point we paired by proximity says so, rather than claiming to be named")
+})
+test("la provenance ne se devine pas: elle se déduit de ce qui reste",()=>{
+    /* Un point retrouvé dans un fichier de session n'a plus son `source`: on ne
+       peut plus savoir qui l'avait nommé. Deux honnêtetés plutôt qu'une
+       invention — « nearest » quand le point existe sans clé, et pas de coût
+       quand il n'y en a pas. Un tiret serait plus lisible, mais il se lirait
+       comme une absence de mesure. */
+    const entries=[
+        entry("a",12,0,null,"CH4[H+]",[{mz:12.00001,intensity:10,errorPpm:0.1,cost:NaN}]),
+        entry("b",100,0,null,"H2O",[{mz:100.00005,intensity:20,errorPpm:0.2}])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{view:"peaks"}))
+    eq(paint(rows[0]).notation.textContent,"nearest","no key to read, so we paired it")
+    eq(paint(rows[1]).notation.textContent,"nearest",
+        "and no cost to print, so nothing is printed")
+})
+test("la poignée n'apparaît que sur une ligne qui a quelque chose dedans",()=>{
+    /* La poignée répond à « y a-t-il des lignes là-dessous ? », et elle doit être
+       là AVANT qu'on ouvre. Une formule sans cible n'a rien à montrer: une
+       poignée qui s'ouvrirait sur du vide est une poignée qui ment. */
+    const entries=[
+        entry("with",12,10,0.1,"CH4[H+]",[peak(12.00001,10,0.1)]),
+        entry("without",100,0,null,"H2O",[])
+    ]
+    const rows=visibleRows.call(readerWith(entries))
+    const opened=paint(rows[0],{folded:new Set(["with"])})
+    eq(opened.fold.textContent,"▾","an open line shows the handle turned down")
+    ok(opened.classes.includes("foldable"),"and the row is marked foldable")
+    ok(opened.classes.includes("unfolded"),"and carries the open mark")
+    const empty=paint(rows[1])
+    eq(empty.fold.textContent,"","a line with nothing inside shows no glyph at all")
+    eq(empty.classes.includes("foldable"),false,"and is not marked foldable")
+    const closed=paint(rows[0])
+    eq(closed.fold.textContent,"▸","a closed line shows the handle turned right")
+    ok(closed.classes.includes("foldable"),"still foldable — that is what it answers")
 })
 test("un pli se lit par le RETRAIT, jamais par une couleur de plus",()=>{
     const entries=[
@@ -619,14 +671,13 @@ test("un pli se lit par le RETRAIT, jamais par une couleur de plus",()=>{
     const head=paint(rows[0],{folded:new Set(["a#0"])})
     eq(head.properties["--fc-depth"],"0","a head line is not indented")
     eq(head.classes.includes("child"),false,"and does not claim to be a child")
-    ok(head.classes.includes("unfolded"),"the line that was unfolded carries the open mark")
+    ok(head.classes.includes("unfolded"),"the line that was opened carries the open mark")
     const child=paint(rows[1])
     eq(child.properties["--fc-depth"],"1","a child line is one step in")
     ok(child.classes.includes("child"),"and says so, so it can be drawn quieter")
-    eq(child.classes.includes("unfolded"),false,
-        "the child it opened is not itself open — the mark belongs to the parent")
+    eq(child.classes.includes("foldable"),false,"and a child is a leaf: no handle on it")
     /* the SECOND point of the same formula, which is a head line like any
-       other: the fold of one line never reaches its neighbour */
+       other: opening one line never reaches its neighbour */
     const neighbour=paint(rows[2],{folded:new Set(["a#0"])})
     eq(neighbour.properties["--fc-depth"],"0","its neighbour stays at the margin")
     eq(neighbour.classes.includes("unfolded"),false,"and is not dragged into the fold")
@@ -641,8 +692,26 @@ test("une molécule affiche son nombre de formules, pas une erreur",()=>{
     ]
     const rows=visibleRows.call(readerWith(entries,{view:"stoichiometry"}))
     const molecule=paint(rows[0])
-    eq(molecule.cells[2].textContent,"×2","two formulas folded")
-    eq(molecule.cells[3].textContent,"","and no intensity, which would be a number invented here")
+    eq(molecule.notation.textContent,"CH₄H⁺","the stoichiometry, written as itself")
+    eq(molecule.error.textContent,"×2","two formulas folded")
+    eq(molecule.intensity.textContent,"","and no intensity, which would be a number invented here")
+})
+test("une molécule affiche la MASSE de la stœchiométrie, pas la moyenne de ses feuilles",()=>{
+    /* La moyenne des m/z d'un groupe n'est ni une masse prédite ni une masse
+       observée — et elle était dans la colonne des m/z, donc lisible comme si
+       elle en était une. La racine a une masse à elle, calculée par la même
+       table que les feuilles; c'est elle qui est affichée. */
+    const withRoot=[
+        entry("h",15,100,0.4,"CH4[H+]"),
+        entry("d",17,40,1.2,"CH4[H+]")
+    ]
+    for(const e of withRoot) e.root={mz:16.0313}
+    eq(visibleRows.call(readerWith(withRoot,{view:"stoichiometry"}))[0].mz,16.0313,
+        "the stoichiometry's own mass")
+    eq(visibleRows.call(readerWith(
+        [entry("h",15,100,0.4,"CH4[H+]"),entry("d",17,40,1.2,"CH4[H+]")],
+        {view:"stoichiometry"}))[0].mz,16,
+        "and the mean only when there is no root to ask")
 })
 
 console.log("les DEUX sorties, et le jumeau exact")
