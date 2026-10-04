@@ -1,4 +1,4 @@
-/* =========================================================================
+﻿/* =========================================================================
    chemistry.js — trois classes.
 
      Element       un atome et ses isotopes. Vient de data/elements.json.
@@ -364,7 +364,29 @@ class Stoichiometry{
        masse et le m/z pèsent — mais l'écrire ET écrire les crochets compterait
        l'adduit deux fois. Voir le constructeur. */
     get written(){
-        return this.core??this.composition
+        /* Ce qui s'ÉCRIT: le core quand on s'en souvient, la composition sinon.
+
+           Cette ligne est la correction du double compte. `composition` porte
+           le groupe absorbé — il faut bien qu'elle le porte, puisque c'est elle
+           que la masse et le m/z pèsent — mais l'écrire ET écrire les crochets
+           compterait l'adduit deux fois. Voir le constructeur.
+
+           LE MÊME DOUBLE COMPTE, POUR UNE AUTRE RAISON, QUAND IL N'Y A PAS DE
+           SQUELETTE. `parseIonisationOnly("[H+]")` ne se souvient d'aucun core:
+           sa composition EST le groupe, et les crochets l'écrivent déjà. Sans
+           cette ligne, on écrivait le proton en toutes lettres ET entre
+           crochets — "H[H+]", lu comme deux hydrogènes alors qu'il n'y en a
+           qu'un. Le proton nu devenait donc une formule fausse, et elle se
+           lisait dans la liste des adduits comme ailleurs.
+
+           La question à se poser est donc: « le core est-il absent PARCE QUE
+           L'UTILISATEUR N'A DONNÉ QUE LE GROUPE? ». Oui → les crochets suffisent,
+           et le core vide s'écrit. Non — un "CH4[H+]" tapé en entier — → le core
+           existe et c'est lui qui s'écrit, le groupe restant dans les crochets
+           comme il se doit. */
+        if(this.core) return this.core
+        const onlyGroups=this.ionisation.some(term=>term.group&&term.group.size>0)
+        return onlyGroups?new Map():this.composition
     }
 
     /* L'AFFICHAGE, qui abrège, et qui se relit avec la même règle.
@@ -374,12 +396,65 @@ class Stoichiometry{
        montrer. C'est lisible pour un humain, et c'est pourquoi cette forme
        n'est PAS une identité. */
     toString(){
-        //l'affichage est COLLÉ: c'est la forme qu'on écrit à la main, et c'est
-        //pour ça qu'elle n'est pas une identité. Comme `key`, il s'écrit depuis
-        //le core: "CH4;H+" doit se relire CH4[H+], et non CH5[H+] où le lecteur
-        //compte six hydrogènes
-        return Formula.compositionToString(this.written,this.rule).replace(/ /g,"")
-            +this.brackets
+        /* L'affichage est COLLÉ: c'est la forme qu'on écrit à la main, et c'est
+           pour ça qu'elle n'est pas une identité. Comme `key`, il s'écrit depuis
+           le core: "CH4;H+" doit se relire CH4[H+], et non CH5[H+] où le lecteur
+           compte six hydrogènes
+
+           MAIS LA COLLE S'ARRÊTE OÙ ELLE TROMPERAIT LE RELECTEUR, et il y a
+           deux frontières — deux cas que la grammaire relit autrement:
+
+             "C5" + "13C"  →  "C513C"   le compte et l'A n'en font qu'un nombre
+             "13C" + "H12"  →  "13CH12"  le "CH" se lit comme deux éléments
+
+           Le second est le moins évident et le plus insidieux: il ne se voit
+           qu'avec un A ÉCRIT suivi d'un élément dont le compte suit, ce qui est
+           exactement ce que produit une attribution. "13CH4" se relit "13C 1H" —
+           le compte est perdu, et rien ne signale qu'il a disparu.
+
+           On ne colle donc que ce qui est relisible, et cela demande DEUX
+           questions, toutes deux lisibles dans la chaîne:
+
+             1. la partie suivante commence-t-elle par un chiffre?  alors c'est
+                un A, et la précédente peut finir par un compte — "C5"+"13C"
+                donnerait "C513C", soit 513 carbones.
+             2. la partie précédente se TERMINE-t-elle par un symbole porteur d'un
+                A?  alors la suivante s'y colle et la relecture y voit deux
+                éléments — "13C"+"H12" donnerait "13CH12", et le compte de H se
+                perd en chemin.
+
+           La 2 se demande sur la FIN de la partie, jamais sur le milieu: le A
+           d'un atome s'écrit DEVANT son symbole, donc c'est la fin qui
+           l'accueille. Sans cette attention, "2H2" passe pour un symbole à A —
+           à cause du "2H" de tête — et l'eau devient "2H2 O".
+
+           AUCUNE DES DEUX NE SUFFIT SEULE. La 2 seule laisse passer "C513C"; la 1
+           seule colle "C"+"H4" en "CH4" sans raison — ou plutôt en "13C H", ce
+           qui est la même perte de compte vue d'un autre côté.
+
+           Ce que ça préserve: "C6H12O6", "Fe2O3", "CH4" et "2H2O" se collent
+           toujours. La forme écrite à la main ne change que là où elle serait
+           relue autrement.
+
+           Ce n'est pas une corner case: une collection aligne des 12C et des
+           13C toute la journée, c'est la forme normale d'une attribution. Et ce
+           texte est stocké comme source de relecture (`addAll` prend
+           `String(formula)` pour sourceText) — une session qui le relit
+           ressortait donc une formule FAUSSE, silencieusement. */
+        const parts=Formula.compositionToString(this.written,this.rule)
+            .split(" ").filter(Boolean)
+        let text=parts[0]??""
+        for(let i=1;i<parts.length;i++){
+            const part=parts[i]
+            /* Le "$" de la condition 2 est ce qui fait la différence: sans lui
+               "2H2" passe pour un symbole à A — à cause du "2H" de tête — et
+               l'eau devient "2H2 O". */
+            const startsOnMassNumber=/^[0-9]/.test(part)
+            const previousEndsOnMassNumber=/[0-9]+[A-Za-z]$/.test(parts[i-1])
+            const glued=!startsOnMassNumber&&!previousEndsOnMassNumber
+            text+=glued?part:` ${part}`
+        }
+        return text+this.brackets
     }
 
     /* La partie ionisation, telle qu'on l'écrit: collée, sans espace.

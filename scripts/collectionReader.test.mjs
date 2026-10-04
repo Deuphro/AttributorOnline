@@ -97,22 +97,31 @@ test("the counts go down and the charge goes up",()=>{
     eq(prettyNotation("C6H12O6[H+]"),"C₆H₁₂O₆H⁺")
     eq(prettyNotation("C6H12O6[H-]"),"C₆H₁₂O₆H⁻")
 })
-test("a mass number stays on the baseline",()=>{
-    /* The whole point of the rule. "12C6" written ₁₂C₆ would read as twelve
-       atoms of a mass number, and the two notations would look alike while
-       meaning different things. */
-    eq(prettyNotation("12C6 1H12 16O6"),"12C₆ 1H₁₂ 16O₆")
+test("a mass number goes UP, on the left of its symbol",()=>{
+    /* The rule, and it is the one a chemist reads. ¹²C₆ — the A is raised and
+       written BEFORE the symbol, the count is lowered and written AFTER it, so
+       the two numbers of an isotope can never be confused for one another. It
+       used to stay on the baseline, which is a position nobody looks for an A
+       in, and a row of a dozen isotopes became a column of bare figures. */
+    eq(prettyNotation("12C6 1H12 16O6"),"¹²C₆ ¹H₁₂ ¹⁶O₆")
     const first=prettyNotation("12C6 1H12 16O6").split(" ")[0]
-    ok(first.startsWith("12"),`the 12 of a mass number must not be subscripted, got "${first}"`)
+    ok(first.startsWith("¹²"),`the 12 of a mass number must be raised, got "${first}"`)
+    ok(first.endsWith("C₆"),`the 6 of a count must go down, got "${first}"`)
 })
-test("a count of one is not written at all",()=>{
-    eq(prettyNotation("CH4"),"CH₄")
-    eq(prettyNotation("CO2"),"CO₂")
+test("a mass number is NEVER taken for a count",()=>{
+    /* The failure this fixes was silent and it was in the FUSED string: the
+       display used to swallow the whole digit run as one count, so "C5 13C"
+       arrived as "C513C" and was drawn C₅₁₃C — a thirteen that reads as five
+       hundred and thirteen. It is fixed upstream, in `toString`, which no
+       longer glues a count onto an A; this test is what notices if it comes
+       back. */
+    const fused=String(parse("12C5 13C1 1H12 16O6"))
+    ok(/C5 13C/.test(fused),`expected "C5 13C" in the display, got "${fused}" — the count and the A would be one number`)
+    const drawn=prettyNotation(fused)
+    ok(!/₅₁₃/.test(drawn),`the 13 was drawn as a count: "${drawn}"`)
+    ok(/¹³/.test(drawn),`the 13 must be raised: "${drawn}"`)
 })
-test("a signed charge of two is written whole",()=>{
-    eq(prettyNotation("SO4[2-]"),"SO₄²⁻")
-})
-test("the notation round-trips: what is drawn is what was read",()=>{
+test("what is drawn reads back to what was read",()=>{
     /* A display that changes the string is a display that lies, because the
        string is what a chemist copies into a search box. Brackets are dropped
        by the drawing, so the comparison is on the composition alone — that is
@@ -121,13 +130,32 @@ test("the notation round-trips: what is drawn is what was read",()=>{
         .replace(/[₀-₉]/g,d=>"0123456789"["₀₁₂₃₄₅₆₇₈₉".indexOf(d)])
         .replace(/⁺/g,"+").replace(/⁻/g,"-")
         .replace(/[⁰¹²³⁴-⁹]/g,d=>"0123456789"["⁰¹²³⁴⁵⁶⁷⁸⁹".indexOf(d)])
-    for(const text of ["C6H12O6","12C6 1H12 16O6","C2H5OH"]){
+    for(const text of ["C6H12O6","12C6 1H12 16O6","C2H5OH","12C5 13C1 1H12 16O6"]){
         const bare=text.replace(/\[.*?\]/g,"").replace(/\s+/g,"")
         eq(restore(prettyNotation(text)).replace(/\s+/g,""),bare,
             `"${text}" does not read back from what is drawn`)
     }
 })
-
+test("the display re-reads, isotopes included",()=>{
+    /* The engine's own round trip, and it is a different question from the
+       drawing above: not "does the glyph decode" but "does the STRING mean the
+       same formula". It used not to — `toString` glued "C5" and "13C" into
+       "C513C", which the grammar reads as 513 carbones, so a session storing
+       that text reopened a DIFFERENT molecule than the one that was found. */
+    for(const text of ["12C5 13C1 1H12 16O6","C6H12O6","CH4[H+]","Fe2O3","C6H5 13C1 1H12 16O6"]){
+        const first=parse(text)
+        const again=Formula.parse(String(first),TABLE)
+        eq(again.key,first.key,
+            `"${text}" is displayed as "${first}", which re-reads as "${again.key}"`)
+    }
+})
+test("a count of one is not written at all",()=>{
+    eq(prettyNotation("CH4"),"CH₄")
+    eq(prettyNotation("CO2"),"CO₂")
+})
+test("a signed charge of two is written whole",()=>{
+    eq(prettyNotation("SO4[2-]"),"SO₄²⁻")
+})
 console.log("a molecule is what a formula belongs to, isotopes forgotten")
 test("two isotopologues share one molecule",()=>{
     const light=parse("12C6 1H12 16O6")

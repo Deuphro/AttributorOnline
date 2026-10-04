@@ -3672,7 +3672,19 @@ class AttributionNode extends NodeWithAccordion{
         return source
             .filter(block=>block.groupIndex===key)
             .map(block=>({
-                notation:block.notation,
+                /* LA NOTATION, ET ELLE SE DESSINE.
+
+                   C'est le même geste que la liste de formules du lecteur, et
+                   pour la même raison: `notation` abrège l'isotope par défaut —
+                   "C H2" — et c'est cette forme qu'un humain écrit. La clé, elle,
+                   dit "12C 1H2", ce qui est exact mais n'est pas une écriture:
+                   personne n'écrit un A sur chaque atome d'un groupe, et la
+                   ligne devenait illisible au moment précis où l'utilisateur
+                   cherche à voir CE QUE SON `ratio` A OUVERT.
+
+                   Le titre garde la notation et non la clé, pour la même
+                   cohérence: les deux se lisent dans la même colonne. */
+                notation:prettyNotation(block.notation),
                 key:block.key,
                 mass:block.atomicMass,
                 logProbability:block.logProbability
@@ -5891,10 +5903,20 @@ function formatValue(value){
 }
 const SUBSCRIPTS={"0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉"}
 const SUPERSCRIPTS={"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹","+":"⁺","-":"⁻"}
-/* The notation, made readable: the COUNTS go down (C₆H₁₂O₆) and the charge
-   goes up (H⁺). The digits of a MASS NUMBER stay on the baseline and are not
-   subscripted — ¹²C₆ and ₁₂C₆ are not the same writing of the same thing, and
-   a subscripted 12 would read as twelve atoms of a mass number nobody wrote.
+/* The notation, made readable: the COUNTS go down (C₆H₁₂O₆), the MASS NUMBERS
+   go up and to the LEFT (¹²C₆), and the charge goes up at the end (H⁺).
+
+   TROIS POSITIONS, et c'est cela qui rend la ligne lisible. Un nombre de masse
+   précède son symbole et un compte le suit: ce qui les distingue est donc
+   OÙ ils sont, et non la façon dont on les dessine. ¹²C₆ et C₁₂₆ sont la même
+   chose écrite deux fois, et celle du bas se lit « douze carbones » — un A
+   subscripté perd le seul endroit où l'œil sait le chercher. L'exposant est aussi
+   la forme qu'un chimiste recopie ailleurs.
+
+   LA RÈGLE TIENT PARCE QUE LA CHAÎNE EST BIEN FORMÉE. Une suite de chiffres
+   precedée d'une lettre est un compte, et sinon un nombre de masse: c'est vrai
+   tant que `toString` ne colle pas un compte à l'A qui suit, et il ne le fait
+   plus — il garde l'espace exactement là où la fusion serait lue autrement.
 
    The key itself is NEVER touched: it is the identity, it never abbreviates,
    and it is what a downstream node re-parses. This is a display of it. */
@@ -5916,7 +5938,7 @@ function prettyNotation(notation){
             //decides a charge magnitude is that a SIGN does
             const sign=/^[^\+\-]*?([\+\-])/.exec(rest)
             if(/[A-Za-z\]]/.test(before)){
-                //a COUNT, and it goes down
+                //a COUNT, and it goes down under the symbol it follows
                 out+=[...digits].map(d=>SUBSCRIPTS[d]).join("")
             }else if(sign&&!/^[A-Za-z]/.test(rest)){
                 //the MAGNITUDE of a charge, and it goes up with its sign:
@@ -5925,8 +5947,16 @@ function prettyNotation(notation){
                 //the sign is consumed here, so the main loop must not see it
                 i+=sign.index+sign[0].length
             }else{
-                //a MASS NUMBER, left on the baseline where it is read
-                out+=digits
+                /* A MASS NUMBER, and it goes UP, on the left of its symbol.
+
+                   It used to stay on the baseline, which was defensible — ¹²C₆
+                   and ₁₂C₆ are different writings — but the baseline is not a
+                   position anyone reads an A in, and the row filled with a dozen
+                   of them became a column of figures with nothing to say which
+                   number was which. The exponent is where the A is looked for
+                   first, and it is the only place it cannot be mistaken for a
+                   count, since the count is the one AFTER the symbol. */
+                out+=[...digits].map(d=>SUPERSCRIPTS[d]).join("")
             }
             continue
         }

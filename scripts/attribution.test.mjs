@@ -52,6 +52,11 @@ const test=async(name,fn)=>{
     catch(e){ failures.push(name); console.log(`  FAIL ${name}\n       ${e.message}`) }
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??`expected a truthy value, got ${value}`) }
+/* `eq` EXISTE parce que la comparaison de chaînes est la moitié de ce fichier:
+   une notation qui change d'un caractère est un défaut qu'aucun `ok` ne
+   voitrait, et le message doit nommer les DEUX écritures — c'est ce qui permet
+   de lire l'échec sans relancer. */
+const eq=(a,b,msg)=>{ if(a!==b) throw new Error(`${msg??`${a} != ${b}`}`) }
 const close=(a,b,tol,msg)=>{ if(!(Math.abs(a-b)<=tol)) throw new Error(`${msg??`${a} vs ${b}`}`) }
 
 /* Un plan de lecture, sans passer par une liste de formules à chaque test:
@@ -83,6 +88,52 @@ await test("[Na+] est un adduit valide, de masse atomique et de charge",()=>{
     close(p.ionisers[0].atomicMass,22.98922,1e-4,"the sodium ion mass")
 })
 
+await test("a lone adduct is not written twice",()=>{
+    /* THE BARE PROTON, and it showed in the ionising list: "[H+]" displayed as
+       "H[H+]" — the proton spelled out AND inside brackets, so it read as two
+       hydrogens when there is one.
+
+       The cause is `written`, which falls back to the composition when there
+       is no core. `parseIonisationOnly` has NO core: its composition IS the
+       group, and the brackets already write it. */
+
+    const proton=Formula.parseIonisationOnly("[H+]",TABLE)
+    eq(String(proton),"[H+]",`a bare proton must read back as "[H+]", got "${proton}"`)
+    /* AND THE MASS IS UNCHANGED, because the mass is what counts. The bare
+       proton weighs 1.007276 — 1.007825 less the electron — and not 2.015: had
+       the writing counted the atom twice, the mass would be wrong too. */
+    close(proton.mass,1.00728,1e-4,"the bare proton ion mass")
+    ok(proton.composition.size===1,"the proton still carries its atom in the composition")
+
+    /* The same adduct typed WITH a skeleton keeps ITS core: the core is what
+       gets written, and the adduct stays in the brackets as it should. */
+    const methyl=Formula.parse("CH4[H+]",TABLE)
+    eq(String(methyl),"CH4[H+]",`a typed skeleton must keep its core, got "${methyl}"`)
+    ok(methyl.composition.get(TABLE.find("H")).size===1,
+        "CH4[H+] holds two kinds of hydrogen — the core one and the adduct one")
+})
+await test("the ionising list names the adduct as it was typed",()=>{
+    /* What the user reads in the node, not what the key says. */
+    const p=plan({combining:["CH2"],ionising:["[H+]"],chargeMax:1})
+    eq(p.ionisers[0].notation,"[H+]",`the panel shows "${p.ionisers[0].notation}"`)
+    eq(p.ionisers[0].groupNotation,"[H+]",`the row name is "${p.ionisers[0].groupNotation}"`)
+    /* And it brings ONE hydrogen in the composition, which is what
+       `stateToFormula` merges. */
+    const hydrogens=p.ionisers[0].composition.get(TABLE.find("H"))
+    close(hydrogens.get(1),1,0,"the proton adduct brings ONE hydrogen")
+})
+await test("combinable blocks display a notation, not a key",()=>{
+    /* The panel lists what the `ratio` OPENED, and the point of that line is to
+       be read at a glance. The key says "12C 1H2" — exact, but nobody writes a
+       mass number on every atom, and it is not a notation anyone would type. */
+    const p=plan({combining:["CH2"],ionising:["[H+]"],ratio:0})
+    ok(p.combinables.length===6,`expected 6 blocks, got ${p.combinables.length}`)
+    /* The notation abbreviates the default isotope; the key never does. That
+       gap is exactly what makes the key unusable as on-screen text. */
+    const block=p.combinables.find(b=>b.notation==="C H2")
+    ok(block,`expected an abbreviated "C H2", got ${JSON.stringify(p.combinables.map(b=>b.notation))}`)
+    eq(block.key,"12C 1H2",`the key of the abbreviated block is "${block.key}"`)
+})
 await test("un groupe illisible est un diagnostic, pas une exception",()=>{
     const p=plan({combining:["CH2","Xx9"],ionising:["[H+]"]})
     ok(p.combinables.length===6,"the readable group must survive the unreadable one")
