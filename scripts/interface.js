@@ -1049,6 +1049,49 @@ function scaleToggle({get,set,leftLabel,rightLabel,title}){
     wrap.paint=paint
     return wrap
 }
+/* The SAME control with as many positions as the question has answers, for the
+   cases where two is a lie: the collection reader's list can be read as
+   formulae, as molecules or as measured peaks, and a two-state switch cannot
+   name the third without renaming the other two.
+
+   `get` answers the CURRENT position and `set` takes one of `states`. The
+   comparison is `===` on the values, not on a boolean, so the positions must be
+   given distinct values — three strings, or three numbers, never two `true`s. */
+function segmentToggle({get,set,states,title}){
+    const wrap=CE("span",{
+        title,
+        style:{
+            display:"inline-flex",
+            border:"1px solid rgba(255,255,255,0.18)",
+            borderRadius:"4px",
+            overflow:"hidden"
+        }
+    },[])
+    const paint=()=>{
+        const current=get()
+        for(const [button,state] of pairs){
+            const on=state===current
+            //the active position carries the accent, the others recede
+            button.style.color=on?"#c9e02b":"rgba(255,255,255,0.45)"
+            button.style.background=on?"rgba(201,224,43,0.14)":"transparent"
+        }
+    }
+    const pairs=states.map(({label,value})=>{
+        const button=CE("button",{
+            type:"button",
+            style:{cursor:"pointer",padding:"2px 7px",borderRadius:"0",border:"none",font:"inherit"}
+        },[label])
+        button.addEventListener("click",()=>{
+            set(value)
+            paint()
+        })
+        return [button,value]
+    })
+    for(const [button] of pairs) wrap.appendChild(button)
+    paint()
+    wrap.paint=paint
+    return wrap
+}
 
 const TRIM_METHODS={
     passthrough:{
@@ -6023,6 +6066,16 @@ const FORMULA_SORTS={
        tête — un `?? 0` la ferait passer devant toutes les autres. */
     intensity:{label:"intensity",compare:(a,b)=>ordered(b.intensity,a.intensity)},
     error:{label:"error",compare:(a,b)=>ordered(Math.abs(a.errorPpm),Math.abs(b.errorPpm))},
+    /* LE NOMBRE DE PICS, et c'est le seul ordre qui ne parle ni de la formule
+       ni de la mesure prise isolément: il répond « combien de points mesurés
+       cette ligne explique-t-elle ». Pour une molécule c'est la somme de ses
+       feuilles — c'est ce qu'on cherche quand on trie par pics, puisque c'est
+       la couverture du signal qui compte, pas le nombre de formules.
+
+       DÉCROISSANT comme l'intensité, pour la même raison: on cherche d'abord ce
+       qui explique le plus. Une ligne sans cible vaut 0 par la construction des
+       lignes elle-même, donc elle part en FIN — jamais en tête. */
+    peaks:{label:"peaks",compare:(a,b)=>ordered(b.peaks??0,a.peaks??0)},
     notation:{label:"notation",compare:(a,b)=>(a.notation<b.notation?-1:a.notation>b.notation?1:0)}
 }
 /* THE COMPARATOR, as a function — never as a table entry.
@@ -6077,17 +6130,26 @@ function formulaComparator(name){
 
    THREE panels, and each answers a different question:
      - LEFT  : WHAT there is. Level 1 the collections (name, size, two
-               checkboxes, a handle); level 2 the formulas of the collection on
-               screen, virtualized, filterable, sortable.
+               checkboxes, a handle); level 2 the rows of the collection on
+               screen, virtualized, filterable, sortable — and the toolbar that
+               filters and sorts them sits with them, not above the collections.
      - CENTER: what it LOOKS like. One stick trace per collection ticked for
                the graphs, drawn in the node's own dialog.
      - RIGHT : what a given formula IS. The unabridged key, the mass, every
                measured target with its error, and a free-text annotation.
 
-   The Formula / Stoichiometry switch is a VIEW and never a transformation.
-   "Fold to stoichiometry" groups the leaves of a graph under their root — the
-   engine already knows that lineage, so the grouping is a grouping and not a
-   guess — and unfolding hands back every key, m/z and target untouched.
+   The Formula / Stoichiometry / Peaks switch is a VIEW and never a
+   transformation. "Fold to stoichiometry" groups the leaves of a graph under
+   their root — the engine already knows that lineage, so the grouping is a
+   grouping and not a guess — and unfolding hands back every key, m/z and target
+   untouched.
+
+   A LINE IS FOLDABLE, and what it unfolds depends on what it IS: a formula
+   shows its measured peaks, a peak shows the formula that took it, a molecule
+   shows its formulas — and those formulas, unfolded in turn, show their peaks.
+   So the stoichiometry view ends up showing BOTH levels, which is the only way
+   a fold can be useful there: a molecule is an abstraction, and a user who
+   opens it is asking what it is made of.
    ------------------------------------------------------------------------- */
 class FormulaCollectionNode extends NodeWithAccordionGraph{
     //how many sticks the central graph will take before it says "capped"
@@ -6122,8 +6184,14 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                on the band, `contain:strict` also brings SIZE containment: the
                grid is then laid out as if it were empty, the row collapses, and
                the list below it has nothing to show. */
-            style:{minHeight:"0",display:"grid","grid-template-rows":"auto minmax(0,1fr) auto"}
+            style:{minHeight:"0",display:"grid","grid-template-rows":"auto auto minmax(0,1fr) auto"}
         },[])
+        /* The toolbar is the FIRST ROW of this band, and not a band of its own
+           above it: it filters and orders these rows, so it belongs to the same
+           box they are in — one gesture away from what it acts on, and visibly
+           attached to it. */
+        const toolbar=this.buildToolbar()
+        toolbar.style.marginBottom="2px"
         /* The write line, and it is ABOVE the list: what you are adding goes at
            the top of a list you are reading downward, not at the bottom where
            you would have to scroll past fifty thousand rows to see it land.
@@ -6152,7 +6220,7 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         viewport.tabIndex=0
         viewport.addEventListener("keydown",(event)=>this.onListKeyDown(event))
         this.diagnosticsBand=CE("div",{style:{maxHeight:"5.5em",overflow:"auto",minHeight:"0"}},[])
-        band.append(this.addRow,viewport,this.diagnosticsBand)
+        band.append(toolbar,this.addRow,viewport,this.diagnosticsBand)
         this.formulaBand=band
         this.renderAddRow()
         return band
@@ -6188,18 +6256,64 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         }
     }
     /* A row is selected by being READ, and read by being the selection: one
-       gesture, no "details" button to find. */
+       gesture, no "details" button to find.
+
+       ET LE PLI EST ICI, parce qu'un clic est un clic: ouvrir une ligne et la
+       sélectionner sont le même geste, sinon il faudrait un second bouton sur
+       chaque ligne et la moitié de la place d'une ligne de 22 px y partirait.
+
+       L'ensemble dépend de ce que la ligne EST — c'est la même règle que
+       `visibleRows`, et elle est écrite deux fois parce qu'elle est le contrat
+       entre les deux: si `visibleRows` et `activateRow` divergeaient sur le
+      ensemble, cliquer replierait ce qui vient de se déplier. */
+    foldSetFor(row){
+        if(row.kind==="molecule") return this.openMolecules
+        if(row.kind==="peak") return this.openPeaks
+        return this.openEntries
+    }
+    foldKeyFor(row){
+        return row.kind==="molecule"?row.molecule:row.key
+    }
+    isFolded(row){
+        return this.foldSetFor(row).has(this.foldKeyFor(row))
+    }
+    /* What key a line ANSWERS to when the question is "which one is selected?".
+
+       A peak line does not answer to its own key — it answers to the formula it
+       was measured on. Without this, the arrows could never FIND the line the
+       user was on in the peaks view: the selection holds a formula key, the
+       peak line carries `key#index`, `findIndex` returned -1, and every ArrowDown
+       jumped back to the top of the list.
+
+       It is also what tints the peaks of the selected formula, which is worth
+       having: unfolding a formula and seeing its points lit is the answer to
+       "which points are these?" without reading a single m/z. */
+    selectionKeyOf(row){
+        return row.kind==="peak"?row.entry.key:row.key
+    }
+    isSelected(row){
+        return this.parameters.selection===this.selectionKeyOf(row)
+    }
     activateRow(row){
+        const set=this.foldSetFor(row)
+        const foldKey=this.foldKeyFor(row)
+        if(set.has(foldKey)) set.delete(foldKey)
+        else set.add(foldKey)
         if(row.kind==="molecule"){
-            if(this.openMolecules.has(row.molecule)) this.openMolecules.delete(row.molecule)
-            else this.openMolecules.add(row.molecule)
-            this.parameters.selection=this.parameters.selection
+            /* A molecule stands for no single formula, so there is nothing to
+               select and nothing for the right panel to show. The selection is
+               deliberately left alone rather than cleared: the user was reading
+               a formula under this molecule a moment ago, and unfolding the
+               molecule above it is not a reason to lose it. */
+        }else if(row.kind==="peak"){
+            /* A peak is a measurement OF a formula: unfolding it shows that
+               formula, and the detail panel opens on it, because the user's
+               next question is always « which formula is this? ». */
+            this.parameters.selection=row.entry.key
+            this.selectedEntry=row.entry
         }else{
-            const entry=row.entry
-            if(this.openEntries.has(row.key)) this.openEntries.delete(row.key)
-            else this.openEntries.add(row.key)
             this.parameters.selection=row.key
-            this.selectedEntry=entry
+            this.selectedEntry=row.entry
         }
         this.origin?.saveSessionSoon?.()
         this.renderRows()
@@ -6213,7 +6327,10 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
     onListKeyDown(event){
         const rows=this.rows??[]
         if(!rows.length) return
-        const current=rows.findIndex(row=>row.key===this.parameters.selection)
+        /* `isSelected`, and not a comparison of keys: a peak line answers to the
+           formula it was measured on, and comparing raw keys would leave the
+           arrows with no line to start from in the peaks view. */
+        const current=rows.findIndex(row=>this.isSelected(row))
         let next=current
         if(event.key==="ArrowDown") next=current<0?0:Math.min(rows.length-1,current+1)
         else if(event.key==="ArrowUp") next=current<0?rows.length-1:Math.max(0,current-1)
@@ -6241,8 +6358,12 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             return
         }
         event.preventDefault()
-        this.parameters.selection=rows[next].key
-        this.selectedEntry=rows[next].kind==="formula"?rows[next].entry:null
+        /* The arrows move the SELECTION, and a peak answers to its formula — so
+           moving onto a peak selects the formula it belongs to, and the detail
+           panel follows. `selectedEntry` is read the same way, otherwise the
+           panel would empty itself on every peak the cursor crossed. */
+        this.parameters.selection=this.selectionKeyOf(rows[next])
+        this.selectedEntry=rows[next].kind==="molecule"?null:rows[next].entry??null
         this.list?.scrollToRow(next)
         this.renderRows()
         this.renderSelection()
@@ -6265,9 +6386,16 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
     async deleteVisibleRow(row){
         const collection=this.currentCollection
         if(!collection) return
+        /* UN PIC NE SE SUPPRIME PAS: LE POINT MESURÉ APPARTIENT À LA MESURE.
+
+           Il est arrivé par le lien et il revient à la prochaine résolution,
+           exactement comme une formule d'un parent. Ce que l'utilisateur peut
+           jeter, c'est la formule qui l'a pris — et c'est ce qu'il verra
+           disparaître: la ligne et son point ensemble. Supprimer le point seul
+           le ferait revenir aussitôt et rendrait Delete cassé. */
         const keys=row.kind==="molecule"
             ?row.entries.map(entry=>entry.key)
-            :[row.key]
+            :[row.kind==="peak"?row.entry.key:row.key]
         /* Every key goes, or none does. Half a molecule is not a molecule, and a
            partial removal is the one outcome that would have to be explained. */
         for(const key of keys){
@@ -6280,7 +6408,12 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.reportDeletion(
             row.kind==="molecule"
                 ?`removed ${formatCount(keys.length)} formulae of ${collection.name}`
-                :`removed from ${collection.name}`
+                :row.kind==="peak"
+                    /* On a peak line, Delete removed the FORMULA, and saying
+                       "removed from X" would leave the user watching the list
+                       to work out what had just gone. */
+                    ?`removed ${prettyNotation(row.entry.notation)} and its measured points, from ${collection.name}`
+                    :`removed from ${collection.name}`
         )
     }
     /* What a refusal or a success looks like, on the line under the field.
@@ -6482,16 +6615,36 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             this.selectedEntry=null
         }
         this.openEntries.delete(canonicalKey)
+        /* Les PLICS DE PICS de cette formule partent avec elle. Ils sont les
+           seules clés de `openPeaks` qui commencent par la clé canonique —
+           `key#index` — donc c'est le seul endroit où ils peuvent être
+           reconnus sans les lister tous. Les laisser est inoffensif (une clé
+           qui ne correspond à aucune ligne ne s'affiche pas) mais ferait
+           grossir l'ensemble sur une session où l'on ajoute et retire sans
+           arrêt. */
+        for(const folded of this.openPeaks){
+            if(folded.startsWith(`${canonicalKey}#`)) this.openPeaks.delete(folded)
+        }
         this.origin?.saveSessionSoon?.()
         await this.startResolve()
         this.resolveChildren()
         return {ok:true,message:`removed from ${collectionName}`}
     }
     setView(view){
-        if(this.parameters.view===view) return
-        this.parameters.view=view
+        /* THREE positions, and an unknown one falls back instead of sticking:
+           `view` travels in a session file, and a file this build did not write
+           must not be able to leave the list in a state no switch can show —
+           there would be no way back to it except reloading the file. */
+        const wanted=["formula","stoichiometry","peaks"].includes(view)?view:"formula"
+        if(this.parameters.view===wanted) return
+        this.parameters.view=wanted
+        /* The folds are cleared because a fold means nothing across views: a key
+           open under "formula" is a formula, and the same key in "peaks" view is
+           a peak, and the user did not ask for that. The selection survives —
+           it names a formula, which exists in all three views. */
         this.openMolecules.clear()
         this.openEntries.clear()
+        this.openPeaks.clear()
         this.viewToggle?.paint()
         this.renderRows()
         this.origin?.saveSessionSoon?.()
@@ -6679,14 +6832,16 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                 }
             },
             {
+                /* The verb TOGGLES between the two ends and never mentions the
+                   third: "Peaks" is not the opposite of "Stoichiometry", so a
+                   two-way verb would say "Unfold the molecules" while the list is
+                   showing peaks, which is neither. The switch above the list
+                   names all three; this verb only moves between the two it can
+                   describe, and the label always describes where it would GO. */
                 label:this.parameters.view==="stoichiometry"?"Unfold the molecules":"Fold to stoichiometry",
                 hint:"one row per molecule instead of per formula",
                 run:()=>{
                     this.setView(this.parameters.view==="stoichiometry"?"formula":"stoichiometry")
-                    if(this.parameters.view==="stoichiometry"){
-                        this.openMolecules.clear()
-                        this.openEntries.clear()
-                    }
                 }
             },
             {
@@ -6948,8 +7103,16 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         return box
     }
 
-    /* The LEFT panel, in three bands: the toolbar, the collections, the
-       formulas of the collection on screen.
+    /* The LEFT panel, in TWO bands: the collections, and the formulas of the
+       collection on screen.
+
+       The toolbar used to be a THIRD band, at the very top, above both — and
+       that placement is what made it feel like it belonged to the collections.
+       It does not: the filter keeps rows whose NOTATION matches, and the order
+       menu reads a m/z, an error or an intensity. A column of collection names
+       has none of those. So the toolbar sits with the formula list, directly
+       above the rows it filters, where the object it acts on is one gesture
+       away — and the collections get the whole top of the panel for themselves.
 
        The heights are decided ONCE, here, and not by the content: the
        collection list gets a bounded share and the formula list takes the rest,
@@ -6963,34 +7126,42 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.accordion.DOMelt.container.style.maxHeight="75%"
         stylize(content,{
             display:"grid",
-            "grid-template-rows":"auto minmax(0, 34%) minmax(0, 1fr)",
+            "grid-template-rows":"minmax(0, 34%) minmax(0, 1fr)",
             minHeight:"0",
             height:"100%",
             overflow:"hidden",
             padding:"3px",
             gap:"3px"
         })
-        content.append(this.buildToolbar(),this.buildCollectionBand(),this.buildFormulaBand())
+        content.append(this.buildCollectionBand(),this.buildFormulaBand())
     }
+    /* ONE row: what the list shows, what it keeps, how it is ordered, how many.
+       All four are about the same list, which is why they are on one line and
+       why that line belongs to the list and not to the collections above it. */
     buildToolbar(){
         const bar=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em"}},[])
-        /* The Formula / Stoichiometry switch, and the ONLY control of the view: the wide
-           Fold button that used to sit under this row is gone, and this took its
-           place. Two names for one idea is a cost, and with the action gone there
-           is nothing left to pay it. */
-        this.viewToggle=scaleToggle({
-            /* `get` answers for the RIGHT label, which is the convention of every
-               other scaleToggle in this file: Lin/Log asks `logY`, so `true` means
-               the right-hand state. It used to answer for the LEFT one, and both
-               halves were wrong together — the accent lit "Stoichiometry" while
-               the list was still showing formulae, and clicking "Stoichiometry"
-               called setView("formula"). One line, and the switch was exactly
-               backwards in the one place a reader checks it: under the cursor. */
-            get:()=>this.parameters.view==="stoichiometry",
-            set:(on)=>this.setView(on?"stoichiometry":"formula"),
-            leftLabel:"Formula",
-            rightLabel:"Stoichiometry",
-            title:"One row per formula, or one row per molecule with its isotopologues folded under it"
+        /* THREE POSITIONS, and the control grew to hold them: what a line of
+           the list STANDS FOR — a formula, the molecule it belongs to, or the
+           measured point it was matched to. Those are three different objects,
+           and a two-state switch could only name two of them, which is why
+           "peaks" had no place until now.
+
+           `segmentToggle` compares the VALUES, so `get` answers the view itself
+           and not a boolean about it. The boolean form was also the one place
+           the switch had been exactly backwards — the accent lit
+           "Stoichiometry" while the list still showed formulae, and clicking
+           "Stoichiometry" called setView("formula"). Reading the value that is
+           stored removes the possibility of that class of mistake: there is no
+           second value to keep in step with the first. */
+        this.viewToggle=segmentToggle({
+            get:()=>this.parameters.view,
+            set:(value)=>this.setView(value),
+            states:[
+                {value:"formula",label:"Formula"},
+                {value:"stoichiometry",label:"Stoichiometry"},
+                {value:"peaks",label:"Peaks"}
+            ],
+            title:"What one line of the list stands for: a formula, the molecule it belongs to, or the measured point it was matched to"
         })
         this.filterInput=CE("input",{
             type:"search",
@@ -7100,9 +7271,19 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             this.renderAll()
             if(this.parameters.localCollections.length) this.startResolve()
         })
-        //the unfolded molecules and the unfolded formulas, by key
+        /* THE THREE FOLDS, and there are three because there are three kinds of row.
+
+           A molecule is folded on its `molecule`, a formula on its `key`, and a
+           peak on `key#index` — the peak's own key, never the formula's, or
+           opening the second peak of a formula would close the first.
+
+           They are NOT saved with the session, and that is deliberate: they are
+           where the user happens to be reading, not a choice about the data.
+           A file that reopened with yesterday's folds open would show a list
+           longer than the collection it is a list of. */
         this.openMolecules=new Set()
         this.openEntries=new Set()
+        this.openPeaks=new Set()
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]){
             inputAnchors[0].innerHTML='<title>Input: any number of collections of Formula, all on this one anchor</title>'
@@ -7162,8 +7343,114 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         if(!collection) return []
         const entries=collection.entries
         const filter=this.parameters.filter.trim().toLowerCase()
+        const openEntries=this.openEntries
+        const openMolecules=this.openMolecules
+        const openPeaks=this.openPeaks
+        /* LE PLI, ET CE QU'IL OUVRE.
+
+           Un pli est une CLÉ dans un ensemble, jamais un drapeau posé sur la
+           ligne: la ligne est reconstruite à chaque peinture, donc un drapeau
+           qu'elle porterait serait perdu au premier rendu. Les trois ensembles
+           sont les trois questions — qu'est-ce que je déplie ? — et ils sont lus
+           avec `?.` parce qu'une collection peut être là sans qu'aucun pli ne
+           soit ouvert: une liste qu'on n'a pas dépliée ne doit pas lever. */
+        const peakCount=(entry)=>(entry.targets??[]).length
+        /* UNE LIGNE DE PIC. Ce n'est pas la formule: c'est le point MESURÉ, tel
+           que l'appariement l'a retenu. La notation affichée est celle de la
+           formule qui l'a pris — sans elle, la ligne serait un m/z orphelin —
+           et la clé est la clé de cette formule suffixée de l'index du pic:
+           deux pics de la même formule sont deux lignes, et aucune des deux
+           n'écrase la clé de la formule, qui sert à tout le reste. */
+        const peakRow=(entry,index,depth,parentKey)=>({
+            kind:"peak",
+            depth,
+            parentKey,
+            entry,
+            target:entry.targets[index],
+            key:`${entry.key}#${index}`,
+            ownerKey:entry.key,
+            notation:entry.notation,
+            mz:entry.targets[index].mz,
+            intensity:entry.targets[index].intensity,
+            errorPpm:entry.targets[index].errorPpm,
+            /* UN pic est UN pic. L'ordre « peaks » dégénère donc en ordre du
+               m/z dans cette vue — ce qui est la seule réponse honnête: on ne
+               va pas faire passer un pic devant un autre en comptant ses voisins.
+               L'ordre par nombre de pics se choisit dans les deux autres vues,
+               où la ligne est une formule ou une molécule et le compte a un sens. */
+            peaks:1,
+            note:entry.note??""
+        })
+        /* UNE LIGNE DE FORMULE, et la même que celle de la vue « formula ». `depth`
+           vaut l'indentation, et `parentKey` nomme la ligne qui l'a ouverte:
+           les deux sont posés ici plutôt que déduits à l'affichage, parce que
+           la ligne est reconstruite à chaque peinture et ne peut donc pas se
+           souvenir d'où elle vient. */
+        const formulaRow=(entry,depth,parentKey)=>({
+            kind:"formula",
+            depth,
+            parentKey,
+            entry,
+            key:entry.key,
+            notation:entry.notation,
+            mz:entry.mz,
+            /* Les deux champs que le comparateur LIT, posés à plat sur la
+               ligne. Ils vivaient dans `entry`, et le comparateur les
+               cherchait sur la ligne: il y trouvait `undefined` aux deux
+               endroits, donc `intensity` et `error` renvoyaient 0 pour
+               toutes les paires et retombaient sur le m/z. Choisir « erreur »
+               dans le menu ne changeait donc RIEN à l'ordre — sans lever la
+               moindre exception, ce qui est la pire façon de ne pas
+               fonctionner. */
+            intensity:entry.intensity,
+            errorPpm:entry.errorPpm,
+            peaks:peakCount(entry),
+            note:entry.note??""
+        })
+        /* LES ENFANTS, et ils dépendent de ce que la ligne EST.
+
+           C'est la règle demandée, et elle tient en une phrase: une formule
+           déplie ses PICS, un pic déplie sa FORMULE, une molécule déplie ses
+           FORMULES — lesquelles déplient à leur tour leurs pics, ce qui est
+           comment la vue molécule finit par montrer les deux. */
+        const childrenOf=(row)=>{
+            if(row.kind==="molecule") return row.entries.map(entry=>formulaRow(entry,row.depth+1,row.key))
+            if(row.kind==="peak") return [formulaRow(row.entry,row.depth+1,row.key)]
+            return (row.entry.targets??[]).map((target,index)=>peakRow(row.entry,index,row.depth+1,row.key))
+        }
+        const isOpen=(row)=>{
+            if(row.kind==="molecule") return !!openMolecules?.has(row.molecule)
+            if(row.kind==="peak") return !!openPeaks?.has(row.key)
+            return !!openEntries?.has(row.key)
+        }
+        /* LA PROFONDEUR EST BORNÉE, et c'est une sécurité, pas une limite de
+           présentation: un pic déplié montre sa formule, cette formule déplie
+           ses pics, et l'un de ces pics est le premier. Sans plafond la liste
+           se plierait sur elle-même jusqu'à la saturation de la pile. Deux
+           niveaux suffisent à tout ce qui est demandé: molécule → formule →
+           pic. */
+        const MAX_DEPTH=2
         let rows
-        if(this.parameters.view==="stoichiometry"){
+        if(this.parameters.view==="peaks"){
+            /* LA VUE « PICS », et c'est la troisième lecture de la même
+               collection: la liste ne montre plus ce qui a été PRÉDIT mais ce qui
+               a été MESURÉ. Une ligne est un point du pic de la formule qui l'a
+               pris, donc la formule est écrite à côté de lui — sans elle, la
+               ligne serait un m/z sans auteur.
+
+               Elle répond à la question que les deux autres vues ne peuvent pas:
+               « qu'est-ce qui a été mesuré, et par qui ? ». Les deux autres
+               répondent « qu'est-ce qui a été prédit, et avec quelle erreur ? ».
+               Les pics y sont donc rangés par erreur ou par intensité sans qu'on
+               ait à les chercher feuille par feuille. */
+            rows=[]
+            for(const entry of entries){
+                const targets=entry.targets??[]
+                for(let index=0;index<targets.length;index++){
+                    rows.push(peakRow(entry,index,0,null))
+                }
+            }
+        }else if(this.parameters.view==="stoichiometry"){
             const groups=new Map()
             for(const entry of entries){
                 const key=entry.molecule??entry.key
@@ -7172,9 +7459,19 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             }
             rows=[...groups.values()].map(group=>({
                 kind:"molecule",
+                depth:0,
+                parentKey:null,
                 molecule:group.molecule,
                 entries:group.entries,
-                key:group.entries[0].key,
+                /* La clé d'une molécule est la sienne, préfixée — et non celle de
+                   sa première feuille, comme c'était le cas. Deux raisons, et la
+                   seconde est celle qui casse: la feuille était aussi la clé de la
+                   LIGNE qui la représente, donc une molécule et l'une de ses
+                   feuilles ne pouvaient pas être sélectionnées l'une sans l'autre,
+                   et « la ligne sélectionnée » devenait ambiguë dès qu'on dépliait.
+                   Le préfixe rend les deux lignes distinctes, donc les deux
+                   sélectionnables, donc dépliables sans que l'une mange l'autre. */
+                key:`mol:${group.molecule}`,
                 /* The group is LABELLED with the key that grouped it, not with
                    the notation of whichever leaf happened to come first.
 
@@ -7214,28 +7511,50 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                    molécule ne se glisse jamais devant une feuille qu'elle ne peut
                    pas concurrencer. */
                 intensity:group.entries.reduce((n,e)=>n+(Number.isFinite(e.intensity)?e.intensity:0),0),
-                errorPpm:Infinity
+                errorPpm:Infinity,
+                /* LE NOMBRE DE PICS d'une molécule est la SOMME de ceux de ses
+                   feuilles, pour la même raison que l'intensité: c'est du signal,
+                   et c'est la somme qui dit ce que la molécule couvre. Une
+                   moyenne répondrait « chaque isotopologue couvre autant », ce qui
+                   n'est pas du tout la même question. */
+                peaks:group.entries.reduce((n,e)=>n+peakCount(e),0)
             }))
         }else{
-            rows=entries.map(entry=>({
-                kind:"formula",entry,key:entry.key,notation:entry.notation,mz:entry.mz,
-                /* Les deux champs que le comparateur LIT, posés à plat sur la
-                   ligne. Ils vivaient dans `entry`, et le comparateur les
-                   cherchait sur la ligne: il y trouvait `undefined` aux deux
-                   endroits, donc `intensity` et `error` renvoyaient 0 pour
-                   toutes les paires et retombaient sur le m/z. Choisir « erreur »
-                   dans le menu ne changeait donc RIEN à l'ordre — sans lever la
-                   moindre exception, ce qui est la pire façon de ne pas
-                   fonctionner. */
-                intensity:entry.intensity,
-                errorPpm:entry.errorPpm
-            }))
+            rows=entries.map(entry=>formulaRow(entry,0,null))
         }
         if(filter){
-            rows=rows.filter(row=>row.notation.toLowerCase().includes(filter)
+            rows=rows.filter(row=>String(row.notation??"").toLowerCase().includes(filter)
                 ||(row.kind==="molecule"&&row.entries.some(e=>e.key.toLowerCase().includes(filter))))
         }
         rows.sort(formulaComparator(this.parameters.sort))
+        /* LE DÉPLOIEMENT, et il se fait ICI, après l'ordre — jamais avant.
+
+       Le tri s'applique aux lignes de TÊTE, et les enfants tiennent à leur
+       parent: un pic garde la place de la formule qui l'a pris, quelle que
+       soit l'intensité qu'on ait choisi de suivre. Les enfants sont donc insérés
+       une fois la liste de tête dans son ordre, et ils la suivent partout.
+
+       LA PILE, ET NON UN `push` DANS `rows`. Les deux font le même nombre de
+       lignes et pas la même liste: pousser à la fin les plaçait TOUS en bas,
+       si bien qu'une formule dépliée affichait ses pics sous les trois lignes
+       qui la suivent — donc pas sous elle. Une liste de mesures rangée sous des
+       formules auxquelles elle n'appartient pas est pire qu'une liste sans
+       plis du tout. La pile sort un ENFANT AVANT son frère, donc chaque parent
+       est suivi immédiatement des siens.
+
+       `return rows` reste le nom du résultat, et `heads` la liste triée: les
+       deux sont des lignes de la même liste, l'une avant déploiement et l'autre
+       après, et le tri ne s'applique qu'à la première. */
+        const heads=rows
+        rows=[]
+        const stack=[...heads].reverse()
+        while(stack.length){
+            const row=stack.pop()
+            rows.push(row)
+            if(row.depth>=MAX_DEPTH||!isOpen(row)) continue
+            const children=childrenOf(row)
+            for(let i=children.length-1;i>=0;i--) stack.push(children[i])
+        }
         return rows
     }
     renderRows(){
@@ -7248,16 +7567,30 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
     updateCountReadout(rows){
         if(!this.countLabel) return
         const collection=this.currentCollection
-        const total=collection?collection.entries.length:0
-        const molecules=collection&&this.parameters.view==="stoichiometry"
-            ?new Set(collection.entries.map(e=>e.molecule??e.key)).size
-            :total
-        this.countLabel.textContent=collection
-            ?`${formatCount(rows.length)} / ${formatCount(this.parameters.view==="stoichiometry"?molecules:total)}`
-            :"—"
-        this.countLabel.title=collection
-            ?`${formatCount(rows.length)} shown, ${formatCount(total)} formulas, ${formatCount(molecules)} molecules`
-            :"no collection selected"
+        if(!collection){
+            this.countLabel.textContent="—"
+            this.countLabel.title="no collection selected"
+            return
+        }
+        const entries=collection.entries
+        const view=this.parameters.view
+        /* LE DÉNOMINATEUR EST CELUI DE LA VUE, et non le nombre de formules.
+
+           Le numérateur, lui, ne compte que les lignes de TÊTE: une ligne
+           dépliée est sur l'écran mais ne fait pas partie de ce que la vue
+           compte, et un « 12 / 8 » serait illisible. Les enfants se voient dans
+           le pli qui les a ouverts. */
+        const shown=rows.reduce((n,row)=>n+(row.depth===0?1:0),0)
+        const molecules=new Set(entries.map(e=>e.molecule??e.key)).size
+        const peaks=entries.reduce((n,e)=>n+(e.targets?.length??0),0)
+        const pool=view==="stoichiometry"?molecules:view==="peaks"?peaks:entries.length
+        this.countLabel.textContent=`${formatCount(shown)} / ${formatCount(pool)}`
+        this.countLabel.title=[
+            `${formatCount(shown)} shown`,
+            `${formatCount(entries.length)} formulas`,
+            `${formatCount(molecules)} molecules`,
+            `${formatCount(peaks)} measured points`
+        ].join(", ")
     }
     /* The row itself. Plain divs, not the Table class: that one is a grid of
        strings with a ruler, and what is needed here is a row with a note
@@ -7292,7 +7625,12 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         notation.textContent=prettyNotation(row.notation)
         element.notation.title=row.kind==="molecule"
             ?`${formatCount(row.count)} formulas on this molecule — click to unfold`
-            :row.key
+            :row.kind==="peak"
+                /* A peak's identity is the point, and the point is a PAIR: its own
+                   m/z and the key of the formula that took it. The notation cell
+                   already says which formula, so the title says which point. */
+                ?`measured at ${formatMz(row.mz)}, taken by\n${row.ownerKey}\nclick to unfold the formula`
+                :row.key
         mz.textContent=formatMz(row.mz)
         if(row.kind==="molecule"){
             /* The count REPLACES the error column in this view: a molecule has
@@ -7302,20 +7640,43 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             error.className="fc-cell fc-count"
             intensity.textContent=""
             note.textContent=""
+            note.title=""
         }else{
-            const entry=row.entry
-            error.textContent=Number.isFinite(entry.errorPpm)
-                ?`${entry.errorPpm>=0?"+":""}${entry.errorPpm.toFixed(1)}`
+            /* A peak reads its own numbers — the point's, not the formula's — and
+               they are not the same thing: a formula carries the error of its
+               CLOSEST target only, while the line the user just unfolded is a
+               particular target with its own error. Printing the formula's error
+               on every one of its lines would say the same number twice and be
+               wrong on all but the first. */
+            const measured=row.kind==="peak"
+            const errorPpm=measured?row.errorPpm:row.entry.errorPpm
+            const value=measured?row.intensity:row.entry.intensity
+            const entryNote=row.entry.note??""
+            error.textContent=Number.isFinite(errorPpm)
+                ?`${errorPpm>=0?"+":""}${errorPpm.toFixed(1)}`
                 :"—"
             error.className="fc-cell fc-num"
-            intensity.textContent=Number.isFinite(entry.intensity)?formatValue(entry.intensity):"—"
-            note.textContent=entry.note?"✎":""
-            note.title=entry.note||"no information yet — write some in the panel on the right"
+            intensity.textContent=Number.isFinite(value)?formatValue(value):"—"
+            /* The pen belongs to the FORMULE, so it shows on a formula line and
+               on the peak lines of that same formula — a note written against a
+               peak has to be findable from the peak. */
+            note.textContent=entryNote?"✎":""
+            note.title=entryNote||"no information yet — write some in the panel on the right"
         }
-        element.classList.toggle("selected",this.parameters.selection===row.key)
-        element.classList.toggle("unfolded",row.kind==="molecule"
-            ?this.openMolecules.has(row.molecule)
-            :this.openEntries.has(row.key))
+        /* L'INDENTATION, et elle est le seul signe qu'une ligne est un enfant.
+
+           Une barre de couleur ne suffirait pas: la ligne est déjà teintée quand
+           elle est sélectionnée, et deux teintes sur une ligne de cette densité
+           sont deux signaux de trop. Le retrait se lit sans concurrencer quoi que
+           ce soit, et il survit au changement de vue parce qu'il est dans la
+           classe et pas dans la couleur. Le PAS est une variable CSS — la
+           géométrie de la ligne reste dans la feuille de style, et cette méthode
+           ne dit que QUELLE ligne c'est. */
+        const depth=row.depth??0
+        element.style.setProperty("--fc-depth",String(depth))
+        element.classList.toggle("child",depth>0)
+        element.classList.toggle("selected",this.isSelected(row))
+        element.classList.toggle("unfolded",this.isFolded(row))
         return element
     }
 
@@ -7855,9 +8216,14 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         if(!state){
             return
         }
-        //a view that is neither of the two would leave the toggle painting half
-        //a state, so an unreadable value falls back instead of sticking
-        this.parameters.view=state.view==="stoichiometry"?"stoichiometry":"formula"
+        /* A view this build does not know falls back instead of sticking. It
+           matters more now that there are three: the old test was "formula or
+           stoichiometry", and anything else left the two-position switch painting
+           half a state — a lit "Stoichiometry" over a list of formulae, which is
+           the one place a reader checks. */
+        this.parameters.view=["formula","stoichiometry","peaks"].includes(state.view)
+            ?state.view
+            :"formula"
         this.parameters.filter=typeof state.filter==="string"?state.filter:""
         this.parameters.sort=FORMULA_SORTS[state.sort]?state.sort:"mz"
         if(Number.isFinite(state.ppmWindow)&&state.ppmWindow>0){

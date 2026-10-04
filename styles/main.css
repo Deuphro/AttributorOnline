@@ -957,10 +957,18 @@ body.menu-open .flow.workspace .child{
     white-space:nowrap;
 }
 /* the two checkboxes are told apart by their TITLE, never by a colour: a
-   colour here would be a legend to learn, and the panel is already dense */
+   colour here would be a legend to learn, and the panel is already dense.
+
+   And they are NOT the accent colour either. The lime is reserved for things
+   that are chosen — the current collection, a lit scale, the collection that
+   lives here — so a pair of green ticks sitting on every row of a list says
+   "enabled" about rows that are not enabled, they are merely INCLUDED. Grey
+   makes the state quieter than the object it belongs to, which is where it
+   belongs: a checkbox is a filter on this row, not a claim about the node. */
 .fc-collection input[type=checkbox]{
     margin:0;
     cursor:pointer;
+    accent-color:var(--text-dim);
 }
 
 /* LEVEL 2 — the virtualized formula list. The spacer carries the full height
@@ -1004,6 +1012,12 @@ body.menu-open .flow.workspace .child{
     font-size:0.95em;
     cursor:pointer;
     border-bottom:1px solid rgba(255,255,255,0.04);
+    /* the indent, one step per level of fold. The step itself is a CSS custom
+       property, so the padding stays in the stylesheet where the row's geometry
+       lives and this method only says WHICH line it is. */
+    --fc-step:16px;
+    --fc-depth:0;
+    padding-left:calc(2px + var(--fc-step) * var(--fc-depth));
 }
 .fc-row:hover{
     background:var(--hover-bg);
@@ -1018,6 +1032,16 @@ body.menu-open .flow.workspace .child{
    many signals in a list this dense. */
 .fc-row.unfolded{
     box-shadow:inset 2px 0 0 var(--accent-border);
+}
+/* a CHILD row — a peak under its formula, a formula under its molecule. It is
+   dimmed rather than coloured: it is context for the line above it, and a
+   child drawn at the same weight as its parent would be read as an entry of
+   its own, which is exactly what it is not. */
+.fc-row.child .fc-notation{
+    color:var(--text-muted);
+}
+.fc-row.child .fc-note{
+    opacity:0.7;
 }
 .fc-cell{
     overflow:hidden;
@@ -1057,15 +1081,20 @@ body.menu-open .flow.workspace .child{
 }
 
 /* ---- writing: the collection button, and the one-line formula field ---- */
-/* The field is the FKMD gesture, not a form: write, read, press Enter. The
-   readout sits on the SAME line and carries the reading, so "is this what I
-   meant" is answered without moving the eyes anywhere else. */
+/* A verb, and it is written like one. It was the accent colour, which made it
+   the loudest object on a panel whose job is a quiet column of formulae — and
+   the lime already says "this is the collection you are reading". Creating a
+   collection is not that; it is one of several things you can do here, and it
+   belongs to the same register as the field below it. */
 .fc-newcollection{
     justify-self:start;
     font-size:0.85em;
-    color:var(--accent);
-    border-color:var(--accent-border);
+    color:var(--text-muted);
+    border-color:var(--border);
 }
+/* The field is the FKMD gesture, not a form: write, read, press Enter. The
+   readout sits on the SAME line and carries the reading, so "is this what I
+   meant" is answered without moving the eyes anywhere else. */
 .fc-addrow-wrap{
     padding:0 0 3px 0;
     border-bottom:1px solid var(--border);
@@ -1127,15 +1156,18 @@ body.menu-open .flow.workspace .child{
     color:#ffb347;
 }
 
-/* the band that holds the write line, the list and the diagnostics. It is a
-   GRID, and nothing more: it does not scroll and it does not contain. Both
-   belong to .fc-viewport-wrap, the middle row — `contain:strict` on the band
-   would bring SIZE containment with it, and a size-contained grid is laid out
-   as if it were empty, which collapses the list to nothing. */
+/* the band that holds the toolbar, the write line, the list and the
+   diagnostics. FOUR ROWS: the toolbar (what the list shows, keeps and how it is
+   ordered), the write line, the list, the diagnostics. The list takes the rest
+   because it is the only row that can absorb the space. It is a GRID, and
+   nothing more: it does not scroll and it does not contain. Both belong to
+   .fc-viewport-wrap, the scrolling row — `contain:strict` on the band would
+   bring SIZE containment with it, and a size-contained grid is laid out as if it
+   were empty, which collapses the list to nothing. */
 .fc-formulas{
     min-height:0;
     display:grid;
-    grid-template-rows:auto minmax(0, 1fr) auto;
+    grid-template-rows:auto auto minmax(0, 1fr) auto;
 }
 .fc-menu{
     position:fixed;

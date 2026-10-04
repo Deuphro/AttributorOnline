@@ -328,14 +328,24 @@ test("rows of equal m/z keep a stable order, by key",()=>{
 })
 
 console.log("les LIGNES portent ce que les ordres lisent")
-/* A stand-in for the reader, holding only what `visibleRows` touches. */
-const readerWith=(entries,{view="formula",sort="mz",filter=""}={})=>({
+/* A stand-in for the reader, holding only what `visibleRows` touches — and now
+   the three FOLDS as well, because a fold is an input to the row list and not
+   only to a click. They are empty Sets by default, which is also an assertion
+   that matters: a collection nobody unfolded must produce no children. */
+const readerWith=(entries,{view="formula",sort="mz",filter="",open={}}={})=>({
     currentCollection:{name:"c",entries},
-    parameters:{view,sort,filter}
+    parameters:{view,sort,filter},
+    openEntries:open.openEntries??new Set(),
+    openMolecules:open.openMolecules??new Set(),
+    openPeaks:open.openPeaks??new Set()
 })
-const entry=(key,mz,intensity,errorPpm,molecule)=>({
-    key,notation:key,mz,intensity,errorPpm,molecule:molecule??key
+/* `targets` are the MEASURED points, written by hand because what is under test
+   is the line each of them becomes; the engine's own pairing is exercised on
+   real formulas further down this file. */
+const entry=(key,mz,intensity,errorPpm,molecule,targets=[])=>({
+    key,notation:key,mz,intensity,errorPpm,molecule:molecule??key,targets
 })
+const peak=(mz,intensity,errorPpm)=>({mz,intensity,errorPpm,cost:1})
 
 test("une ligne porte l'intensité et l'erreur que le comparateur lit",()=>{
     /* LE TEST DU BUG. `intensity` et `error` se choisissent dans le menu, donc
@@ -408,6 +418,231 @@ test("une molécule additionne son intensité, et n'a pas d'erreur",()=>{
     const byIntensity=visibleRows.call(
         readerWith(entries,{view:"stoichiometry",sort:"intensity"}))
     eq(byIntensity[0].notation,"CH4[H+]","the summed 140 comes before the 7")
+})
+
+console.log("la TROISIÈME lecture: les pics, et le tri par pics")
+test("la vue pics liste les points mesurés, pas les formules",()=>{
+    /* LA VUE « PICS » EST LA TROISIÈME LECTURE DE LA MÊME COLLECTION, et elle
+       ne montre pas ce qui a été prédit mais ce qui a été MESURÉ. Deux
+       conséquences qu'il faut vérifier plutôt que d'espérer:
+
+       - une ligne par POINT, donc deux points de la même formule sont deux
+         lignes distinctes, et
+       - la formule qui a pris le point est ÉCRITE à côté de lui, sans quoi la
+         ligne serait un m/z sans auteur — le point le plus inutile qu'on puisse
+         afficher. */
+    const entries=[
+        entry("a",12,1,5,"a",[peak(12.00001,900,0.4),peak(12.00002,100,-0.6)]),
+        entry("b",100,9,1,"b",[peak(100.00005,50,2.1)])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{view:"peaks"}))
+    eq(rows.length,3,"three measured points, not two formulas")
+    ok(rows.every(r=>r.kind==="peak"),"every line is a peak")
+    eq(rows.map(r=>String(r.mz)).join(","),"12.00001,12.00002,100.00005","by m/z")
+    eq(rows.map(r=>r.key).join("|"),"a#0|a#1|b#0",
+        "two points of one formula are two lines, and neither takes the formula's key")
+    eq(rows[0].notation,"a","the formula that took it is written beside the point")
+    eq(rows[0].ownerKey,"a","and reachable by key, so unfolding the point can find it")
+})
+test("trier par pics compte les points expliqués",()=>{
+    /* L'ordre « peaks » est le seul qui réponde à « combien de points mesurés
+       cette ligne explique-t-elle ». Il doit être RÉELLEMENT différent du m/z:
+       c'est la propriété qui compte, pas le fait qu'il existe. */
+    const entries=[
+        entry("a",12,1,5,"a",[peak(12.00001,10,0.1)]),
+        entry("b",100,9,1,"b",[peak(100.00005,10,0.1),peak(100.00006,10,0.2),peak(100.00007,10,0.3)]),
+        entry("c",180,5,9,"c",[])
+    ]
+    const keys=(name)=>visibleRows.call(readerWith(entries,{sort:name})).map(r=>r.key).join("")
+    eq(keys("mz"),"abc","m/z ascending: 12, 100, 180")
+    eq(keys("peaks"),"bac","three points, then one, then none — descending")
+})
+test("une molécule additionne ses pics comme elle additionne son intensité",()=>{
+    const entries=[
+        entry("h",15,100,0.4,"CH4[H+]",[peak(15.00001,100,0.4),peak(15.00002,20,0.1)]),
+        entry("d",17,40,1.2,"CH4[H+]",[peak(17.00003,40,1.2)]),
+        entry("other",99,7,0.1,"H2O",[])
+    ]
+    const byPeaks=visibleRows.call(
+        readerWith(entries,{view:"stoichiometry",sort:"peaks"}))
+    eq(byPeaks[0].notation,"CH4[H+]","three measured points beat one beat none")
+    eq(byPeaks[0].peaks,3,"and the count is the sum over the leaves, not a mean")
+})
+console.log("le PLI: ce qu'il ouvre dépend de ce qu'il est")
+test("rien n'est déplié, rien ne s'ouvre",()=>{
+    /* Le plancher. Un pli est une clé dans un ensemble, donc une liste qu'on
+       n'a pas dépliée ne doit produire AUCUNE ligne enfant — sinon une
+       collection de 17 000 formules afficherait 17 000 lignes de plus. */
+    const entries=[
+        entry("a",12,1,5,"CH4[H+]",[peak(12.00001,10,0.1),peak(12.00002,20,0.2)]),
+        entry("b",100,9,1,"H2O",[peak(100.00005,30,0.3)])
+    ]
+    for(const view of ["formula","peaks"]){
+        const rows=visibleRows.call(readerWith(entries,{view}))
+        ok(rows.every(r=>r.depth===0),`${view}: no children when nothing is open`)
+    }
+    eq(visibleRows.call(readerWith(entries)).length,2,"two formulae, no children")
+    eq(visibleRows.call(readerWith(entries,{view:"stoichiometry"})).length,2,
+        "two molecules, no children")
+    eq(visibleRows.call(readerWith(entries,{view:"peaks"})).length,3,
+        "three measured points, no children")
+})
+test("une formule dépliée montre ses pics, et chaque pic ses propres nombres",()=>{
+    const entries=[
+        entry("a",12,1,5,"CH4[H+]",[peak(12.00001,10,0.4),peak(12.00002,20,-0.7)]),
+        entry("b",100,9,1,"H2O",[peak(100.00005,30,0.3)])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{
+        open:{openEntries:new Set(["a"])}
+    }))
+    eq(rows.map(r=>`${r.key}@${r.depth}`).join(" "),
+        "a@0 a#0@1 a#1@1 b@0",
+        "the two points of a, indented under it, and b untouched")
+    const shown=rows.find(r=>r.key==="a#1")
+    eq(shown.kind,"peak","a child of a formula is a peak")
+    eq(shown.errorPpm,-0.7,"and it carries ITS OWN error, not the formula's closest one")
+    eq(shown.intensity,20,"and its own intensity, not the formula's total")
+    eq(shown.depth,1,"one level under its formula")
+})
+test("un pic déplié montre la formule qui l'a pris",()=>{
+    /* L'autre moitié de la règle: dans la vue pics, la ligne est la MESURE, et
+       déplier une mesure répond à « de quelle formule s'agit-il ? ». */
+    const entries=[
+        entry("a",12,1,5,"CH4[H+]",[peak(12.00001,10,0.4),peak(12.00002,20,-0.7)])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{
+        view:"peaks",
+        open:{openPeaks:new Set(["a#1"])}
+    }))
+    eq(rows.map(r=>`${r.kind}:${r.depth}`).join(" "),"peak:0 peak:0 formula:1",
+        "only the SECOND point was opened, and it shows the formula")
+    eq(rows[2].key,"a","the formula, under its own point")
+})
+test("une molécule dépliée montre ses formules ET leurs pics",()=>{
+    /* La demande explicite: dans la vue molécule, un pli montre les DEUX. Il
+       le peut parce que les deux niveaux se contaminent — la molécule ouvre ses
+       formules, et une formule ouverte parmi elles ouvre ses pics. Ce test
+       échouerait si le pli n'était lu qu'au premier niveau. */
+    const entries=[
+        entry("h",15,100,0.4,"CH4[H+]",[peak(15.00001,100,0.4)]),
+        entry("d",17,40,1.2,"CH4[H+]",[peak(17.00003,40,1.2)]),
+        entry("other",99,7,0.1,"H2O",[peak(99.00004,7,0.1)])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{
+        view:"stoichiometry",
+        open:{openMolecules:new Set(["CH4[H+]"]),openEntries:new Set(["d"])}
+    }))
+    eq(rows.map(r=>`${r.kind}:${r.depth}`).join(" "),
+        "molecule:0 formula:1 formula:1 peak:2 molecule:0",
+        "the molecule, its two formulae, the peaks of the one opened in turn, H2O untouched")
+    eq(rows[3].kind,"peak","the second level really is a peak")
+    eq(rows[3].depth,2,"at the fourth line")
+})
+test("le pli s'arrête, sinon la liste se replie sur elle-même",()=>{
+    /* Un pic déplié montre sa formule, cette formule dépliée montre ses pics, et
+       l'un de ces pics EST le premier. Sans plafond, un utilisateur qui ouvre
+       les deux construit une liste infinie — et le premier symptôme n'est pas
+       une erreur, c'est un onglet mort. */
+    const entries=[entry("a",12,1,5,"CH4[H+]",[peak(12.00001,10,0.4)])]
+    const rows=visibleRows.call(readerWith(entries,{
+        view:"peaks",
+        open:{openPeaks:new Set(["a#0"]),openEntries:new Set(["a"])}
+    }))
+    eq(rows.map(r=>r.depth).join(","),"0,1,2","one level per fold, and no more")
+    eq(rows.length,3,"the point, its formula, that formula's one point — then stop")
+})
+
+console.log("ce qu'une ligne de PIC affiche, qui n'est pas ce qu'affiche la formule")
+/* `drawRow` is the other half of what a line IS: `visibleRows` says which
+   numbers a line carries, `drawRow` says which of them the user reads. Both are
+   sliced out of interface.js as TEXT and evaluated here, because that file needs
+   a DOM — the code under test is still the code that ships. */
+const drawStart=source.indexOf("    drawRow(element,row){")
+const drawEnd=source.indexOf("    refreshGraph(){",drawStart)
+if(drawStart<0||drawEnd<drawStart){
+    console.error("drawRow could not be located in interface.js - the test cannot run")
+    process.exit(1)
+}
+const drawRow=new Function("CE","prettyNotation","formatMz","formatValue","formatCount",
+    `return ({${source.slice(drawStart,drawEnd)}}).drawRow`)(
+    ()=>null,prettyNotation,formatMz,formatValue,formatCount)
+
+/* A row element, and the two things `drawRow` writes outside its cells: the
+   classes it toggles and the indent it sets. */
+const paint=(row,{selection=null,folded=new Set()}={})=>{
+    const cells=[0,1,2,3,4].map(()=>({textContent:"",title:""}))
+    const classes=[]
+    const properties={}
+    const element={
+        cells,
+        notation:cells[0],
+        row:null,
+        classList:{toggle:(name,on)=>{if(on) classes.push(name)}},
+        style:{setProperty:(name,value)=>{properties[name]=value}}
+    }
+    drawRow.call({
+        parameters:{selection},
+        isSelected:(r)=>selection===(r.kind==="peak"?r.entry.key:r.key),
+        isFolded:(r)=>folded.has(r.kind==="molecule"?r.molecule:r.key)
+    },element,row)
+    return {cells,classes,properties}
+}
+
+test("une ligne de pic montre les nombres DU PIC, pas ceux de la formule",()=>{
+    /* LA LIGNE ERRONÉE, ET ELLE EST CLAIRE. Une formule porte l'erreur de son
+       pic le plus proche et la SOMME de ses intensités; un pic est un point, et
+       il a les siens. Les afficher sur les lignes dépliées ce serait mettre le
+       même nombre sur chaque ligne du pli, et faux sur toutes sauf la première
+       — le pire genre d'erreur: plausible, constante, et invisible. */
+    const entries=[
+        entry("a",12,9000,0.4,"CH4[H+]",[peak(12.00001,10,-7.5),peak(12.00002,20,3)])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{
+        view:"peaks",
+        open:{openPeaks:new Set(["a#0"])}
+    }))
+    const head=paint(rows[0])
+    eq(head.cells[0].textContent,"a","the formula that took the point is written on the line")
+    eq(head.cells[1].textContent,"12.0000","and the m/z is the MEASURED one")
+    eq(head.cells[2].textContent,"-7.5","the error is the point's, not the formula's closest (+0.4)")
+    eq(head.cells[3].textContent,"10","and the intensity is the point's, not the formula's total (9000)")
+})
+test("un pli se lit par le RETRAIT, jamais par une couleur de plus",()=>{
+    const entries=[
+        entry("a",12,9000,0.4,"CH4[H+]",[peak(12.00001,10,-7.5),peak(12.00002,20,3)]),
+        entry("b",100,9,1,"H2O",[])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{
+        view:"peaks",
+        open:{openPeaks:new Set(["a#0"])}
+    }))
+    const head=paint(rows[0],{folded:new Set(["a#0"])})
+    eq(head.properties["--fc-depth"],"0","a head line is not indented")
+    eq(head.classes.includes("child"),false,"and does not claim to be a child")
+    ok(head.classes.includes("unfolded"),"the line that was unfolded carries the open mark")
+    const child=paint(rows[1])
+    eq(child.properties["--fc-depth"],"1","a child line is one step in")
+    ok(child.classes.includes("child"),"and says so, so it can be drawn quieter")
+    eq(child.classes.includes("unfolded"),false,
+        "the child it opened is not itself open — the mark belongs to the parent")
+    /* the SECOND point of the same formula, which is a head line like any
+       other: the fold of one line never reaches its neighbour */
+    const neighbour=paint(rows[2],{folded:new Set(["a#0"])})
+    eq(neighbour.properties["--fc-depth"],"0","its neighbour stays at the margin")
+    eq(neighbour.classes.includes("unfolded"),false,"and is not dragged into the fold")
+})
+test("une molécule affiche son nombre de formules, pas une erreur",()=>{
+    /* Une molécule n'a pas été mesurée: elle n'a pas d'erreur. La colonne dit
+       donc combien de formules viennent d'être repliées — le nombre que l'on
+       regarde à cet instant. */
+    const entries=[
+        entry("h",15,100,0.4,"CH4[H+]",[peak(15.00001,100,0.4)]),
+        entry("d",17,40,1.2,"CH4[H+]",[peak(17.00003,40,1.2)])
+    ]
+    const rows=visibleRows.call(readerWith(entries,{view:"stoichiometry"}))
+    const molecule=paint(rows[0])
+    eq(molecule.cells[2].textContent,"×2","two formulas folded")
+    eq(molecule.cells[3].textContent,"","and no intensity, which would be a number invented here")
 })
 
 console.log("les DEUX sorties, et le jumeau exact")
