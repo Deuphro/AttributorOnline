@@ -241,6 +241,20 @@ div{
 .vertical.left.content{
     min-height:0;
     overflow:auto;
+    scrollbar-width:none;
+    -ms-overflow-style:none;
+}
+.vertical.left.content::-webkit-scrollbar{
+    display:none;
+}
+.vertical.right.content{
+    min-height:0;
+    overflow:auto;
+    scrollbar-width:none;
+    -ms-overflow-style:none;
+}
+.vertical.right.content::-webkit-scrollbar{
+    display:none;
 }
 .accordion.container{
     min-height:0;

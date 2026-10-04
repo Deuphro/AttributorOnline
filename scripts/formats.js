@@ -506,22 +506,9 @@ class Wave{
                                         indices.add(k)
                                     }
                                 }
-                                iterables[k]=Array.from(indices)
-                                iterables.ranges[k]=indices.size
-                                coordifier[k]=(...c)=>{return iterables[k][c[k]]}
-                                        let commaSplit=res[k].split(",")
-                                        let dotSplit=commaSplit.map((e)=>{return e.split(".")})
-                                        let indices=new Set()
-                                        for(let range of dotSplit){
-                                            for(let k=parseInt(range[0]);k<parseInt(range[range.length-1])+1;k++){
-                                                indices.add(k)
-                                            }
-                                        }
-                                        iterables[k]=Array.from(indices)
-                                        iterables.ranges[k]=indices.size
-                                        coordifier[k]=(...c)=>{return iterables[k][c[k]]}
-                                    }
-                                }
+                                 iterables[k]=Array.from(indices)
+                                 iterables.ranges[k]=indices.size
+                                 coordifier[k]=(...c)=>{return iterables[k][c[k]]}
                             }
                         }
                         //console.log(coordifier)
