@@ -18,6 +18,15 @@
    ===================================================================== */
 
 import * as THREE from "https://unpkg.com/three@0.160.1/build/three.module.js"
+//the CPU hit-testing index. Pure, no d3 and no DOM either (see the header
+//of the file): plot2d-gl.js stays importable from a worker, and the pick
+//arithmetic is unit tested without a GL context.
+import {
+    PointGrid,
+    affineFromBounds,
+    scanNearest,
+    PICK_SCAN_THRESHOLD
+} from "./plot2d-hit.js"
 
 //the single CDN endpoint used for the whole engine (import-map friendly)
 export const THREE_CDN="https://unpkg.com/three@0.160.1/build/three.module.js"
@@ -295,6 +304,15 @@ export class GLTraceLayer{
         this.lines.renderOrder=0
         this.scene.add(this.lines,this.points)
         this.onContextRestored=null
+        //hover/pick state: built on demand, dropped by every upload (the
+        //point indices it holds are the indices of the CURRENT buffers)
+        this.pickMode="off"
+        this.pickGrid=null
+        this.pickTraceStarts=null
+        this.pickTraceRefs=null
+        this.pickCoordsU=null
+        this.pickCoordsV=null
+        this.lastUpload=null
         canvas.addEventListener("webglcontextlost",(event)=>event.preventDefault(),false)
         canvas.addEventListener("webglcontextrestored",()=>this.onContextRestored?.(),false)
     }
@@ -353,8 +371,204 @@ export class GLTraceLayer{
             segments:this.segmentCount,
             pointCapacity:this.capacity.points,
             segmentCapacity:this.capacity.segments,
-            pixelRatio:this.pixelRatio
+            pixelRatio:this.pixelRatio,
+            pick:this.pickMode,
+            pickPoints:this.pickGrid?this.pickGrid.count:(this.pickCoordsU?this.pickCoordsU.length:0),
+            pickBytes:this.pickGrid
+                ?this.pickGrid.memoryBytes()
+                :(this.pickCoordsU?(this.pickCoordsU.byteLength+this.pickCoordsV.byteLength):0)
         }
+    }
+
+    /* ---------------------------------------------------------------
+       Hit testing. The index is LAZY on purpose: it is built on the
+       first hover, not on every upload. A dataset can be re-uploaded
+       many times while a worker fills it, and a plot nobody hovers must
+       never pay for an index it will not read.
+
+       The grid is expressed in the uploaded frame, so a pan or a zoom
+       only changes the projection below — the index itself survives,
+       which is the whole point of indexing data space and not the
+       visible window (see the header of plot2d-hit.js).
+       ---------------------------------------------------------------- */
+
+    //the point indices the index holds are the indices of the CURRENT
+    //vertex buffer: any upload invalidates them, and only an upload does
+    invalidatePickIndex(){
+        this.pickMode="off"
+        this.pickGrid=null
+        this.pickTraceStarts=null
+        this.pickTraceRefs=null
+        this.pickCoordsU=null
+        this.pickCoordsV=null
+    }
+
+    /* Walks the pickable points of the last upload exactly like _collect
+       does — same filter, same log transform, same reference origin, same
+       numbering — and hands them to the grid, which buckets them itself.
+       ONE walk over the flat arrays, on BOTH paths: no per point object,
+       no comparison sort, no allocation beyond the typed arrays.
+
+       The walk also checks the invariant the whole hover rests on: the
+       index the grid stores must be the index the VERTEX BUFFER has at
+       the same place, because pick() reads the coordinates back out of
+       positions[pointIndex*3]. A trace drawn as a line has as many pickable
+       points as vertices, but a trace with markers=False and a broken
+       polyline could shift the numbering, and a hover that silently names
+       the wrong point is worse than no hover at all. */
+    buildPickIndex(){
+        const upload=this.lastUpload
+        if(!upload) return null
+        const descriptors=upload.descriptors
+        const config=upload.config
+        const starts=[]
+        //ordinal (among the pickable traces) -> position in `descriptors`.
+        //The caller owns `descriptors`, so it is the only one that can turn a
+        //pickable ordinal back into a trace: it must be handed this mapping
+        const refs=[]
+        let total=0
+        for(let t=0;t<descriptors.length;t++){
+            if(!descriptors[t].pickable) continue
+            refs.push(t)
+            starts.push(total)
+            total+=descriptors[t].count
+        }
+        starts.push(total)
+        if(!(total>0)) return null
+        this.pickTraceStarts=Uint32Array.from(starts)
+        this.pickTraceRefs=Uint32Array.from(refs)
+        /* The two coordinate planes of the PICKABLE points, filled by the
+           single walk below. They are the measure of truth for BOTH paths:
+           the grid adopts them, the scan reads them. Reading them back from
+           the vertex buffer would be wrong — that buffer only holds the
+           MARKER points, while a line's vertices live in linePositions. */
+        const coordsU=new Float64Array(total)
+        const coordsV=new Float64Array(total)
+        let parked=0
+        this._visitPickable(descriptors,config,(u,v)=>{
+            coordsU[parked]=u
+            coordsV[parked]=v
+            parked++
+        })
+        //the walk and _collect must have agreed on how many points there
+        //are; if they did not, every index past this point would be wrong
+        if(parked!==total){
+            console.warn(`Plot2DWebGL: the pick walk saw ${parked} points where ${total} were expected; hover is disabled`)
+            this.invalidatePickIndex()
+            return null
+        }
+        if(total<=PICK_SCAN_THRESHOLD){
+            //too few points to fragment: a plain scan over the same two
+            //planes answers exactly what the grid would
+            this.pickCoordsU=coordsU
+            this.pickCoordsV=coordsV
+            this.pickMode="scan"
+            return null
+        }
+        //the grid ADOPTS the two planes instead of copying them: the scan
+        //path keeps them alive, the grid path hands them over, and in both
+        //cases there is exactly one copy of the coordinates in the process
+        const grid=new PointGrid()
+        grid.seal(total,starts,coordsU,coordsV)
+        this.pickGrid=grid
+        this.pickMode="grid"
+        return grid
+    }
+
+    //one callback per PICKABLE point (a marker, or any vertex of a drawn
+    //line/stick), in the very order _collect numbers them
+    _visitPickable(descriptors,config,visit){
+        const logX=config.logX
+        const logY=config.logY
+        const referenceX=config.referenceX
+        const referenceY=config.referenceY
+        for(let t=0;t<descriptors.length;t++){
+            const trace=descriptors[t]
+            if(!trace.pickable) continue
+            const buffer=trace.buffer
+            const yBuffer=trace.yBuffer
+            const pairs=trace.pairs
+            const count=trace.count|0
+            for(let i=0;i<count;i++){
+                let x
+                let y
+                if(buffer!==null&&buffer!==undefined&&yBuffer!==null&&yBuffer!==undefined){
+                    x=buffer[i]
+                    y=yBuffer[i]
+                }else{
+                    const pair=pairs?pairs[i]:null
+                    if(!pair) continue
+                    x=pair[0]
+                    y=pair[1]
+                }
+                //the very filter of _collect: an indexed point must be a
+                //drawn point, or the hover would answer about a vertex
+                //that never reached the framebuffer
+                if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                if(logX&&!(x>0)) continue
+                if(logY&&!(y>0)) continue
+                visit(
+                    (logX?Math.log10(x):x)-referenceX,
+                    (logY?Math.log10(y):y)-referenceY
+                )
+            }
+        }
+    }
+
+    /* Returns {traceIndex, tracePoint, distance, px, py} or null.
+       `traceIndex` is the position in the descriptor list passed to
+       upload() — which is what the caller indexed its traces by — and
+       `tracePoint` is the index INSIDE that trace, the number a reader
+       expects to see. `px`/`py` is where the point landed on screen: the
+       marker belongs ON the point, not under a cursor a few pixels off. */
+    pick(px,py,radiusPx){
+        if(!this.lastUpload) return null
+        const projection=affineFromBounds(this.camera,this.width,this.height)
+        if(!projection.sx||!projection.sy) return null
+        if(this.pickMode==="off") this.buildPickIndex()
+        let hit=null
+        if(this.pickMode==="grid"&&this.pickGrid){
+            hit=this.pickGrid.nearest(px,py,projection,radiusPx)
+        }else if(this.pickMode==="scan"&&this.pickCoordsU){
+            const index=scanNearest(
+                this.pickCoordsU,this.pickCoordsV,this.pickCoordsU.length,
+                px,py,projection,radiusPx
+            )
+            if(index>=0) hit={pointIndex:index,distance:null}
+        }
+        if(!hit) return null
+        const ordinal=this.pickTraceIndexOf(hit.pointIndex)
+        if(ordinal<0) return null
+        const descriptorIndex=this.pickTraceRefs?this.pickTraceRefs[ordinal]:ordinal
+        //the point's own pixel position, from whichever plane holds it
+        const u=this.pickMode==="grid"&&this.pickGrid?hit.u:this.pickCoordsU[hit.pointIndex]
+        const v=this.pickMode==="grid"&&this.pickGrid?hit.v:this.pickCoordsV[hit.pointIndex]
+        return {
+            traceIndex:descriptorIndex,
+            tracePoint:hit.pointIndex-this.pickTraceStarts[ordinal],
+            distance:hit.distance??null,
+            px:projection.u0+u*projection.sx,
+            py:projection.v0+v*projection.sy
+        }
+    }
+
+    //the pickable ordinal a global point index belongs to
+    pickTraceIndexOf(pointIndex){
+        const starts=this.pickTraceStarts
+        if(!starts||!(starts.length>1)) return -1
+        let low=0
+        let high=starts.length-2
+        let found=-1
+        while(low<=high){
+            const middle=(low+high)>>1
+            if(starts[middle]<=pointIndex){
+                found=middle
+                low=middle+1
+            }else{
+                high=middle-1
+            }
+        }
+        return found
     }
 
     /* ---------------------------------------------------------------
@@ -380,6 +594,12 @@ export class GLTraceLayer{
             referenceY:Number.isFinite(referenceY)?referenceY:0
         }
         this.reference={x:config.referenceX,y:config.referenceY}
+        //the vertex buffer is about to be rewritten: every point index the
+        //hover index holds becomes meaningless, so it is dropped HERE and
+        //only here. A pan, a zoom or a resize go through setBounds and
+        // leave it alone.
+        this.invalidatePickIndex()
+        this.lastUpload={descriptors,config}
         //measurement pass: counts vertices/segments without touching the buffers.
         //It does not need the Float32 cast, but it uses the same (now 4-arg)
         //signature for consistency: pass descriptors as both sources and meta.
@@ -627,6 +847,8 @@ export class GLTraceLayer{
         }catch(error){
             console.warn("Plot2DWebGL: error while releasing the WebGL layer",error)
         }
+        this.invalidatePickIndex()
+        this.lastUpload=null
         this.capacity={points:0,segments:0}
         this.pointCount=0
         this.segmentCount=0

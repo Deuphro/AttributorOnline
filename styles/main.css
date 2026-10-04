@@ -1259,3 +1259,148 @@ canvas.trace-layer{
     position:relative;
     z-index:1;
 }
+
+/* ---- hover / pick overlay (Plot2DWebGL) ----
+   Its OWN svg, and a SIBLING of svg.main rather than a child of it: the
+   main overlay carries the graphzone opacity (0.5 by default) and a group
+   opacity is multiplicative, so a marker nested inside would be greyed
+   down no matter what it declares. Above both the canvas and the axes,
+   and transparent to the pointer: the hover is read from the container. */
+svg.pick-overlay{
+    position:absolute;
+    left:0px;
+    top:0px;
+    z-index:2;
+    display:block;
+    pointer-events:none;
+    /*the glow is a filter, so it must not be clipped by the plot box */
+    overflow:visible;
+}
+/* the actual glow: a blur on the marker itself. It is composited, so it
+   costs nothing per frame on the handful of nodes that carry it — and it
+   is the difference between "a white ring" and "a lit point" */
+.pick-hover,.pick-pin{
+    will-change:transform;
+    filter:drop-shadow(0 0 2.5px rgba(255,255,255,0.95))
+           drop-shadow(0 0 6px rgba(160,210,255,0.55));
+}
+/* the halo is the second, wider ring of the glow. A blurred drop-shadow on
+   a SMALL white dot reads as light around the point; a big translucent
+   ring reads as a UI affordance, which is not what a hover marker is. */
+.pick-halo{
+    fill:none;
+    stroke:rgba(255,255,255,0.5);
+    stroke-width:1.25;
+}
+.pick-core{
+    fill:#ffffff;
+}
+/* the hover marker: a tight ring so the user sees the point itself, with
+   the glow doing the talking. NOT the pick radius — that is a distance,
+   and drawing it makes the marker look like a bug */
+.pick-hover .pick-halo{
+    r:5.5px;
+    stroke-width:1.25;
+}
+.pick-hover .pick-core{
+    r:2.6px;
+}
+/* a pinned point CLOSES IN and stays: born with the hover radii (see
+   Plot2DWebGL.addPickPin), then handed over to the tight ones. `r` is
+   animatable as a CSS geometry property, and the transition is what turns
+   "a marker appeared" into "it closed and it is staying". The attribute
+   carries the same values, so a browser that ignores the CSS property
+   still draws the marker — only without the animation. */
+.pick-pin .pick-halo,
+.pick-pin .pick-core{
+    transition:r 140ms ease-out;
+}
+.pick-pin .pick-halo{
+    r:3.6px;
+    stroke:rgba(255,255,255,0.65);
+    stroke-width:1;
+}
+.pick-pin .pick-core{
+    r:2px;
+}
+/* the frame the pin is born in: identical to the hover marker, so the
+   handover starts from exactly where the user left the cursor */
+.pick-pin.settling .pick-halo{
+    r:5.5px;
+    stroke:rgba(255,255,255,0.5);
+    stroke-width:1.25;
+}
+.pick-pin.settling .pick-core{
+    r:2.6px;
+}
+
+/* the tooltip: a sibling div, not SVG text, so a long value or a long
+   trace title wraps instead of overflowing the plot */
+.pick-tip{
+    position:absolute;
+    z-index:3;
+    pointer-events:auto;
+    min-width:110px;
+    max-width:260px;
+    padding:6px 8px 6px 9px;
+    font:12px/1.45 var(--plot-axis-font);
+    color:var(--text);
+    background:rgba(10,14,20,0.94);
+    border:1px solid var(--border);
+    border-radius:4px;
+    box-shadow:0 6px 18px rgba(0,0,0,0.55);
+    cursor:default;
+    user-select:none;
+}
+.pick-head{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    margin-bottom:4px;
+    padding-right:14px;
+}
+.pick-swatch{
+    flex:none;
+    width:9px;
+    height:9px;
+    border-radius:50%;
+    box-shadow:0 0 0 1px rgba(255,255,255,0.35);
+}
+.pick-title{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--text-dim);
+}
+.pick-row{
+    display:flex;
+    justify-content:space-between;
+    gap:14px;
+}
+.pick-key{
+    color:var(--text-dim);
+}
+/* tabular figures: a column of x/y values must not shimmer as it changes */
+.pick-val{
+    font-variant-numeric:tabular-nums;
+}
+.pick-close{
+    position:absolute;
+    top:2px;
+    right:2px;
+    width:16px;
+    height:16px;
+    padding:0;
+    font:13px/14px inherit;
+    color:var(--text-dim);
+    background:transparent;
+    border:none;
+    border-radius:3px;
+    cursor:pointer;
+}
+.pick-close:hover{
+    color:var(--text);
+    background:var(--hover-bg);
+    box-shadow:none;
+    outline:none;
+}
