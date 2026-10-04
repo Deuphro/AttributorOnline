@@ -603,6 +603,18 @@ class Node{
         if(this.restoredFolded){
             this.accordion?.fold()
         }
+        /* The panel's rank in its column, handed to the accordion rather than
+           acted on: a column can only be sorted once EVERY panel is back,
+           and that is App.applyPanelOrder's job, not this node's.
+
+           Both sides, for a node that owns a panel in each column. */
+        const ranks=this.restoredPanelOrder??{}
+        if(Number.isInteger(ranks.left)){
+            this.accordion?.restoredPanelOrder(ranks.left)
+        }
+        if(Number.isInteger(ranks.right)){
+            this.accordionRight?.restoredPanelOrder(ranks.right)
+        }
     }
     static anchorAbsPos(anchor){
         const anchorPos=anchor.pilot.parameters.anchorMap.get(anchor).positions
@@ -14283,6 +14295,62 @@ class Dialog{
     }
 }
 
+/* -------------------------------------------------------------------------
+    RANGER LES ACCORDÉONS LES UNS PAR RAPPORT AUX AUTRES.
+
+    LA POIGNÉE, ET ELLE SEULE. Le carré de gauche du handler existait déjà:
+    il était peint, il avait une classe CSS, et il ne faisait strictement
+    rien. C'est lui qui devient la poignée, parce que tout le reste du
+    panneau est déjà pris — le double-clic replie, le contenu sélectionne du
+    texte, les contrôles répondent au pointeur. Prendre le panneau par le
+    côté, c'est le seul geste qui ne risque pas de déclencher autre chose en
+    route.
+
+    UN SEUL CHAMP EN MOUVEMENT, et il est ici plutôt que dans le dataTransfer.
+    Un glisser HTML ne livre au récepteur qu'une chaîne, et seulement au
+    moment du dépôt: or il faut savoir QUEL panneau se déplace dès le
+    premier survol, pour dessiner la marque d'insertion. Cette variable est
+    remise à zéro au dragend, et c'est elle qui distingue « un panneau se
+    réarrange » de « un fichier est glissé sur la page » — ce dernier cas
+    doit être ignoré sans bruit, sans interdire le dépôt au navigateur. */
+let draggedAccordion=null
+let reorderMark=null
+let reorderMarkEdge=null
+
+function markReorder(container,edge){
+    if(reorderMark===container&&reorderMarkEdge===edge){
+        return
+    }
+    clearReorderMark()
+    reorderMark=container
+    reorderMarkEdge=edge
+    container.classList.add(edge==="above"?"reorder-above":"reorder-below")
+    /* La marque doit SUIVRE le pointeur. Le conteneur porte une transition
+       de 300 ms, écrite pour le repli; la laisser ici étirerait chaque
+       marque d'un tiers de seconde et la ligne traînerait derrière la main.
+       Elle est donc remplacée le temps du geste, et remise à la fin. */
+    container.style.transition="box-shadow 60ms linear"
+}
+function clearReorderMark(){
+    if(!reorderMark){
+        return
+    }
+    reorderMark.classList.remove("reorder-above","reorder-below")
+    reorderMark.style.transition="300ms"
+    reorderMark=null
+    reorderMarkEdge=null
+}
+/* Les panneaux du panneau, dans l'ordre où ils se trouvent À L'ÉCRAN. C'est
+   cet ordre-là, et lui seul, qui fait foi : il est reconstruit à chaque
+   dessin, et il ne dépend ni du nom du nœud ni de son id. */
+function accordionRows(panel){
+    return [...(panel?.querySelectorAll?.(":scope > .accordion.container")??[])]
+}
+function lastAccordionOf(panel){
+    const rows=accordionRows(panel)
+    return rows.length?rows[rows.length-1].accordion??null:null
+}
+
 class Accordion{
     constructor(title,origin,destination){
         this.title=title
@@ -14327,18 +14395,190 @@ class Accordion{
         this.DOMelt={
             folder:CE('div',{className:"accordion handler folder",pilot:this,handleClick:(e)=>e.target.pilot.toggle()},[]),
             handler:CE('div',{className:"accordion handler",pilot:this,handleDblClick:(e)=>e.target.pilot.toggle()},[
-                CE('div',{className:"accordion handler menu"},[]),
+                CE('div',{className:"accordion handler menu grip",pilot:this,draggable:true,tabIndex:0,title:"Glisser pour déplacer ce panneau (flèches haut/bas au clavier)",handleKeyDown:(e)=>this.handleReorderKey(e)},[]),
                 CE('div',{className:"accordion handler label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggle()},[title]),
             ]),
             content:CE('div',{className:"accordion content"},[]),
         }
         this.DOMelt.handler.appendChild(this.DOMelt.folder)
         this.DOMelt.container=CE('div',{className:"accordion container"},[this.DOMelt.handler,this.DOMelt.content]);
+        //le conteneur se connaît lui-même: un accordéon est cherché par son
+        //enveloppe (le réordonnancement, la mort d'un nœud), jamais par une
+        //classe CSS qui pourrait appartenir à deux panneaux à la fois
+        this.DOMelt.container.accordion=this
         stylize(this.DOMelt.container,this.parameters.container.style);
         stylize(this.DOMelt.handler,this.parameters.handler.style);
         stylize(this.DOMelt.content,this.parameters.content.style);
         this.destination.appendChild(this.DOMelt.container)
         this.setSizingMode("content")
+        this.setUpReordering()
+    }
+    /* LE GLISSER, ET LE CLAVIER.
+
+       Le glisser est du HTML5 natif, comme celui de la liste des traces:
+       pas de bibliothèque, le même code que partout ailleurs. Le clavier est
+       là PARCE QUE le glisser n'en a pas: une poignée qui ne se bouge qu'à la
+       souris est une poignée inaccessible, et cet accordéon est précisément
+       un panneau de réglages — on l'attrape, on le pousse, mais on ne peut
+       pas le faire au clavier. */
+    setUpReordering(){
+        const grip=this.DOMelt.handler.querySelector(".accordion.handler.menu")
+        grip.addEventListener("dragstart",(event)=>this.startReorderDrag(event))
+        grip.addEventListener("dragend",()=>this.endReorderDrag())
+        for(const element of [this.DOMelt.container,this.destination]){
+            element.addEventListener("dragover",(event)=>this.handleReorderOver(event))
+            element.addEventListener("drop",(event)=>this.handleReorderDrop(event))
+        }
+    }
+    /* Où le pointeur se trouve-t-il PAR RAPPORT à la ligne? On compare au
+       milieu, pas au bord: c'est ce qui fait qu'un panneau glissé passe
+       dessus quand on approche par le haut, dessous quand on approche par
+       le bas — le geste que la liste des traces a déjà rendu familier. */
+    reorderEdge(event){
+        const box=this.DOMelt.container.getBoundingClientRect()
+        return event.clientY<(box.top+box.height/2)?"above":"below"
+    }
+    handleReorderOver(event){
+        /* Un glisser qui n'est pas le nôtre ne nous concerne pas — et un glisser
+           QUELCONQUE ne se déplace pas de colonne: chaque accordéon reste
+           dans le panneau où il est né, parce qu'un accordéon du panneau
+           droit (l'inspecteur d'un graphe) n'a rien à faire dans le panneau
+           gauche (les réglages du nœud). Ne surtout pas preventDefault()
+           dans ce cas: c'est cet appel qui autorise le dépôt, et l'interdire
+           reviendrait à rendre la colonne entière infranchissable pour un
+           fichier glissé depuis le bureau — alors que le navigateur, lui,
+           sait très bien où le poser. */
+        if(!draggedAccordion||draggedAccordion.destination!==this.destination){
+            return
+        }
+        /* L'ÉVÉNEMENT REMONTE, et le panneau est écouté par TOUS les
+           accordéons de la colonne. Sans ce tri, un survol de gamma serait
+           traité successivement par gamma, par alpha et par beta, et c'est le
+           DERNIER à parler qui déciderait où la ligne s'allume. Celui qui a
+           la cible sous le pointeur est donc le seul à avoir voix au
+           chapitre; les autres n'écoutent que le panneau lui-même, le vide
+           sous la dernière ligne. */
+        if(event.target!==this.destination&&event.target.closest?.(".accordion.container")!==this.DOMelt.container){
+            return
+        }
+        event.preventDefault()
+        event.dataTransfer.dropEffect="move"
+        /* Un survol du PANNEAU vise la fin de la liste, et il n'y a alors
+           aucune ligne à marquer. Une réception sur le conteneur marque la
+           ligne visée, au-dessus ou en dessous selon la moitié visée. */
+        if(event.target===this.destination){
+            clearReorderMark()
+        }else{
+            markReorder(this.DOMelt.container,this.reorderEdge(event))
+        }
+    }
+    handleReorderDrop(event){
+        if(!draggedAccordion||draggedAccordion.destination!==this.destination){
+            return
+        }
+        //le même tri que sur le survol: un dépôt remonte jusqu'au panneau,
+        //qui est écouté par tous les accordéons de la colonne. Sans cela le
+        //panneau serait déplacé autant de fois qu'il y a de panneaux, et
+        //c'est le dernier écouté qui déciderait de la place finale
+        if(event.target!==this.destination&&event.target.closest?.(".accordion.container")!==this.DOMelt.container){
+            return
+        }
+        event.preventDefault()
+        clearReorderMark()
+        const moved=draggedAccordion
+        if(event.target===this.destination){
+            moved.moveToEnd()
+        }else{
+            moved.placeBefore(this,this.reorderEdge(event))
+        }
+    }
+    /* LE CLAVIER, parce qu'un glisser HTML n'en a pas. La poignée a le focus
+       après un déplacement: sans cela le focus repart sur le corps et les
+       flèches ne pourraient plus recommencer — un déplacement qu'on ne peut
+       pas recommencer est un déplacement qu'on ne peut pas ajuster. */
+    handleReorderKey(event){
+        const delta=event.key==="ArrowUp"?-1:event.key==="ArrowDown"?1:0
+        if(!delta){
+            return
+        }
+        event.preventDefault()
+        this.moveBy(delta)
+        this.DOMelt.handler.querySelector(".accordion.handler.menu").focus()
+    }
+    moveBy(delta){
+        const rows=accordionRows(this.destination)
+        const there=rows.indexOf(this.DOMelt.container)+delta
+        if(there<0||there>=rows.length){
+            return false
+        }
+        return this.placeBefore(rows[there].accordion,delta<0?"above":"below")
+    }
+    moveToEnd(){
+        const last=lastAccordionOf(this.destination)
+        if(!last||last===this){
+            return false
+        }
+        return this.placeBefore(last,"below")
+    }
+    /* LE DÉPLACEMENT PROPREMENT DIT, et il tient en trois lignes parce
+       qu'il n'y a rien d'autre à faire: les accordéons sont de simples
+       frères dans le panneau, et LE DOM EST L'ORDRE. Rien n'est recopié, rien
+       n'est reconstruit — ce qui exclut d'oublier de mettre à jour une liste
+       parallèle qui, elle, se désynchroniserait au premier accordéon tué. */
+    placeBefore(accordion,edge){
+        if(!accordion||accordion===this){
+            return false
+        }
+        const reference=edge==="below"?accordion.DOMelt.container.nextSibling:accordion.DOMelt.container
+        if(reference===this.DOMelt.container||this.DOMelt.container.nextSibling===reference){
+            //déjà à sa place: réinsérer le nœud au même endroit le détache
+            //d'abord du DOM, ce qui ferait clignoter toute la colonne
+            return false
+        }
+        this.destination.insertBefore(this.DOMelt.container,reference)
+        /* Un accordéon replié n'occupe qu'une ligne. Le réordonnancement ne
+           déplie donc rien: il choisit seulement QUELLE ligne sera en haut,
+           et c'est déjà ce que demande un panneau qu'on range. */
+        this.announce()
+        return true
+    }
+    /* RANG DE L'ACCORDÉON DANS SON PANNEAU, ou null s'il n'est plus là.
+
+       C'est tout ce qu'il faut sauvegarder pour qu'un rechargement retrouve
+       la colonne telle qu'on l'avait rangée: le DOM EST l'ordre, donc l'ordre
+       ne se stocke pas comme une liste à côté — il se déduit de la place de
+       chaque accordéon. Il est calculé À LECTURE, jamais entreposé dans un
+       champ: deux vérités cohabiteraient, et le réordonnancement n'aurait
+       qu'à oublier la mise à jour de l'une pour que le fichier mente. */
+    panelOrder(){
+        const index=accordionRows(this.destination).indexOf(this.DOMelt.container)
+        return index<0?null:index
+    }
+    /* LE RANG RETROUVÉ APRÈS UN RELOAD. Il n'est PAS appliqué ici, et c'est
+       volontaire: un accordéon qui se replace à l'instant de son propre
+       retour ne sait pas combien d'autres vont encore arriver, et se placer
+       « au rang 2 » d'une liste qui n'en contient qu'un le mettrait à la
+       fin. Le tri se fait une fois, sur le panneau entier, quand tous les
+       nœuds sont revenus (App.applyPanelOrder). */
+    restoredPanelOrder(order){
+        this.pendingPanelOrder=Number.isInteger(order)?order:null
+    }
+    startReorderDrag(event){
+        draggedAccordion=this
+        event.dataTransfer.effectAllowed="move"
+        //une donnée voyage quand même: Firefox refuse de lancer un glisser
+        //sans payload, et c'est aussi ce qui distingue un accordéon d'un
+        //fichier si le geste est un jour repris autrement
+        event.dataTransfer.setData("text/plain",this.title)
+        this.DOMelt.container.classList.add("reordering")
+    }
+    endReorderDrag(){
+        //même en cas d'abandon (Échap, sortie de la fenêtre): la marque doit
+        //disparaître dans TOUS les cas, sinon le panneau garde une ligne
+        //lumineuse qui ne correspond à plus rien
+        draggedAccordion=null
+        clearReorderMark()
+        this.DOMelt.container.classList.remove("reordering")
     }
     setSizingMode(mode,{height=null}={}){
         if(!["content","viewport"].includes(mode)){
@@ -14404,6 +14644,15 @@ class Accordion{
         }
     }
     suicide(){
+        /* un accordéon tué au milieu d'un glisser laisserait sa marque
+           allumée: le réordonnancement garde le PREMIER conteneur marqué en
+           mémoire, et il peut être précisément celui-ci */
+        if(reorderMark===this.DOMelt.container){
+            clearReorderMark()
+        }
+        if(draggedAccordion===this){
+            draggedAccordion=null
+        }
         this.DOMelt.container.remove()
         if(this.events?.broadcast?.killed){
             dispatchEvent(this.events.broadcast.killed)
@@ -14693,6 +14942,68 @@ class App{
             document.onmousemove=null;
             document.onmouseup=null;
             pilot.mid.style.transition="300ms";
+        }
+    }
+    /* REMET LA COLONNE DANS L'ORDRE CHOISI, après un rechargement.
+
+       Un squelette se restaure dans l'ordre du FICHIER, qui est l'ordre de
+       création des nœuds — pas l'ordre dans lequel l'utilisateur a ensuite
+       rangé ses panneaux. Sans ce passage, chaque rechargement remettrait la
+       colonne dans l'ordre de naissance et défait silencieusement le
+       rangement.
+
+       Le tri est fait ici, sur le panneau entier, et non au retour de chaque
+       accordéon: à cet instant-là un accordéon ne connaît pas le nombre de
+       ceux qui doivent encore arriver, et se placer « au rang 2 » d'une liste
+       qui n'en contient qu'un le mettrait à la fin.
+
+       Un accordéon sans rang écrit revient APRÈS ceux qui en ont un: un
+       nœud créé depuis le dernier enregistrement se range donc en bas de la
+       colonne, ce qui est aussi ce qu'on voit à l'écran quand on vient de
+       le créer. Un rang infini fait exactement cela, et le tri des tableaux
+       étant stable, ceux qui n'ont pas de rang entre eux gardent l'ordre
+       d'arrivée — donc un simple .sort() suffit, et il n'y a rien à suivre. */
+    /* LE TRI EST FAIT ICI, ET C'EST ICI QUE ÇA COMPTE — voir la note sur
+       resolveAfterRestore(): un accordéon n'existe qu'une fois son nœud
+       enregistré, et son rang n'arrive qu'à la fin de l'import. */
+    applyPanelOrder(){
+        for(const panel of this.main.querySelectorAll(".vertical.left.content,.vertical.right.content")){
+            const rows=accordionRows(panel)
+            if(rows.length<2){
+                continue
+            }
+            const ranks=rows.map(container=>container.accordion?.pendingPanelOrder)
+            if(!ranks.some(rank=>Number.isInteger(rank))){
+                //personne n'a de rang: le panneau est dans l'ordre où les
+                //accordéons sont arrivés, et le laisser tel quel est exact
+                continue
+            }
+            const sorted=rows
+                .map((container,arrival)=>({container,rank:ranks[arrival],arrival}))
+                .sort((a,b)=>(a.rank??Infinity)-(b.rank??Infinity)||a.arrival-b.arrival)
+                .map(entry=>entry.container)
+            /* On INSÈRE chaque accordéon devant son successeur plutôt que de
+               les pousser tous à la fin dans l'ordre: chaque appendChild
+               détache le nœud de sa place, ce qui fait scintiller toute la
+               colonne à chaque étape. Insérer devant le suivant ne touche
+               qu'un nœud, et le résultat est le même. */
+            /* On NE SE SERT PAS DU SUIVANT comme point d'insertion: le nœud
+               qu'on vient de déplacer a déplacé le suivant avec lui, et la
+               ancre cherchée n'est plus où on l'attendait — la colonne sortait
+               alors dans un ordre qui n'était celui d'aucun rang.
+
+               On avance donc d'un CURSEUR, qui est toujours un nœud déjà
+               placé donc jamais déplacé ensuite: c'est la seule ancre qui ne
+               bouge pas pendant qu'on la cherche. */
+            let cursor=panel.firstChild
+            for(const container of sorted){
+                while(cursor&&cursor!==container){
+                    const next=cursor.nextSibling
+                    panel.insertBefore(container,cursor)
+                    cursor=next
+                }
+                cursor=container.nextSibling
+            }
         }
     }
     applyPanelParameters(){
@@ -15078,6 +15389,7 @@ class App{
         }
         globalThis.Attributor=restored
         restored.applyPanelParameters()
+        restored.applyPanelOrder()
         restored.resolveAfterRestore()
         return restored
     }
@@ -15164,8 +15476,20 @@ class App{
     resolveAfterRestore(){
         const flow=this.channel.get("mainFlow")
         if(!flow?.nodeSet?.size){
+            //the columns are still sorted on this path: a session that only
+            //ever rearranged its panels has no flow to resolve, and would
+            //otherwise come back in birth order — the one case where the
+            //early return above would silently undo the user's arrangement
+            this.applyPanelOrder()
             return Promise.resolve()
         }
+        /* The panels go back into the user's order HERE, and not at the end of
+           the import: a node's accordion is built when it is REGISTERED, and
+           the rank arrives later still, in restoreAfterImport. Sorting between
+           those two moments would sort an empty column — which is exactly what
+           it did, and the arrangement was lost on every reload. This is the
+           first point where every panel of the session exists. */
+        this.applyPanelOrder()
         return flow.resolveFlow()
             .then(()=>{
                 //the statuses just settled: save them, so a second reload
@@ -15254,6 +15578,11 @@ class App{
         globalThis.Attributor=importedApp
         //restore the saved panel layout (fold states and sizes)
         importedApp.applyPanelParameters()
+        /* and the order the user gave the panels within each column. This path
+           does not go through resolveAfterRestore() — an imported file needs
+           no resolve, it carries its data — so the sort is asked for here,
+           where the import is over and every panel exists. */
+        importedApp.applyPanelOrder()
         return importedApp
     }
     about(){
@@ -15313,6 +15642,10 @@ function restoreSession(document){
         return null
     }
     try{
+        /* The panel order is applied by resolveAfterRestore(), not here: a
+           node's accordion is built when the node is REGISTERED, and it only
+           learns its rank in restoreAfterImport, which runs later still. A
+           sort placed here would sort an empty column. */
         return importSessionData(JSON.stringify(document),options)
     }catch(error){
         /* The import builds a WHOLE app before anything can fail: it draws its

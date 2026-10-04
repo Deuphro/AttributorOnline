@@ -141,6 +141,21 @@ function skeletonNode(node){
            open: a user who folded a node did it to get it out of the way, and a
            reload that unfolds it takes that choice back. */
         folded:node.accordion?.parameters?.folded??false,
+        /* Where this node's panel sits in its column. It is the user's own
+           arrangement of the panels - which one they want in sight, at the
+           top - so it travels with the fold state right above it: both are
+           choices about how the panel looks, and both are rebuilt from
+           scratch after a reload, since an accordion is a fresh object and
+           arrives in the order the file lists the nodes in.
+
+           Read from the live DOM, never kept in a field of its own: the DOM
+           order IS the arrangement, and a stored copy would be a second
+           source of truth to keep in step by hand. */
+        panelOrder:node.accordion?.panelOrder?.()??null,
+        /* The second column's rank, for the nodes that own a panel on the
+           right as well. Same reasoning as the two keys on the way back in:
+           the columns are ranked separately. */
+        rightPanelOrder:node.accordionRight?.panelOrder?.()??null,
         status:node.status??null,
         /* The SHAPE, not the data: a slot held traces, and traces come back from
            the resolve. What has to survive is how MANY slots there were, because a
@@ -385,6 +400,20 @@ export function importOptions(document,hooks={}){
             node.parameters.pinned=!!data.pinned
             //read back by Node.restoreAfterImport, once the accordion exists
             node.restoredFolded=data.folded===true
+            /* The rank of each panel in its column, likewise: a rank belongs to
+               the accordion, which only exists once the node is registered. It
+               is handed over, not applied — App.applyPanelOrder sorts a whole
+               column at the end, because a panel that comes back first cannot
+               know how many will follow it.
+
+               TWO keys, because a node can own a panel in EACH column (the
+               graph inspector lives on the right): the two columns are ranked
+               independently, and one number cannot say "second from the top"
+               about both at once. */
+            node.restoredPanelOrder={
+                left:Number.isInteger(data.panelOrder)?data.panelOrder:null,
+                right:Number.isInteger(data.rightPanelOrder)?data.rightPanelOrder:null
+            }
             if(data.status){
                 node.status=data.status
             }

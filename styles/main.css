@@ -309,6 +309,42 @@ div{
     opacity:0.5;
 }
 
+/* ---- Réordonner les accordéons d'une colonne ---------------------------- */
+/* La poignée du handler: elle était déjà peinte et vide, elle devient le seul
+   endroit d'où l'on tire un panneau. Le curseur `grab` est la moitié du
+   contrat — une poignée sans curseur de saisie se prend pour un décor. La
+   poignée garde le focus après un déplacement au clavier, donc son anneau de
+   focus doit être visible: c'est le seul moyen de savoir où l'on est. */
+.accordion.handler.menu.grip{
+    cursor:grab;
+    touch-action:none;
+}
+.accordion.handler.menu.grip:hover{
+    opacity:1;
+    border-color:var(--accent-border);
+}
+.accordion.handler.menu.grip:active{
+    cursor:grabbing;
+}
+.accordion.handler.menu.grip:focus-visible{
+    outline:1px solid var(--accent);
+}
+
+/* La ligne d'insertion, en haut ou en bas de la ligne visée. Un box-shadow
+   interne et non une bordure: la bordure ferait sauter la mise en page d'un
+   pixel à chaque passage, et le panneau à côté clignoterait avec. */
+.accordion.container.reorder-above{
+    box-shadow: inset 0 3px 0 0 var(--accent);
+}
+.accordion.container.reorder-below{
+    box-shadow: inset 0 -3px 0 0 var(--accent);
+}
+/* Le panneau emporté: il reste en place pendant le geste (on ne réordonne
+   qu'au dépôt), donc il s'efface pour qu'on voie ce qu'on survole. */
+.accordion.container.reordering{
+    opacity:0.45;
+}
+
 .accordion.folder:hover{
     border:1px solid var(--accent);
 }
