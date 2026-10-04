@@ -6768,6 +6768,11 @@ function formulaComparator(name){
 class FormulaCollectionNode extends NodeWithAccordionGraph{
     //how many sticks the central graph will take before it says "capped"
     static GRAPH_POINT_BUDGET=200000
+    /* CE QUE LE GRAPHE MONTRE PAR DÉFAUT, et le DEFAULT vit ici pour la même
+       raison que GRAPH_POINT_BUDGET: il est utilisé par le constructeur, par
+       `refreshGraph` et par `restoreState`, et trois copies d'une chaîne
+       seraient trois endroits à se tromper. */
+    static GRAPH_MODE_DEFAULT="error"
     //one line of the list. Fixed, and the reason the windowing is cheap. It
     //MUST equal the height of .fc-row in main.css: the offsets the list
     //computes are multiples of this, and a one-pixel disagreement puts the row
@@ -7891,6 +7896,14 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.parameters.ppmWindow=5
         this.parameters.logY=false
         this.parameters.graphBudget=FormulaCollectionNode.GRAPH_POINT_BUDGET
+        /* CE QUE LE GRAPHE MONTRE, et l'erreur est le DÉFAUT.
+
+           Une collection n'est pas une liste de hauteurs: c'est une liste de
+           MESURES, et ce qu'un lecteur de masse veut voir d'abord est l'écart
+           entre le prédit et le mesuré. L'intensité reste disponible d'un clic —
+           elle dit autre chose (le signal), et elle ne doit pas disparaître, mais
+           elle n'est pas la question par défaut. */
+        this.parameters.graphMode=FormulaCollectionNode.GRAPH_MODE_DEFAULT
         //the collection on screen, and the formula read inside it, both by NAME
         this.parameters.current=null
         this.parameters.selection=null
@@ -8466,16 +8479,50 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
 
     /* --- the central graph: one trace per collection the user ticked ----- */
     /* What is drawn is the COLLECTION, not the formula list: one trace per
-       ticked collection, x = m/z, y = intensity, sticks to zero. That is what
-       makes a hundred collections comparable at a glance, which a formula
-       index never would.
+       ticked collection. WHAT a point SAYS is the choice — `graphMode`, whose
+       default is the error against the measured mass.
 
-       The budget is a hard stop and it says so out loud. A hundred collections
-       of fifty thousand formulas is five million sticks, and a WebGL buffer of
-       that size is not a slow graph, it is a dead tab. What was dropped is
-       reported in the readout rather than silently thinning the picture. */
+       LES DEUX QUESTIONS, et aucune ne répond à la place de l'autre:
+
+         error     x = the mass actually MEASURED (target.mz), y = the error in
+                   ppm the matching computed against the formula. C'est la vue
+                   par défaut, parce que c'est elle qui répond à « cette
+                   collection est-elle juste ? » — et la réponse se lit à l'œil:
+                   un nuage resserré autour de zéro, ou deux groupes nettement
+                   décalés, se voient sans qu'on lise une seule valeur.
+
+         intensity x = the same measured mass, y = the signal. C'est le
+                   spectre, et c'est ce qu'il faut quand la question est
+                   « y a-t-il du signal ? ».
+
+       Les deux tiennent dans la même fonction parce qu'elles ne changent qu'une
+       colonne et un libellé: deux moteurs de rendu pour un nuage et un spectre
+       seraient deux objets DOM et deux panneaux à synchroniser. Le mode est dans
+       les PARAMÈTRES, donc dans la session — un graphe qui changerait de sens
+       au chargement serait un graphe qu'on ne peut pas comparer d'un jour à
+       l'autre.
+
+       Le BUDGET, lui, est le même dans les deux modes et reste ce qu'il était:
+       un arrêt dur, dit tout haut. Cent collections de cinquante mille formules,
+       c'est cinq millions de points, et un tampon WebGL de cette taille n'est pas
+       un graphe lent, c'est un onglet mort. Ce qui a été écarté est COMPTÉ dans
+       le readout plutôt que de saigner en silence dans l'image. */
+    /* LE POINT N'EST PAS LE MÊME DANS LES DEUX CAS, et l'écart le dit.
+
+       En INTENSITÉ, un point sans signal n'est pas une mesure: il dessine un
+       zéro qui n'est rien. On exige donc les deux nombres finis, comme avant.
+
+       En ERREUR, c'est l'inverse: une formule appariée à un point même loin
+       porte un ppm calculé, et ce ppm EST l'information — c'est exactement la
+       ligne que l'utilisateur doit voir. Seul un point dont l'erreur n'existe
+       pas (aucune cible du tout) est écarté. */
     refreshGraph(){
         if(!this.graph) return
+        /* LE MODE EST LU ICI ET PAS DÉJÀ NORMALISÉ ailleurs, parce que c'est le
+           seul endroit qui sait ce qu'un point EST: `restoreState` ne fait que
+           vérifier que le nom existe, et une valeur inconnue retombe sur le
+           défaut au lieu d'effacer le graphe. */
+        const byError=(this.parameters.graphMode??FormulaCollectionNode.GRAPH_MODE_DEFAULT)!=="intensity"
         const traces=[]
         let eligible=0
         let drawn=0
@@ -8484,13 +8531,25 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             const points=[]
             for(const entry of collection.entries){
                 for(const target of entry.targets){
-                    if(!Number.isFinite(target.mz)||!Number.isFinite(target.intensity)) continue
-                    points.push([target.mz,target.intensity])
+                    if(!Number.isFinite(target.mz)) continue
+                    if(byError){
+                        /* L'erreur prime sur TOUT, et pas seulement sur son
+                           caractère fini: une formule dont la cible n'a pas
+                           d'erreur n'a pas de point, sinon on lui en
+                           inventerait un. */
+                        if(!Number.isFinite(target.errorPpm)) continue
+                        points.push([target.mz,target.errorPpm])
+                    }else{
+                        if(!Number.isFinite(target.intensity)) continue
+                        points.push([target.mz,target.intensity])
+                    }
                 }
             }
             if(!points.length) continue
             eligible+=points.length
-            //sorted by m/z: a stick plot read left to right must not jump
+            /* TRIÉ PAR m/z DANS LES DEUX CAS, pour la même raison: un nuage lu
+               de gauche à droite ne doit pas sauter d'une masse à l'autre, et
+               un spectre encore moins. */
             points.sort((a,b)=>a[0]-b[0])
             const x=new Float64Array(points.length)
             const y=new Float64Array(points.length)
@@ -8499,12 +8558,31 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                 y[i]=points[i][1]
             }
             traces.push(new XYTrace({
-                id:`${collection.name}:sticks`,
-                title:`${collection.name} (${points.length})`,
-                wave:Wave.fromCoordinates(x,y,{collection:collection.name},["m/z","intensity"]),
+                /* L'ID porte le mode, sinon un graphe rechargé après un
+                   changement de mode pourrait réappliquer à la nouvelle trace
+                   les options sauvées pour l'ancienne — même couleur, mais
+                   aussi même géométrie, et la géométrie est justement ce qui a
+                   changé. */
+                id:`${collection.name}:${byError?"error":"sticks"}`,
+                title:byError
+                    ?`${collection.name} — error (${points.length})`
+                    :`${collection.name} (${points.length})`,
+                wave:Wave.fromCoordinates(
+                    x,
+                    y,
+                    {collection:collection.name, quantity:byError?"errorPpm":"intensity"},
+                    ["m/z",byError?"error (ppm)":"intensity"]
+                ),
                 options:{
                     color:traceColor(this.collections.indexOf(collection)),
-                    mode:"sticks-to-zero",
+                    /* DES MARQUEURS, et non des bâtons, en mode erreur. Un
+                       « stick to zero » tire un trait de chaque point jusqu'à
+                       l'axe, donc chaque ppm trace une ligne depuis zéro: le
+                       graphique ne montre plus un nuage mais une forêt de
+                       traits, et deux points voisins deviennent indiscernables.
+                       L'écart se LIT dans la position verticale du point. */
+                    mode:byError?"points":"sticks-to-zero",
+                    marker:{shape:"circle",size:3},
                     layer:"gl"
                 }
             }))
@@ -8512,14 +8590,21 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         }
         const capped=drawn>this.parameters.graphBudget
         this.graph.setTraces(traces)
-        this.graph.parameters.axis.left.scale=this.parameters.logY?"log":"linear"
+        /* LE LOG N'EXISTE QU'EN INTENSITÉ, et sa raison est arithmétique: une
+           erreur en ppm est négative ou nulle pour la moitié des points, et le
+           traceur ÉCARTE silencieusement tout ce qui n'est pas strictement
+           positif. Un point à -3 ppm ne disparaîtrait pas — il ne serait jamais
+           dessiné, et le graphique dirait « tout va bien » sur une collection
+           mal calibrée. Le paramètre n'est donc pas effacé, seulement ignoré:
+           revenir en intensité le retrouve. */
+        this.graph.parameters.axis.left.scale=(!byError&&this.parameters.logY)?"log":"linear"
         /* The axes say what they measure, and they are written ONCE here rather
            than left to syncAxisLabels: that helper copies the labels of the
            FIRST trace, and a graph whose axes change meaning when a collection
            is ticked on or off is a graph nobody reads twice. */
-        this.graph.parameters.axis.bottom.label="m/z"
+        this.graph.parameters.axis.bottom.label="Measured m/z"
         this.graph.parameters.axis.bottom.autoLabel=false
-        this.graph.parameters.axis.left.label="Intensity"
+        this.graph.parameters.axis.left.label=byError?"Error (ppm)":"Intensity"
         this.graph.parameters.axis.left.autoLabel=false
         this.graph.drawGraph()
         if(this.graphReadout){
@@ -8527,6 +8612,14 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
                 ?`${formatCount(drawn)} / ${formatCount(eligible)} (capped)`
                 :`${formatCount(drawn)} / ${formatCount(eligible)}`
             this.graphReadout.style.color=capped?"#ffb347":""
+            /* LE TITRE DIT CE QUI EST COMPTÉ, parce que les deux modes ne
+               comptent pas la même chose: un point sans signal compte en
+               intensité et pas en erreur. Sans cette phrase, un « 120 / 340 »
+               serait lu comme « 220 points perdus » alors que ce sont des
+               formules sans cible. */
+            this.graphReadout.title=byError
+                ?"Points drawn / points eligible — a measured point counted here only when it carries an error"
+                :"Points drawn / points eligible — a measured point counted here only when it carries an intensity"
         }
     }
 
@@ -8986,6 +9079,10 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             ppmWindow:this.parameters.ppmWindow,
             logY:this.parameters.logY,
             graphBudget:this.parameters.graphBudget,
+            /* LE MODE DU GRAPHE EST UN CHOIX COMME LES AUTRES: il ne se déduit
+               d'aucun resolve, donc sans lui un fichier de session rouvrirait
+               le nœud sur une autre lecture que celle qu'on a quittée. */
+            graphMode:this.parameters.graphMode,
             current:this.parameters.current,
             selection:this.parameters.selection,
             collectionState:DC(this.parameters.collectionState),
@@ -9017,6 +9114,12 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         if(Number.isFinite(state.graphBudget)&&state.graphBudget>0){
             this.parameters.graphBudget=state.graphBudget
         }
+        /* UN MODE INCONNU RETOMBE SUR LE DÉFAUT, comme la vue et l'ordre: un
+           fichier écrit par un autre build ne doit pas pouvoir vider le
+           graphique en demandant une troisième lecture qui n'existe pas. */
+        this.parameters.graphMode=["error","intensity"].includes(state.graphMode)
+            ?state.graphMode
+            :FormulaCollectionNode.GRAPH_MODE_DEFAULT
         this.parameters.current=typeof state.current==="string"?state.current:null
         this.parameters.selection=typeof state.selection==="string"?state.selection:null
         this.parameters.collectionState=state.collectionState&&typeof state.collectionState==="object"
@@ -9059,9 +9162,37 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.destination?.syncInputs(this).then(()=>this.startResolve())
     }
 
+    setGraphMode(mode){
+        /* LE MODE EST UN CHOIX DE LECTURE, pas un filtre: changer de mode ne
+           touche à rien d'autre — ni les collections cochées, ni les filtres, ni
+           les notes. Le dire ici évite le glissement bien connu qui consiste à
+           « réinitialiser le graphe » et à perdre les deux. */
+        if(this.parameters.graphMode===mode) return
+        this.parameters.graphMode=mode
+        this.origin?.saveSessionSoon?.()
+        /* LE PANNEAU SE REFAIT, parce que le Lin/Log n'a de sens qu'en
+           intensité: le laisser visible en mode erreur donnerait un contrôle
+           qui agit sur le graphique sans effet visible, et un utilisateur
+           clique sur un contrôle qui ne fait rien. */
+        this.renderGraphOptions()
+        this.refreshGraph()
+    }
     renderGraphOptions(){
         if(!this.graphOptions) return
         this.graphOptions.replaceChildren()
+        const byError=this.parameters.graphMode!=="intensity"
+        /* CE QUE LE GRAPHE MONTRE, et c'est le PREMIER contrôle de la section:
+           les deux autres (échelle, budget) ne se lisent qu'en sachant ce qu'il
+           y a sur l'axe. */
+        this.graphModeToggle=segmentToggle({
+            get:()=>this.parameters.graphMode,
+            set:(value)=>this.setGraphMode(value),
+            states:[
+                {value:"error",label:"Error"},
+                {value:"intensity",label:"Intensity"}
+            ],
+            title:"What one point of the central graph says: the error in ppm against the measured mass, or the intensity of the signal"
+        })
         this.logToggle=scaleToggle({
             get:()=>this.parameters.logY,
             set:(on)=>{
@@ -9073,6 +9204,20 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             rightLabel:"Log",
             title:"Scale of the intensity axis"
         })
+        /* LE LOG N'EST PROPOSÉ QU'EN INTENSITÉ. Pas « désactivé », PAS
+           simplement ignoré: absent. Une erreur en ppm est négative pour la
+           moitié des points, et un graphique en log SUPPRIMERAIT ces points
+           sans rien dire — l'utilisateur verrait un graphe vide alors que tout
+           va bien, ce qui est la pire des deux erreurs possibles. */
+        this.logRow=CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},[])
+        if(!byError){
+            this.logRow.append(this.logToggle)
+        }else{
+            /* On ne laisse pas un vide muet là où un contrôle faisait la
+               loi: on dit POURQUOI il n'y en a pas, en un mot. */
+            this.logRow.append(CE("span",{style:{opacity:"0.6",fontSize:"0.9em"}},["Lin"]))
+            this.logRow.title="A logarithmic axis would delete every point whose error is zero or negative, without saying so — so it is not offered here"
+        }
         const budget=CE("input",{
             type:"number",min:"1000",step:"10000",size:7,
             value:String(this.parameters.graphBudget),
@@ -9091,9 +9236,17 @@ class FormulaCollectionNode extends NodeWithAccordionGraph{
             className:"pp-readout",
             title:"Points drawn / points eligible, and how many the budget left out"
         },[""])
+        const budgetLabel=CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},["Budget",budget])
         const row=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em"}},[])
-        row.append(this.logToggle,CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},["Budget",budget]),this.graphReadout)
-        this.graphOptions.append(CE("div",{className:"pp-caption"},["Graphs"]),row)
+        /* La PREMIÈRE cellule est l'échelle, et elle n'est présente qu'en mode
+           intensité: `logRow` y laisse un mot grisé qui explique pourquoi, ce
+           qui vaut mieux qu'un trou dans une ligne de trois cases. */
+        row.append(this.logRow,budgetLabel,this.graphReadout)
+        /* LE MODE EN PREMIER, sur sa propre ligne: il dit ce qu'on regarde, et
+           les deux lignes du dessous sont les réglages de CETTE lecture. */
+        const modeRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr)",fontSize:"0.95em"}},[])
+        modeRow.append(CE("span",{className:"pp-caption",style:{margin:"0"}},["Show"]),this.graphModeToggle)
+        this.graphOptions.append(CE("div",{className:"pp-caption"},["Graphs"]),modeRow,row)
     }
     suicide(options={}){
         /* The scroll list holds a ResizeObserver and a pool of rows: without

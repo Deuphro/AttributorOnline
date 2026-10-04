@@ -16,7 +16,7 @@
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
 import {Element,Formula,FormulaCollection,nearestByMz,nearestTarget} from "./chemistry.js"
-import {Wave} from "./formats.js"
+import {Wave,XYTrace} from "./formats.js"
 
 const TABLE=Element.load(JSON.parse(
     readFileSync(new URL("../data/elements.json",import.meta.url),"utf8")))
@@ -46,9 +46,9 @@ if(!helpersSource.includes("function prettyNotation")){
     process.exit(1)
 }
 const helpers=new Function(`${helpersSource}
-    return {prettyNotation,formatCount,formatValue,formatMz,FORMULA_SORTS,formulaComparator}`
+    return {prettyNotation,formatCount,formatValue,formatMz,traceColor,FORMULA_SORTS,formulaComparator}`
 )()
-const {prettyNotation,formatCount,formatValue,formatMz,FORMULA_SORTS,formulaComparator}=helpers
+const {prettyNotation,formatCount,formatValue,formatMz,traceColor,FORMULA_SORTS,formulaComparator}=helpers
 
 /* `visibleRows` is a METHOD of the reader, so it cannot be pulled out of the
    helper slice — but it is the code that decides what a row CARRIES, and the
@@ -1141,6 +1141,150 @@ test("a session of typed formulas survives a re-read",()=>{
     eq(again[0].keys.join("|"),collections[0].keys.join("|"),
         "and the keys come back in the order they were typed")
     eq(again[0].size,4,"with the same count")
+})
+
+console.log("le graphe: l'ERREUR en fonction de la masse mesurée, par défaut")
+/* `refreshGraph` decides what ONE POINT SAYS, and that is the whole contract of
+   the central graph. It is a method of the reader, so it is sliced out of
+   interface.js and called against a stand-in `this` carrying a fake graph — the
+   real method, and no DOM needed: everything it touches is `setTraces`, the axis
+   parameters and `drawGraph`. */
+const graphStart=source.indexOf("    refreshGraph(){")
+const graphEnd=source.indexOf("    /* What this node publishes",graphStart)
+if(graphStart<0||graphEnd<graphStart){
+    console.error("refreshGraph could not be located in interface.js - the test cannot run")
+    process.exit(1)
+}
+const graphSource=source.slice(graphStart,graphEnd)
+if(!graphSource.includes("this.graph.drawGraph()")){
+    console.error("the refreshGraph slice is incomplete - the test cannot run")
+    process.exit(1)
+}
+const refreshGraph=new Function("XYTrace","Wave","traceColor","formatCount","FormulaCollectionNode",
+    `return ({${graphSource}}).refreshGraph`)(XYTrace,Wave,traceColor,formatCount,{GRAPH_MODE_DEFAULT:"error"})
+
+/* The stand-in: a graph that remembers what it was given. `traces`, the two axis
+   labels and the scale are the four things the user can SEE change when the mode
+   changes, so they are the four things the test reads. */
+const graphWith=(mode,collections,{logY=false,ticked=true}={})=>{
+    const graph={
+        traces:[],
+        parameters:{axis:{
+            bottom:{label:"",autoLabel:true},
+            left:{label:"",autoLabel:true,scale:"linear"}
+        }},
+        setTraces(traces){ this.traces=traces },
+        drawGraph(){ this.drawn=true }
+    }
+    refreshGraph.call({
+        graph,
+        collections,
+        parameters:{graphMode:mode,graphBudget:200000,logY},
+        collectionState:()=>({inGraphs:ticked})
+    })
+    return graph
+}
+/* A target, and it carries BOTH numbers so the mode is the only thing that
+   decides which one lands on the graph. */
+const measured=(mz,errorPpm,intensity)=>({mz,errorPpm,intensity})
+const sampleCollection=()=>({
+    name:"c",
+    entries:[
+        {targets:[measured(180.0001,-2.5,900)]},
+        {targets:[measured(12.00002,1.2,50)]}
+    ]
+})
+
+test("le graphe montre l'erreur, et l'erreur est le DÉFAUT",()=>{
+    /* THE test of this change. A default is only a default until something reads
+       it: `mode` undefined must still land on the error, because a node built by
+       an older build — or a session written before the mode existed — carries no
+       such field, and it must not come up showing the old picture as if it were
+       the intended one. */
+    const graph=graphWith(undefined,[sampleCollection()])
+    eq(graph.parameters.axis.left.label,"Error (ppm)","the left axis is the error")
+    eq(graph.traces.length,1,"one trace per ticked collection")
+    const y=Array.from(graph.traces[0].wave.core.subarray(2,4))
+    /* -2.5 comes SECOND because the points are sorted by measured mass, and the
+       12 comes before the 180: the ordinates must travel with their own x, and
+       this is where that is checked rather than assumed. */
+    eq(y.join(","),"1.2,-2.5","the ppm, in the order of the measured masses, not the intensities")
+})
+test("l'abscisse est la masse MESURÉE, dans les deux modes",()=>{
+    /* The x is `target.mz` — what the machine measured — and NOT `entry.mz`, the
+       mass the formula predicts. The whole point of the view is the gap between
+       the two, and plotting the prediction against the error would draw a
+       diagonal whose slope is the calibration itself. */
+    const graph=graphWith("error",[sampleCollection()])
+    const x=Array.from(graph.traces[0].wave.core.subarray(0,2))
+    eq(x.join(","),"12.00002,180.0001","sorted by measured mass, each with its own error")
+})
+test("l'intensité reste accessible, et elle dit autre chose",()=>{
+    const graph=graphWith("intensity",[sampleCollection()])
+    eq(graph.parameters.axis.left.label,"Intensity","the other axis")
+    const y=Array.from(graph.traces[0].wave.core.subarray(2,4))
+    eq(y.join(","),"50,900","the signal, not the error")
+})
+test("un mode INCONNU retombe sur l'erreur plutôt que de vider le graphe",()=>{
+    /* A session file this build did not write may name a mode that does not
+       exist. Blanking the graph would be a worse answer than showing the
+       default: the user would see an empty dialog and blame the node. */
+    const graph=graphWith("somethingElse",[sampleCollection()])
+    eq(graph.traces.length,1,"the collection is still drawn")
+    eq(graph.parameters.axis.left.label,"Error (ppm)","on the default reading")
+})
+
+console.log("ce qui fait qu'un point n'EXISTE PAS, et ce qui le fait disparaître")
+test("un point sans erreur n'est pas un point à zéro",()=>{
+    /* THE case that separates the two modes. The intensity plot needs both
+       numbers, and a missing one is not a measurement. The error plot needs the
+       error: a target whose ppm is absent has nothing to say, and inventing a
+       zero for it would put a point at the origin of the axis — exactly where
+       "perfectly calibrated" lives. */
+    const collection={name:"c",entries:[{targets:[measured(100,undefined,42)]}]}
+    eq(graphWith("error",[collection]).traces.length,0,"no error, no point")
+    eq(graphWith("intensity",[collection]).traces.length,1,"but the signal is still there")
+})
+test("un ppm NÉGATIF est dessiné, et le graphique ne le supprime pas",()=>{
+    /* The reason the log scale is refused in this mode. `plot2d-gl` skips
+       anything that is not strictly positive on a log axis, so a -3 ppm point
+       would be dropped without a word and the graph would read as clean on a
+       badly calibrated collection — the failure this view exists to reveal. */
+    const graph=graphWith("error",[sampleCollection()])
+    eq(graph.parameters.axis.left.scale,"linear","the left axis is never log here")
+    const y=Array.from(graph.traces[0].wave.core.subarray(2,4))
+    ok(y.some(v=>v<0),`a negative error is among the points (${y.join(",")})`)
+})
+test("le log reste disponible EN INTENSITÉ, où il a un sens",()=>{
+    /* and the parameter is NOT cleared by the mode change — it is only ignored,
+       so coming back to the spectrum finds the scale the user had chosen. */
+    const graph=graphWith("intensity",[sampleCollection()],{logY:true})
+    eq(graph.parameters.axis.left.scale,"log","a positive quantity may be logarithmic")
+})
+test("l'erreur se lit en MARQUEURS, pas en bâtons",()=>{
+    /* A stick runs from the point down to zero, so every ppm would draw its own
+       line from the origin: the picture would be a thicket, and two nearby
+       errors would be indistinguishable. The error is read from the VERTICAL
+       POSITION of the point, so it needs a point. */
+    eq(graphWith("error",[sampleCollection()]).traces[0].options.mode,"points")
+    eq(graphWith("intensity",[sampleCollection()]).traces[0].options.mode,"sticks-to-zero",
+        "and the spectrum keeps the sticks it always had")
+})
+test("une collection décochée ne donne pas de trace, dans les deux modes",()=>{
+    /* The checkbox means the same thing whatever is on the graph: it excludes
+       the collection from the PICTURE. It did not become a filter on the error
+       only, or on the intensity only. */
+    eq(graphWith("error",[sampleCollection()],{ticked:false}).traces.length,0)
+    eq(graphWith("intensity",[sampleCollection()],{ticked:false}).traces.length,0)
+})
+test("les deux modes ne se confondent pas dans l'état d'une trace",()=>{
+    /* The trace id carries the mode. It looks like cosmetics — it is not: ids are
+       how the saved trace options are matched back on a reload, so one id for
+       both geometries would let the sticks of a saved spectrum be reapplied to
+       an error cloud, and the markers would inherit a stick's line size. */
+    const error=graphWith("error",[sampleCollection()]).traces[0]
+    const intensity=graphWith("intensity",[sampleCollection()]).traces[0]
+    ok(error.id!==intensity.id,`the two traces have different ids (${error.id})`)
 })
 
 console.log(`\n${passed} passed, ${failures.length} failed`)
