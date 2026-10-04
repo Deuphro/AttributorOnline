@@ -991,6 +991,35 @@ function clipSegmentToRect(x0,y0,x1,y1,width,height){
     return [x0+t0*dx,y0+t0*dy,x0+t1*dx,y0+t1*dy]
 }
 
+/* The two decisions the classifier's result carries into the width stage, as
+   PURE functions of that result — so the interactive path and the multiplexed
+   one cannot answer them differently.
+
+   `publishedPeakY` is the Y column a classified peak is PUBLISHED with: the
+   integrated mass when the kernel gave one, the chief's intensity when it did
+   not. A stale pkg build that supplies no mass must not look like a peak of
+   area zero, hence the explicit fallback.
+
+   `massThroughMask` walks that mass with the anti-radio mask: the filter DROPS
+   peaks, so its result is SHORTER than the array it was given, and the mass has
+   to be cut by the SAME mask or the two columns stop lining up — the area of
+   one peak under the x of another, which is worse than no area at all. `isRadio`
+   is that mask (1 = dropped) and it is aligned with the INPUT arrays. */
+function publishedPeakY(classification){
+    const keptMass=classification.keptIntegratedMass
+    const keptX=classification.keptPointsX
+    const hasMass=keptMass&&keptMass.length===keptX.length
+        &&keptMass.every(value=>Number.isFinite(value))
+    return hasMass?keptMass:classification.keptPointsY
+}
+function massThroughMask(keptMass,mask,length){
+    if(!keptMass||!mask||keptMass.length!==length) return null
+    return Float64Array.from(mask.reduce((acc,dropped,i)=>{
+        if(!dropped) acc.push(keptMass[i])
+        return acc
+    },[]))
+}
+
 /* -----------------------------------------------------------------
    Trimmer method registry. Methods are DATA, not code branches: the node
    asks the registry for the list, for the fields to render, and for the
@@ -1093,6 +1122,58 @@ function segmentToggle({get,set,states,title}){
     return wrap
 }
 
+/* -----------------------------------------------------------------
+   THE INPUT SYNAPSE, READ ONCE.
+
+   `Flow.parentSynapse` leaves Map<parent, Array<Array<Wave>>> on every
+   input anchor: one inner array per LINK, each holding the waves its
+   output slot carried. Three levels is not a design choice, it is the
+   shape the synapse leaves, and reading it at the wrong depth yields a
+   value quietly missing one level — so the walk is written once, here.
+
+   Several links may land on the SAME anchor, and ONE link may carry
+   SEVERAL waves. To a reader those are the same thing — the multiplex
+   this shell is built for — so neither is merged and neither is
+   dropped: the caller receives them all, in link order, and decides for
+   itself what a value it cannot use means.
+
+   FOUR nodes read that shape (F-KMD, Attribution, Trimmer, Peak
+   picking) and four copies of a three-level walk is four places for the
+   depth to be wrong in.
+   ---------------------------------------------------------------- */
+function wavesFromInput(input){
+    const waves=[]
+    let skipped=0
+    if(input instanceof Map){
+        for(const values of input.values()){
+            for(const linkOutputs of values instanceof Array?values:[values]){
+                for(const value of linkOutputs instanceof Array?linkOutputs:[linkOutputs]){
+                    if(value instanceof Wave){
+                        waves.push(value)
+                    }else{
+                        //COUNTED, never dropped: a node that silently forgot
+                        //two spectra out of three looks exactly like a node
+                        //that worked.
+                        skipped++
+                    }
+                }
+            }
+        }
+    }
+    return {waves,skipped}
+}
+
+/* The bars a trimHistogram run produced, as the plain objects the frame draws.
+
+   Array.from first: Float64Array.prototype.map returns a Float64Array, NOT an
+   array of objects, so mapping the typed array straight through would silently
+   produce a buffer of NaN where the bin objects should be — a frame that draws
+   nothing and says nothing about why. */
+function binsOfHistogram(histogram){
+    return Array.from(histogram.centres)
+        .map((value,index)=>({value,count:histogram.counts[index]}))
+}
+
 const TRIM_METHODS={
     passthrough:{
         label:"No trim (pass-through)",
@@ -1163,10 +1244,23 @@ class TrimmerNode extends NodeWithAccordion{
         //separate timer for the trim itself: the children debounce guards the
         //subtree re-resolve, this one guards the postMessage copy of the core
         this.trimDebounceTimer=null
+        //a second ticket, for the MULTIPLEX: a resolve launched by hand while a
+        //loop over N spectra is still walking them must not be overwritten by
+        //the older loop when it finally reaches the end
+        this.resolveRun=0
+        /* MULTIPLEX. Several links on input 0, or one link carrying several
+           waves, are the same question to this node: "treat them all the
+           same way". The count is read at every resolve and is NOT state — the
+           number of cables is the flow's business, not the node's, and writing
+           it into `parameters` would put it in every session file for nothing. */
+        this.multiplexCount=0
+        this.skippedInputs=0
+        /* the totals of the LAST multiplexed resolve, for the readout */
+        this.multiplexTotals=null
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
-        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D)</title>'
+        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D), or several at once — each is then trimmed on its own data</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
-        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: trimmed Wave</title>'
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: one trimmed Wave per input Wave</title>'
     }
     registered(e){
         if(e.detail.msg.caster!==this||this.accordion){
@@ -1192,8 +1286,7 @@ class TrimmerNode extends NodeWithAccordion{
     //computed: the value below which `fraction` of the points lie. No extra
     //kernel round trip, and it lands where the data actually is instead of on a
     //hardcoded constant that means nothing on a real spectrum.
-    quantileThreshold(fraction=0.05){
-        const bins=this.bins
+    quantileThreshold(fraction=0.05,bins=this.bins){
         if(!bins?.length) return 0
         let total=0
         for(const bin of bins) total+=bin.count
@@ -1218,9 +1311,48 @@ class TrimmerNode extends NodeWithAccordion{
     }
     //The threshold actually sent to the kernel: the user value when there is
     //one, the data-driven quantile otherwise.
-    effectiveThreshold(){
+    //
+    //`bins` is a PARAMETER and not `this.bins` because the multiplexed path
+    //asks the question about ONE input at a time, with THAT input's
+    //histogram: a quantile read off another spectrum's distribution is a number
+    //that means nothing here.
+    effectiveThreshold(bins=this.bins){
         const set=this.parameters.methodParams?.threshold
-        return Number.isFinite(set)?set:this.quantileThreshold(0.05)
+        return Number.isFinite(set)?set:this.quantileThreshold(0.05,bins)
+    }
+    /* THE INPUT WAVES, in link order, and the count of values that were not
+       waves at all.
+
+       The trimmer takes 1D as readily as XY — the histogram is read on the Y
+       block either way — so unlike F-KMD there is nothing to refuse here, only
+       to count. */
+    collectInputWaves(){
+        const {waves,skipped}=wavesFromInput(this.inputs[0])
+        return {waves,skipped}
+    }
+    /* True when this node is being asked to treat SEVERAL spectra the same way
+       instead of tuning one. It is a property of the LINKS, read fresh on
+       every resolve: the moment a second cable lands the node changes its
+       mind, and the moment it is removed it changes back. */
+    isMultiplexed(){
+        return this.multiplexCount>1
+    }
+/* The value domain of an EXPLICIT linear span, on the current scale.
+
+       `trimValueDomain()` reads the node's own span, which is the span of the
+       wave currently on the frame. The multiplexed path holds no such wave —
+       it holds N of them — so it asks the same question about each one's own
+       span, and the two cannot drift apart because the arithmetic lives here
+       and only here. */
+    valueDomainOnScale(linear){
+        const [low,high]=linear
+        if(!this.parameters.logY) return [low,high]
+        if(!(high>0)){
+            return [1,10]//no data at all: a readable empty frame beats NaN
+        }
+        const pad=Math.pow(10,0.1)
+        const floor=low>0?low:high/1e6
+        return [Math.max(floor/pad,Number.MIN_VALUE),high*pad]
     }
 
     //Value axis domain for the CURRENT scale mode. On a log axis the histogram
@@ -1230,23 +1362,9 @@ class TrimmerNode extends NodeWithAccordion{
     //of a decade each side, because an additive margin would vanish next to a
     //spectrum spanning thousands.
     trimValueDomain(){
-        const [low,high]=this.linearValueDomain
-        if(!this.parameters.logY) return [low,high]
-        if(!(high>0)){
-            return [1,10]//no data at all: a readable empty frame beats NaN
-        }
-        const pad=Math.pow(10,0.1)
-        /* The "strictly positive" floor above is a property of the KERNEL's
-           report, not of this function, and the two states of a node disagree:
-           before the first resolve linearValueDomain is still the constructor's
-           [0,100000] placeholder. 0/pad is 0, and clamping it to
-           Number.MIN_VALUE is far worse than useless on a log axis - that is
-           4.9e-324, i.e. -323 decades, so the frame shows one sliver of bars
-           under 323 empty ones, and a restored node sits like that until the
-           user resolves. With no floor to honour, six decades under the top is
-           the smallest assumption a reader can interpret. */
-        const floor=low>0?low:high/1e6
-        return [Math.max(floor/pad,Number.MIN_VALUE),high*pad]
+        //the arithmetic, and the reasoning behind it, live in
+        //valueDomainOnScale; this is only "the node's own span, please"
+        return this.valueDomainOnScale(this.linearValueDomain)
     }
     setLogY(on){
         if(this.parameters.logY===on) return
@@ -1328,6 +1446,8 @@ class TrimmerNode extends NodeWithAccordion{
         })
         const guessBtn=CE("button",{type:"button",title:"Use the guess provided by the selected method"},["Guess"])
         guessBtn.addEventListener("click",()=>{this.guessFromKernel()})
+        //kept, because updateTrimmerMultiplex() has to be able to grey it
+        this.guessBtn=guessBtn
         //one control, two always-visible labels, the active one coloured
         const logBtn=scaleToggle({
             get:()=>this.parameters.logY,
@@ -1353,6 +1473,9 @@ class TrimmerNode extends NodeWithAccordion{
         //panel width, which wrapped k and window onto two lines. Flex keeps them
         //on one line and lets the row shrink instead.
         this.fieldsRow=CE("div",{
+            //the class is what main.css hangs the greyed-out look on: these
+            //fields are enabled again the moment the node stops being a batch
+            className:"trim-fields",
             style:{
                 display:"flex",
                 //nowrap, not wrap: the two knobs must share ONE line, right under
@@ -1412,20 +1535,44 @@ class TrimmerNode extends NodeWithAccordion{
     //applyTrimBounds() matters, because the trim kernel takes the CURSOR as an
     //input: asking it for a guess with a cursor already set would just echo
     //that cursor back and the guess would never move.
-    //
-    //A NaN bound sent to the kernel means "you decide": the kernel then reports
-    //its own threshold, which is exactly the value a guess needs. passthrough
-    //reports -Infinity (it trims nothing), which is useless as a cursor
-    //position, so it is mapped onto the frame instead: bottom and top.
     async seedBoundsFromKernel(){
-        const inputWave=this.lastInputWave
         const domain=this.trimValueDomain()
         if(!domain.every(Number.isFinite)) return
-        if(!inputWave){
+        if(!this.lastInputWave){
             this.resetBoundsToFrame()
             this.refreshTrimmerUI()
             return
         }
+        const bounds=await this.guessBoundsFor(this.lastInputWave,this.linearValueDomain,this.bins)
+        this.parameters.lowBound=bounds.lowBound
+        this.parameters.highBound=bounds.highBound
+        this.refreshTrimmerUI()
+    }
+    /* THE GUESS ITSELF, as a PAIR, and about ONE input.
+
+       This is what both paths ask, and the difference between them is only
+       WHICH wave and WHICH histogram they pass: the interactive one passes the
+       node's own, the multiplexed one passes each input's in turn. A method that
+       places the lower bound at the 5 % quantile of a distribution means
+       nothing at all unless the distribution is the one being cut — so `bins`
+       is a parameter, never `this.bins`, in this function.
+
+       RETURNS null when the span is not readable, which is the one case where
+       there is no honest answer to give. A NaN bound sent to the kernel means
+       "you decide": the kernel then reports its own threshold, which is exactly
+       the value a guess needs. passthrough reports -Infinity (it trims nothing),
+       which is useless as a cursor position, so it is mapped onto the frame
+       instead: bottom and top.
+
+       The threshold is used AS IS: it may sit below the data range (a legitimate
+       "keep everything" setting) or above it. Clamping it into the frame used to
+       push a threshold of 0.1 up onto the data minimum, which silently disabled
+       the whole trim. Only a non-finite answer is replaced. */
+    async guessBoundsFor(inputWave,linear=this.linearValueDomain,bins=this.bins){
+        const domain=this.valueDomainOnScale(linear)
+        if(!domain.every(Number.isFinite)) return null
+        const frame={lowBound:domain[0],highBound:domain[1]}
+        if(!inputWave) return frame
         try{
             //trim_guess returns ONE number: where the method wants the cursor.
             //The old code asked the FULL trim for it and discarded every kept
@@ -1438,25 +1585,26 @@ class TrimmerNode extends NodeWithAccordion{
                     stride:inputWave.degree===2&&inputWave.dims[1]===2?2:1,
                     k:this.methodParams().k,
                     window:this.methodParams().window,
-                    threshold:this.effectiveThreshold()
+                    threshold:this.effectiveThreshold(bins)
                 }
             })
-            //The threshold is used AS IS: it may sit below the data range (a
-            //legitimate "keep everything" setting) or above it. Clamping it into
-            //the frame used to push a threshold of 0.1 up onto the data
-            //minimum, which silently disabled the whole trim. Only a
-            //non-finite answer - passthrough returns -Infinity - is replaced.
-            this.parameters.lowBound=Number.isFinite(guess)?guess:domain[0]
-            this.parameters.highBound=domain[1]
+            return {lowBound:Number.isFinite(guess)?guess:domain[0],highBound:domain[1]}
         }catch(err){
-            console.warn("[TrimmerNode] guess failed, resetting the cursors to the frame:",err)
-            this.resetBoundsToFrame()
+            console.warn("[TrimmerNode] guess failed, falling back to the frame:",err)
+            return frame
         }
-        this.refreshTrimmerUI()
     }
     //The Guess button, and the method-change path: seed the cursors from the
     //kernel, then actually trim with them.
     async guessFromKernel(){
+        //The cursors belong to the SINGLE-input case. With several waves there
+        //is nothing to seed: every input is already seeded from its own data on
+        //every resolve, so the button would re-run the whole thing to obtain
+        //exactly what is already published.
+        if(this.isMultiplexed()){
+            await this.startResolve()
+            return
+        }
         await this.seedBoundsFromKernel()
         await this.applyTrimBounds()
     }
@@ -1465,6 +1613,11 @@ class TrimmerNode extends NodeWithAccordion{
     async applyTrimBounds(){
         const inputWave=this.lastInputWave
         if(!inputWave) return
+        //the cursors are the single-input case's own state. Trimming the ONE
+        //wave on the frame while N are published would leave the output
+        //describing a spectrum that is not there any more, so the multiplexed
+        //resolve is the only thing allowed to publish.
+        if(this.isMultiplexed()) return
         //a drag fires dozens of events: only the newest run may publish, or the
         //output would flicker back to a stale trim
         const ticket=++this.trimRun
@@ -1569,11 +1722,19 @@ class TrimmerNode extends NodeWithAccordion{
                 }
             },[])
             //shows the EFFECTIVE value: with no user input the field displays the
-            //data-driven quantile, so the box is never a misleading 0
+            //data-driven quantile, so the box is never a misleading 0.
+            //
+            //...except while multiplexed. There is no single effective value
+            //any more: each input carries its own threshold, and showing the
+            //first one's would make a per-spectrum number look like a setting.
+            //The method's own default is what is honest here.
             const shown=field.key==="threshold"&&!Number.isFinite(this.parameters.methodParams?.threshold)
-                ?this.effectiveThreshold()
+                ?(this.isMultiplexed()?field.value:this.effectiveThreshold())
                 :(params[field.key]??field.value)
             input.value=formatCursorValue(shown)
+            input.title=this.isMultiplexed()
+                ?`${field.title??field.key}. Applied to every input; each spectrum still gets its own threshold, read from its own data.`
+                :(field.title??field.key)
             input.addEventListener("change",async()=>{
                 const parsed=parseFloat(input.value)
                 if(!Number.isFinite(parsed)){input.value=formatCursorValue(params[field.key]??field.value);return}
@@ -1613,9 +1774,28 @@ class TrimmerNode extends NodeWithAccordion{
         //the live kept/total count: the cursors alone cannot tell a real trim
         //from a no-op, this number does
         if(this.keptLabel&&this.trimResult){
-            this.keptLabel.textContent=`${this.trimResult.keptCount}/${this.trimResult.totalCount}`
+            this.keptLabel.textContent=this.keptReadout()
+            this.keptLabel.title=this.keptTitle()
         }
         this.graph?.drawGraph()
+    }
+    /* WHAT THE COUNTER SAYS, in the two states.
+
+       With one input it is the plain kept/total the node has always shown. With
+       several, the number that matters is the MULTIPLEX itself: "3 entries"
+       says the node is treating them all the same way, and the totals say what
+       that cost. A bare kept/total over a merged-looking figure would read as one
+       spectrum that happened to be trimmed. */
+    keptReadout(){
+        if(!this.isMultiplexed()){
+            return `${this.trimResult.keptCount}/${this.trimResult.totalCount}`
+        }
+        return `${this.multiplexCount} entrées · ${this.trimResult.keptCount}/${this.trimResult.totalCount}`
+    }
+    keptTitle(){
+        return this.isMultiplexed()
+            ?"Inputs read, and the points they kept, summed over them. Each input is trimmed on its own data: one threshold per spectrum, from the selected method."
+            :"Points kept by the trim, out of the input points"
     }
     //bars + cursors, each cursor carrying its own number field
     drawTrimmerOverlay(){
@@ -1634,10 +1814,20 @@ class TrimmerNode extends NodeWithAccordion{
         let cursorLayer=anchor.select(".trim-cursors")
         if(cursorLayer.empty()) cursorLayer=anchor.append("g").attr("class","trim-cursors")
         cursorLayer.selectAll("*").remove()
+        /* THE CURSORS BELONG TO THE SINGLE-INPUT CASE.
+
+           A multiplexed trimmer seeds every input from that input's own data, so
+           a cursor here would be a bound for ONE of the N spectra — and the one
+           on the frame would be whichever resolved first. Drawing it would offer
+           a control that changes nothing about the other N-1, which is worse
+           than offering none. The BARS stay whatever the answer: the frame still
+           shows the distribution a threshold was read from, and there is one
+           frame, so there is one spectrum's worth of bars to show. */
+        const liveCursors=!this.isMultiplexed()
         //First paint, no data yet: seed the cursors once. With a wave connected,
         //startResolve has already placed them from the kernel, and this block
         //stays out of the way - it must never move a hand-placed cursor.
-        if(!Number.isFinite(this.parameters.highBound)){
+        if(liveCursors&&!Number.isFinite(this.parameters.highBound)){
             this.resetBoundsToFrame()
         }
         //xScale(0) is -Infinity on a log count axis, so the bar origin is the
@@ -1716,6 +1906,7 @@ class TrimmerNode extends NodeWithAccordion{
             .attr("y",d=>d.y-thickness/2)
             .attr("width",d=>Math.max(1,Math.abs(d.x1-x0)))
             .attr("height",Math.max(2,thickness))
+        if(!liveCursors) return
         for(const [key,color] of CURSOR_COLORS){
             const value=this.parameters[key]
             if(!Number.isFinite(value)) continue
@@ -1763,6 +1954,10 @@ class TrimmerNode extends NodeWithAccordion{
     }
 
     setTrimBound(key,value){
+        //no cursor exists while the node is multiplexed, so nothing may write
+        //one: a bound typed here would apply to one spectrum and be read as
+        //applying to all of them
+        if(this.isMultiplexed()) return
         //the two bounds can never cross: each stops at the other
         if(key==="lowBound"&&Number.isFinite(this.parameters.highBound)){
             value=Math.min(value,this.parameters.highBound)
@@ -1858,6 +2053,10 @@ class TrimmerNode extends NodeWithAccordion{
     handleTrimPointerDown(event){
         const graph=this.graph
         if(!graph) return
+        //no cursor is drawn while the node is a batch, so there is nothing to
+        //grab: refusing the gesture here also keeps it out of the undo stack,
+        //where a drag that moved nothing would be a command that undoes nothing
+        if(this.isMultiplexed()) return
         const zone=graph.graphzone
         if(!(zone.width>0&&zone.height>0)) return
         event.preventDefault()
@@ -1925,33 +2124,33 @@ class TrimmerNode extends NodeWithAccordion{
             :4
         this.setTrimHover(bestDistance<=Math.max(half,4)?best:null)
     }
+    /* THE RESOLVE, and the fork that decides everything else.
+
+       The PORT is still constrained — a link must land on input 0, the only one
+       there is — but the NUMBER of links is no longer a question. The old check
+       refused to resolve as soon as a second cable arrived, and it was counting
+       the links whose inputNode is this one, which are its CONSUMERS: wiring the
+       trimmed wave to a second node made the trimmer refuse to resolve even
+       though fan-out on the output is none of its business.
+
+       What decides the shape of the resolve is not the number of cables but the
+       number of WAVES they bring. One wave is the case this node was built for
+       and it is resolved exactly as before — cursors, frame, hand-placed bounds
+       and all. Several waves are a request to treat them all the same way, and
+       that request is answered without one knob per spectrum. */
     async startResolve(){
-        //Only the INPUT is constrained to a single link. The previous check
-        //counted the links whose inputNode is this one, which - as childrenMap()
-        //shows - are its CONSUMERS: wiring the trimmed wave to a second node
-        //made the trimmer refuse to resolve, even though fan-out on the output
-        //is none of its business.
         const inputLinks=(this.destination?.linkList??[]).filter(link=>link.outputNode===this)
-        if(inputLinks.length>1||inputLinks.some(link=>link.inputAnchor.id!=="0")){
+        if(inputLinks.some(link=>link.inputAnchor.id!=="0")){
             this.status="error"
             this.outputs[0]=[]
-            console.error("[TrimmerNode] exactly one link on input 0 is required")
+            console.error("[TrimmerNode] only input 0 is read by this node")
             return
         }
-        const input=this.inputs[0]
-        let inputWave=null
-        if(input instanceof Map){
-            for(const values of input.values()){
-                for(const waves of values){
-                    const found=Array.isArray(waves)
-                        ?waves.find(wave=>wave instanceof Wave)
-                        :(waves instanceof Wave?waves:null)
-                    if(found){inputWave=found;break}
-                }
-                if(inputWave) break
-            }
-        }
-        if(!inputWave){
+        const {waves,skipped}=this.collectInputWaves()
+        this.skippedInputs=skipped
+        this.multiplexCount=waves.length
+        this.updateTrimmerMultiplex()
+        if(!waves.length){
             this.status="floating"
             this.outputs[0]=[]
             //the wave is gone: a later drag must not trim a stale input
@@ -1959,36 +2158,29 @@ class TrimmerNode extends NodeWithAccordion{
             this.refreshTrimmerUI()
             return
         }
+        if(waves.length===1){
+            //the aggregate belonged to the multiplex this node no longer is: left
+            //in place it would go on counting points that are no longer trimmed
+            this.multiplexTotals=null
+            await this.resolveOneInput(waves[0])
+            return
+        }
+        await this.resolveMultiplexed(waves)
+    }
+    /* ONE WAVE IN, ONE TRIMMED WAVE OUT — the whole original resolve.
+
+       Split out of startResolve, not rewritten: this is the single-input case
+       the node has always had, and the only thing multiplexing changes about it
+       is that it stops being the only case. */
+    async resolveOneInput(inputWave){
         this.status="pending"
         this.lastInputWave=inputWave
         const stride=inputWave.degree===2&&inputWave.dims[1]===2?2:1
-        const methodParams=this.methodParams()
         try{
             //the frame is drawn from the FULL wave, before any trimming: the
             //user places the cursors on the input distribution, not on the
             //already-cut one
-            const histogram=await computePool.run("trimHistogram",{
-                core:inputWave.core,
-                //the binning follows the AXIS scale: on a log axis the bars must
-                //be evenly spaced in decades, otherwise every point piles into
-                //the first bar and the distribution is unreadable
-                params:{
-                    stride,
-                    //an upper bound: in log mode the kernel derives the real bar
-                    //count from the span of the data (bars per decade), because a
-                    //fixed count over a 2-decade spectrum comes out mostly empty
-                    bins:TrimmerNode.HISTOGRAM_BINS,
-                    scale:this.parameters.logY?"log":"linear"
-                }
-            })
-            this.histogramDropped=histogram.dropped??0
-            //Array.from first: Float64Array.prototype.map returns a Float64Array,
-            //not an array of objects, so mapping the typed array straight through
-            //would silently produce a buffer of NaN instead of the bin objects
-            const centres=Array.from(histogram.centres)
-            this.bins=centres.map((value,index)=>({value,count:histogram.counts[index]}))
-            this.linearValueDomain=this.valueDomainFromBins(histogram)
-            this.pinTrimDomains()
+            this.adoptHistogram(await this.trimHistogramFor(inputWave,stride))
             //the cursors belong to the METHOD, not to this resolve: a re-resolve
             //with unchanged parameters must NOT move a bound the user placed by
             //hand. Only an absent bound is seeded, from the kernel threshold.
@@ -2021,13 +2213,155 @@ class TrimmerNode extends NodeWithAccordion{
         }
         this.refreshTrimmerUI()
     }
+    /* N WAVES IN, N TRIMMED WAVES OUT, each cut on ITS OWN data.
+
+       The method stays the user's to choose — that is what a multiplex asks for:
+       one recipe, applied N times. Everything the recipe reads off the data is
+       re-read per input, because a threshold measured on one spectrum says
+       nothing about the next: the 5 % quantile of THIS histogram, the noise of
+       THIS core. The cursors are not consulted at all; they belong to the
+       single-input case, and this path leaves `parameters.lowBound/highBound`
+       exactly as it found them, so pulling the second cable out gives back the
+       window the user had placed by hand.
+
+       SEQUENTIALLY, like F-KMD's and Attribution's: the pool holds a few
+       workers, a burst would queue every multi-megabyte core at once and stall
+       the interface on all of them instead of one at a time.
+
+       A wave the kernel fails on is recorded and the resolve carries on: one
+       broken spectrum is one broken result, not a dead node. "error" is only for
+       when NOTHING came out — a node painted red over seven good products would
+       be lying. */
+    async resolveMultiplexed(waves){
+        const run=++this.resolveRun
+        this.status="pending"
+        const products=[]
+        const errors=[]
+        let keptCount=0
+        let totalCount=0
+        let framed=false
+        for(let i=0;i<waves.length;i++){
+            if(run!==this.resolveRun) return       //superseded: publish nothing
+            if(i>0) await new Promise(resolve=>setTimeout(resolve,0))
+            if(run!==this.resolveRun) return
+            const wave=waves[i]
+            const label=wave.metadata?.title??`entrée ${i+1}`
+            try{
+                const stride=wave.degree===2&&wave.dims[1]===2?2:1
+                const histogram=await this.trimHistogramFor(wave,stride)
+                const bins=binsOfHistogram(histogram)
+                const linear=this.valueDomainFromBins(histogram)
+                if(!framed){
+                    /* THE FRAME IS THE FIRST INPUT'S, and the counter says how
+                       many there are. One picture standing for N distributions
+                       would be a claim about a spectrum nobody has; the first
+                       one is real data, and the readout is what warns the reader
+                       that it is one of several. */
+                    this.lastInputWave=wave
+                    this.histogramDropped=histogram.dropped??0
+                    this.bins=bins
+                    this.linearValueDomain=linear
+                    this.pinTrimDomains()
+                    framed=true
+                }
+                const bounds=await this.guessBoundsFor(wave,linear,bins)
+                if(!bounds) continue
+                const result=await computePool.run("trimApply",{
+                    core:wave.core,
+                    params:{stride,lowBound:bounds.lowBound,highBound:bounds.highBound}
+                })
+                keptCount+=result.keptCount
+                totalCount+=result.totalCount
+                if(result.keptCount){
+                    products.push(Wave.fromCoordinates(result.pointsX,result.pointsY,{
+                        title:`${this.title} (trimmed)`,
+                        method:this.parameters.method,
+                        kept:result.keptCount,
+                        total:result.totalCount,
+                        //WHICH spectrum this is. They all share the node's title,
+                        //and a consumer reading the metadata has no other way to
+                        //tell three products apart.
+                        source:label
+                    },["x","y"]))
+                }
+            }catch(err){
+                errors.push(`${label}: ${err?.message??String(err)}`)
+            }
+        }
+        if(run!==this.resolveRun) return
+        this.trimResult={keptCount,totalCount}
+        this.multiplexTotals={inputs:waves.length,keptCount,totalCount,errors}
+        this.outputs[0]=products
+        this.status=errors.length&&!products.length?"error":"resolved"
+        if(errors.length) console.error("[TrimmerNode] some inputs failed:",errors)
+        this.refreshTrimmerUI()
+    }
+    /* The histogram kernel call, with the binning the AXIS scale asks for: on a
+       log axis the bars must be evenly spaced in decades, otherwise every point
+       piles into the first bar and the distribution is unreadable. Both paths
+       call it, so neither can drift into a binning of its own. */
+    async trimHistogramFor(wave,stride){
+        return computePool.run("trimHistogram",{
+            core:wave.core,
+            params:{
+                stride,
+                //an upper bound: in log mode the kernel derives the real bar
+                //count from the span of the data (bars per decade), because a
+                //fixed count over a 2-decade spectrum comes out mostly empty
+                bins:TrimmerNode.HISTOGRAM_BINS,
+                scale:this.parameters.logY?"log":"linear"
+            }
+        })
+    }
+    /* Takes a histogram onto the frame: the bars, the value span, the domains.
+
+       Array.from first: Float64Array.prototype.map returns a Float64Array, not an
+       array of objects, so mapping the typed array straight through would
+       silently produce a buffer of NaN instead of the bin objects. */
+    adoptHistogram(histogram){
+        this.histogramDropped=histogram.dropped??0
+        this.bins=binsOfHistogram(histogram)
+        this.linearValueDomain=this.valueDomainFromBins(histogram)
+        this.pinTrimDomains()
+    }
+
+    /* THE CONTROLS, in the two states.
+
+       The METHOD stays live: it is the one thing the N spectra share, and
+       choosing it is choosing how all of them will be treated. Everything that
+       tunes ONE spectrum — the cursors, and the Guess that moves them — goes
+       grey, because a bound the user can still place while N spectra are
+       published would look as though it applied to them, and would not.
+
+       `disabled` and not a class of our own: the browser already knows how to
+       grey a control it must not accept, and a hand-rolled opacity would leave
+       the control perfectly clickable.
+
+       `renderMethodFields()` runs LAST, because it rebuilds the field row from
+       scratch — a field rebuilt after the greying would come back enabled. */
+    updateTrimmerMultiplex(){
+        const on=this.isMultiplexed()
+        if(this.guessBtn) this.guessBtn.disabled=on
+        if(this.methodSelect){
+            this.methodSelect.title=on
+                ?"Trimming method, applied to EVERY input: each one is cut at the threshold this method reads off its own data."
+                :"Trimming method"
+        }
+        this.renderMethodFields()
+    }
+
     /* What this node IS, as opposed to what it computed.
 
        This is the only durable record of the settings. The undo stack cannot
        be one: a Command holds closures, and closures do not serialize, so the
        history dies with the tab whatever we do. The trimmer had neither half of
        this, and an exported session came back as a pass-through with no window
-       - a silent loss of the one number the user had tuned. */
+       - a silent loss of the one number the user had tuned.
+
+       The MULTIPLEX is not in here, and deliberately: it is a property of the
+       links, so spelling it out in the state would mean saying it twice — here,
+       and in every session file — for something a resolve can read off the
+       graph in one line. */
     serializeState(){
         return {
             method:this.parameters.method,
@@ -2339,25 +2673,19 @@ class FKMDNode extends NodeWithAccordion{
        is skipped and COUNTED rather than dropped: a node that silently forgot
        two of three spectra would look exactly like one that worked. */
     collectInputWaves(){
-        const input=this.inputs[0]
-        const waves=[]
-        let skipped=0
-        if(input instanceof Map){
-            for(const values of input.values()){
-                for(const parentOutputs of values){
-                    if(!Array.isArray(parentOutputs)) continue
-                    for(const wave of parentOutputs){
-                        if(!(wave instanceof Wave)) continue
-                        if(wave.degree!==2||wave.dims[1]!==2){
-                            skipped++
-                            continue
-                        }
-                        waves.push(wave)
-                    }
-                }
+        //the depth is `wavesFromInput`'s business; what is left here is this
+        //node's own rule: an XY wave or nothing
+        const {waves,skipped}=wavesFromInput(this.inputs[0])
+        const accepted=[]
+        let refused=0
+        for(const wave of waves){
+            if(wave.degree===2&&wave.dims[1]===2){
+                accepted.push(wave)
+            }else{
+                refused++
             }
         }
-        return {waves,skipped}
+        return {waves:accepted,skipped:skipped+refused}
     }
     /* Sends each input wave to the kernel, one call at a time, and collects
        the products.
@@ -2825,26 +3153,19 @@ class AttributionNode extends NodeWithAccordion{
        and not thrown away: a node that silently dropped two spectra out of three
        looks exactly like a node that works. */
     collectInputWaves(){
-        const input=this.inputs[0]
-        const waves=[]
-        let skipped=0
-        if(input instanceof Map){
-            for(const values of input.values()){
-                if(!Array.isArray(values)) continue
-                for(const parentOutputs of values){
-                    if(!Array.isArray(parentOutputs)) continue
-                    for(const wave of parentOutputs){
-                        if(!(wave instanceof Wave)) continue
-                        if(wave.degree!==2||wave.dims[1]!==2){
-                            skipped++
-                            continue
-                        }
-                        waves.push(wave)
-                    }
-                }
+        //same reader, same XY-only rule as F-KMD's: the sieve has masses to
+        //match against, and a 1D wave has none
+        const {waves,skipped}=wavesFromInput(this.inputs[0])
+        const accepted=[]
+        let refused=0
+        for(const wave of waves){
+            if(wave.degree===2&&wave.dims[1]===2){
+                accepted.push(wave)
+            }else{
+                refused++
             }
         }
-        return {waves,skipped}
+        return {waves:accepted,skipped:skipped+refused}
     }
 
     /* ONE spectrum -> ONE attribution list.
@@ -4530,12 +4851,27 @@ class PeakPickingNode extends NodeWithAccordion{
         this.dragDebounceTimer=null
         this.graph=null
         this.radioResult=null
+        /* MULTIPLEX. Several links on input 0, or one link carrying several
+           waves, are the same question: "treat them all the same way". The count
+           is read at every resolve and is NOT state — the number of cables is the
+           flow's business, not the node's, and writing it into `parameters` would
+           put it in every session file for nothing. */
+        this.multiplexCount=0
+        this.skippedInputs=0
+        this.multiplexTotals=null
+        //monotonic ticket: a multiplexed resolve walking N spectra must not be
+        //overwritten by a newer resolve that came in while it was still walking
+        this.resolveRun=0
+        /* the slope GUESSED on the first input, which the panel draws and the
+           field shows while multiplexed. It is deliberately NOT `parameters.slope`:
+           see resolveMultiplexed. */
+        this.multiplexSlope=null
 
         // Tooltips on SVG anchors for clarity
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
-        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D)</title>'
+        if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D), or several at once — each is then picked on its own data, with the default (guessed) slope and z</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
-        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: the picked peaks</title>'
+        if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: the picked peaks — one wave per input Wave</title>'
     }
 
     registered(e){
@@ -4608,6 +4944,8 @@ class PeakPickingNode extends NodeWithAccordion{
             title: "Fit the line through the mean point (mean death / mean birth)",
             style: { cursor: "pointer", padding: "2px 6px" }
         }, ["Guess"])
+        //kept, because updatePeakMultiplex() has to be able to grey it
+        this.slopeGuessBtn=guessBtn
         guessBtn.addEventListener("click", () => {
             const slope = this.guessSlope()
             if(slope !== null){
@@ -4733,6 +5071,8 @@ class PeakPickingNode extends NodeWithAccordion{
             title:"Read z from the spectrum: half the gap between the tight peak population and the wide one. Falls back to 3 when the widths form a single population.",
             style:{cursor:"pointer",padding:"2px 6px"}
         },["Guess"])
+        //kept, because updatePeakMultiplex() has to be able to grey it
+        this.zGuessBtn=zGuess
         zGuess.addEventListener("click",()=>{this.guessZFromKernel()})
         //the measured width reference, and the kept/total ratio. The z is NOT
         //repeated here: it is on screen two cells to the left, and saying it
@@ -4759,10 +5099,14 @@ class PeakPickingNode extends NodeWithAccordion{
     /* The z the kernel reads off the widths, or null when it cannot read one.
 
        Split from the commit so the automatic path and the button do the same
-       measurement and only differ in what they do with the answer. */
-    async readZFromKernel(){
-        const profile=this.lastInputWave
-        const indices=this.persistenceKeptIndices
+       measurement and only differ in what they do with the answer.
+
+       `profile` and `indices` are PARAMETERS because the multiplexed resolve
+       asks this question about each spectrum in turn, one at a time: a z read
+       on the first spectrum is that spectrum's instrument resolution and says
+       nothing about the second one's. The defaults keep the button and the
+       automatic path reading the node's own current state. */
+    async readZFromKernel(profile=this.lastInputWave,indices=this.persistenceKeptIndices){
         if(!profile||!indices?.length) return null
         //the width is measured on the profile, so there is nothing to read on a
         //1D wave: no mass axis means no ppm, which is the whole point
@@ -4827,28 +5171,46 @@ class PeakPickingNode extends NodeWithAccordion{
             ?`${result.referencePpm.toFixed(1)} ppm`
             :"â€”"
     }
+    /* EVERY WAVE THE INPUT CARRIES, in link order.
+
+       Unlike F-KMD's, nothing is refused here: the classifier runs on a 1D wave
+       just as well as on an XY one — it is the anti-radio stage, further down,
+       that needs a mass axis. A 1D input is therefore not skipped, it is
+       published with stage 2 unrun, which is the truth about it. */
+    collectInputWaves(){
+        return wavesFromInput(this.inputs[0])
+    }
+    /* The FIRST of them, for the paths that only ever looked at one. */
     extractInputWave(){
-        const input = this.inputs[0]
-        if(!(input instanceof Map)) return null
-        for(const values of input.values()){
-            for(const waves of values){
-                if(Array.isArray(waves)){
-                    for(const wave of waves){
-                        if(wave instanceof Wave) return wave
-                    }
-                }else if(waves instanceof Wave){
-                    return waves
-                }
-            }
-        }
-        return null
+        return this.collectInputWaves().waves[0]??null
+    }
+    /* True when this node is being asked to treat SEVERAL spectra the same way
+       instead of tuning one. A property of the LINKS, read fresh on every
+       resolve: a second cable changes the node's mind, and pulling it out gives
+       the single-input behaviour back. */
+    isMultiplexed(){
+        return this.multiplexCount>1
+    }
+    /* The slope the PANEL draws and its field shows.
+
+       `parameters.slope` for a single input — that is the user's line, or the
+       kernel's fit when they never chose one. For several, the guess made on
+       the FIRST input, and NOTHING is written to `parameters`: a slope fitted on
+       one spectrum is not a setting, and letting it become one would make the
+       second spectrum get cut by the first one's picture of the data. */
+    displaySlope(){
+        return Number.isFinite(this.parameters.slope)
+            ?this.parameters.slope
+            :this.multiplexSlope
     }
 
     //slope of the line through the origin and the centroid of the pairs â€”
     //a neutral split of the cloud (the old guess placed a threshold at mean(Y))
-    guessSlope(){
-        const births=this.persistenceBirths
-        const deaths=this.persistenceDeaths
+    //
+    //The pairs are PARAMETERS because the multiplexed resolve guesses on one
+    //spectrum at a time: reading them off the node's own fields would measure the
+    //previous spectrum's cloud.
+    guessSlope(births=this.persistenceBirths,deaths=this.persistenceDeaths){
         if(!births?.length) return null
         let sumBirth=0
         let sumDeath=0
@@ -4869,6 +5231,7 @@ class PeakPickingNode extends NodeWithAccordion{
     fail(message){
         this.status="error"
         this.outputs[0]=[]
+        this.multiplexTotals=null
         this.persistenceBirths=null
         this.persistenceDeaths=null
         this.persistencePointsX=null
@@ -4882,25 +5245,54 @@ class PeakPickingNode extends NodeWithAccordion{
         this.graph?.drawGraph()
     }
 
+    /* THE RESOLVE, and the fork that decides everything else.
+
+       The PORT is still constrained — a link must land on input 0, the only one
+       there is — but the NUMBER of links is no longer a question. The old check
+       counted the links whose inputNode is this one, which are its CONSUMERS,
+       and refused to resolve as soon as two nodes consumed the output: a bug
+       that stayed latent only because the node happened to have one output.
+
+       What decides the shape of the resolve is not the number of cables but the
+       number of WAVES they bring. One wave is the case this node was built for
+       and it is resolved exactly as before — the user's line, their z, the
+       click on the diagram. Several waves are a request to treat them all the
+       same way, and that request is answered with the DEFAULTS applied N times:
+       a slope guessed on each spectrum, a z read on each spectrum, and not one
+       of those readings written into the node. */
     async startResolve(){
-        //Only the INPUT is constrained to a single link. The previous check
-        //counted the links whose inputNode is this one, which - as childrenMap()
-        //shows - are its CONSUMERS, and refused to resolve as soon as two nodes
-        //consumed the output. That was a latent bug until the node grew a second
-        //output; it is now plainly a single-output node, and the check is the
-        //one TrimmerNode uses (see the note there). Fan-out on the OUTPUT is
-        //none of this node's business.
         const links=this.incomingLinks()
-        if(links.length>1 || links.some(link=>link.inputAnchor.id!=="0")){
-            this.fail("exactly one link on input 0 is required")
+        if(links.some(link=>link.inputAnchor.id!=="0")){
+            this.fail("only input 0 is read by this node")
             return
         }
-        const inputWave = this.extractInputWave()
-        if(!inputWave){
+        const {waves,skipped}=this.collectInputWaves()
+        this.skippedInputs=skipped
+        this.multiplexCount=waves.length
+        this.updatePeakMultiplex()
+        if(!waves.length){
             this.status = "floating"
             this.outputs[0] = []
+            this.multiplexTotals=null
             return
         }
+        if(waves.length===1){
+            //the aggregate belonged to the multiplex this node no longer is: left
+            //in place it would go on counting spectra that are gone, and the drawn
+            //line would keep showing a guess that no longer describes anything
+            this.multiplexTotals=null
+            this.multiplexSlope=null
+            await this.resolveOneInput(waves[0])
+            return
+        }
+        await this.resolveMultiplexed(waves)
+    }
+    /* ONE WAVE IN, THE PEAKS OF THAT WAVE OUT — the whole original resolve.
+
+       Split out of startResolve, not rewritten: this is the single-input case the
+       node has always had, and the only thing multiplexing changes about it is
+       that it stops being the only case. */
+    async resolveOneInput(inputWave){
         this.status = "pending"
         this.lastInputWave = inputWave
 
@@ -4911,19 +5303,7 @@ class PeakPickingNode extends NodeWithAccordion{
                 core: inputWave.core,
                 params: { mode: this.parameters.filtrationMode ?? "sublevel", stride }
             })
-            this.persistenceBirths=analysis.births
-            this.persistenceDeaths=analysis.deaths
-            this.persistencePointsX=analysis.pointsX
-            this.persistencePointsY=analysis.pointsY
-            this.persistenceBirthIndices=analysis.birthIndices
-            /* The integrated mass and its centroid, kept beside the births.
-               NOT thrown away here: `pointsY` is the intensity of the single
-               point that BORN each component — its chief — so it is what the
-               output used to carry, and it is exactly the number the union-find
-               integration exists to replace. */
-            this.persistenceIntegratedMass=analysis.integratedMass
-            this.persistenceCentroidX=analysis.centroidX
-            this.pairsData={count:this.persistenceBirths.length}
+            this.adoptAnalysis(analysis)
             if(!Number.isFinite(this.parameters.slope) && Number.isFinite(analysis.slope)){
                 this.parameters.slope=analysis.slope
             }
@@ -4937,6 +5317,245 @@ class PeakPickingNode extends NodeWithAccordion{
             //easily as from the data. The reason belongs on screen.
             this.fail(`resolving failed: ${err?.message??String(err)}`)
         }
+    }
+    /* THE ANALYSIS, onto the node's own fields.
+
+       Both paths hand their H0 result here rather than each writing eight fields
+       of its own, because the panel reads those fields and the multiplexed path
+       has to make the panel describe a spectrum it is no longer working on. */
+    adoptAnalysis(analysis){
+        this.persistenceBirths=analysis.births
+        this.persistenceDeaths=analysis.deaths
+        this.persistencePointsX=analysis.pointsX
+        this.persistencePointsY=analysis.pointsY
+        this.persistenceBirthIndices=analysis.birthIndices
+        /* The integrated mass and its centroid, kept beside the births.
+           NOT thrown away here: `pointsY` is the intensity of the single
+           point that BORN each component — its chief — so it is what the
+           output used to carry, and it is exactly the number the union-find
+           integration exists to replace. */
+        this.persistenceIntegratedMass=analysis.integratedMass
+        this.persistenceCentroidX=analysis.centroidX
+        this.pairsData={count:analysis.births.length}
+    }
+    /* N WAVES IN, N PEAK LISTS OUT, each measured on ITS OWN spectrum.
+
+       THE DEFAULTS, EVERY TIME. The classifier slope is the kernel's own fit for
+       that spectrum — or the centroid guess when it has none — and the z is read
+       off that spectrum's own widths. Both are what the node already does with a
+       null slope and a `convention` z, which is to say what it does before anyone
+       has touched it. That is the whole point of putting several spectra here:
+       the same treatment, N times, instead of one pane of settings per spectrum.
+
+       AND NOTHING IS WRITTEN DOWN. Neither `parameters.slope` nor `parameters.z`
+       is touched, and that is correctness rather than squeamishness: the node has
+       one slope field and one z field, so a multiplexed resolve that wrote the
+       first spectrum's guess into them would have the second spectrum cut by the
+       first one's picture of the data — and, on the next resolve, every other one
+       as well. A guess that becomes a setting is precisely the bug this path
+       exists to avoid.
+
+       SEQUENTIALLY, like F-KMD's, Attribution's and the trimmer's: the pool holds
+       a few workers, a burst would queue every multi-megabyte core at once and
+       stall the interface on all of them rather than one at a time.
+
+       A spectrum the kernel fails on is recorded and the resolve carries on: one
+       broken spectrum is one broken result, not a dead node. "error" is only for
+       when NOTHING came out. */
+    async resolveMultiplexed(waves){
+        const run=++this.resolveRun
+        this.status="pending"
+        const products=[]
+        const errors=[]
+        let keptTotal=0
+        let pairsTotal=0
+        let shown=null
+        for(let i=0;i<waves.length;i++){
+            if(run!==this.resolveRun) return       //superseded: publish nothing
+            if(i>0) await new Promise(resolve=>setTimeout(resolve,0))
+            if(run!==this.resolveRun) return
+            const wave=waves[i]
+            const label=wave.metadata?.title??`input ${i+1}`
+            try{
+                const picked=await this.pickPeaksFrom(wave)
+                if(picked.output) products.push(picked.output)
+                keptTotal+=picked.keptCount
+                pairsTotal+=picked.pairCount
+                //the FIRST spectrum is the one the panel will describe
+                if(!shown) shown=picked
+            }catch(err){
+                errors.push(`${label}: ${err?.message??String(err)}`)
+            }
+        }
+        if(run!==this.resolveRun) return
+        this.outputs[0]=products
+        this.multiplexTotals={inputs:waves.length,keptTotal,pairsTotal,errors}
+        /* THE PANEL DESCRIBES THE FIRST SPECTRUM, and says so.
+
+           There is one diagram, one drawn line and one width reference, so they
+           show the first input: real data, and the spectrum whose slope the line
+           belongs to. The counter then speaks for all N, because the aggregate is
+           the only figure that can. */
+        if(shown) this.showPicked(shown)
+        this.status=errors.length&&!products.length?"error":"resolved"
+        if(errors.length) console.error("[PeakPickingNode] some inputs failed:",errors)
+        this.updateControlsUI()
+    }
+    /* ONE SPECTRUM -> ONE PEAK LIST, on the defaults, touching no node state.
+
+       The two stages in the order they require: the classifier needs a slope, the
+       width filter needs the peaks the classifier kept, and the z is read between
+       the two because it measures THOSE peaks. It returns what it found rather
+       than publishing it — publishing N results one at a time would leave the
+       output describing whichever spectrum happened to resolve last. */
+    async pickPeaksFrom(inputWave){
+        const stride=inputWave.degree===2&&inputWave.dims[1]===2?2:1
+        const analysis=await computePool.run("persistentHomology0D",{
+            core:inputWave.core,
+            params:{mode:this.parameters.filtrationMode??"sublevel",stride}
+        })
+        /* the kernel's own fit, or the centroid guess when it has none — the two
+           things a null slope already means. Either way it is a reading of THIS
+           diagram, which is the only honest source for a line that cuts it. */
+        const slope=Number.isFinite(analysis.slope)
+            ?clampClassifierSlope(analysis.slope)
+            :(this.guessSlope(analysis.births,analysis.deaths)??0)
+        const classification=await computePool.run("classifyPersistence0D",{
+            births:analysis.births,
+            deaths:analysis.deaths,
+            pointsX:analysis.pointsX,
+            pointsY:analysis.pointsY,
+            pointsIndex:analysis.birthIndices,
+            integratedMass:analysis.integratedMass,
+            centroidX:analysis.centroidX,
+            params:{slope}
+        })
+        const publishedY=publishedPeakY(classification)
+        const candidates=classification.keptPointsX.length
+        let z=this.parameters.z
+        let radioResult=null
+        /* The width stage needs a mass axis, exactly as it does for one input:
+           on a 1D wave there is no ppm to measure, the stage does not run, and the
+           classified peaks are published as they are. */
+        if(candidates&&inputWave.degree===2&&inputWave.dims[1]===2){
+            z=await this.readZFromKernel(inputWave,classification.keptIndices)??CONVENTIONAL_Z
+            try{
+                radioResult=await computePool.run("antiRadioFilter",{
+                    core:inputWave.core,
+                    pointsX:classification.keptPointsX,
+                    pointsY:classification.keptPointsY,
+                    pointsIndex:classification.keptIndices,
+                    params:{stride:2,z}
+                })
+            }catch(err){
+                //a failing filter must not take the peaks with it: the classified
+                //result is still valid, and hiding it would lose real work
+                console.error("[PeakPickingNode] anti-radio failed, keeping the classified peaks:",err)
+            }
+        }
+        const label=inputWave.metadata?.title??null
+        let output=null
+        if(radioResult){
+            const masked=massThroughMask(classification.keptIntegratedMass,radioResult.isRadio,candidates)
+            output=this.peaksWave(
+                radioResult.pointsX,
+                masked&&masked.length===radioResult.pointsX.length?masked:radioResult.pointsY,
+                radioResult.keptCount,slope,z,label
+            )
+        }else if(candidates){
+            output=this.peaksWave(classification.keptPointsX,publishedY,candidates,slope,z,label)
+        }
+        return {
+            wave:inputWave,
+            analysis,
+            classification,
+            slope,
+            z,
+            radioResult,
+            output,
+            keptCount:radioResult?radioResult.keptCount:candidates,
+            pairCount:analysis.births.length
+        }
+    }
+    /* Puts ONE spectrum's result on the panel: its state, its diagram, its
+       readouts. The multiplexed resolve calls it once, with the first input, and
+       what it writes is exactly what a single-input resolve would have left — it
+       is the same code, not a second rendering of the same data. */
+    showPicked(picked){
+        this.lastInputWave=picked.wave
+        this.adoptAnalysis(picked.analysis)
+        this.adoptClassification(picked.classification)
+        //the drawn line belongs to THIS spectrum and to no other
+        this.multiplexSlope=picked.slope
+        this.radioResult=picked.radioResult
+        this.renderRadioReadout(picked.radioResult,picked.classification.keptPointsX.length)
+        this.paintDiagram(picked.classification)
+    }
+    /* THE CONTROLS, in the two states.
+
+       Everything that decides for ONE spectrum goes grey: the slope field, its
+       Guess, the z field, its Guess. Left live they would offer to settle a
+       question that has N answers — and the value they hold would be the first
+       spectrum's guess, which is not a setting of anything. The Lin/Log switch
+       stays live: it is how the diagram is DRAWN, not what the node decides.
+
+       `disabled` and not a class of our own: the browser already knows how to
+       grey a control it must not accept, and a hand-rolled opacity would leave it
+       perfectly clickable. */
+    updatePeakMultiplex(){
+        const on=this.isMultiplexed()
+        for(const control of [this.slopeInput,this.slopeGuessBtn,this.zInput,this.zGuessBtn]){
+            if(control) control.disabled=on
+        }
+        if(this.slopeInput){
+            this.slopeInput.title=on
+                ?"Classifier slope — GUESSED on each spectrum in turn. This field shows the first one's, and typing another would only move that one."
+                :"Classifier slope (< 1): pairs under death = slope × birth are kept"
+        }
+        if(this.zInput){
+            this.zInput.title=on
+                ?"Width threshold in robust sigma — read from EACH spectrum's own peak widths, so there is no one value to show."
+                :"Number of robust sigma above the median width above which a peak is called radio"
+        }
+    }
+    /* THE CLASSIFICATION, onto the node's own fields, and nothing else.
+
+       The classified points are held in memory rather than published: the
+       anti-radio stage reads them together with their indices, and the OUTPUT is
+       whatever survives both stages. */
+    adoptClassification(classification){
+        this.persistenceKeptPointsX=classification.keptPointsX
+        this.persistenceKeptPointsY=classification.keptPointsY
+        this.persistenceKeptIndices=classification.keptIndices
+        this.persistenceKeptCount=classification.keptCount
+        this.persistenceKeptMass=classification.keptIntegratedMass
+        this.persistenceKeptCentroidX=classification.keptCentroidX
+        this.persistencePublishedY=publishedPeakY(classification)
+    }
+    /* The diagram, from a classification. Extracted from applySlopeFilter so the
+       multiplexed path paints the very same picture rather than a second
+       rendering of the same data. */
+    paintDiagram(classification){
+        if(!this.graph) return
+        const traces=[]
+        if(classification.keptBirths.length){
+            traces.push(new XYTrace({
+                id:`${this.title}:kept`,title:`Kept (${classification.keptCount})`,
+                wave:Wave.fromCoordinates(classification.keptBirths,classification.keptDeaths,{},["birth","death"]),
+                options:{color:"#2ecc71",mode:"points",marker:{shape:"circle",size:4},layer:"gl"}
+            }))
+        }
+        if(classification.discardedBirths.length){
+            traces.push(new XYTrace({
+                id:`${this.title}:discarded`,
+                title:`Discarded (${classification.discardedBirths.length})`,
+                wave:Wave.fromCoordinates(classification.discardedBirths,classification.discardedDeaths,{},["birth","death"]),
+                options:{color:"#7f8c8d",mode:"points",marker:{shape:"circle",size:3},layer:"gl"}
+            }))
+        }
+        this.graph.setTraces(traces)
+        this.graph.drawGraph()
+        this.updateClassifierSVG()
     }
 
     async applySlopeFilter(){
@@ -4957,31 +5576,7 @@ class PeakPickingNode extends NodeWithAccordion{
             params:{slope}
         })
         const pairCount=this.persistenceBirths.length
-        //the classified points, held in memory rather than published: the
-        //anti-radio stage reads them together with their indices, and the OUTPUT
-        //is whatever survives both stages.
-        this.persistenceKeptPointsX=classification.keptPointsX
-        this.persistenceKeptPointsY=classification.keptPointsY
-        this.persistenceKeptIndices=classification.keptIndices
-        this.persistenceKeptCount=classification.keptCount
-        /* THE MASS BECOMES THE PEAK'S INTENSITY, and this is the line the whole
-           integration turned on.
-
-           `keptPointsY` is the intensity of the point that BORN each component
-           — its chief. It was the node's output Y, which is why the union-find
-           could sum intensities forever and nothing would change on screen: the
-           sum was computed, carried, and then the chief was published instead.
-
-           So the published Y is the integrated mass, falling back to the chief
-           only when the kernel did not supply one (a stale pkg build). The
-           fallback is explicit rather than silent, because "the area is missing"
-           and "the area is zero" must not look alike. */
-        this.persistenceKeptMass=classification.keptIntegratedMass
-        this.persistenceKeptCentroidX=classification.keptCentroidX
-        const keptMass=this.persistenceKeptMass
-        const hasMass=keptMass&&keptMass.length===classification.keptPointsX.length
-            &&keptMass.every(v=>Number.isFinite(v))
-        this.persistencePublishedY=hasMass?keptMass:classification.keptPointsY
+        this.adoptClassification(classification)
 
         //The auto z runs HERE, between the classification and the filter: the
         //guess measures the CLASSIFIED peaks at their input indices, so those
@@ -4991,28 +5586,16 @@ class PeakPickingNode extends NodeWithAccordion{
 
         await this.applyAntiRadio()
 
-        if(this.graph){
-            const traces=[]
-            if(classification.keptBirths.length){
-                traces.push(new XYTrace({
-                    id:`${this.title}:kept`,title:`Kept (${classification.keptCount})`,
-                    wave:Wave.fromCoordinates(classification.keptBirths,classification.keptDeaths,{},["birth","death"]),
-                    options:{color:"#2ecc71",mode:"points",marker:{shape:"circle",size:4},layer:"gl"}
-                }))
-            }
-            if(classification.discardedBirths.length){
-                traces.push(new XYTrace({
-                    id:`${this.title}:discarded`,
-                    title:`Discarded (${classification.discardedBirths.length})`,
-                    wave:Wave.fromCoordinates(classification.discardedBirths,classification.discardedDeaths,{},["birth","death"]),
-                    options:{color:"#7f8c8d",mode:"points",marker:{shape:"circle",size:3},layer:"gl"}
-                }))
-            }
-            this.graph.setTraces(traces)
-            this.graph.drawGraph()
-            this.updateClassifierSVG()
-        }
-        if(this.countLabel) this.countLabel.textContent=`${classification.keptCount}/${pairCount}`
+        this.paintDiagram(classification)
+        if(this.countLabel) this.countLabel.textContent=this.countReadout(classification.keptCount,pairCount)
+    }
+    /* THE COUNTER, in the two states: one input reads as it always has, and
+       several announce themselves before they give the aggregate, because a
+       "412/1103" over three spectra is not a figure about any of them. */
+    countReadout(keptCount,pairCount){
+        return this.isMultiplexed()
+            ?`${this.multiplexCount} entrées · ${keptCount}/${pairCount}`
+            :`${keptCount}/${pairCount}`
     }
 
     /* The second stage, in this node: drop the classified peaks whose
@@ -5049,23 +5632,8 @@ class PeakPickingNode extends NodeWithAccordion{
                 params:{stride:2,z:this.parameters.z}
             })
             this.radioResult=result
-            /* The filter DROPS peaks, so `result.pointsX` is SHORTER than the
-               array it was given, and the mass has to be filtered by the SAME
-               mask or the two columns would no longer line up — the mass of one
-               peak sitting under the name of another, which is worse than no
-               mass at all.
-
-               `isRadio` is that mask: 1 means dropped, 0 means kept, and it is
-               aligned with the INPUT arrays, so it walks the mass in step with
-               the peaks. */
-            const keptMass=this.persistenceKeptMass
-            const mask=result.isRadio
-            const filteredMass=(keptMass&&mask&&keptMass.length===px.length)
-                ?Float64Array.from(mask.reduce((acc,dropped,i)=>{
-                    if(!dropped) acc.push(keptMass[i])
-                    return acc
-                },[]))
-                :null
+            //the mass, cut by the SAME mask — see massThroughMask
+            const filteredMass=massThroughMask(this.persistenceKeptMass,result.isRadio,px.length)
             this.publishOutput(
                 result.pointsX,
                 filteredMass&&filteredMass.length===result.pointsX.length
@@ -5083,25 +5651,51 @@ class PeakPickingNode extends NodeWithAccordion{
             this.renderRadioReadout(null,px.length)
         }
     }
+    /* THE PEAKS AS A WAVE, or null when there are none.
+
+       One builder for both paths, because the columns that travel with a peak
+       are a CONTRACT — the slope and the z that decided it, how many survived,
+       how many were offered — and a second builder is a second chance to publish
+       a mass under the x of a peak it does not belong to.
+
+       `slope` and `z` are PARAMETERS: while multiplexed, they are that
+       spectrum's own readings and not the node's settings, and the metadata has
+       to say which. `source` names the spectrum, because N products otherwise
+       all carry the same title. */
+    peaksWave(pointsX,pointsY,kept,slope=this.parameters.slope,z=this.parameters.z,source=null){
+        if(!kept||!pointsX?.length) return null
+        return Wave.fromCoordinates(pointsX,pointsY,{
+            title:`${this.title} (peaks)`,
+            slope,
+            z,
+            kept,
+            total:this.persistenceKeptCount??kept,
+            source
+        },["x","y"])
+    }
+    /* Publishes ONE result on the output slot — the single-input case's own
+       ending. The multiplexed path does NOT come through here: it has N results
+       and a slot that must hold all of them at once, so it collects them and
+       writes the slot once, at the end. */
     publishOutput(pointsX,pointsY,kept){
-        this.outputs[0]=kept&&pointsX?.length
-            ?[Wave.fromCoordinates(pointsX,pointsY,{
-                title:`${this.title} (peaks)`,
-                slope:this.parameters.slope,
-                z:this.parameters.z,
-                kept,
-                total:this.persistenceKeptCount??kept
-            },["x","y"])]
-            :[]
+        const wave=this.peaksWave(pointsX,pointsY,kept)
+        this.outputs[0]=wave?[wave]:[]
     }
 
     updateControlsUI(){
-        if(this.slopeInput && Number.isFinite(this.parameters.slope)){
-            this.slopeInput.value = formatSlope(this.parameters.slope)
+        //the DISPLAYED slope, not the stored one: while multiplexed the stored
+        //one is null on purpose and the field shows the first spectrum's guess
+        const slope=this.displaySlope()
+        if(this.slopeInput && Number.isFinite(slope)){
+            this.slopeInput.value = formatSlope(slope)
         }
         if(this.countLabel && this.pairsData){
-            const keptCount = this.outputs[0]?.[0]?.dims?.[0] ?? 0
-            this.countLabel.textContent = `${keptCount}/${this.pairsData.count}`
+            //the multiplexed case counts over all of them, which is the only
+            //figure that can speak for N; one input reads as it always has
+            const totals=this.multiplexTotals
+            this.countLabel.textContent = totals
+                ?this.countReadout(totals.keptTotal,totals.pairsTotal)
+                :this.countReadout(this.outputs[0]?.[0]?.dims?.[0]??0,this.pairsData.count)
         }
     }
 
@@ -5132,7 +5726,10 @@ class PeakPickingNode extends NodeWithAccordion{
                 .attr("stroke-width", 1.5)
         }
 
-        const slope = this.parameters.slope
+        //the DISPLAYED line: the user's own while there is one input, and the first
+        //spectrum's guess while there are several — the line drawn on the diagram
+        //is the one that cut that spectrum, and any other would be a lie about it
+        const slope = this.displaySlope()
         if(!Number.isFinite(slope)){
             group.style("display", "none")
             return
@@ -5189,6 +5786,11 @@ class PeakPickingNode extends NodeWithAccordion{
     //since every pair lives strictly above the diagonal death = birth
     handleClassifierClick(event){
         if(!this.graph) return
+        //a click here sets ONE line, and while multiplexed each spectrum is cut
+        //by its own — so the click would move the first spectrum and leave the
+        //others exactly where they were. The control is greyed; this is the same
+        //rule reached by the keyboard, by a drag, or by a restored session.
+        if(this.isMultiplexed()) return
         //the tail of a pan drag also fires a click: ignore it (like dblclick)
         if(performance.now()-(this.graph.lastPanEndAt??-Infinity)<PAN_DBLCLICK_GUARD) return
         const zone=this.graph.graphzone
@@ -5209,6 +5811,11 @@ class PeakPickingNode extends NodeWithAccordion{
     }
 
     setSlope(newSlope, commit = false){
+        //the single-input case's decision. While multiplexed the slope is read
+        //off each spectrum in turn, and storing one would apply it to all of them
+        //on the next resolve — the exact "a guess became a setting" bug the
+        //multiplexed path refuses to commit.
+        if(this.isMultiplexed()) return
         this.parameters.slope = clampClassifierSlope(newSlope)
         if(this.slopeInput){
             this.slopeInput.value = formatSlope(this.parameters.slope)

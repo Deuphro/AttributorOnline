@@ -328,16 +328,19 @@ index(i, 1)          // Y of point i</pre>
             <tr>
                 <td>Inputs</td>
                 <td>
-                    <strong>1 input</strong> — a single 1D or 2D wave.<br>
-                    <span class="badge req">required</span>
-                    exactly one link on input <code>0</code>
+                    <strong>1 input</strong> — one 1D or 2D wave, or several at once.<br>
+                    <span class="badge">several links</span>
+                    more than one link may target input <code>0</code>, and one link may carry several
+                    waves. One wave behaves exactly as below; several are treated as one batch — see
+                    <em>Multiplexing</em>.
                 </td>
             </tr>
             <tr>
                 <td>Outputs</td>
                 <td>
                     <strong>1 output</strong> — the peaks that survive <em>both</em> stages, as a
-                    non-interleaved 2D wave <code>[X…, Y…]</code>.<br>
+                    non-interleaved 2D wave <code>[X…, Y…]</code>.
+                    Multiplexed: <em>one such wave per input wave</em>, in input order.<br>
                     The birth/death pairs and the input indices are internal: they feed the persistence
                     diagram and the width measurement, and never leave the node. There is no second slot
                     — an output nothing consumes is a cable you would have to wire by hand.
@@ -533,7 +536,7 @@ index(i, 1)          // Y of point i</pre>
         <ul>
             <li>
                 <span class="badge req">error</span>
-                more than one link connected to the node, or a link targeting a removed input.
+                a link targeting an input the node does not have.
             </li>
             <li>
                 <span class="badge warn">floating</span>
@@ -571,6 +574,53 @@ index(i, 1)          // Y of point i</pre>
             keeping the cable would leave a peak-picking node reading from another one, and the width
             filter would run twice.
         </p>
+
+        <h4>Multiplexing</h4>
+        <p>
+            Several links on input <code>0</code>, or one link carrying several waves, are the same
+            request: <em>treat these data the same way</em>. What decides is not the number of cables
+            but the number of <strong>waves</strong> that reach the anchor.
+        </p>
+        <ul>
+            <li>
+                <strong>One wave</strong> — the case this node was built for, and it is unchanged: the
+                slope field, the <code>z</code> field, the <em>Guess</em> buttons and the click on the
+                diagram all work as before.
+            </li>
+            <li>
+                <strong>Several waves</strong> — every input is resolved with the <strong>defaults,
+                one after another</strong>: the classifier slope is the kernel's own fit for
+                <em>that</em> spectrum (or the centroid guess when it has none), and the width threshold
+                <code>z</code> is read off <em>that</em> spectrum's peak widths. None of this is a
+                per-spectrum setting, which is the point: a multiplex is a request for the same
+                treatment N times, not for N panes of settings.
+            </li>
+            <li>
+                <strong>No reading is stored.</strong> Neither the guessed slope nor the guessed
+                <code>z</code> is written into the node's parameters. They are per-spectrum facts, and
+                the node has one slope field and one <code>z</code> field: writing the first spectrum's
+                guess into them would have every other spectrum cut by it on the next resolve. The
+                fields keep their own values, and the panel shows what the first spectrum was cut with.
+            </li>
+            <li>
+                The slope and <code>z</code> fields, and both <em>Guess</em> buttons, go
+                <strong>grey</strong>, and a click on the diagram no longer places the classifier — each
+                spectrum is cut by its own line, so one line could only ever move one of them. The
+                Lin/Log switch stays live: it is how the diagram is drawn, not what the node decides.
+            </li>
+            <li>
+                The output is <strong>one peak list per input wave</strong>, in input order, each
+                carrying its own <code>slope</code>, its own <code>z</code> and the <code>source</code>
+                title of the spectrum it came from. The diagram shows the <strong>first</strong> spectrum
+                — one diagram cannot overlay N clouds honestly — and the counter reads
+                <code>N entrées · kept/total</code>, summed over the batch.
+            </li>
+            <li>
+                One input the kernel fails on is one broken result, not a dead node: it is logged and the
+                resolve carries on. <span class="badge req">error</span> appears only when <em>nothing</em>
+                came out.
+            </li>
+        </ul>
 
         <h4>Data flow</h4>
         <pre>input wave core
@@ -611,9 +661,11 @@ index(i, 1)          // Y of point i</pre>
             <tr>
                 <td>Inputs</td>
                 <td>
-                    <strong>1 input</strong> — a single 1D or 2D wave.<br>
-                    <span class="badge req">required</span>
-                    exactly one link on input <code>0</code><br>
+                    <strong>1 input</strong> — one 1D or 2D wave, or several at once.<br>
+                    <span class="badge">several links</span>
+                    more than one link may target input <code>0</code>, and one link may carry several
+                    waves. One wave is trimmed exactly as below; several are treated as one batch —
+                    see <em>Multiplexing</em>.<br>
                     <span class="badge">unrestricted</span>
                     the output may feed any number of consumers
                 </td>
@@ -623,6 +675,7 @@ index(i, 1)          // Y of point i</pre>
                 <td>
                     <strong>1 output</strong> — the points lying between the two bounds, as a
                     non-interleaved 2D wave <code>[X…, Y…]</code>. Empty when no point survives.
+                    Multiplexed: <em>one such wave per input wave</em>, in input order.
                 </td>
             </tr>
             <tr>
@@ -649,6 +702,42 @@ index(i, 1)          // Y of point i</pre>
                 </td>
             </tr>
         </table>
+        <h4>Multiplexing</h4>
+        <p>
+            Several links on input <code>0</code>, or one link carrying several waves, are the same
+            request: <em>treat these data the same way</em>. What decides is not the number of cables
+            but the number of <strong>waves</strong> that reach the anchor.
+        </p>
+        <ul>
+            <li>
+                <strong>One wave</strong> — the case this node was built for, and it is unchanged: the
+                cursors are drawn, draggable and authoritative, and the method only decides where they
+                are first placed.
+            </li>
+            <li>
+                <strong>Several waves</strong> — each input is cut at a threshold read from
+                <em>its own</em> data: its own histogram, its own 5&nbsp;% quantile, its own noise. The
+                method stays selectable, because it is the recipe they share; the cursors and the
+                <em>Guess</em> that moves them go <strong>grey</strong>, because a bound placed by hand
+                could only ever belong to one spectrum while appearing to apply to all of them. Nothing
+                is written into <code>lowBound</code>/<code>highBound</code>, so pulling the second cable
+                out gives back the window you had placed by hand.
+            </li>
+            <li>
+                The output is <strong>one trimmed wave per input wave</strong>, in input order, each
+                carrying the title of the spectrum it came from in its <code>source</code> metadata.
+            </li>
+            <li>
+                The frame shows the <strong>first</strong> input's histogram — there is one frame and one
+                set of bars, and one spectrum's worth of bars is what can honestly be drawn — and the
+                counter reads <code>N entrées · kept/total</code>, the totals being summed over the batch.
+            </li>
+            <li>
+                One input the kernel fails on is one broken result, not a dead node: it is logged and the
+                resolve carries on. <span class="badge req">error</span> appears only when <em>nothing</em>
+                came out.
+            </li>
+        </ul>
         <h4>Methods</h4>
         <p>
             All three share the same contract: they return <strong>the value the lower cursor should be

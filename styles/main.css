@@ -481,6 +481,21 @@ div{
     justify-self:end;
 }
 
+/* ---- Multiplexing: the controls that go grey when waves share one node ----
+   A control that decides for ONE spectrum has no meaning while several are
+   being treated the same way, so the nodes set `disabled` on it and the browser
+   stops accepting it. This is what makes it LOOK greyed: a number field and a
+   select carry their own text colour, and without this they would read as live
+   settings while refusing every keystroke — which is worse than a control that
+   is simply absent. `button:disabled` already exists above; an input is not a
+   button, and that difference is what is paid for here. */
+.pp-row input:disabled,
+.trim-fields input:disabled,
+.pp-row button:disabled{
+    opacity:0.45;
+    cursor:not-allowed;
+}
+
 input[type=range].dual{
     -webkit-appearance: none;
     appearance: none;
