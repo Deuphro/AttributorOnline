@@ -12,6 +12,11 @@ import {Formula,Stoichiometry,FormulaCollection,loadTable} from "./chemistry.js"
 //the attribution engine: the two group lists, the isotopic and ionisation
 //windows, and the sieve. Pure, and tested without a DOM (attribution.test.mjs).
 import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula} from "./attribution.js"
+//the measurement NETWORK: the reference list built from the plan, and the
+//minimum spanning forest over the measured points. `growForest` is the JS oracle
+//of the Rust kernel, not a second implementation — forestParity.test.mjs proves
+//the two give the same tree (see forest.js).
+import {forestStandards,forestComponents,componentLine,growForest,DEFAULT_LINK_TOLERANCE} from "./forest.js"
 //where the nodes go, and which two of them get wired together by themselves.
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
@@ -2944,6 +2949,47 @@ class AttributionNode extends NodeWithAccordion{
            Inside the window the raw offset is still reported, so the number the
            user reads is the real one and not merely a pass/fail. */
         this.parameters.ppm=10
+        /* LE RÉSEAU DE MESURES — les trois réglages de `GRAPHTTRIBUTOR`.
+
+           Ils vivent dans CE nœud et pas dans un nœud séparé, parce qu'ils
+           répondent à la même question que le reste: « quelles masses cette
+           liste de groupes peut-elle expliquer? ». Un nœud séparé imposerait
+           de dupliquer les listes, et deux listes qui divergent donneraient
+           un réseau calculé sur autre chose que ce qui est écrit à l'écran.
+
+           LA FENÊTRE DE LIEN est le 0.5 qu'Igor avait écrit en dur, devenu un
+           réglage : 0.5 Da sur un lien est une GÉOMÉTRIE (« près »), pas une
+           physique, et une constante cachée dans une comparaison ne se règle
+           pas. Au-delà, deux pics ne sont plus « voisins ».
+
+           LE PLAFOND DE DEGRÉ est le `degmax` du même Igor: 0 = aucun
+           plafond, ce qui est le mode `GrowForest`; 2 donne les « réticules »,
+           où chaque pic n'accroche que deux voisins. C'est le SEUL réglage qui
+           change la NATURE du réseau et pas sa taille — un graphe en chaîne
+           et un graphe en étoile ne s'expliquent pas de la même façon, et on
+           ne peut pas passer de l'un à l'autre sans y toucher.
+
+           LA CHARGE des ions, parce qu'Igor comparait des masses à des écarts
+           de m/z, ce qui n'est juste que pour des ions 1+. 0 = « la charge du
+           plan », donc unplan à 1+ se comporte comme l'oracle. */
+        this.parameters.forestTolerance=DEFAULT_LINK_TOLERANCE
+        this.parameters.forestDegreeMax=0
+        this.parameters.forestCharge=0
+        /* la liste de références du dernier calcul, et les arbres par entrée */
+        this.forestPlan=null
+        this.forests=[]
+        this.forestComponents=[]
+        this.forestErrors=[]
+        /* LE MONO TONIQUE DU RÉSEAU, comme celui du resolve.
+
+           Un réseau lancé à la main sur trois spectres peut se croiser avec un
+           autre: sans jeton, le résultat le plus ancien publierait par-dessus
+           le plus récent, et l'écran montrerait un arbre calculé sur des
+           réglages qui ne sont plus ceux affichés. */
+        this.forestRun=0
+        /* la liste des pics du dernier calcul, par entrée: le panneau affiche
+           des m/z, et le noyau ne connaît que des indices */
+        this.forestPoints=[]
         /* the plan, the table, and the diagnostics of the last resolve */
         this.plan=null
         this.loadedTable=null
@@ -3152,6 +3198,20 @@ class AttributionNode extends NodeWithAccordion{
             }
         }
         return this.plan
+    }
+    /* LA LISTE DE RÉFÉRENCES EST REBÂTIE AVEC LE PLAN, et jamais séparément.
+
+       Elle en dérive entièrement — mêmes briques, même charge — donc la
+       rebuilding dans le panneau de gauche la laisserait afficher les masses
+       d'une liste de groupes qui n'est plus celle affichée. Or le panneau
+       gauche se remplit à l'ouverture et après chaque resolve: ce sont deux
+       moments où le plan change sans que l'utilisateur ait rien demandé, et
+       deux fois où une liste de références périmée serait déjà à l'écran si
+       elle vivait de son côté. */
+    refreshForestPlan(){
+        this.buildForestPlan()
+        this.renderForest()
+        return this.forestPlan
     }
 
     /* Every XY wave landed on the input anchor, in link order.
@@ -3918,6 +3978,14 @@ class AttributionNode extends NodeWithAccordion{
         })
         content.appendChild(this.probeOutput)
         this.renderGroupTables()
+        /* LA LISTE DE RÉFÉRENCES SUIT LE PLAN, ici et partout où le plan change.
+
+           Un plan se reconstruit à l'ouverture du panneau, au resolve et quand
+           une liste de groupes change. Trois endroits, donc trois appels — ou
+           un seul, si c'est la FIN de `renderGroupTables`, que tous trois traversent.
+           La liste de références est une DÉRIVÉE du plan, et une
+           dérivée rafraîchie à la main est une dérivée qui finira périmée. */
+        this.refreshForestPlan()
         /* LA SONDE PART TOUTE SEULE, après les tableaux: le plan existe donc, et si
            elle a à attendre la table, elle attend sur un panneau déjà dessiné — pas
            sur un panneau vide. */
@@ -4748,13 +4816,25 @@ class AttributionNode extends NodeWithAccordion{
             chargeMax:this.parameters.chargeMax,
             bestMatches:this.parameters.bestMatches,
             ppm:this.parameters.ppm,
-            probeMass:this.parameters.probeMass
+            probeMass:this.parameters.probeMass,
+            /* LES TROIS RÉGLAGES DU RÉSEAU, et eux seuls.
+
+               Les ARBRES ne sont pas enregistrés, pour la même raison que les
+               attributions: ils sont dérivés des réglages et des vagues
+               d'entrée. Les garder montrerait un réseau calculé sur des
+               réglages qui ont pu changer depuis — et le panneau droit
+               afficherait un arbre mort, que rien dans la session ne
+               reproduirait. Ce qui PART, c'est l'intention. */
+            forestTolerance:this.parameters.forestTolerance,
+            forestDegreeMax:this.parameters.forestDegreeMax,
+            forestCharge:this.parameters.forestCharge
         }
     }
 
     restoreState(state){
         if(!state) return
-        for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm","probeMass"]){
+        for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm","probeMass",
+            "forestTolerance","forestDegreeMax","forestCharge"]){
             if(state[name]!==undefined&&state[name]!==null){
                 this.parameters[name]=state[name]
             }
@@ -4811,7 +4891,15 @@ class AttributionNode extends NodeWithAccordion{
                charge(s) » les remplace, et elle est dérivée. Il n'y a donc plus
                rien à y écrire. */
             bestMatchesInput:"bestMatches",
-            ppmInput:"ppm"
+            ppmInput:"ppm",
+            /* LES CHAMPS DU RÉSEAU SUIVENT, et pour la même raison que les
+               autres: sans cette ligne, une session rechargée afficherait les
+               valeurs de la CONSTRUCTEUR pendant que le réseau se calculerait
+               avec les valeurs restaurées — un panneau qui ment sur ce qu'il
+               va faire. */
+            forestToleranceInput:"forestTolerance",
+            forestDegreeMaxInput:"forestDegreeMax",
+            forestChargeInput:"forestCharge"
         }
         for(const [field,key] of Object.entries(numeric)){
             const input=this[field]
@@ -4822,6 +4910,27 @@ class AttributionNode extends NodeWithAccordion{
     registered(e){
         if(e.detail.msg.caster!==this||this.accordion) return
         super.registered(e)
+        /* LE PANNEAU DU RÉSEAU, À DROITE, et pas dans le panneau de gauche.
+
+           Le nœud d'attribution a déjà deux listes, cinq nombres, une sonde et
+           un readout — son panneau de gauche est plein. Le réseau est une
+           LECTURE, pas un réglage de plus, et une lecture qui entasse ses
+           composants sous les listes oblige à faire défiler le panneau pour
+           passer des réglages à des résultats. Deux colonnes, comme le lecteur
+           de collections: une liste à gauche, son détail à droite.
+
+           Le panneau est donc un ACCORDÉON À PART ENTIÈRE, comme celui de
+           FormulaCollectionNode — pas un sous-panneau, parce qu'un sous-panneau
+           ne peut pas être replié tout seul, et qu'un réseau de plusieurs
+           centaines de composants n'a rien à faire dans une colonne de réglages. */
+        const {channel,registrationName,label}=e.detail.msg
+        this.forestAccordion=new Accordion(
+            `${label} (network)`,
+            this.origin,
+            this.origin.main.querySelector(".vertical.right.content")
+        )
+        channel.register(`${registrationName}:network`,this.forestAccordion,`${label} (network)`)
+        this.setupForestPanel()
         this.setupUI()
         /* NO resolve is triggered here: the node may have no input yet, and a
            resolve that finds no wave would publish an empty output. The
@@ -4830,6 +4939,400 @@ class AttributionNode extends NodeWithAccordion{
            That is FKMDNode's shape. */
         this.syncUI()
         this.renderReadout()
+    }
+    suicide(options={}){
+        /* LE PANNEAU DU RÉSEAU EST TUÉ AVEC LE NŒUD.
+
+           `NodeWithAccordion.suicide` ne tue que le panneau gauche: sans cette
+           ligne, un nœud supprimé laisserait son panneau de réseau à l'écran,
+           avec des résultats qui plus rien ne produit. */
+        this.forestAccordion?.suicide()
+        this.forestAccordion=null
+        super.suicide(options)
+    }
+
+    /* ------------------------------------------------------------------
+       LE RÉSEAU DE MESURES — les trois temps, dans l'ordre d'Igor.
+       ------------------------------------------------------------------ */
+
+    /* TEMPS 1 — LE PLAN: la liste des références.
+
+       C'est l'équivalent de `formatStds`, qui assemblait dans `Stds_Obs` les
+       masses théoriques des formules cochées avant de lancer quoi que ce soit.
+       Ici la liste vient du plan, donc elle est TOUJOURS cohérente avec ce qui
+       est écrit dans les tableaux de gauche — et c'est le but: un réseau
+       calculé sur une autre liste que celle affichée serait un mensonge
+       silencieux.
+
+       La charge est celle du plan sauf si l'utilisateur en a choisi une: 0
+       signifie « celle du plan », parce que taper 1 dans une case quand le plan
+       dit 1+ serait une redite qui peut mentir dès que le plan change. */
+    buildForestPlan(){
+        const asked=Number(this.parameters.forestCharge)
+        const charge=Number.isFinite(asked)&&asked>0?Math.abs(asked):0
+        this.forestPlan=forestStandards(this.plan,{charge})
+        /* La liste des charges ATTEIGNABLES est affichée quand le champ est à 0,
+           parce que c'est elle qui décide de la division: sans cette ligne,
+           « 0 » se lirait « charge nulle » alors qu'il veut dire « celle du
+           plan ». */
+        if(this.forestChargeLabel){
+            const derived=charge>0
+                ?`${charge}+ assumed — the references are divided by ${charge}`
+                :`from the plan: |z| in {${this.plan?.chargeSet?.join(", ")??"none"}}, `+
+                 `references divided by the charge read there`
+            this.forestChargeLabel.textContent=derived
+            this.forestChargeLabel.title=charge>0
+                ?"you pinned the charge; the plan's own window is ignored here"
+                :"the plan decides, so the network follows the adduct lists"
+        }
+        return this.forestPlan
+    }
+
+    /* TEMPS 2 — LE GROS CALCUL, par le worker.
+
+       Un worker et un noyau Rust, comme le crible: le thread principal reste
+       libre pendant que l'arbre se construit, et le panneau peut afficher ce
+       qu'il est en train de faire au lieu de figer.
+
+       LE REPLI EST LE MÊME CALCUL. Si le wasm est absent ou périmé, ou si le
+       worker tombe, on repasse par `growForest` — l'ORACLE du test de parité,
+       donc exactement le même arbre, pas une approximation. Un repli « approché »
+       laisserait deux physiques dans le programme, et celle qui répondrait serait
+       celle qu'on ne testerait pas. */
+    async growForestAsync(wave,standards){
+        const half=wave.size/2
+        const x=new Float64Array(half)
+        const y=new Float64Array(half)
+        if(wave.core.length>=wave.size){
+            for(let i=0;i<half;i++) x[i]=wave.core[i]
+            for(let i=0;i<half;i++) y[i]=wave.core[i+half]
+        }
+        const points=new SortedPoints(x,y)
+        /* LE NOYAU VEUT DES MASSES TRIÉES, et il ne les trie pas lui-même:
+           payer un tri par appel serait le poste qu'il existe pour supprimer.
+           `SortedPoints` est donc construit ICI et non au resolve — le réseau
+           a ses propres réglages, il ne dépend pas du crible. */
+        const tolerance=Number(this.parameters.forestTolerance)
+        const degreeMax=Number(this.parameters.forestDegreeMax)
+        const payload={params:{
+            masses:Array.from(points.order.map(index=>points.x[index])),
+            intensities:Array.from(points.order.map(index=>points.y[index])),
+            standards:standards.masses,
+            tolerance:Number.isFinite(tolerance)&&tolerance>0?tolerance:DEFAULT_LINK_TOLERANCE,
+            degreeMax:Number.isFinite(degreeMax)&&degreeMax>0?degreeMax:0
+        }}
+        let forest=null
+        try{
+            const answer=await computePool.run("attributionForest",payload)
+            forest=answer?.forest??null
+            if(!forest) throw new Error(answer?.fallback??"le noyau n'a rien rendu")
+        }catch(error){
+            /* LE MOTIF EST NOMMÉ, puis on retombe — comme pour le crible. */
+            console.warn("[network] kernel unavailable, JS fallback:",error)
+            forest=growForest(payload.params)
+        }
+        return {forest,points}
+    }
+
+    /* TEMPS 3 — LA LECTURE, et elle est FAITE ICI, pas dans le panneau.
+
+       Le noyau rend des tableaux; l'écran veut des lignes. La conversion vit
+       dans `forestComponents` — donc dans un fichier testable sans DOM — et le
+       panneau ne fait que les peindre. C'est le découpage que
+       `collectionReader.test.mjs` a établi pour la moitié DOM du programme. */
+    async startForest(){
+        const run=++this.forestRun
+        const {waves,skipped}=this.collectInputWaves()
+        this.forestSkipped=skipped
+        if(!this.plan?.items?.length||!waves.length){
+            this.forests=[]
+            this.forestComponents=[]
+            this.forestErrors=[waves.length
+                ?[]
+                :["nothing to link: no XY wave is connected"]]
+            this.renderForestButton(false)
+            this.renderForest()
+            return
+        }
+        this.renderForestButton(true)
+        const standards=this.buildForestPlan()
+        if(!standards.masses.length){
+            /* AUCUNE RÉFÉRENCE EST UN CAS NORMAL, pas une panne: une liste de
+               groupes vide, ou une table pas encore arrivée. Le panneau le dit
+               et le bouton reste visible — c'est le même traitement que la
+               sonde de masse, qui répond « loading… » au lieu de se taire. */
+            this.forests=[]
+            this.forestComponents=[]
+            this.forestErrors=[...standards.diagnostics]
+            this.renderForest()
+            this.renderForestButton(false)
+            return
+        }
+        const forests=[]
+        const components=[]
+        const errors=[...standards.diagnostics]
+        for(let i=0;i<waves.length;i++){
+            if(run!==this.forestRun) return
+            if(i>0) await new Promise(resolve=>setTimeout(resolve,0))
+            if(run!==this.forestRun) return
+            const wave=waves[i]
+            const title=wave.metadata?.title??`input ${i+1}`
+            try{
+                const {forest,points}=await this.growForestAsync(wave,standards)
+                forests.push(forest)
+                components.push({
+                    title,
+                    points,
+                    components:forestComponents(forest,standards)
+                })
+            }catch(error){
+                /* UN SPECTRE QUI ÉCHOUE N'ARRÊTE PAS LES AUTRES. Un réseau
+                   cassé est un résultat cassé, pas un nœud mort. */
+                const message=error?.message??String(error)
+                errors.push(`${title}: ${message}`)
+                forests.push(null)
+                components.push({title,points:null,components:[]})
+            }
+        }
+        if(run!==this.forestRun) return
+        this.forests=forests
+        this.forestComponents=components
+        this.forestErrors=errors
+        this.renderForestButton(false)
+        this.renderForest()
+    }
+
+    /* LE BOUTON PENDANT LE CALCUL, et il le dit sur lui-même.
+
+       Un bouton qu'on peut recliquer pendant qu'il travaille fait planter
+       le nœud si le calcul est lent, et un bouton muet laisse croire qu'un
+       second appui serait sans effet — les deux sont le même défaut, vu
+       d'endroits différents. */
+    renderForestButton(busy){
+        const button=this.forestButton
+        if(!button) return
+        button.textContent=busy?"growing…":"Grow network"
+        button.disabled=!!busy
+        button.style.opacity=busy?"0.6":"1"
+        button.title=busy
+            ?"building the minimum spanning forest — the worker is on it"
+            :"link the measured peaks whose m/z gap matches a reference mass"
+    }
+
+    /* LE PANNEAU DU RÉSEAU, et il ne fait qu'une chose de plus que le gauche:
+       il rend le résultat. Les réglages y sont parce qu'ils bornent l'arbre, et
+       ils sont donc dans la même colonne que lui — mais le LECTEUR est le
+       bouton et la liste, pas les cases. */
+    setupForestPanel(){
+        if(!this.forestAccordion) return
+        const content=this.forestAccordion.DOMelt.content
+        content.replaceChildren()
+        this.forestAccordion.setSizingMode("content")
+        stylize(content,{
+            display:"grid",
+            "grid-template-columns":"minmax(0, 1fr)",
+            padding:"4px",
+            gap:"4px"
+        })
+        /* LES TROIS RÉGLAGES SUR DEUX RANGÉES, parce qu'ils vont par paires.
+
+           La fenêtre et le plafond sont tous deux des bornes de l'arbre, et les
+           poser l'un sous l'autre les ferait passer pour une hiérarchie. La
+           charge vient ensuite: elle se déduit du plan le plus souvent, donc
+           elle est lisible et rarement saisie. */
+        const bounds=CE("div",{className:"an-row"},[])
+        stylize(bounds,{
+            display:"grid",
+            "grid-template-columns":"1fr 1fr",
+            gap:"6px",
+            "align-items":"start"
+        })
+        content.appendChild(bounds)
+        this.forestToleranceInput=this.field(bounds,"Link window (Da)",this.parameters.forestTolerance,{
+            tag:"number",
+            onCommit:(raw)=>this.commitForestNumber("forestTolerance",raw,0,100)
+        },"How close two peaks must be to a reference mass to be linked. Igor used 0.5 as a constant; here it is a setting, because it is a geometry and not a physics")
+        this.forestDegreeMaxInput=this.field(bounds,"Max degree",this.parameters.forestDegreeMax,{
+            tag:"number",
+            onCommit:(raw)=>this.commitForestNumber("forestDegreeMax",raw,0,8)
+        },"How many links one peak may hold. 0 = no limit (Igor's GrowForest); 2 gives a chain, Igor's GrowReticles")
+        this.forestChargeInput=this.field(content,"Charge (0 = the plan's)",this.parameters.forestCharge,{
+            tag:"number",
+            onCommit:(raw)=>this.commitForestNumber("forestCharge",raw,0,8)
+        },"The reference masses are divided by this charge, because a gap of m/z shrinks as the charge grows. Igor compared masses to m/z gaps, which is only right for 1+")
+        this.forestChargeLabel=CE("div",{className:"an-charges"},[])
+        stylize(this.forestChargeLabel,{fontSize:"0.8em",lineHeight:"1.35"})
+        content.appendChild(this.forestChargeLabel)
+        /* LE BOUTON, et il EST UN BOUTON, pas un réglage.
+
+           Le réseau est le calcul le plus long du nœud — un crible sur 10 000
+           pics — et il ne se lance ni à la frappe ni au resolve: le resolve
+           appartient à l'attribution, qui a ses propres sorties. Relancer le
+           crible parce qu'on a changé la fenêtre de lien serait du travail
+           payé pour un résultat identique, et faire du réseau un effet de bord
+           du crible lierait deux questions qui se répondent séparément. */
+        this.forestButton=CE("button",{type:"button"},["Grow network"])
+        stylize(this.forestButton,{
+            fontSize:"0.85em",padding:"3px 10px",cursor:"pointer",
+            color:"inherit",background:"rgba(255,255,255,0.08)",
+            border:"1px solid rgba(255,255,255,0.2)",borderRadius:"3px"
+        })
+        this.forestButton.addEventListener("click",()=>this.startForest())
+        content.appendChild(this.forestButton)
+        /* LA LECTURE, et elle est RENDUE TOUTE SEULE quand elle arrive.
+
+           `forest.js` fait la conversion ligne par ligne et `componentLine` la
+           met en forme; le panneau ne connaît ni le noyau ni les tableaux, donc
+           il ne peut pas se tromper de numérotation — celle que le noyau a
+           fixée. */
+        this.forestList=CE("div",{className:"an-forest"},[])
+        stylize(this.forestList,{display:"grid",gap:"3px"})
+        content.appendChild(this.forestList)
+        this.forestReadout=CE("div",{style:{
+            fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap"
+        }},[])
+        content.appendChild(this.forestReadout)
+        this.renderForest()
+    }
+
+    /* UN RÉGLAGE DU RÉSEAU, ET IL NE MARQUE PAS LE CRIBLE.
+
+       Les trois entiers du panneau de droite ne changent rien à l'attribution:
+       le resolve produit les formules, et elles ne bougent pas parce qu'on a
+       changé la fenêtre d'un lien. Les propager au `needsResolve` du crible
+       ferait recalculer des milliers de formules pour un résultat identique,
+       et repeindrait le nœud « sale » alors que ses sorties sont à jour — le
+       défaut inverse, et tout aussi mensonger. */
+    commitForestNumber(name,raw,low,high){
+        const value=Number(raw)
+        const bounded=Number.isFinite(value)?Math.min(high,Math.max(low,value)):low
+        if(bounded===this.parameters[name]){
+            this.renderForest()
+            return
+        }
+        this.parameters[name]=bounded
+        const input=this[`${name.charAt(0).toUpperCase()}${name.slice(1)}Input`]
+        if(input) input.value=String(bounded)
+        this.renderForest()
+    }
+
+    /* LA LECTURE PEINTE.
+
+       Trois choses et pas une de plus: ce que le réseau est (les références),
+       ce qu'il a produit (les composants, classés par taille comme le noyau les
+       a classés), et ce qui a été refusé (les diagnostics).
+
+       LE CLIC VA À LA SONDE, et c'est le geste d'Igor: son `TreeListAction`
+       prenait la ligne, en faisait un ROI, et attribuait depuis `roipnts[0]`.
+       Ici le ROI n'existe pas — ce programme n'a pas d'état global — donc le clic
+       fait ce qui existe: il met cette masse dans la SONDE, qui est déjà
+       l'outil « quelle formule est-ce? » du nœud. Le clic et la sonde répondent
+       donc à la même question, par le même chemin. */
+    renderForest(){
+        if(!this.forestList) return
+        const lines=[]
+        if(this.forestPlan){
+            const {masses,labels,charge}=this.forestPlan
+            lines.push(masses.length
+                ?`${masses.length} reference mass(es) at |z|=${charge}: ${labels.join(", ")}`
+                :"no reference mass yet")
+        }else{
+            lines.push("no reference list yet — press Grow network")
+        }
+        for(const line of this.forestErrors??[]) lines.push(line)
+        if(this.forestSkipped) lines.push(`${this.forestSkipped} input(s) skipped: not an XY wave`)
+        for(const batch of this.forestComponents??[]){
+            if(!batch) continue
+            const forest=this.forestForestOf(batch)
+            lines.push(`${batch.title}: ${batch.components.length} component(s)`+
+                (forest?.candidates
+                    ?`, ${forest.edgeCount} link(s) out of ${forest.candidates} candidates`
+                    :""))
+        }
+        if(this.forestReadout) this.forestReadout.textContent=lines.join("\n")
+        this.renderForestList()
+    }
+
+    /* L'ARBRE D'UN LOT, et le lien entre les deux tableaux est ISOLÉ ICI.
+
+       `forests` et `forestComponents` se remplissent dans la même boucle et
+       d'abord à la même taille — mais deux tableaux parallèles sont un contrat
+       implicite, et un `indexOf` qui ne trouve pas doit renvoyer `null` plutôt
+       qu'un autre lot. Une fonction, un endroit. */
+    forestForestOf(batch){
+        const index=(this.forestComponents??[]).indexOf(batch)
+        if(index<0) return null
+        return (this.forests??[])[index]??null
+    }
+
+    /* LA LISTE DES COMPOSANTS.
+
+       PAS de virtualisation ici, et c'est un choix à MESURER plus tard: le
+       nombre de composants est BORNE par le nombre de pics moins les liens, donc
+       il est de l'ordre du millier pour un spectre de 10 000 points — pas de
+       dix mille comme une liste de formules, où chaque pic peut en porter
+       `bestMatches`. Un bloc de mille lignes se peint en une frame; un de dix
+       mille non. La virtualisation viendrait le jour où ce plafond tombe, et elle
+       viendrait ici, pas dans le rendu. */
+    renderForestList(){
+        const list=this.forestList
+        if(!list) return
+        list.replaceChildren()
+        const batches=this.forestComponents??[]
+        if(!batches.length){
+            const empty=CE("div",{},["— no network yet —"])
+            stylize(empty,{fontSize:"0.8em",opacity:"0.5",padding:"2px"})
+            list.appendChild(empty)
+            return
+        }
+        for(const batch of batches){
+            if(!batch?.components?.length) continue
+            for(const component of batch.components){
+                list.appendChild(this.forestRow(component,batch))
+            }
+        }
+    }
+
+    /* UNE LIGNE DE COMPOSANT, et son infobulle porte les PIÈCES.
+
+       La ligne dit la taille, l'ancêtre et l'erreur totale; l'infobulle dit
+       quelles références ont fait les liens et quelles masses sont reliées. Sur
+       une ligne de six mots, il n'y a pas la place du détail — et le détail est
+       ce qui permet de JUGER le groupe. */
+    forestRow(component,batch){
+        const row=CE("div",{className:"an-forest-row",pilot:this},[
+            componentLine(component)
+        ])
+        stylize(row,{
+            fontSize:"0.8em",lineHeight:"1.35",cursor:"pointer",
+            padding:"2px 4px",borderRadius:"3px",
+            background:"rgba(255,255,255,0.05)",
+            border:"1px solid rgba(255,255,255,0.12)"
+        })
+        const points=batch.points
+        row.title=[
+            `root ${component.rootMass.toFixed(5)} · tallest ${component.peakMass.toFixed(5)}`,
+            `total error ${component.weight.toFixed(3)} Da over ${component.links.length} link(s)`,
+            ...component.links.map(link=>{
+                const from=points?.x?.[link.u]
+                const to=points?.x?.[link.v]
+                const masses=[from,to].filter(v=>Number.isFinite(v))
+                    .map(v=>v.toFixed(4)).join(" ↔ ")
+                return `${link.label??`#${link.standard}`}: ${masses} (${link.weight.toFixed(3)} Da)`
+            }),
+            "",
+            "click to probe the lowest peak of this group"
+        ].join("\n")
+        /* LE CLIC NE LANCE RIEN: `probeMass` répond sur le plan courant, sans
+           crible, donc le geste est instantané — et il ne touche pas au réseau,
+           dont les réglages ne dépendent pas de la sonde. */
+        row.addEventListener("click",()=>{
+            const mass=component.rootMass
+            if(!Number.isFinite(mass)) return
+            if(this.probeInput) this.probeInput.value=String(mass)
+            this.probeMass(mass)
+        })
+        return row
     }
 }
 

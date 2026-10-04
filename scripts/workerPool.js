@@ -11,6 +11,11 @@ const MIN_GAP_OVER_NOISE=8
 
 //WorkerPool: keeps a set of module workers alive and dispatches compute
 //tasks to them, so heavy kernels never run on the main thread.
+/* Le réseau de mesures, comme dans le worker: `forest.js` n'a AUCUNE dépendance,
+   donc l'importer ici n'ajoute rien au graphe de dépendances du thread
+   principal. C'est ce qui autorise le repli local à être le VRAI calcul et non
+   une approximation. */
+import {growForest} from "./forest.js"
 class WorkerPool{
     constructor(size){
         this.size=Math.max(1,Math.min(size??((navigator.hardwareConcurrency||2)-1),4))
@@ -218,6 +223,19 @@ function runKernelLocally(kernel,payload){
            repasse par `attributeSpectrum`, qui est le même crible. Le recalculer
            dans ce worker local dupliquerait la physique en JS pour rien. */
         return {rows:null,fallback:"pas de worker: le repli JS fait le crible"}
+    }
+    if(kernel==="attributionForest"){
+        /* ICI LE REPLI EST FAIT ICI, et la raison est l'INVERSE du crible.
+
+           Le crible melange la chimie (une formule par lecture) et la
+           combinatoire, donc le renvoyer au nœud réutilise `attributeSpectrum`
+           au lieu de le réécrire. Le réseau, lui, ne connaît que des NOMBRES:
+           il n'a aucune chimie à refaire, et rendre `null` obligerait le thread
+           principal à recalculer un arbre qu'un worker déjà présent savait
+           calculer. C'est le même résultat par le même code — `growForest` est
+           l'ORACLE du test de parité — donc rien n'est approximé. */
+        const {params={}}=payload
+        return {forest:growForest(params),fallback:"pas de worker: le repli JS fait l'arbre"}
     }
     throw new Error(`unknown kernel "${kernel}"`)
 }

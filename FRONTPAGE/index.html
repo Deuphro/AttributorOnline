@@ -1346,6 +1346,84 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             exists but is not used by default.
         </p>
 
+        <h4>Measurement network <span class="badge">minimum spanning forest</span> <span class="badge">second right panel</span></h4>
+        <p>
+            A second panel on the right — <em>Attribution (network)</em> — builds a graph over the
+            <strong>measured points</strong> of each spectrum, links two of them when the m/z gap
+            matches a reference mass, and takes the minimum spanning forest of that graph. The
+            oracle is <code>GRAPHTTRIBUTOR</code> in
+            <code>resources/ProcAttributorLegacy/MainProc.ipf</code>: <code>calcBestof</code> for the
+            links, <code>kruskal4mass</code> for the tree, <code>CompteTribue</code> for the groups.
+        </p>
+
+        <h4>Data flow</h4>
+        <pre>combining[], ionising[], ratio, table
+    → buildPlan(...)                       // the SAME plan as the attribution
+    → forestStandards(plan, charge)        // TIME 1 — the reference list
+        → one reference per combining brick, mass/|z|; adducts refused, and said
+    → per input wave, "Grow network"
+        → SortedPoints(x[], y[])           // masses sorted for the kernel's early break
+        → worker: attributionForest({masses, intensities, standards, tolerance, degreeMax})
+            → forest_grow in Rust — candidates, sorted by weight, Kruskal, union-find
+        → {edges[], components[]}          // TIME 2 — the heavy compute
+    → forestComponents(forest, standards)  // TIME 3 — one row per group
+        → root mass, size, tallest peak, total error, and its own links
+    → click a row → the Probe field, which attributes the group's lightest peak</pre>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Reference list</td>
+                <td>
+                    One entry per <em>combining</em> brick of the current plan, divided by the charge.
+                    <strong>Adducts are excluded</strong>: they carry a charge, not a mass increment, and
+                    comparing them to m/z gaps would link peaks for no reason. The charge field
+                    <code>0</code> means "the plan's", so the list can never drift from the group tables
+                    on the left.
+                </td>
+            </tr>
+            <tr>
+                <td>Settings</td>
+                <td>
+                    <em>Link window</em> (default <code>0.5</code> Da — Igor's hard-coded constant, made a
+                    setting), <em>max degree</em> (<code>0</code> = no cap, Igor's <code>degmax=inf</code>;
+                    <code>2</code> gives Igor's <code>GrowReticles</code>), <em>charge</em> (<code>0</code> =
+                    the plan's). They change the <strong>nature</strong> of the graph, not just its size.
+                </td>
+            </tr>
+            <tr>
+                <td>Weights</td>
+                <td>
+                    An edge's weight is its <strong>error in Da</strong> — not ppm — so Kruskal minimises
+                    the total error of a group. Ties on the nearest reference go to the lowest index,
+                    as Igor's <code>whichgap[0]</code> did, so the same spectrum always labels its links
+                    the same way.
+                </td>
+            </tr>
+            <tr>
+                <td>Groups</td>
+                <td>
+                    An isolated peak is a <strong>component of its own</strong>, not a hole: 95 peaks with
+                    3 linked give 93 groups, and reporting 3 would read as "92 peaks vanished". Groups are
+                    ordered by size, then by root; the root is the <strong>lightest</strong> peak, which is
+                    the ancestor Igor attributed from.
+                </td>
+            </tr>
+            <tr>
+                <td>Fallback</td>
+                <td>
+                    <span class="badge warn">fallback</span> no worker or stale wasm: the JS
+                    <code>growForest</code> runs the <strong>same</strong> calculation, and
+                    <code>forestParity.test.mjs</code> proves the two give the same tree, edge by edge,
+                    on a 900-peak spectrum. The network never repaints the node status: that status
+                    belongs to the attribution, which is a different calculation.
+                </td>
+            </tr>
+        </table>
+
         <h4>FormulaCollection <span class="badge">named set</span> <span class="badge">ppm matching</span> <span class="badge">molecule folding</span></h4>
         <p>
             A <strong>FormulaCollection</strong> is a named, deduplicated set of formulas with their

@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 mod antiradio;
 mod attribution;
 mod fkmd;
+mod forest;
 mod persistence;
 mod trim;
 pub use antiradio::{anti_radio_filter, anti_radio_guess_z, RadioDecision};
@@ -11,6 +12,11 @@ pub use antiradio::{anti_radio_filter, anti_radio_guess_z, RadioDecision};
 //spectrum points is a binary search and stays in JS, where the points already
 //are.
 pub use attribution::{crible_heap, STRIDE};
+//the minimum spanning forest over MEASURED points: two peaks are linked when
+//their m/z gap matches a reference mass within a window, and the weight of the
+//link IS that error. Same shape as the rest of the kernels — flat arrays out,
+//no chemistry, no knowledge of what a formula is.
+pub use forest::{forest_grow, Forest, EDGE_STRIDE};
 pub use fkmd::fkmd;
 pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,

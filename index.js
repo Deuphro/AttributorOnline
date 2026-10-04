@@ -71,6 +71,11 @@ function serveStaticFileLimited(req, res) {
         "/scripts/chemistry.js":"scripts/chemistry.js",
         "/scripts/valence.js":"scripts/valence.js",
         "/scripts/attribution.js":"scripts/attribution.js",
+        //the measurement network: the reference list and the JS oracle of the
+        //Rust forest kernel. Served like the others because the module graph
+        //is explicit — an import nothing serves is a 404 the worker only
+        //discovers when the user presses the button.
+        "/scripts/forest.js":"scripts/forest.js",
         //where the flow arranges its nodes and wires the new ones by itself
         "/scripts/layout.js":"scripts/layout.js",
         "/resources/pattern.svg":"resources/pattern.svg",

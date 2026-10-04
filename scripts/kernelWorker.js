@@ -1,6 +1,11 @@
 //Kernel worker: loads its own instance of the attribrustor WASM module and
 //executes compute kernels off the main thread, so the UI never blocks.
 import init,* as rust from "../XOP/rust-extension/pkg/attribrustor.js"
+/* Le réseau de mesures. Ce module n'importe QUE forest.js, qui n'importe rien:
+   c'est ce qui permet au worker de l'avoir sans traîner la table périodique
+   dans chaque fil — et c'est pourquoi `growForest` y est le MÊME calcul que
+   dans le noyau, et non une version allégée. */
+import {growForest} from "./forest.js"
 
 let wasmReady=null
 //Log-histogram bar density, kept in step with LOG_BINS_PER_DECADE in trim.rs
@@ -321,6 +326,62 @@ const kernels={
         }catch(err){
             console.warn("[kernelWorker] rust mixed sieve unavailable, JS fallback:",err)
             return {rows:null,fallback:err?.message??String(err)}
+        }
+    },
+    /* LE RÉSEAU DE MESURES — l'arbre couvrant de poids minimal.
+
+       Unlike the sieve above, this one KNOWS NOTHING about chemistry: the
+       reference masses arrive as numbers, because a difference of m/z is a
+       number. `forest.js` builds the list from the plan, this runs the tree,
+       and neither of them needs the other.
+
+       The returned shape is the FLAT one the worker can post: plain arrays,
+       no wasm classes. A `Forest` would not survive `structuredClone` — the
+       same reason `attributionCriblemixed` turns its `Reading` rows into plain
+       objects HERE rather than in the node. */
+    async attributionForest({params}){
+        const {masses,intensities,standards,tolerance,degreeMax}=params??{}
+        try{
+            await ensureWasm()
+            if(typeof rust.forest_grow!=="function"){
+                throw new Error("rust forest_grow is missing (stale pkg build?)")
+            }
+            const forest=rust.forest_grow(
+                Float64Array.from(masses??[]),
+                Float64Array.from(intensities??[]),
+                Float64Array.from(standards??[]),
+                Number(tolerance),
+                Number(degreeMax??0)
+            )
+            return {
+                forest:{
+                    edgeU:toFloat64(forest.edge_u),
+                    edgeV:toFloat64(forest.edge_v),
+                    edgeWeight:toFloat64(forest.edge_weight),
+                    edgeStandard:toFloat64(forest.edge_standard),
+                    degree:toFloat64(forest.degree),
+                    componentOf:toFloat64(forest.component_of),
+                    componentRoot:toFloat64(forest.component_root),
+                    componentSize:toFloat64(forest.component_size),
+                    componentMaxIntensity:toFloat64(forest.component_max_intensity),
+                    componentWeight:toFloat64(forest.component_weight),
+                    componentRootMass:toFloat64(forest.component_root_mass),
+                    componentPeakMass:toFloat64(forest.component_peak_mass),
+                    candidates:forest.candidates,
+                    isolated:forest.isolated,
+                    edgeCount:forest.edge_count,
+                    componentCount:forest.component_count
+                }
+            }
+        }catch(err){
+            /* LE REPLI EST LE MÊME CALCUL, pas une approximation — comme pour
+               le crible. Il est écrit ICI, dans le worker, et non renvoyé au
+               nœud: ici il n'y a aucune chimie à refaire, donc le rendre ici
+               évite un aller-retour du thread principal pour un calcul que le
+               worker peut faire lui-même. */
+            console.warn("[kernelWorker] rust forest unavailable, JS fallback:",err)
+            const forest=growForest({masses,intensities,standards,tolerance,degreeMax})
+            return {forest,fallback:err?.message??String(err)}
         }
     },
     async trimHistogram({core,params}){

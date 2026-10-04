@@ -98,6 +98,30 @@ export function persistent_homology_0d_waves(core: Float64Array, stride: number,
 */
 export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number, integrated_mass: Float64Array, centroid_x: Float64Array): PersistenceClassification;
 /**
+* L'arbre couvrant de poids minimal sur des points MESURÉS.
+*
+* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
+* précoce de la boucle des paires, et le seul prérequis que la fonction ne
+* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
+* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
+* écrit est un bug qui n'apparaît qu'à l'écran.
+*
+* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
+* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
+* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
+* `forest.js` le fait, à partir des briques du plan.
+*
+* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
+* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
+* @param {Float64Array} masses
+* @param {Float64Array} intensities
+* @param {Float64Array} standards
+* @param {number} tolerance
+* @param {number} degree_max
+* @returns {Forest}
+*/
+export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number): Forest;
+/**
 * Where the SELECTED method wants the low cursor to sit, as a single number.
 *
 * Deliberately returns one f64 and allocates nothing: the shell only needs the
@@ -250,6 +274,78 @@ export function persistent_homology_0d(data: Float64Array, mode: string): Float6
 * @returns {Float64Array}
 */
 export function fkmd(core: Float64Array, mz: number): Float64Array;
+/**
+* Ce que rend `forest_grow`.
+*
+* Les tableaux sont PLATS et non entrelacés: c'est la forme que le worker
+* transporte et que `toFloat64` rend directement. Les composants sont ORDONNÉS
+* par taille décroissante puis par indice de sommet croissant — le même tri que
+* le `Sort2D(...,1,1,-1)` d'Igor, rendu déterministe.
+*/
+export class Forest {
+  free(): void;
+/**
+* Combien de paires ont trouvé une référence. C'est le DIAGNOSTIC qui
+* compte: le nombre d'arêtes possibles avant le tri et le plafond de degré,
+* donc il dit si un composant est pauvre par absence de liens ou par abandon.
+*/
+  readonly candidates: number;
+/**
+*/
+  readonly component_count: number;
+/**
+*/
+  readonly component_max_intensity: Float64Array;
+/**
+* Le rang du composant de chaque point, dans les tableaux de composants.
+*/
+  readonly component_of: Float64Array;
+/**
+*/
+  readonly component_peak_mass: Float64Array;
+/**
+*/
+  readonly component_root: Float64Array;
+/**
+* La masse du sommet le plus LÉGER du composant — l'ancêtre qu'Igor
+* prenait dans `roipnts[0]`, et donc celui qu'il attribuait.
+*/
+  readonly component_root_mass: Float64Array;
+/**
+*/
+  readonly component_size: Float64Array;
+/**
+* Le poids TOTAL de l'arbre du composant: la somme des erreurs de ses
+* arêtes. C'est la grandeur que l'on compare entre deux lectures du même
+* spectre, et ce n'est PAS la somme des poids de toutes les arêtes
+* candidates — seulement de celles que Kruskal a gardées.
+*/
+  readonly component_weight: Float64Array;
+/**
+*/
+  readonly degree: Float64Array;
+/**
+*/
+  readonly edge_count: number;
+/**
+* L'indice, dans la liste des RÉFÉRENCES, de celle qui a matché l'arête.
+* C'est ce qui permet à l'écran d'écrire « CH2 » sur un lien sans que le
+* noyau ait jamais su ce qu'est une formule.
+*/
+  readonly edge_standard: Float64Array;
+/**
+*/
+  readonly edge_u: Float64Array;
+/**
+*/
+  readonly edge_v: Float64Array;
+/**
+*/
+  readonly edge_weight: Float64Array;
+/**
+*/
+  readonly isolated: number;
+}
 /**
 */
 export class PersistenceAnalysis {
@@ -459,6 +555,24 @@ export interface InitOutput {
   readonly persistenceclassification_kept_integrated_mass: (a: number, b: number) => void;
   readonly persistenceclassification_kept_centroid_x: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_births: (a: number, b: number) => void;
+  readonly __wbg_forest_free: (a: number) => void;
+  readonly forest_edge_u: (a: number, b: number) => void;
+  readonly forest_edge_v: (a: number, b: number) => void;
+  readonly forest_edge_weight: (a: number, b: number) => void;
+  readonly forest_edge_standard: (a: number, b: number) => void;
+  readonly forest_degree: (a: number, b: number) => void;
+  readonly forest_component_of: (a: number, b: number) => void;
+  readonly forest_component_root: (a: number, b: number) => void;
+  readonly forest_component_size: (a: number, b: number) => void;
+  readonly forest_component_max_intensity: (a: number, b: number) => void;
+  readonly forest_component_weight: (a: number, b: number) => void;
+  readonly forest_component_root_mass: (a: number, b: number) => void;
+  readonly forest_component_peak_mass: (a: number, b: number) => void;
+  readonly forest_candidates: (a: number) => number;
+  readonly forest_isolated: (a: number) => number;
+  readonly forest_edge_count: (a: number) => number;
+  readonly forest_component_count: (a: number) => number;
+  readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
   readonly __wbg_trimresult_free: (a: number) => void;
   readonly trimresult_points_x: (a: number, b: number) => void;
   readonly trimresult_points_y: (a: number, b: number) => void;
