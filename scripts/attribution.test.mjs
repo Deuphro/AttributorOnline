@@ -27,7 +27,8 @@ import {
     attributeSpectrum,
     lastNonZero,
     saneBound,
-    saneRatio
+    saneRatio,
+    propagateForest
 } from "./attribution.js"
 
 const TABLE=Element.load(JSON.parse(
@@ -1701,6 +1702,91 @@ await test("MOTEUR — reclasser sans recribler donne le même résultat que rec
     ok(wideWindow.entries.length>narrowWindow.entries.length,
         `a wider window must read more, got `+
         `${wideWindow.entries.length} vs ${narrowWindow.entries.length}`)
+})
+
+await test("PROPAGATION — la formule de toute la chaîne se déduit de sa racine",()=>{
+    /* LA PREUVE QUE C'EST EXACT, ET PAS APPROCHÉ.
+
+       On construit un groupe dont on CONNAIT la vérité: une chaîne de quatre
+       pics dont on part d'une formule et qu'on décale d'un CH₂ à chaque fois.
+       Puis on redonne au réseau cette seule formule de racine, et on compare.
+
+       Si la déduction n'était qu'une approximation, les ppm ici ne tomberaient
+       pas à zéro — et le panneau afficherait des formules « proches » comme si
+       elles étaient établies. Le seuil est 0.001 ppm: c'est le bruit de
+       double, pas une tolérance de chimie. */
+    const ref=Formula.parse("CH2",TABLE)
+    const root=Formula.parse("C6H12O6 H+",TABLE)
+    const step=ref.mass
+    const masses=[root.mz-step,root.mz,root.mz+step,root.mz+2*step]
+    const graph={
+        rootIndex:1,
+        vertices:masses.map((mass,index)=>({index,mass})),
+        links:[
+            {u:0,v:1,weight:0.001,standard:0,label:"CH2"},
+            {u:1,v:2,weight:0.002,standard:0,label:"CH2"},
+            {u:2,v:3,weight:0.001,standard:0,label:"CH2"}
+        ]
+    }
+    const out=propagateForest(graph,root,[ref],{table:TABLE})
+    ok(out,"a root and references must yield a propagation")
+    eq(out.rows.length,4,"every vertex of the chain must be attributed")
+    eq(out.unattributed,0,"no vertex may be left behind")
+    for(const row of out.rows){
+        close(Math.abs(row.errorPpm),0,0.001,
+            `vertex ${row.index} (${row.notation}) is off by ${row.errorPpm} ppm`)
+    }
+    /* ET LES NOTATIONS, parce qu'un test d'exactitude qui ne vérifie pas les
+       formules ne prouve que l'exactitude d'un chiffre. */
+    const byIndex=new Map(out.rows.map(row=>[row.index,row.notation]))
+    eq(byIndex.get(0),"C5H11O6[+]","one CH₂ BELOW the root is one CH₂ less")
+    eq(byIndex.get(1),"C6H13O6[+]","the root is itself")
+    eq(byIndex.get(2),"C7H15O6[+]","one CH₂ above the root is one CH₂ more")
+    eq(byIndex.get(3),"C8H17O6[+]","two above")
+    /* LE SIGNE EST RENDU PAR LIGNE, PARCE QU'IL EST RELATIF À LA RACINE, et
+       c'est ce qui le rend lisible: on remonte depuis la racine, donc une arête
+       marquée + est celle où l'on a AJOUTÉ la référence, et une marquée − celle
+       où on l'a retirée. La chaîne monte de 167 à 209 : on commence par retirer
+       un CH₂ en descendant, puis on en ajoute deux. */
+    eq(out.edges.length,3,"three links were traversed")
+    eq(out.edges.map(edge=>edge.sign).join(","),"-1,1,1",
+        "down to the lowest vertex is a removal, the two climbs are additions")
+})
+
+await test("PROPAGATION — un ion sans charge est refusé, il n'a pas de m/z",()=>{
+    /* UNE ESPÈCE NEUTRE N'A PAS DE POSITION: m/z est un rapport, et il n'y a pas
+       de rapport sans charge. Rendre une formule neutre « propagée » produirait
+       un m/z infini et un ppm sans définition — donc rien du tout. */
+    const neutral=Formula.parse("C6H12O6",TABLE)
+    eq(neutral.charge,0,"the fixture must be neutral to begin with")
+    const graph={rootIndex:0,vertices:[{index:0,mass:180.06}],links:[],rootIndex_:0}
+    const out=propagateForest(graph,neutral,[Formula.parse("CH2",TABLE)],{table:TABLE})
+    eq(out,null,"a neutral root must yield nothing rather than a fake m/z")
+})
+
+await test("PROPAGATION — une référence inconnue arrête le groupe, elle ne le devine pas",()=>{
+    /* LE GENRE D'ÉCHEC QU'IL FAUT REFUSER. Deviner la formule d'une brique qu'on
+       n'a pas lue donnerait un arbre entier faux avec l'air d'une mesure — et
+       rien en aval ne pourrait le rattraper. On s'arrête donc, et on COMPTE ce
+       qui n'a pas été atteint. */
+    const ref=Formula.parse("CH2",TABLE)
+    const root=Formula.parse("C6H12O6 H+",TABLE)
+    const step=ref.mass
+    const masses=[root.mz-step,root.mz,root.mz+step,root.mz+2*step]
+    const graph={
+        rootIndex:1,
+        vertices:masses.map((mass,index)=>({index,mass})),
+        links:[
+            {u:0,v:1,weight:0.001,standard:0,label:"CH2"},
+            {u:1,v:2,weight:0.002,standard:1,label:"NH"},
+            {u:2,v:3,weight:0.001,standard:0,label:"CH2"}
+        ]
+    }
+    /* LA RÉFÉRENCE 1 EST ABSENTE: la racine et son voisin du bas sont attribués,
+       et le groupe s'arrête là. */
+    const out=propagateForest(graph,root,[ref,null],{table:TABLE})
+    eq(out.rows.length,2,"only the part below the unknown reference is attributed")
+    eq(out.unattributed,2,"and the rest is COUNTED, not silently dropped")
 })
 
 console.log(`\n${passed} passed, ${failures.length} failed`)

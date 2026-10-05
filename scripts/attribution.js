@@ -2050,3 +2050,176 @@ export {
     planForKernel,
     buildPlan
 }
+
+/* ===========================================================================
+   LA PROPAGATION DANS UN RÉSEAU — et ce n'est PAS une attribution.
+
+   Un lien du réseau dit une chose très précise: les pics `u` et `v` diffèrent
+   d'exactement la masse de référence `s`. Ce n'est pas une ressemblance, c'est
+   une ÉGALITÉ que le noyau a vérifiée dans la fenêtre de lien.
+
+   DONC, si l'on connaît la formule d'un seul pic d'un groupe, la formule de
+   tous les autres s'en DÉDUIT: on ajoute ou on retire la référence du lien, et
+   on recommence. Ce n'est pas une hypothèse, c'est de l'arithmétique — et c'est
+   ce qui rend la chose utile: chaque sommet reçoit une formule PRÉDITE, qu'on
+   compare à sa masse MESURÉE, et l'écart se lit en ppm.
+
+   C'est un contrôle qualité, et il est le seul des trois qui puisse échouer:
+
+     — l'attribution du crible part des masses balayées et remonte vers les
+       formules: elle peut se tromper de formule;
+     — la propagation part d'une formule et descend le long d'égalités vérifiées:
+       elle peut se tromper de RACINE, et c'est tout. Si elle se trompe, elle se
+       trompe d'un facteur de formule entier pour TOUT le groupe, et chaque
+       sommet le dira dans le même sens.
+
+   LA CHARGE N'EST PAS VÉRIFIÉE ICI, et c'est volontaire. Les références sont
+   déjà divisées par z, donc un écart de m/z de `masse_s / z` signifie « masse
+   plus masse_s, à la même charge ». Si un voisin est réellement doublement
+   chargé, la formule propagée est fausse — et elle le dira à hauteur de la
+   demie masse de l'électron, soit 0.0005 Da. Refuser ce cas ici serait cacher
+   l'information qui compte; la laisser apparaître, c'est la laisser juger.
+   =========================================================================== */
+
+/* UNE COMPOSITION COPIÉE, parce qu'une Map d'atomes mutée en place ferait
+   remonter l'addon chez le parent: tous les sommets du groupe finiraient par
+   porter la formule du plus gros. C'est le genre de faute qui n'apparaît qu'à
+   la deuxième image. */
+function copyComposition(source){
+    const copy=new Map()
+    for(const [element,byA] of source??[]){
+        copy.set(element,new Map(byA))
+    }
+    return copy
+}
+
+
+/* LA FORMULE D'UN SOMMET, ou null si elle n'a pas pu être construite.
+
+   Un `Formula` sans charge ne donne pas de m/z — il donnerait Infinity — donc
+   une formule sans charge n'est pas une formule d'ion et ne vaut rien. Elle est
+   rendue nulle, et le sommet sera compté parmi ceux que la propagation n'a pas
+   atteint. Une exception sur une composition bizarre ne tue pas la propagation
+   non plus: elle rend ce sommet nul, et le groupe continue autour de lui. */
+function formulaFrom(composition,charge,rootFormula,table){
+    const filled=[...(composition?.values()??[])]
+        .some(byA=>[...byA.values()].some(n=>n>0))
+    if(!filled) return null
+    const chargeOf=charge??rootFormula?.charge
+    if(!Number.isFinite(chargeOf)||chargeOf===0) return null
+    try{
+        return new Formula({
+            composition,
+            charge:chargeOf,
+            ionisation:rootFormula?.ionisation??[],
+            rule:rootFormula?.rule??"mostProbable",
+            table:table??rootFormula?.table??null
+        })
+    }catch{
+        return null
+    }
+}
+
+/* LA PROPAGATION, et elle rend aussi ce qu'elle n'a PAS su faire.
+
+   `references` est indexé comme `link.standard`: l'entrée i est la formule de la
+   référence i. Un lien dont la référence est absente ou illisible arrête la
+   propagation AU-DELÀ — il ne la fausse pas. Un groupe coupé en deux par une
+   référence inconnue est un groupe qu'on a mal construit, pas un groupe dont on
+   a inventé la fin. */
+export function propagateForest(graph,rootFormula,references,{table=null}={}){
+    const vertices=graph?.vertices??[]
+    if(!vertices.length||!rootFormula) return null
+    const byIndex=new Map(vertices.map(vertex=>[vertex.index,vertex]))
+    const startIndex=byIndex.has(graph.rootIndex)
+        ?graph.rootIndex
+        :vertices[0].index
+    const charge=rootFormula.charge
+    const rootFormulaBuilt=formulaFrom(
+        copyComposition(rootFormula.composition),charge,rootFormula,table)
+    if(!rootFormulaBuilt) return null
+    const assigned=new Map([[startIndex,{formula:rootFormulaBuilt,sign:0,depth:0}]])
+
+    /* LA FILE, et elle porte le SENS du lien. Chaque sommet reçoit le lien par
+       lequel on l'a atteint et le signe de ce lien, donc un cycle ne peut pas
+       faire osciller une formule: le second passage trouve le sommet déjà
+       attribué et s'arrête. */
+    const queue=[startIndex]
+    const reachedLinks=new Set()
+    const edges=[]
+    let unattributed=0
+    while(queue.length){
+        const current=queue.shift()
+        const here=assigned.get(current)
+        for(const link of graph.links??[]){
+            if(reachedLinks.has(link)) continue
+            const isU=link.u===current
+            if(!isU&&link.v!==current) continue
+            const reference=references?.[link.standard]
+            /* UNE RÉFÉRENCE INCONNUE ARRÊTE ICI, et elle n'est pas devinée: la
+               formule d'une brique qu'on n'a pas lue serait un mensonge, et il
+               se propagerait à tout l'arbre avec l'air d'une mesure. */
+            if(!reference) continue
+            reachedLinks.add(link)
+            /* LE SENS. `u < v` dans les masses, et l'écart vaut la référence:
+               donc v est u PLUS la référence. Atteint par u on ajoute, atteint
+               par v on retire — et c'est la seule chose que le lien porte. */
+            const child=isU?link.v:link.u
+            if(assigned.has(child)) continue
+            const composition=copyComposition(here.formula.composition)
+            /* `mergeComposition` additionne la source dans la cible sans jamais
+               l'écrire, donc la composition de la référence — celle du PLAN,
+               partagée — reste intacte. */
+            mergeComposition(composition,reference.composition,isU?1:-1)
+            const built=formulaFrom(composition,charge,rootFormula,table)
+            if(!built){ unattributed++; continue }
+            assigned.set(child,{formula:built,sign:isU?1:-1,depth:here.depth+1})
+            edges.push({
+                u:link.u,v:link.v,standard:link.standard,
+                label:link.label??null,sign:isU?1:-1
+            })
+            queue.push(child)
+        }
+    }
+
+
+    /* L'ERREUR, SOMME ET NON MOYENNE. Un groupe est une chaîne de pics liés, et
+       chaque maillon peut se tromper dans le même sens; la somme s'accumule
+       donc, et la moyenne la diviserait par le nombre de sommets — ce qui ferait
+       passer un groupe de cent maillons faux pour un groupe à un pic juste.
+       C'est la somme qui répond à « cette molécule tient-elle debout ? ». */
+    const rows=[]
+    let totalAbs=0
+    for(const vertex of vertices){
+        const hit=assigned.get(vertex.index)
+        if(!hit) continue
+        const mz=hit.formula.mz
+        const errorPpm=Number.isFinite(mz)&&mz>0
+            ?(vertex.mass-mz)/mz*1e6
+            :null
+        const absolute=errorPpm===null?Infinity:Math.abs(errorPpm)
+        if(Number.isFinite(absolute)) totalAbs+=absolute
+        rows.push({
+            index:vertex.index,
+            mass:vertex.mass,
+            formula:hit.formula,
+            notation:String(hit.formula),
+            mz,
+            errorPpm,
+            depth:hit.depth,
+            sign:hit.sign
+        })
+    }
+    unattributed+=vertices.length-rows.length
+    rows.sort((a,b)=>(b.depth-a.depth)||(a.mass-b.mass))
+    return {
+        rootIndex:startIndex,
+        rows,
+        edges,
+        unattributed,
+        totalAbsPpm:totalAbs,
+        meanAbsPpm:rows.length?totalAbs/rows.length:0,
+        worstAbsPpm:rows.reduce(
+            (n,row)=>Math.max(n,Math.abs(row.errorPpm??Infinity)),0)
+    }
+}
