@@ -197,6 +197,12 @@ test("the curve is drawn in the app's own colours, by ROLE",()=>{
         forestCut:8,forestDrawCut:null,
         drawForestMarks(){ calls.push({op:"marks"}) }
     }
+    /* LA GÉOMÉTRIE EST LEUR SOURCE COMMUNE, donc le nœud de test doit la
+       fournir: `drawForestCurve` ne la recalcule plus tout seul — c'est
+       précisément LE POINT du changement. Sans cette ligne la méthode lèverait
+       `this.forestCurveGeometry is not a function`, ce qui serait un échec de
+       harnais et non un défaut du programme. */
+    node.forestCurveGeometry=evaluate("forestCurveGeometry","wireForestCursor")
     evaluate("drawForestCurve","drawForestMarks").call(node,null)
     const stroked=calls.filter(call=>call.op==="stroke").map(call=>call.color)
     assert.ok(stroked.includes(accent),`the kept links must be drawn in ${accent}`)
@@ -215,6 +221,104 @@ test("the curve is drawn in the app's own colours, by ROLE",()=>{
     assert.equal(arcs[0].color,text,`the suggestion circle must be ${text}`)
     const blue=calls.filter(call=>call.op==="stroke"&&call.color==="#78b4ff")
     assert.equal(blue.length,1,"exactly one blue line: the applied cut")
+})
+
+/* LE CLIC EST SOUS LA SOURIS, ET ÇA SE MESURE.
+
+   Ce test ne vérifie pas une couleur: il vérifie une INVARIANCE. Pour un point
+   de la courbe, la position à laquelle le curseur serait DESSINÉ doit tomber
+   sous ce point — c'est la définition même d'un curseur aligné.
+
+   L'ERREUR QU'IL EMPÊCHE DE REVENIR. Dessiner et lire sont deux conversions
+   inverses de la même chose, et elles ont été écrites chacune de leur côté:
+
+     • le DESSIN posait la marge en pixels — `left = 0.10 * width`;
+     • le CURSEUR mélangeait `box.width - forestPlotLeft`, où `forestPlotLeft`
+       vaut 0.10 SANS UNITÉ. Le résultat ne mesurait rien, la somme se
+       simplifiait en « à-peu-près toute la largeur », et la marge de gauche —
+       le 10 % — n'était jamais soustraite.
+
+   D'où le décalage OBSERVÉ: nul au bord droit, maximum au bord gauche, donc un
+   décalage qui BOUGE avec la position. Un décalage constant se lirait comme un
+   réglage; celui-ci se lit comme un bug — parce que c'en est un.
+
+   La seconde cause, plus têtue: `getBoundingClientRect()` rend le BORDER box
+   (bordure comprise) alors que le bitmap n'occupe que le CONTENT box. Un pixel
+   d'écart à l'origine, deux de largeur — invisible à l'œil, mais c'est un
+   pixel de trop, et il est à l'endroit exact où l'on mesure. */
+test("the cursor lands under the mouse across the whole curve",()=>{
+    const evaluate=(name,source)=>new Function("window",
+        "return "+source.replace(/^(\s*)/,"$1function "))({devicePixelRatio:1})
+    const listeners={}
+    const canvas={
+        width:0,height:0,
+        /* LA ZONE DE FOND, ET PAS LE CADRE COMPLET: 300 de contenu, 302 de
+           border box. C'est cet écart que la conversion doit connaître. */
+        clientWidth:300,clientHeight:150,clientLeft:1,
+        getContext:()=>({}),
+        getBoundingClientRect:()=>({left:0,top:0,width:302,height:152}),
+        addEventListener:(type,handler)=>{listeners[type]=handler},
+        setPointerCapture(){}
+    }
+    const count=20
+    let picked=null
+    const node={
+        forestCanvas:canvas,
+        forestWeights:Array.from({length:count},(_,i)=>0.01+i*0.001),
+        forestPlotLeft:0.10,forestPlotRight:0.01,
+        /* ON NE PEINT PAS: ce qui nous intéresse est le RANG que le clic donne,
+           pas la courbe qu'on en ferait. */
+        drawForestCurve(rank){picked=rank}
+    }
+    node.forestCurveGeometry=evaluate("forestCurveGeometry",
+        slice(NODE,"    forestCurveGeometry(){","    wireForestCursor(){","forestCurveGeometry"))
+    /* L'ANRE EST `async setForestCut(` ET NON `setForestCut(`: l'helper
+       `method()` construit ses ancres sans le mot-clé, et ne trouverait donc
+       jamais la fin de `wireForestCursor`. On découpe à la main. */
+    evaluate("wireForestCursor",
+        slice(NODE,"    wireForestCursor(){","    async setForestCut(","wireForestCursor")).call(node)
+    assert.ok(listeners.pointerdown,"the canvas must listen for presses")
+
+    const geo=node.forestCurveGeometry()
+    const xOf=rank=>geo.left+(count<2?geo.usable/2:(rank/(count-1))*geo.usable)
+    const pitch=geo.usable/(count-1)
+    /* UN DEMI PAS, ET PAS PLUS: `rankAt` ARRONDISIT au rang entier le plus
+       proche, donc l'erreur maximale est la moitié de la distance entre deux
+       rangs. Au-delà, ce n'est plus une imprécision de lecture. */
+    const tolerance=pitch/2+0.5
+    let checked=0
+    for(let x=geo.left;x<=geo.left+geo.usable;x+=7){
+        picked=null
+        listeners.pointerdown({clientX:geo.x0+x,pointerId:1})
+        assert.notEqual(picked,null,`no rank at x=${x}`)
+        const drawn=xOf(picked)
+        assert.ok(Math.abs(drawn-x)<=tolerance,
+            `click at x=${x} lights the rank drawn at x=${drawn.toFixed(1)} `
+            +`— ${Math.abs(drawn-x).toFixed(1)}px off (tolerance ${tolerance.toFixed(1)})`)
+        checked++
+    }
+    assert.ok(checked>=30,`the sweep must cover the width, ${checked} probes is not enough`)
+
+    /* LES BORDS DE LA MARGE: cliquer à GAUCHE de la courbe donne le premier
+       rang, pas un rang négatif ni le deuxième. La marge appartient au
+       graphique — elle n'est pas du vide qu'on peut viser. */
+    picked=null
+    listeners.pointerdown({clientX:geo.x0,pointerId:1})
+    assert.equal(picked,0,"left of the plot reads the first rank")
+    picked=null
+    listeners.pointerdown({clientX:geo.x0+geo.width,pointerId:1})
+    assert.equal(picked,count-1,"right of the plot reads the last rank")
+
+    /* ET LA GÉOMÉTRIE EST BIEN CELLE DU DESSIN: ces deux nombres sont ceux que
+       `drawForestCurve` emploie pour poser le trait. S'ils diffèrent, le test
+       ci-dessus passerait en vérifiant une courbe que le programme ne peint pas. */
+    assert.equal(geo.left,300*0.10,"the left margin is 10 % of the CONTENT box")
+    assert.equal(geo.usable,300-30-3,"the drawn run spans width minus both margins")
+    /* L'ORIGINE EST LE FOND ET PAS LA BORDURE: `clientLeft` vaut 1 ici, et
+       l'oublier décalerait toute la lecture d'un pixel — le test de balayage
+       ci-dessus resterait vert, car un pixel passe sous la tolérance. C'est
+       donc cette ligne qui tient le correctif de la bordure. */
+    assert.equal(geo.x0,1,"the reading origin is the padding edge, not the border")
 })
 
 test("the suggested cut is applied on its own, like Igor did",()=>{
@@ -379,7 +483,91 @@ test("the reference list is rebuilt from the plan, never beside it",()=>{
     assert.match(NODE,/this\.refreshForestPlan\(\)/)
     const refresh=slice(NODE,"    refreshForestPlan(){","    /* Every XY wave","refreshForestPlan")
     assert.match(refresh,/this\.buildForestPlan\(\)/)
-    assert.match(refresh,/this\.renderForest\(\)/)
+    /* LA LECTURE, ET PAS LE RÉSEAU, ET C'EST LE COÛT.
+       `forestPlan` n'a qu'un lecteur: la première ligne de la lecture. Tout le
+       reste de `renderForest` — courbe, liste, graphe, récapitulatif — ne le
+       lit pas. Le relancer coûtait pourtant 130 ms à 2,3 s de Fruchterman–
+       Reingold à CHAQUE groupe ajouté, pour repeindre une ligne de texte: un
+       défaut invisible dans le calcul, qui ne se voit qu'au chronomètre, donc
+       il est affirmé ici et non constaté ailleurs. */
+    assert.match(refresh,/this\.renderForestReadout\(\)/)
+    assert.ok(!/this\.renderForest\(\)/.test(refresh),
+        "refreshForestPlan repaints the whole network: the plan changes one line of the readout")
+})
+
+/* LE VRAI COÛT DU PANNEAU, ET IL EST MESURÉ ICI.
+
+   180 itérations de Fruchterman–ReingOLD valent 130 ms sur cinquante groupes
+   et 2,3 s sur mille — `layoutForests` est le poste de dépense du panneau, et
+   de très loin: `buildForestPlan` coûte moins d'une milliseconde. Le rendu ne
+   doit donc pas le relancer.
+
+   Ce test ne lit pas le texte: il EXÉCUTE la méthode avec un `layoutForests`
+   espion. Un test de texte dirait « la mémoïsation est écrite »; il ne dirait
+   pas qu'elle ne se vide pas au premier redimensionnement, ni que deux appels
+   rendent bien la MÊME valeur plutôt que deux valeurs égales. */
+test("the force layout runs ONCE for one graph, not at every repaint",()=>{
+    const source=slice(NODE,
+        "    forestOverviewLayout(){",
+        "/* LE DESSIN, ET IL NE FAIT QUE LIRE",
+        "forestOverviewLayout")
+    let runs=0
+    /* LE FILTRE EST INJECTÉ, parce que `new Function` ne voit pas les imports:
+       le corps de la méthode appelle `layoutForests` comme une variable, donc
+       c'est une variable qu'on lui donne — et c'est elle qui compte. */
+    const build=new Function("window","layoutForests",
+        "return "+source.replace(/^(\s*)/,"$1function "))(
+        {devicePixelRatio:1},
+        ()=>({stamp:++runs,groups:[]}))
+    /* LES DEUX GRAPHES SONT TENUS EN VARIABLE, et c'est l'objet même qui fait
+       la clé: `[...]` écrit deux fois crée deux tableaux, donc deux identités,
+       donc un cache qui manque toujours — un test qui vérifierait le cache en
+       le remplissant à chaque ligne ne vérifierait rien. */
+    const node={
+        forestPlotBox:{clientWidth:600,clientHeight:300},
+        forestPlotHeight:260,
+        forestGraphs:[{graphs:[{rank:0}]}]
+    }
+    const call=()=>build.call(node)
+
+    const first=call()
+    assert.equal(runs,1,"the first call must lay the graph out")
+    const second=call()
+    assert.equal(runs,1,
+        "the same graph in the same box laid out twice: every repaint pays the whole network again")
+    assert.equal(second,first,
+        "two calls must return the same layout object, not two equal ones")
+    /* LA BOÎTE COMPTE, et c'est la seule autre clé: une grille calée sur une
+       largeur qu'on ne mesurerait plus serait fausse à chaque redimensionnement. */
+    node.forestPlotBox={clientWidth:800,clientHeight:300}
+    call()
+    assert.equal(runs,2,"a resized box must lay the graph out again")
+    /* ET DES SOMMETS NEUFS COMPTENT: c'est un nouveau réseau, pas le même. */
+    const fresh={graphs:[{rank:1}]}
+    node.forestGraphs=[fresh]
+    call()
+    assert.equal(runs,3,"a new graph must lay the graph out again")
+    /* PUIS LE MÊME, ENCORE: c'est le cas que le panneau rencontre à chaque
+       ajout de groupe, et celui qui coûtait 130 ms à 2,3 s. */
+    node.forestGraphs=[fresh]
+    call()
+    assert.equal(runs,3,"the very same graph and box must not be laid out again")
+})
+
+test("the readout has ONE writer, and the plan has ONE reader",()=>{
+    /* Écrire la lecture à deux endroits, c'est deux endroits à rafraîchir — et
+       l'un finit par être oublié. `renderForest` délègue, le plan n'est lu que
+       dans la lecture, et c'est ce qui rend `refreshForestPlan` bon marché. */
+    const readout=method("renderForestReadout","renderForest")
+    assert.match(readout,/this\.forestPlan/,
+        "the readout no longer reads the plan: its first line would go stale")
+    assert.match(readout,/this\.forestReadout\.textContent=/,
+        "the readout must paint its own element")
+    const render=method("renderForest","renderForestCurveLine")
+    assert.match(render,/this\.renderForestReadout\(\)/,
+        "renderForest must delegate the readout instead of writing it again")
+    assert.ok(!/this\.forestPlan/.test(render),
+        "renderForest reads the plan directly: the readout would have two writers")
 })
 
 test("the module is served: an import nothing serves is a 404 at the click",()=>{

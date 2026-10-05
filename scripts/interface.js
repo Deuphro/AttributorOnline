@@ -11,12 +11,12 @@ import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "./plot2d-gl.js"
 import {Formula,Stoichiometry,FormulaCollection,loadTable} from "./chemistry.js"
 //the attribution engine: the two group lists, the isotopic and ionisation
 //windows, and the sieve. Pure, and tested without a DOM (attribution.test.mjs).
-import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula} from "./attribution.js"
+import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula,propagateForest} from "./attribution.js"
 //the measurement NETWORK: the reference list built from the plan, and the
 //minimum spanning forest over the measured points. `growForest` is the JS oracle
 //of the Rust kernel, not a second implementation — forestParity.test.mjs proves
 //the two give the same tree (see forest.js).
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,DEFAULT_LINK_TOLERANCE} from "./forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,layoutForests,DEFAULT_LINK_TOLERANCE} from "./forest.js"
 //where the nodes go, and which two of them get wired together by themselves.
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
@@ -2999,6 +2999,8 @@ class AttributionNode extends NodeWithAccordion{
         this.parameters.forestGroups=[{group:"CH2"}]
         /* la liste de références du dernier calcul, et les arbres par entrée */
         this.forestPlan=null
+        this.forestGraphsOf=null
+        this.forestLayoutOf=null
         this.forests=[]
         this.forestComponents=[]
         this.forestErrors=[]
@@ -3238,7 +3240,12 @@ class AttributionNode extends NodeWithAccordion{
            isotopiques d'un groupe ajouté — donc une ligne muette sous un nom
            qu'on vient de taper. */
         this.renderForestGroupTable()
-        this.renderForest()
+        /* LA LECTURE SEULE, ET PAS LE RÉSEAU. `forestPlan` n'a qu'un lecteur:
+           la première ligne de la lecture — le compte des masses de référence.
+           Tout le reste de `renderForest` (courbe, liste, graphe, récapitulatif,
+           mise en page force) ne le lit pas, et le relancer coûtait 130 ms à
+           2,3 s à CHAQUE groupe ajouté, pour repeindre une ligne de texte. */
+        this.renderForestReadout()
         return this.forestPlan
     }
 
@@ -4963,6 +4970,7 @@ class AttributionNode extends NodeWithAccordion{
             this.origin.main.querySelector(".vertical.right.content")
         )
         channel.register(`${registrationName}:network`,this.forestAccordion,`${label} (network)`)
+        this.setupForestGraphDialog(channel,registrationName,label)
         this.setupForestPanel()
         this.setupUI()
         /* NO resolve is triggered here: the node may have no input yet, and a
@@ -4981,6 +4989,11 @@ class AttributionNode extends NodeWithAccordion{
            avec des résultats qui plus rien ne produit. */
         this.forestAccordion?.suicide()
         this.forestAccordion=null
+        /* LA FENÊTRE CENTRALE SUIT LE NŒUD. Sans cette ligne, un nœud
+           supprimé laisserait au centre une fenêtre qui montre un réseau devenu
+           muet, et que plus rien ne repeint. */
+        this.forestDialog?.suicide()
+        this.forestDialog=null
         super.suicide(options)
     }
 
@@ -5000,6 +5013,391 @@ class AttributionNode extends NodeWithAccordion{
        La charge est celle du plan sauf si l'utilisateur en a choisi une: 0
        signifie « celle du plan », parce que taper 1 dans une case quand le plan
        dit 1+ serait une redite qui peut mentir dès que le plan change. */
+/* LES GRAPHS DU RÉSEAU — ILS SONT DÉRIVÉS DES COMPOSANTS, JAMAIS RECALCULÉS.
+
+       `forestComponents` a déjà lu les mêmes tableaux que la liste de groupes, et
+       a déjà rangé les liens par composant. Refaire ce travail ici produirait un
+       second jeu de nombres, et les deux divergeraient au premier changement de
+       coupure — la liste dirait 6 pics et le graphique en montrerait 5, sans
+       qu'aucun des deux soit faux tout seul.
+
+       LES MASSES SONT INDEXÉES COMME LE NOYAU, DONC DANS L'ORDRE TRIÉ DES PICS.
+       C'est cet ordre que portent `u` et `v`, et c'est un piège: les masses dans
+       l'ordre d'arrivée donneraient des sommets aux masses fausses, et le
+       graphique serait aberrant sans que rien ne le signale. */
+    buildForestGraphs(){
+        /* LE REBÂTIMENT EST MÉMOÏSÉ SUR LES COMPOSANTS, ET SUR EUUX SEULEMENT.
+           `forestGraph` ne lit que `forestComponents`; le reconstruire à chaque
+           rendu produirait des sommets — et une identité — NEUFS alors que rien
+           n'a bougé, ce qui invaliderait la mise en page en dessous sans raison.
+           Les composants ne sont réécrits qu'au résultat d'un « Grow network »:
+           leur identité est exactement la bonne clé. */
+        const source=this.forestComponents??[]
+        if(this.forestGraphsOf===source&&Array.isArray(this.forestGraphs)) return this.forestGraphs
+        this.forestGraphsOf=source
+        this.forestGraphs=[]
+        for(const batch of source){
+            if(!batch) continue
+            /* `points.order` est le tri: `points.x[order[i]]` est la i-ème masse
+               par ordre croissant, et c'est ce rang que le noyau numérote. */
+            const points=batch.points
+            const masses=points?Array.from(points.order.map(index=>points.x[index])):[]
+            const intensities=points?Array.from(points.order.map(index=>points.y[index])):[]
+            this.forestGraphs.push({
+                title:batch.title??"attribution",
+                points,
+                graphs:forestGraph(batch.components??[],{masses,intensities})
+            })
+        }
+        return this.forestGraphs
+    }
+
+/* LA MISE EN PLACE, CALCULÉE UNE FOIS PAR RÉSEAU.
+
+       Elle vient de `forest.js` et ne dépend que du graphe: elle n'est donc PAS
+       dans le rendu. Un moteur de force recalculé à chaque image donnerait deux
+       réseaux différents pour un même « Grow network », et la comparaison d'un
+       run à l'autre — le seul usage de ce graphique — deviendrait impossible. */
+    forestOverviewLayout(){
+        const box=this.forestPlotBox
+        if(!box) return null
+        const batch=this.forestGraphs?.[0]
+        if(!batch?.graphs?.length) return null
+        const width=Math.max(240,Math.round(box.clientWidth||600))
+        const height=Math.max(160,Math.round(box.clientHeight||this.forestPlotHeight||260))
+        /* LA MISE EN PAGE EST MÉMOÏSÉE, ET C'EST LE VRAI COÛT DU PANNEAU.
+           180 itérations de Fruchterman–ReingOLD valent 130 ms sur cinquante
+           groupes et 2,3 s sur mille — et `renderForest` les relançait à chaque
+           ajout de groupe, qui ne change ni les sommets ni la boîte. La clé est
+           donc l'identité des graphes (elle ne bouge que si les composants
+           bougent) et la taille mesurée de la boîte (elle seule décale la
+           grille). Le déterminisme du moteur rend la valeur réutilisable à
+           l'identique: c'est le même cercle, les mêmes itérations. */
+        const cached=this.forestLayoutOf
+        if(cached&&cached.graphs===batch.graphs
+            &&cached.width===width&&cached.height===height){
+            return cached.layout
+        }
+        const layout=layoutForests(batch.graphs,{width,height})
+        this.forestLayoutOf={graphs:batch.graphs,width,height,layout}
+        return layout
+    }
+
+    /* LE DESSIN, ET IL NE FAIT QUE LIRE DES POSITIONS.
+
+       LES SEGMENTS SONT GROUPÉS PAR TRANCHE D'ERREUR — huit traces, pas une par
+       lien. Une trace par lien donnerait dix mille entrées de légende et dix
+       mille nœuds; huit traces donnent huit valeurs d'opacité, et c'est
+       exactement ce que l'œil sait comparer. Le regroupement est donc une
+       décision de LISSAGE visuel, pas de donnée: l'erreur exacte reste dans la
+       liste des liens et dans l'infobulle du pic. */
+    static FOREST_OPACITY_STEPS=8
+
+    /* LA PALETTE DES BRIQUES, et elle est celle du programme.
+
+       Le bleu `#78b4ff` des listes ionisantes ouvre la série, puis le vert de
+       l'accent, puis l'orange et le rouge d'alerte que la feuille de style
+       declare pour `.badge.warn` et `.badge.req`. Une palette inventée ici
+       ferait un graphique qui ne ressemble à rien du reste de l'application. */
+    static FOREST_FORMULA_COLOURS=["#78b4ff","#aef22e","#ffb02e","#ff6363","#c58cff"]
+
+    renderForestPlot(){
+        const plot=this.forestPlot
+        if(!plot) return
+        const layout=this.forestOverviewLayout()
+        if(!layout){
+            plot.traces=[]
+            plot.drawGraph?.()
+            return
+        }
+        this.forestLayout=layout
+        const batch=this.forestGraphs[0]
+        /* LA POSITION DE CHAQUE SOMMET, DANS UN INDEX UNIQUE. Le noyau numérote
+           les pics par rang dans l'ordre trié, et la mise en page ne connaît que
+           des positions: c'est le seul endroit où les deux mondes se rencontrent,
+           donc c'est le seul endroit où une confusion serait possible. */
+        const place=new Map()
+        for(const group of layout.groups){
+            for(const point of group.points) place.set(`${group.rank}:${point.index}`,point)
+        }
+        const at=(rank,index)=>place.get(`${rank}:${index}`)
+        const groups=batch.graphs.map((graph,index)=>({graph,rank:graph.rank??index}))
+        const tolerance=Number(this.parameters.forestTolerance)
+        const traces=[]
+
+        /* UNE TRACE DE SEGMENTS, et elle tient tous les liens qu'on lui donne
+           dans UN SEUL chemin SVG. C'est ce qui permet à un réseau de cent mille
+           pics de rester un objet DOM unique au lieu de cent mille. */
+        const segmentTrace=(id,title,colour,opacity,pairs,size)=>{
+            if(!pairs.length) return
+            traces.push(new XYTrace({
+                id,title,mode:"segments",layer:"svg",
+                options:{mode:"segments",layer:"svg",color:colour,opacity,
+                    line:{size}},
+                /* PAS DE `points` EN PLUS: `XYTrace` ne lit que `{id,title,wave,
+                   options}`, et ses `points` viennent du wave. */
+                wave:Wave.fromCoordinates(
+                    Float64Array.from(pairs,pair=>pair[0]),Float64Array.from(pairs,pair=>pair[1]),{},["x","y"])
+            }))
+        }
+
+        for(let step=0;step<AttributionNode.FOREST_OPACITY_STEPS;step++){
+            const low=step/AttributionNode.FOREST_OPACITY_STEPS
+            const high=(step+1)/AttributionNode.FOREST_OPACITY_STEPS
+            const pairs=[]
+            for(const {graph,rank} of groups){
+                for(const link of graph.links??[]){
+                    const ratio=tolerance>0?Number(link.weight||0)/tolerance:0
+                    if(!(ratio>=low&&ratio<high)) continue
+                    const from=at(rank,link.u)
+                    const to=at(rank,link.v)
+                    if(!from||!to) continue
+                    pairs.push([from.x,from.y],[to.x,to.y])
+                }
+            }
+            /* L'OPACITÉ VIENT DE LA TRANCHE ET NON DU LIEN: deux liens d'une même
+               tranche partagent la même valeur, donc l'écart entre eux serait du
+               bruit de segmentation — et ce bruit se voit, parce que deux liens
+               identiques seraient arrondis différemment. */
+            segmentTrace(
+                `${this.title}:forest:error:${step}`,
+                `link error ${(low*tolerance).toFixed(2)}–${(high*tolerance).toFixed(2)} Da`,
+                "#dfe6ee",0.12+0.88*(low+high)/2,pairs,1)
+        }
+
+        /* LES SOMMETS, ET ILS SONT BLANCS. Un pic est une MESURE, donc il porte
+           la couleur du texte du programme; un réseau qui ne serait qu'en blanc
+           se confondrait avec la grille et les repères. */
+        const points=[]
+        for(const {graph,rank} of groups){
+            for(const vertex of graph.vertices??[]){
+                const point=at(rank,vertex.index)
+                if(point) points.push([point.x,point.y])
+            }
+        }
+        if(points.length){
+            traces.push(new XYTrace({
+                id:`${this.title}:forest:peaks`,
+                title:"measured peaks",
+                mode:"points",layer:"svg",
+                options:{mode:"points",layer:"svg",color:"#dfe6ee",line:{size:1},
+                    marker:{shape:"circle",size:3}},
+                wave:Wave.fromCoordinates(
+                    Float64Array.from(points,pair=>pair[0]),Float64Array.from(points,pair=>pair[1]),{},["x","y"])
+            }))
+        }
+
+        /* `traces`, ET NON `data`: `resolveRenderTraces()` et `dataBounds()` lisent
+           `this.traces` quand il y en a, et ne retombent sur `this.data` qu'en
+           dernier recours. Écrire dans `data` laissait donc `traces` vide — rien
+           n'était dessiné et les bornes restaient nulles, sans une seule erreur:
+           un cadre muet. C'est le défaut le plus coûteux, il ne se signale pas. */
+        plot.traces=traces
+        plot.drawGraph?.()
+    }
+
+    /* LA FENÊTRE EST DANS LE PANNEAU CENTRAL, ET PAS AU-DESSUS DES LISTES.
+
+       Le réseau est une LECTURE: on le regarde pour comparer, on ne le règle
+       pas. Une lecture encastrée en tête du panneau de réglages pousse ceux-ci
+       hors d'écran — il faut défiler pour passer de la forme aux paramètres, et
+       l'on finit par oublier les deux. Dans le panneau central elle a la place
+       d'une fenêtre, c'est-à-dire autant qu'on en veut, et elle se range avec
+       les grilles des autres graphes plutôt que de disputer la colonne. */
+    setupForestGraphDialog(channel,registrationName,label){
+        this.forestDialog=new Dialog(
+            `${label} network`,this.origin,this.origin.midCentralContent)
+        /* COMME NodeWithAccordionGraph, ET POUR LA MÊME RAISON: une fenêtre de
+           graphe fermable n'a aucun moyen de se rouvrir, faute d'un bouton qui
+           la réouvre. La dismisser est donc grisée et inerte plutôt que
+           masquée — un contrôle qui disparaît entre deux panneaux est plus
+           dur à apprendre qu'un contrôle visiblement inapplicable. */
+        const dismisser=this.forestDialog.DOMelt.dismisser
+        delete dismisser.handleClick
+        dismisser.classList.add("disabled")
+        dismisser.setAttribute("aria-disabled","true")
+        stylize(this.forestDialog.DOMelt.window,{
+            top:"0px",
+            left:"0px",
+            width:"100%",
+            height:"100%"
+        })
+        channel.register(
+            `${registrationName}:graph`,this.forestDialog,`${label} network`)
+        /* LA FENÊTRE EST PLEINE DÈS SA CRÉATION. Sans cet appel elle
+           s'ouvrirait vide jusqu'au premier resolve — et un nœud sans entrée ne
+           résout jamais, donc elle resterait vide indéfiniment. */
+        this.setupForestOverview()
+    }
+
+    /* L'ORDRE DANS CETTE MÉTHODE EST LA MÉTHODE.
+
+       Plot2D ne s'observe pas: il mesure sa boîte une seule fois, à la
+       construction, et ne la remesure jamais. Tout ce qui prend de la place —
+       le cadre, la légende, le récapitulatif — est donc monté AVANT la ligne qui
+       crée le plot, sinon il mesure un cadre encore vide et se retrouve à moitié
+       rempli, sans jamais le signaler. */
+    setupForestOverview(){
+        if(!this.forestDialog) return
+        const content=this.forestDialog.DOMelt.content
+        /* PAS DE GARDE SUR `this.forestPlot`, ET C'EST DÉLIBÉRÉ.
+
+           `replaceChildren()` vide la fenêtre, donc au second montage le DOM est
+           vierge alors que `this.forestPlot` existe encore — une garde « déjà
+           construit » court-circuiterait, laissant une fenêtre SANS graphique
+           qui paraît pourtant configurée. C'est le pire genre de défaut: rien
+           ne signale l'absence, il faut le remarquer.
+
+           Le Plot2DWebGL de l'appel précédent est d'abord LIBÉRÉ: il tient un
+           contexte WebGL, et le remplacer sans le disposer en ferait fuiter un
+           par reconstruction de panneau. */
+        content.replaceChildren()
+        this.forestPlot?.dispose?.()
+        stylize(content,{
+            display:"grid",
+            "grid-template-rows":"minmax(0,1fr) auto auto",
+            height:"100%",
+            minHeight:"0",
+            padding:"4px",
+            gap:"4px",
+            overflow:"hidden"
+        })
+        const caption=(text)=>{
+            const label=CE("div",{},[text])
+            stylize(label,{fontSize:"0.78em",opacity:"0.6",margin:"6px 0 2px"})
+            content.appendChild(label)
+            return label
+        }
+        this.forestPlotBox=CE("div",{className:"an-forest-plot"},[])
+        stylize(this.forestPlotBox,{
+            /* PAS DE HAUTEUR EN px: la fenêtre a la sienne et se redimensionne.
+               Un cadre de 260px figé laisserait une bande morte en dessous, puis
+               une seconde bande dès qu'on élargit la fenêtre. */
+            minHeight:"160px",
+            background:"rgba(255,255,255,0.04)",
+            border:"1px solid rgba(255,255,255,0.15)",borderRadius:"3px"
+        })
+        content.appendChild(this.forestPlotBox)
+
+        /* LE RÉCAPITULATIF, SOUS LE GRAPHE — et non au-dessus. Le graphique
+           répond à « à quoi ressemble ce réseau », les trois chiffres à « qu'est-ce
+           que j'ai là ». Le premier est une forme, le second une quantité: poser
+           la quantité au-dessus ferait chercher la forme dans un tableau. */
+        caption("Attribution")
+        this.forestRecapHost=CE("div",{className:"an-recap"},[])
+        stylize(this.forestRecapHost,{display:"grid",gap:"4px"})
+        content.appendChild(this.forestRecapHost)
+
+        /* LE PLOT, EN DERNIER: tout ce qui occupe de la place est déjà en place,
+           donc la boîte qu'il mesure est exactement celle qu'il dessinera. */
+        this.forestPlot=new Plot2DWebGL([],
+            `${this.title} network`,this.origin,this.forestPlotBox)
+        this.forestPlot.parameters.axis.left.autoLabel=false
+        this.forestPlot.parameters.axis.bottom.autoLabel=false
+        this.forestPlot.parameters.axis.left.label=""
+        this.forestPlot.parameters.axis.bottom.label=""
+
+        /* ET IL EST REPEINT TOUT DE SUITE, pas au prochain resolve: la fenêtre
+           vient d'être recréée et montrerait un cadre vide à qui l'ouvrirait
+           alors que les données existent déjà. */
+        this.renderForestOverview()
+    }
+
+
+
+
+/* LES TROIS NOMBRES, ET ILS SONT LUS, JAMAIS RECOMPTÉS.
+
+       Ils existent déjà: `attribution.pointCount`, les entrées qui passent la
+       fenêtre, et le nombre d'entrées. Les REPRODUIRE serait l'échec le plus
+       facile à commettre — un compteur dupliqué diverge de celui qu'il duplique
+       au premier resolve, et les deux restent vrais séparément. */
+    forestRecap(batchIndex){
+        const attribution=(this.attributions??[])[batchIndex]
+        if(!attribution) return null
+        const entries=attribution.entries??[]
+        return {
+            title:(this.forestGraphs?.[batchIndex]?.title)??"attribution",
+            /* LES CIBLES: les positions de pic soumises, pas les lignes du
+               tableau de formules. */
+            targets:attribution.pointCount??0,
+            /* LES MATCHS, ET CE SONT CEUX QUI PASSENT LA FENÊTRE. Une formule
+               présente mais hors fenêtre est un CANDIDAT, pas une
+               correspondance, et la compter ferait monter un nombre qui n'a pas
+               de sens. */
+            matched:entries.filter(entry=>entry.inWindow).length,
+            /* LES CAS POSSIBLES: les formules qui ont survécu au crible et
+               qu'on peut donc vérifier. Le nombre de combinaisons ÉNUMÉRÉES
+               n'est pas mis ici — c'est du travail de machine, et `visited` le
+               dit déjà à qui le veut. */
+            possible:entries.length
+        }
+    }
+
+/* LE RÉCAPITULATIF, ET CHAQUE NOMBRE A SA BARRE.
+
+       La barre est une PART, pas une valeur: elle est normée sur le plus grand
+       des trois du même lot, donc elle dit une proportion à l'intérieur d'une
+       série. C'est le seul moyen honnête quand trois grandeurs n'ont pas la même
+       unité — et trois grandeurs sans commune mesure, alignées en colonnes, se
+       lisent très bien. */
+    renderForestRecap(){
+        const host=this.forestRecapHost
+        if(!host) return
+        host.replaceChildren()
+        const rows=(this.forestGraphs??[])
+            .map((_,index)=>this.forestRecap(index))
+            .filter(Boolean)
+        if(!rows.length){
+            stylize(host.appendChild(CE("div",{},["— resolve first —"])),
+                {fontSize:"0.8em",opacity:"0.5"})
+            return
+        }
+        for(const row of rows){
+            const cells=[["targets",row.targets],["matched",row.matched],["possible",row.possible]]
+            const top=Math.max(...cells.map(([,value])=>value))||1
+            const line=CE("div",{className:"an-recap-line"},[])
+            stylize(line,{display:"grid",gap:"2px"})
+            line.appendChild(CE("div",{style:{fontSize:"0.72em",opacity:"0.65"}},[row.title]))
+            const grid=CE("div",{},[])
+            stylize(grid,{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:"6px"})
+            for(const [label,value] of cells){
+                const cell=CE("div",{},[])
+                stylize(cell,{display:"grid",gap:"1px",minWidth:"0"})
+                const bar=CE("div",{},[])
+                /* `minWidth` GARDE LE TICK: une valeur nulle donnerait une barre
+                   de largeur nulle, donc un nombre qui n'a pas l'air d'être
+                   mesuré. Zéro est une RÉPONSE, et elle doit se voir. */
+                stylize(bar,{
+                    height:"3px",minWidth:"1px",
+                    width:`${Math.round(100*value/top)}%`,
+                    background:"var(--accent)",opacity:"0.8"
+                })
+                cell.appendChild(bar)
+                const text=CE("div",{},[`${value} ${label}`])
+                stylize(text,{fontSize:"0.72em",opacity:"0.9",overflow:"hidden"})
+                cell.appendChild(text)
+                grid.appendChild(cell)
+            }
+            line.appendChild(grid)
+            host.appendChild(line)
+        }
+    }
+
+    /* LE RENDU DU PANNEAU, EN UN SEUL ENDROIT.
+
+       Récapitulatif et graphique ensemble, parce qu'ils lisent le même état. Les
+       appeler séparément depuis deux endroits différents laisserait
+       inévitablement un chemin où l'un est repeint sans l'autre — et un
+       récapitulatif qui annonce cent cibles pendant que le graphique en montre
+       trente est le défaut le plus coûteux de tous: il ne se remarque qu'en
+       comparant les deux. */
+    renderForestOverview(){
+        if(!this.forestPlot) return
+        this.renderForestRecap()
+        this.renderForestPlot()
+    }
+
     buildForestPlan(){
         const asked=Number(this.parameters.forestCharge)
         const charge=Number.isFinite(asked)&&asked>0?Math.abs(asked):0
@@ -5270,6 +5668,36 @@ class AttributionNode extends NodeWithAccordion{
        cinq mille points, viser un rang au pixel près est faisable; viser une
        VALEUR au pixel près, non. Un glissement ajoute donc de la précision et
        retire de la certitude — et l'utilisateur voit où il coupe. */
+    /* LA GÉOMÉTRIE DE LA COURBE, CALCULÉE UNE SEULE FOIS, POUR LES DEUX SENS.
+
+       Dessiner et lire sont deux conversions inverses de la même chose, et
+       elles doivent employer les mêmes nombres. Écrites chacune de leur côté,
+       elles divergent — et c'est un curseur décalé: la marge de gauche vaut
+       10 % dans le dessin, elle doit valoir 10 % dans le curseur.
+
+       L'ERREUR QU'ELLE RÉPARE: `rankAt` mélangeait des FRACTIONS et des
+       PIXELS dans une même expression — `box.width - forestPlotLeft`, où
+       `forestPlotLeft` vaut 0.10 sans unité. Le résultat ne mesurait rien, le
+       long « usable » se simplifiait en à-peu-près la largeur totale, et le
+       curseur ignorait la marge: en décalé d'un maximum à gauche, exact au
+       bord droit, donc un décalage qui BOUGE — qui se lit comme un bug, pas
+       comme une imprécision.
+
+       LA BOÎTE EST LA ZONE DE FOND ET PAS LA BORDURE: le bitmap n'occupe que
+       le content box, alors que `getBoundingClientRect()` rend le border box.
+       Mesurer depuis celui-là ajoute l'épaisseur de la bordure à l'origine —
+       un pixel — et emploie une largeur qui n'est pas celle du dessin. */
+    forestCurveGeometry(){
+        const canvas=this.forestCanvas
+        if(!canvas) return null
+        const rect=canvas.getBoundingClientRect()
+        const width=Math.max(80,Math.round(canvas.clientWidth||rect.width))
+        const height=Math.max(80,Math.round(canvas.clientHeight||rect.height))
+        const left=this.forestPlotLeft*width
+        const usable=Math.max(1,width-left-this.forestPlotRight*width)
+        return {rect,width,height,left,usable,x0:rect.left+(canvas.clientLeft??0)}
+    }
+
     wireForestCursor(){
         const canvas=this.forestCanvas
         if(!canvas) return
@@ -5277,16 +5705,14 @@ class AttributionNode extends NodeWithAccordion{
         const rankAt=event=>{
             const weights=this.forestWeights
             if(!weights?.length) return null
-            const box=canvas.getBoundingClientRect()
-            const ratio=(event.clientX-box.left)/Math.max(1,box.width)
-            /* LE MARGE EST DANS LE DESSIN, ET DONC DANS LA CONVERSION: si le
-               tracé commence à 6 % de la largeur, le pixel 0 ne doit pas
-               correspondre au rang 0. Deux conversions du même calcul, c'est un
-               curseur décalé d'une fraction de la largeur. */
-            const usable=Math.max(1e-6,this.forestPlotLeft/box.width+
-                (box.width-this.forestPlotLeft-this.forestPlotRight)/box.width)
-            const along=Math.max(0,Math.min(1,(ratio-this.forestPlotLeft/box.width)/usable))
-            return Math.round(along*(weights.length-1))
+            /* L'INVERSE EXACT DE `xOf`, ET RIEN D'AUTRE: mêmes marges, même
+               largeur, même unité, lues à l'endroit même où le dessin les lit.
+               C'est ce partage qui empêche les deux de diverger — une seconde
+               écriture du calcul reprendrait aussitôt le décalage. */
+            const geometry=this.forestCurveGeometry()
+            if(!geometry) return null
+            const along=(event.clientX-geometry.x0-geometry.left)/geometry.usable
+            return Math.round(Math.max(0,Math.min(1,along))*(weights.length-1))
         }
         canvas.addEventListener("pointerdown",event=>{
             if(!this.forestWeights?.length) return
@@ -5382,9 +5808,12 @@ class AttributionNode extends NodeWithAccordion{
         if(!canvas) return
         const weights=this.forestWeights??[]
         const ratio=window.devicePixelRatio??1
-        const box=canvas.getBoundingClientRect()
-        const width=Math.max(80,Math.round(box.width))
-        const height=Math.max(80,Math.round(box.height))
+        /* LA MÊME GÉOMÉTRIE QUE LE CURSEUR — c'est le principe de la méthode:
+           largeur, marge et origine se lisent UNE fois, et le trait comme la
+           croix s'en servent tous les deux. */
+        const geometry=this.forestCurveGeometry()
+        if(!geometry) return
+        const {width,height,left,usable}=geometry
         /* LE CANVAS EST MIS À L'ÉCHELLE DU DISPOSITIF, sinon la courbe est
            floue sur tout écran à haute densité — et une courbe floue fait poser
            le curseur au mauvais pixel. */
@@ -5402,9 +5831,7 @@ class AttributionNode extends NodeWithAccordion{
             ctx.fillText("no link yet — press Grow network",width/2,height/2)
             return
         }
-        const left=this.forestPlotLeft*width
-        const right=this.forestPlotRight*width
-        const usable=Math.max(1,width-left-right)
+        /* (largeur, marge et course: forestCurveGeometry, au-dessus) */
         /* L'ÉCHELLE LOG, ET LE PLANCHER N'EST PAS UN DÉTAIL DE DESSIN.
 
            Les erreurs vont de 1e-7 à 1 Da: six ordres de grandeur, donc une
@@ -5688,6 +6115,9 @@ class AttributionNode extends NodeWithAccordion{
         const content=this.forestAccordion.DOMelt.content
         content.replaceChildren()
         this.forestAccordion.setSizingMode("content")
+        /* LE GRAPHE N'EST PLUS ICI: il vit dans sa fenêtre centrale.
+           Il est repeint par `renderForest()`, qui est le seul endroit où l'état
+           du réseau change. */
         stylize(content,{
             display:"grid",
             "grid-template-columns":"minmax(0, 1fr)",
@@ -5783,7 +6213,22 @@ class AttributionNode extends NodeWithAccordion{
            il ne peut pas se tromper de numérotation — celle que le noyau a
            fixée. */
         this.forestList=CE("div",{className:"an-forest"},[])
-        stylize(this.forestList,{display:"grid",gap:"3px"})
+        /* LA LISTE EST BRIDÉE À LA MOITIÉ, ET ELLE DÉFILE SEULE.
+
+           Un `50%` ne servirait à rien ici: l'accordéon est en mode « content »,
+           sa hauteur est `auto`, et un pourcentage posé sur une hauteur `auto`
+           se résout en `none` — la bride n'existerait pas, et on ne verrait pas
+           la différence. La colonne de droite, elle, remplit la fenêtre, donc
+           `50vh` est la moitié demandée à la marge de l'en-tête près.
+
+           LE DÉFILEMENT EST DANS LE CADRE, pas dans la colonne: `.vertical
+           .right.content` a `scrollbar-width:none`, une liste qui déborderait
+           serait donc longue sans être navigable. Ici la barre appartient au
+           cadre, elle se voit — et le reste du panneau (courbe, lecture,
+           réglages) reste à sa place. */
+        stylize(this.forestList,{
+            display:"grid",gap:"3px",maxHeight:"50vh",overflowY:"auto",minWidth:"0"
+        })
         content.appendChild(this.forestList)
         this.forestReadout=CE("div",{style:{
             fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap"
@@ -5824,9 +6269,14 @@ class AttributionNode extends NodeWithAccordion{
        Ici le ROI n'existe pas — ce programme n'a pas d'état global — donc le clic
        fait ce qui existe: il met cette masse dans la SONDE, qui est déjà
        l'outil « quelle formule est-ce? » du nœud. Le clic et la sonde répondent
-       donc à la même question, par le même chemin. */
-    renderForest(){
-        if(!this.forestList) return
+       donc à la même question, par le même chemin.
+
+       LA LECTURE EST SÉPARÉE DU RÉSEAU, ET C'EST CE QUI REND LE PLAN BON
+       MARCHÉ. `forestPlan` n'a qu'un lecteur — le compte des masses de
+       référence, ci-dessous — donc rafraîchir ici ne rafraîchit QUE ceci.
+    */
+    renderForestReadout(){
+        if(!this.forestReadout) return
         const lines=[]
         if(this.forestPlan){
             const {masses,labels,charge}=this.forestPlan
@@ -5846,7 +6296,14 @@ class AttributionNode extends NodeWithAccordion{
                     ?`, ${forest.edgeCount} link(s) out of ${forest.candidates} candidates`
                     :""))
         }
-        if(this.forestReadout) this.forestReadout.textContent=lines.join("\n")
+        this.forestReadout.textContent=lines.join("\n")
+    }
+
+    /* LE PANNEAU ENTIÈR, ET UN SEUL APPEL. Le plan n'y entre pas: la
+       lecture ci-dessus le porte toute seule. */
+    renderForest(){
+        if(!this.forestList) return
+        this.renderForestReadout()
         /* LA COURBE EST REDESSINÉE À CHAQUE LECTURE, et c'est gratuit: le
            tracé tient dans un canvas de 300 points et ne fait aucun calcul.
            Elle doit suivre les RÉGLAGES — un changement de fenêtre de lien
@@ -5855,6 +6312,12 @@ class AttributionNode extends NodeWithAccordion{
         this.drawForestCurve(this.forestDrawCut??this.forestCut??null)
         this.renderForestCurveLine()
         this.renderForestList()
+        /* LE GRAPHE ET LE RÉCAPITULATIF, ICI ET NULLE PART AILLEURS. C'est
+           cette méthode que `startForest` appelle sur chacune de ses
+           branches — résultat, aucune référence, plan illisible — donc c'est
+           le seul endroit où les deux sont repeints ensemble. */
+        this.buildForestGraphs()
+        this.renderForestOverview()
     }
 
     /* LA PHRASE SOUS LA COURBE, et elle dit CE QUI EST GARDÉ.
@@ -13699,22 +14162,51 @@ class Plot2D{
         const line=d3.line()
             .x(pair=>xScale(pair[0]))
             .y(pair=>yScale(pair[1]))
+        /* LES SEGMENTS, ET ILS SONT UN MODE A PART ENTIERE.
+
+           lines-between-points relie les points DANS L'ORDRE, donc il relie
+           aussi le dernier d'un segment au premier du suivant — et un réseau
+           de dix mille liens y deviendrait un zigzag qui traverse tout le
+           cadre. Ici les points vont deux par deux: a,b,c,d donne DEUX
+           segments, a vers b et c vers d, et RIEN entre b et c.
+
+           TOUS LES SEGMENTS TIENNENT DANS UN SEUL path, comme les bâtons. Un
+           chemin par lien, ce serait dix mille noeuds DOM et dix mille
+           recalculs à chaque déplacement de vue; un chemin unique, c'est une
+           chaîne — et c'est ce qui permet de peindre un réseau qui contient
+           cent mille pics. */
+        const segmentPath=(points,xScale,yScale)=>{
+            const parts=[]
+            for(let i=0;i+1<points.length;i+=2){
+                const from=points[i]
+                const to=points[i+1]
+                parts.push("M"+xScale(from[0])+","+yScale(from[1])
+                    +"L"+xScale(to[0])+","+yScale(to[1]))
+            }
+            return parts.join("")
+        }
         const owner=this
         const stickBaseY=owner.stickBaseline()
         mergedTraceGroups.each(function(trace){
             const group=d3.select(this)
             const tracePoints=trace.points.filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
             const color=trace.options.color
-            const showLine=(trace.options.mode==="lines-between-points"||trace.options.mode==="lines-and-points"||trace.options.mode==="sticks-to-zero")
+            const showLine=(trace.options.mode==="lines-between-points"||trace.options.mode==="lines-and-points"||trace.options.mode==="sticks-to-zero"||trace.options.mode==="segments")
             const showMarkers=(trace.options.mode==="points"||trace.options.mode==="lines-and-points")
             const traceLine=group.selectAll("path.trace-line").data(showLine?[tracePoints]:[])
             traceLine.enter()
                 .append("path")
                 .attr("class","trace-line")
                 .merge(traceLine)
-                .attr("d",trace.options.mode==="sticks-to-zero"?tracePoints.flatMap(pair=>`M${xScale(pair[0])},${yScale(stickBaseY)}L${xScale(pair[0])},${yScale(pair[1])}`).join(""):line(tracePoints))
+                .attr("d",trace.options.mode==="sticks-to-zero"?tracePoints.flatMap(pair=>`M${xScale(pair[0])},${yScale(stickBaseY)}L${xScale(pair[0])},${yScale(pair[1])}`).join(""):trace.options.mode==="segments"?segmentPath(tracePoints,xScale,yScale):line(tracePoints))
                 .attr("fill","none")
                 .attr("stroke",color)
+                /* L'OPACITE, ET ELLE EST UNE PROPRIETE DU TRACE — parce que
+                   c'est la seule façon de montrer un lien faible SANS le
+                   cacher. Un réseau où les liens à 0.45 Da sont aussi noirs
+                   que ceux à 0.02 Da ne dit rien de sa qualité; les effacer
+                   dit le contraire de ce qu'on sait. */
+                .attr("stroke-opacity",trace.options.opacity??1)
                 .attr("stroke-width",trace.options.line.size)
                 .attr("stroke-linejoin",trace.options.line.joinStyle)
                 .attr("stroke-linecap",trace.options.line.capStyle)
