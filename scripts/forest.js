@@ -76,7 +76,14 @@ export function forestStandards(plan,{charge=1}={}){
        « celle que l'utilisateur a écrite ». */
     const masses=bricks.map(item=>item.atomicMass/divisor)
     const labels=bricks.map(item=>item.notation??item.groupNotation??item.key)
-    return {masses,labels,charge:divisor,diagnostics}
+    /* LES COMPOSITIONS, DANS LE MÊME ORDRE. `propagateForest` indexe ses
+       références comme `link.standard`: l'entrée i est la composition de la
+       brique i. Rendre un tableau séparé dans un autre ordre donnerait des
+       formules propagées fausses avec l'air de mesures — donc le même
+       `bricks`, le même ordre, et la Map partagée du plan (jamais mutée:
+       `mergeComposition` lit sa source sans l'écrire). */
+    const compositions=bricks.map(item=>item.composition??null)
+    return {masses,labels,compositions,charge:divisor,diagnostics}
 }
 /* LA RÉFÉRENCE LA PLUS PROCHE, dans une liste de {mass,index} TRIÉE par masse.
 
@@ -575,11 +582,25 @@ export function forestGraph(components,{masses=[],intensities=[]}={}){
             })
         }
         const vertices=[...seen.values()].sort((a,b)=>a.mass-b.mass)
+        /* LA RACINE DU CAHIER DES CHARGES, ET ELLE VIT DANS LE GRAPHE.
+           `forestRoot` choisit le pic au défaut le plus élevé dans ±10 % de
+           l'étendue autour de la moyenne — pas le premier indice, qui est le
+           pic le plus léger. `propagateForest` lit `graph.rootIndex` en
+           premier et ne retombe sur `vertices[0]` qu'en son absence: sans ce
+           champ, la propagation partait du mauvais pic. */
+        const chosen=forestRoot({vertices})
+        const rootIndex=Number.isInteger(chosen?.index)&&seen.has(chosen.index)
+            ?chosen.index
+            :null
+        for(const vertex of vertices) vertex.isRoot=vertex.index===rootIndex
         return {
             rank:component.rank,
             size:component.size??vertices.length,
             vertices,
             links,
+            rootIndex,
+            rootReason:chosen?.reason??null,
+            rootCandidates:chosen?.candidates??0,
             /* LA MASSE MOYENNE, et elle sert à deux choses: choisir la racine, et
                dire à l'écran où est le CENTRE d'un groupe. Un groupe dont la
                moyenne est très au-dessus du mode n'est pas un groupe, c'est une

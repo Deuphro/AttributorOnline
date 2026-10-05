@@ -2863,8 +2863,8 @@ function windowFor(mass){
 
 class AttributionNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
-        //one multiplexed input (XY waves), one output
-        super(title,[[]],[[]],origin,destinationFlow,position)
+        //one multiplexed input (XY waves), two outputs: attributions + forest FormulaCollections
+        super(title,[[]],[[],[]],origin,destinationFlow,position)
         this.status="floating"
         /* THE TWO LISTS, as text. Text rather than formulas, for the same
            reason the reader does it: a session must not carry the periodic table
@@ -3004,6 +3004,14 @@ class AttributionNode extends NodeWithAccordion{
         this.forests=[]
         this.forestComponents=[]
         this.forestErrors=[]
+        /* SELECTION ET FILTRE DU RÉSEAU.
+        
+           forestSelected: Set de rangs (component.rank) des arbres sélectionnés.
+           forestMinSize: taille minimale pour afficher un arbre dans la liste.
+           Les deux sont persistés dans serializeState/restoreState. */
+        this.forestSelected=new Set()
+        this.forestMinSize=1
+        this.forestLayoutMode="fr"  // "fr" | "mass" | "kmd"
         /* LE MONO TONIQUE DU RÉSEAU, comme celui du resolve.
 
            Un réseau lancé à la main sur trois spectres peut se croiser avec un
@@ -3042,7 +3050,10 @@ class AttributionNode extends NodeWithAccordion{
         }
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]){
-            outputAnchors[0].innerHTML='<title>Output: one attribution list per input wave</title>'
+            outputAnchors[0].innerHTML='<title>Output 0: one attribution list per input wave</title>'
+        }
+        if(outputAnchors[1]){
+            outputAnchors[1].innerHTML='<title>Output 1: one FormulaCollection per selected forest tree</title>'
         }
     }
 
@@ -4867,14 +4878,19 @@ class AttributionNode extends NodeWithAccordion{
                panneau qui soit une LISTE comme celle de gauche: une session
                rechargée sans elle perdrait les groupes qu'on avait choisis de
                lier, et le réseau retomberait sur CH2 seul sans rien le dire. */
-            forestGroups:this.forestGroupList()
+            forestGroups:this.forestGroupList(),
+            /* SÉLECTION ET FILTRE DU RÉSEAU (persistés pour la session). */
+            forestSelected:Array.from(this.forestSelected),
+            forestMinSize:this.forestMinSize,
+            forestLayoutMode:this.forestLayoutMode
         }
     }
 
     restoreState(state){
         if(!state) return
         for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm","probeMass",
-            "forestTolerance","forestDegreeMax","forestCharge","forestGroups"]){
+            "forestTolerance","forestDegreeMax","forestCharge","forestGroups",
+            "forestSelected","forestMinSize","forestLayoutMode"]){
             if(state[name]!==undefined&&state[name]!==null){
                 this.parameters[name]=state[name]
             }
@@ -4898,6 +4914,15 @@ class AttributionNode extends NodeWithAccordion{
            So the old value is dropped, not translated, and the new default
            applies. The user loses a number they can hardly have meant, and gets a
            setting that behaves the way its name says. Nothing is guessed. */
+        if(Array.isArray(state.forestSelected)){
+            this.forestSelected=new Set(state.forestSelected)
+        }
+        if(Number.isFinite(state.forestMinSize)){
+            this.forestMinSize=state.forestMinSize
+        }
+        if(state.forestLayoutMode){
+            this.forestLayoutMode=state.forestLayoutMode
+        }
         this.syncUI()
     }
 
@@ -4945,6 +4970,9 @@ class AttributionNode extends NodeWithAccordion{
             const input=this[field]
             if(input) input.value=this.parameters[key]
         }
+        /* CHAMPS DU PANNEAU RÉSEAU (sélection/filtre). */
+        if(this.forestMinSizeInput) this.forestMinSizeInput.value=String(this.forestMinSize)
+        if(this.forestLayoutModeSelect) this.forestLayoutModeSelect.value=this.forestLayoutMode
     }
 
     registered(e){
@@ -5051,13 +5079,65 @@ class AttributionNode extends NodeWithAccordion{
         }
         return this.forestGraphs
     }
+    /* L'ATTRIBUTION D'UN ARBRE, ET ELLE EST PARESSEUSE.
+       La racine est sondée avec le plan de GAUCHE — `attributeSpectrum` sur
+       ±0,5 Da, exactement comme le Probe — puis `propagateForest` déroule les
+       formules le long des liens avec les compositions du plan de DROITE
+       (`forestLinkPlan`, même ordre que `link.standard`).
+       Le cache est clé sur l'identité des deux plans plus les réglages de
+       lecture: changer un groupe invalide, changer la sélection ne touche à
+       rien. La table partagée du plan voyage avec les formules — jamais une
+       copie, sinon la session porterait un tableau périodique par formule. */
+    async attributeTree(graph){
+        if(!graph||!Number.isInteger(graph.rootIndex)) return null
+        if(!this.loadedTable) await this.table()
+        if(!this.loadedTable) return null
+        const plan=this.buildPlan()
+        const linkPlan=this.forestLinkPlan
+        const cached=this.forestAttributions
+        const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):10
+        const bestMatches=Math.max(1,Math.trunc(Number(this.parameters.bestMatches))||3)
+        if(cached&&cached.graph===graph&&cached.plan===plan
+            &&cached.linkPlan===linkPlan&&cached.ppm===ppm
+            &&cached.bestMatches===bestMatches){
+            return cached.result
+        }
+        const rootVertex=graph.vertices.find(vertex=>vertex.index===graph.rootIndex)
+        if(!rootVertex||!Number.isFinite(rootVertex.mass)) return null
+        let probed
+        try{
+            probed=attributeSpectrum(plan,windowFor(rootVertex.mass),{
+                limit:Infinity,ppm,bestMatches
+            })
+        }catch{
+            return null
+        }
+        const centre=(probed.entries??[])
+            .filter(entry=>entry.target?.index===1)
+            .sort((a,b)=>Math.abs(a.errorPpm)-Math.abs(b.errorPpm))
+        if(!centre.length) return null
+        const rootFormula=centre[0].formula
+        if(!rootFormula) return null
+        const references=(linkPlan?.items??[])
+            .filter(item=>item.kind==="combining"&&item.atomicMass>0)
+            .map(item=>({composition:item.composition??null}))
+        const result=propagateForest(graph,rootFormula,references,{
+            table:this.loadedTable
+        })
+        if(!result) return null
+        this.forestAttributions={graph,plan,linkPlan,ppm,bestMatches,result}
+        return result
+    }
+
 
 /* LA MISE EN PLACE, CALCULÉE UNE FOIS PAR RÉSEAU.
 
        Elle vient de `forest.js` et ne dépend que du graphe: elle n'est donc PAS
        dans le rendu. Un moteur de force recalculé à chaque image donnerait deux
        réseaux différents pour un même « Grow network », et la comparaison d'un
-       run à l'autre — le seul usage de ce graphique — deviendrait impossible. */
+       run à l'autre — le seul usage de ce graphique — deviendrait impossible.
+
+       TROIS MODES: "fr" (force-directed), "mass" (étirement par masse), "kmd" (Carbon-KMD). */
     forestOverviewLayout(){
         const box=this.forestPlotBox
         if(!box) return null
@@ -5070,16 +5150,20 @@ class AttributionNode extends NodeWithAccordion{
            groupes et 2,3 s sur mille — et `renderForest` les relançait à chaque
            ajout de groupe, qui ne change ni les sommets ni la boîte. La clé est
            donc l'identité des graphes (elle ne bouge que si les composants
-           bougent) et la taille mesurée de la boîte (elle seule décale la
-           grille). Le déterminisme du moteur rend la valeur réutilisable à
-           l'identique: c'est le même cercle, les mêmes itérations. */
+           bougent), la taille de la boîte, ET le mode de layout. */
         const cached=this.forestLayoutOf
         if(cached&&cached.graphs===batch.graphs
-            &&cached.width===width&&cached.height===height){
+            &&cached.width===width&&cached.height===height
+            &&cached.mode===this.forestLayoutMode){
             return cached.layout
         }
-        const layout=layoutForests(batch.graphs,{width,height})
-        this.forestLayoutOf={graphs:batch.graphs,width,height,layout}
+        let layout
+        if(this.forestLayoutMode==="mass"||this.forestLayoutMode==="kmd"){
+            layout=this.layoutForestsMassKMD(batch.graphs,{width,height,mode:this.forestLayoutMode})
+        }else{
+            layout=layoutForests(batch.graphs,{width,height})
+        }
+        this.forestLayoutOf={graphs:batch.graphs,width,height,mode:this.forestLayoutMode,layout}
         return layout
     }
 
@@ -5121,7 +5205,13 @@ class AttributionNode extends NodeWithAccordion{
             for(const point of group.points) place.set(`${group.rank}:${point.index}`,point)
         }
         const at=(rank,index)=>place.get(`${rank}:${index}`)
-        const groups=batch.graphs.map((graph,index)=>({graph,rank:graph.rank??index}))
+        const allGroups=batch.graphs.map((graph,index)=>({graph,rank:graph.rank??index}))
+        /* FILTRER PAR SÉLECTION: si rien n'est sélectionné, tout afficher;
+           sinon n'afficher que les arbres sélectionnés. */
+        const hasSelection=this.forestSelected.size>0
+        const groups=hasSelection
+            ?allGroups.filter(g=>this.forestSelected.has(g.rank))
+            :allGroups
         const tolerance=Number(this.parameters.forestTolerance)
         const traces=[]
 
@@ -5165,26 +5255,91 @@ class AttributionNode extends NodeWithAccordion{
                 "#dfe6ee",0.12+0.88*(low+high)/2,pairs,1)
         }
 
-        /* LES SOMMETS, ET ILS SONT BLANCS. Un pic est une MESURE, donc il porte
-           la couleur du texte du programme; un réseau qui ne serait qu'en blanc
-           se confondrait avec la grille et les repères. */
-        const points=[]
+        /* LES SOMMETS: blancs pour non-sélectionnés, colorés pour sélectionnés.
+           Pour les arbres sélectionnés, on ajoute les formules en infobulle et
+           un glow sur la racine. */
+        const pointsSelected=[]
+        const pointsUnselected=[]
+        const rootGlows=[]  // {x,y,rank} pour les racines sélectionnées
+        const vertexLabels=[]  // {x,y,text,rank} pour étiquettes de formule
         for(const {graph,rank} of groups){
+            const isTreeSelected=this.forestSelected.has(rank)
             for(const vertex of graph.vertices??[]){
                 const point=at(rank,vertex.index)
-                if(point) points.push([point.x,point.y])
+                if(!point) continue
+                if(isTreeSelected){
+                    pointsSelected.push([point.x,point.y])
+                    /* Racine = glow */
+                    if(vertex.isRoot){
+                        rootGlows.push({x:point.x,y:point.y,rank})
+                    }
+                    /* Étiquettes de formule pour arbres sélectionnés (si peu de sommets) */
+                    if(graph.vertices.length<=40){
+                        const attr=this.forestAttributions?.result
+                        if(attr){
+                            const row=attr.rows.find(r=>r.index===vertex.index)
+                            if(row){
+                                vertexLabels.push({
+                                    x:point.x,y:point.y,
+                                    text:`${row.notation} (${row.errorPpm?.toFixed(1)??"?"} ppm)`,
+                                    rank
+                                })
+                            }
+                        }
+                    }
+                }else{
+                    pointsUnselected.push([point.x,point.y])
+                }
             }
         }
-        if(points.length){
+        if(pointsUnselected.length){
             traces.push(new XYTrace({
-                id:`${this.title}:forest:peaks`,
-                title:"measured peaks",
+                id:`${this.title}:forest:peaks:unselected`,
+                title:"measured peaks (unselected)",
                 mode:"points",layer:"svg",
                 options:{mode:"points",layer:"svg",color:"#dfe6ee",line:{size:1},
                     marker:{shape:"circle",size:3}},
                 wave:Wave.fromCoordinates(
-                    Float64Array.from(points,pair=>pair[0]),Float64Array.from(points,pair=>pair[1]),{},["x","y"])
+                    Float64Array.from(pointsUnselected,pair=>pair[0]),Float64Array.from(pointsUnselected,pair=>pair[1]),{},["x","y"])
             }))
+        }
+        if(pointsSelected.length){
+            traces.push(new XYTrace({
+                id:`${this.title}:forest:peaks:selected`,
+                title:"measured peaks (selected)",
+                mode:"points",layer:"svg",
+                options:{mode:"points",layer:"svg",color:"#aef22e",line:{size:2},
+                    marker:{shape:"circle",size:5}},
+                wave:Wave.fromCoordinates(
+                    Float64Array.from(pointsSelected,pair=>pair[0]),Float64Array.from(pointsSelected,pair=>pair[1]),{},["x","y"])
+            }))
+        }
+        /* GLOW SUR LES RACINES SÉLECTIONNÉES: cercles radiaux plus grands */
+        if(rootGlows.length){
+            const glowPairs=[]
+            for(const glow of rootGlows){
+                const r=12
+                glowPairs.push([glow.x-r,glow.y],[glow.x+r,glow.y])
+                glowPairs.push([glow.x,glow.y-r],[glow.x,glow.y+r])
+            }
+            traces.push(new XYTrace({
+                id:`${this.title}:forest:rootglow`,
+                title:"selected roots",
+                mode:"segments",layer:"svg",
+                options:{mode:"segments",layer:"svg",color:"#aef22e",opacity:0.6,
+                    line:{size:2}},
+                wave:Wave.fromCoordinates(
+                    Float64Array.from(glowPairs,pair=>pair[0]),Float64Array.from(glowPairs,pair=>pair[1]),{},["x","y"])
+            }))
+        }
+        /* ÉTIQUETTES DE FORMULES sur les sommets (arbres sélectionnés, ≤40 sommets) */
+        if(vertexLabels.length){
+            /* On utilise une trace de type "text" via SVG direct dans le hook de dessin,
+               mais XYTrace ne supporte pas le texte. On ajoute les labels via un hook
+               post-dessin dans plot.drawGraph. */
+            this.forestVertexLabels=vertexLabels
+        }else{
+            this.forestVertexLabels=null
         }
 
         /* `traces`, ET NON `data`: `resolveRenderTraces()` et `dataBounds()` lisent
@@ -5193,7 +5348,107 @@ class AttributionNode extends NodeWithAccordion{
            n'était dessiné et les bornes restaient nulles, sans une seule erreur:
            un cadre muet. C'est le défaut le plus coûteux, il ne se signale pas. */
         plot.traces=traces
+        /* Hook pour dessiner les étiquettes de formule après le rendu */
+        const origDraw=plot.drawGraph.bind(plot)
+        plot.drawGraph=()=>{
+            origDraw()
+            if(this.forestVertexLabels?.length){
+                this.drawForestVertexLabels(plot)
+            }
+        }
         plot.drawGraph?.()
+    }
+
+    /* Dessine les étiquettes de formule sur les sommets (SVG direct). */
+    drawForestVertexLabels(plot){
+        const svg=plot.graphSVG
+        if(!svg) return
+        const anchor=svg.select(".anchor")
+        if(!anchor) return
+        let labelLayer=anchor.select(".forest-vertex-labels")
+        if(labelLayer.empty()) labelLayer=anchor.append("g").attr("class","forest-vertex-labels")
+        labelLayer.selectAll("*").remove()
+        for(const label of this.forestVertexLabels){
+            labelLayer.append("text")
+                .attr("x",label.x)
+                .attr("y",label.y-8)
+                .attr("text-anchor","middle")
+                .attr("font-size","9px")
+                .attr("fill","#aef22e")
+                .attr("pointer-events","none")
+                .text(label.text)
+        }
+    }
+
+    /* LAYOUT MASSE / KMD — O(n), pas d'itérations.
+    
+       "mass": x = masse, y = profondeur (ou FR existant pour y)
+       "kmd": x = Kendrick Mass (KM = m × 14/14.01565), y = KMD = nominal - KM
+       Les deux sont déterministes, gratuits, et partagent la même clé de cache. */
+    layoutForestsMassKMD(graphs,{width,height,mode}){
+        const list=graphs.filter(graph=>(graph?.vertices?.length??0)>0)
+        if(!list.length) return {width,height,groups:[],columns:0,rows:0}
+        /* Pour KMD: calculer KM et KMD pour chaque sommet */
+        const KM_FACTOR=14/14.01565
+        const allVertices=[]
+        for(const graph of list){
+            for(const vertex of graph.vertices){
+                const mass=vertex.mass
+                const km=mass*KM_FACTOR
+                const nominal=Math.round(km)
+                const kmd=nominal-km
+                allVertices.push({graph,vertex,mass,km,kmd,nominal})
+            }
+        }
+        /* Déterminer l'étendue selon le mode */
+        let minX,maxX,minY,maxY
+        if(mode==="mass"){
+            minX=Math.min(...allVertices.map(v=>v.mass))
+            maxX=Math.max(...allVertices.map(v=>v.mass))
+            minY=Math.min(...allVertices.map(v=>v.vertex.depth??0))
+            maxY=Math.max(...allVertices.map(v=>v.vertex.depth??0))
+        }else{
+            minX=Math.min(...allVertices.map(v=>v.km))
+            maxX=Math.max(...allVertices.map(v=>v.km))
+            minY=Math.min(...allVertices.map(v=>v.kmd))
+            maxY=Math.max(...allVertices.map(v=>v.kmd))
+        }
+        const spanX=maxX-minX||1
+        const spanY=maxY-minY||1
+        const margin=40
+        const plotW=width-2*margin
+        const plotH=height-2*margin
+        const scaleX=plotW/spanX
+        const scaleY=plotH/spanY
+        const scale=Math.min(scaleX,scaleY)
+        const groups=list.map((graph,gi)=>{
+            const points=graph.vertices.map((vertex,vi)=>{
+                let x,y
+                if(mode==="mass"){
+                    x=margin+(vertex.mass-minX)*scale
+                    y=margin+(vertex.depth??0)*scale
+                }else{
+                    const km=vertex.mass*KM_FACTOR
+                    const nominal=Math.round(km)
+                    const kmd=nominal-km
+                    x=margin+(km-minX)*scale
+                    y=margin+(kmd-minY)*scale
+                }
+                return {index:vertex.index,x,y}
+            })
+            const xs=points.map(p=>p.x), ys=points.map(p=>p.y)
+            return {
+                rank:graph.rank??gi,
+                size:graph.size,
+                points,
+                box:{
+                    x:Math.min(...xs),y:Math.min(...ys),
+                    width:Math.max(...xs)-Math.min(...xs),
+                    height:Math.max(...ys)-Math.min(...ys)
+                }
+            }
+        })
+        return {width,height,groups,columns:1,rows:list.length}
     }
 
     /* LA FENÊTRE EST DANS LE PANNEAU CENTRAL, ET PAS AU-DESSUS DES LISTES.
@@ -5607,6 +5862,8 @@ class AttributionNode extends NodeWithAccordion{
         this.forests=forests
         this.forestComponents=components
         this.forestErrors=errors
+        /* NOUVEAU RÉSEAU = NOUVELLES RANGES: on efface la sélection. */
+        this.forestSelected.clear()
         this.renderForestButton(false)
         this.forestBusy=false
         this.renderForest()
@@ -6181,6 +6438,43 @@ class AttributionNode extends NodeWithAccordion{
         })
         this.forestButton.addEventListener("click",()=>this.startForest())
         content.appendChild(this.forestButton)
+        /* SELECTION ET FILTRE DES ARBRES.
+        
+           Une rangée avec: filtre par taille minimale, boutons tout/rien,
+           sélecteur de mode de layout. */
+        const selectionRow=CE("div",{className:"an-row"},[])
+        stylize(selectionRow,{
+            display:"grid",
+            "grid-template-columns":"1fr 1fr auto auto",
+            gap:"6px",
+            "align-items":"start"
+        })
+        content.appendChild(selectionRow)
+        this.forestMinSizeInput=this.field(selectionRow,"Min tree size",this.forestMinSize,{
+            tag:"number",
+            onCommit:(raw)=>this.commitForestMinSize(raw)
+        },"Only show trees with at least this many vertices")
+        this.forestSelectAllBtn=CE("button",{type:"button",title:"Select all visible trees"},["Select all"])
+        stylize(this.forestSelectAllBtn,{fontSize:"0.8em",padding:"2px 8px",cursor:"pointer"})
+        this.forestSelectAllBtn.addEventListener("click",()=>this.selectAllForestTrees())
+        selectionRow.appendChild(this.forestSelectAllBtn)
+        this.forestDeselectAllBtn=CE("button",{type:"button",title:"Deselect all trees"},["Deselect all"])
+        stylize(this.forestDeselectAllBtn,{fontSize:"0.8em",padding:"2px 8px",cursor:"pointer"})
+        this.forestDeselectAllBtn.addEventListener("click",()=>this.deselectAllForestTrees())
+        selectionRow.appendChild(this.forestDeselectAllBtn)
+        this.forestLayoutModeSelect=CE("select",{
+            title:"Layout mode for the forest graph"
+        },[
+            new Option("Force-directed (FR)","fr"),
+            new Option("Mass stretch","mass"),
+            new Option("Carbon KMD","kmd")
+        ])
+        this.forestLayoutModeSelect.value=this.forestLayoutMode
+        this.forestLayoutModeSelect.addEventListener("change",()=>{
+            this.forestLayoutMode=this.forestLayoutModeSelect.value
+            this.renderForestOverview()
+        })
+        selectionRow.appendChild(this.forestLayoutModeSelect)
         /* LA COURBE DES POIDS, et c'est ELLE qui rend le résultat lisible.
 
            Une liste de composants dit QUOI il reste, mais pas POURQUOI on a
@@ -6258,6 +6552,32 @@ class AttributionNode extends NodeWithAccordion{
         this.renderForest()
     }
 
+    commitForestMinSize(raw){
+        const value=Math.max(1,Math.trunc(Number(raw)||1))
+        if(value===this.forestMinSize) return
+        this.forestMinSize=value
+        if(this.forestMinSizeInput) this.forestMinSizeInput.value=String(value)
+        this.renderForest()
+    }
+
+    selectAllForestTrees(){
+        const batches=this.forestComponents??[]
+        for(const batch of batches){
+            if(!batch?.components?.length) continue
+            for(const component of batch.components){
+                if(component.size>=this.forestMinSize){
+                    this.forestSelected.add(component.rank)
+                }
+            }
+        }
+        this.renderForest()
+    }
+
+    deselectAllForestTrees(){
+        this.forestSelected.clear()
+        this.renderForest()
+    }
+
     /* LA LECTURE PEINTE.
 
        Trois choses et pas une de plus: ce que le réseau est (les références),
@@ -6318,6 +6638,89 @@ class AttributionNode extends NodeWithAccordion{
            le seul endroit où les deux sont repeints ensemble. */
         this.buildForestGraphs()
         this.renderForestOverview()
+        /* PUBLIER LES FORMULACOLLECTIONS DES ARBRES SÉLECTIONNÉS (output[1]). */
+        this.publishForestCollections()
+    }
+
+    /* CRÉER ET PUBLIER LES FORMULACOLLECTIONS POUR LES ARBRES SÉLECTIONNÉS.
+    
+       Chaque arbre sélectionné génère une FormulaCollection via propagateForest.
+       On utilise stateToFormula du plan pour partager la table périodique
+       (pas de duplication → pas de session à 85 Mo). */
+    async publishForestCollections(){
+        if(!this.forestSelected.size) {
+            this.outputs[1]=[]
+            return
+        }
+        if(!this.loadedTable) await this.table()
+        if(!this.loadedTable) {
+            this.outputs[1]=[]
+            return
+        }
+        const plan=this.buildPlan()
+        const linkPlan=this.forestLinkPlan
+        const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):10
+        const batch=this.forestGraphs?.[0]
+        if(!batch?.graphs?.length) {
+            this.outputs[1]=[]
+            return
+        }
+        const references=(linkPlan?.items??[])
+            .filter(item=>item.kind==="combining"&&item.atomicMass>0)
+            .map(item=>({composition:item.composition??null}))
+        const collections=[]
+        for(const graph of batch.graphs){
+            const rank=graph.rank
+            if(!this.forestSelected.has(rank)) continue
+            if(!Number.isInteger(graph.rootIndex)) continue
+            const rootVertex=graph.vertices.find(v=>v.index===graph.rootIndex)
+            if(!rootVertex||!Number.isFinite(rootVertex.mass)) continue
+            let probed
+            try{
+                probed=attributeSpectrum(plan,windowFor(rootVertex.mass),{
+                    limit:Infinity,ppm,
+                    bestMatches:Math.max(1,Math.trunc(Number(this.parameters.bestMatches))||3)
+                })
+            }catch{
+                continue
+            }
+            const centre=(probed.entries??[])
+                .filter(entry=>entry.target?.index===1)
+                .sort((a,b)=>Math.abs(a.errorPpm)-Math.abs(b.errorPpm))
+            if(!centre.length) continue
+            const rootFormula=centre[0].formula
+            if(!rootFormula) continue
+            const result=propagateForest(graph,rootFormula,references,{table:this.loadedTable})
+            if(!result) continue
+            /* Construire la FormulaCollection avec les formules propagées. */
+            const name=`${batch.title??"attribution"} tree #${rank}`
+            const collection=new FormulaCollection({name,table:this.loadedTable,ppm})
+            for(const row of result.rows){
+                const formula=row.formula
+                if(!formula) continue
+                collection.addAll([{
+                    formula,
+                    sourceText:row.notation
+                }])
+            }
+            /* Points: les pics du spectre correspondant aux vertices de l'arbre.
+               row.mass = masse du vertex (mesurée), row.mz = mz de la formule.
+               setPoints/match calcule l'erreur : (measured - formula.mz)/formula.mz * 1e6
+               L'intensité vient du vertex du graphe. */
+            const points=[]
+            const intensityByIndex=new Map(graph.vertices.map(v=>[v.index,v.intensity]))
+            for(const row of result.rows){
+                const formula=row.formula
+                const measuredMz=row.mass
+                if(!Number.isFinite(measuredMz)||measuredMz<=0) continue
+                const intensity=intensityByIndex.get(row.index)??0
+                points.push({mz:measuredMz,key:formula.key,intensity})
+            }
+            collection.setPoints(points)
+            collections.push(collection)
+        }
+        this.outputs[1]=collections
+        this.resolveChildren()
     }
 
     /* LA PHRASE SOUS LA COURBE, et elle dit CE QUI EST GARDÉ.
@@ -6390,7 +6793,9 @@ class AttributionNode extends NodeWithAccordion{
         for(const batch of batches){
             if(!batch?.components?.length) continue
             for(const component of batch.components){
-                list.appendChild(this.forestRow(component,batch))
+                if(component.size>=this.forestMinSize){
+                    list.appendChild(this.forestRow(component,batch))
+                }
             }
         }
     }
@@ -6400,16 +6805,21 @@ class AttributionNode extends NodeWithAccordion{
        La ligne dit la taille, l'ancêtre et l'erreur totale; l'infobulle dit
        quelles références ont fait les liens et quelles masses sont reliées. Sur
        une ligne de six mots, il n'y a pas la place du détail — et le détail est
-       ce qui permet de JUGER le groupe. */
+       ce qui permet de JUGER le groupe.
+       
+       Le clic TOGGLE la sélection. Ctrl/Cmd + clic = additive (garde les autres).
+       La sélection synchronise la liste et le graphe. */
     forestRow(component,batch){
+        const isSelected=this.forestSelected.has(component.rank)
         const row=CE("div",{className:"an-forest-row",pilot:this},[
             componentLine(component)
         ])
         stylize(row,{
             fontSize:"0.8em",lineHeight:"1.35",cursor:"pointer",
             padding:"2px 4px",borderRadius:"3px",
-            background:"rgba(255,255,255,0.05)",
-            border:"1px solid rgba(255,255,255,0.12)"
+            background:isSelected?"rgba(172,255,47,0.18)":"rgba(255,255,255,0.05)",
+            border:isSelected?"2px solid #aef22e":"1px solid rgba(255,255,255,0.12)",
+            boxShadow:isSelected?"0 0 8px rgba(172,255,47,0.4)":"none"
         })
         const points=batch.points
         row.title=[
@@ -6423,16 +6833,23 @@ class AttributionNode extends NodeWithAccordion{
                 return `${link.label??`#${link.standard}`}: ${masses} (${link.weight.toFixed(3)} Da)`
             }),
             "",
-            "click to probe the lowest peak of this group"
+            "click to toggle selection, Ctrl+click for additive"
         ].join("\n")
-        /* LE CLIC NE LANCE RIEN: `probeMass` répond sur le plan courant, sans
-           crible, donc le geste est instantané — et il ne touche pas au réseau,
-           dont les réglages ne dépendent pas de la sonde. */
-        row.addEventListener("click",()=>{
+        row.addEventListener("click",(e)=>{
             const mass=component.rootMass
-            if(!Number.isFinite(mass)) return
-            if(this.probeInput) this.probeInput.value=String(mass)
-            this.probeMass(mass)
+            if(Number.isFinite(mass)){
+                if(this.probeInput) this.probeInput.value=String(mass)
+                this.probeMass(mass)
+            }
+            const additive=e.ctrlKey||e.metaKey
+            if(!additive) this.forestSelected.clear()
+            if(this.forestSelected.has(component.rank)){
+                this.forestSelected.delete(component.rank)
+            }else{
+                this.forestSelected.add(component.rank)
+            }
+            this.renderForest()
+            this.renderForestOverview()
         })
         return row
     }
