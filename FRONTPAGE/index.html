@@ -1465,9 +1465,24 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                     <code>suggestWeightCut</code> returns the first gap that exceeds
                     <strong>8× the local spread</strong> of the steps — the criterion
                     <code>antiradio.rs</code> already uses for peak widths, so "significant" means the
-                    same thing across the program. The default is only a default: clicking elsewhere on
-                    the curve overrides it, and double-click takes the suggestion back. The circle marks
-                    what the detector suggests; the green line marks what you chose.
+                    same thing across the program. It is <strong>applied on its own</strong> to the
+                    first network, as Igor's <code>kruskal4mass</code> stopped on his own criterion:
+                    without it a real spectrum gives one component holding almost everything, and the
+                    group list says nothing. It is only ever applied when a <em>real</em> step exists —
+                    a flat curve keeps every link and says so. Clicking elsewhere on the curve
+                    overrides it, and double-click takes the suggestion back.
+                </td>
+            </tr>
+            <tr>
+                <td>Reading the curve</td>
+                <td>
+                    The colours follow the roles, and they are the program's own: the curve is
+                    <span class="badge">lime #aef22e</span> — the accent the folder buttons already carry —
+                    and the links the tree refused are
+                    <span class="badge req">in red</span>, so what the cut threw away is visible without
+                    counting a single point. The white circle is what the detector suggests; the blue
+                    line <code>#78b4ff</code>, the blue of the ionising lists, is the cut actually in use —
+                    yours, or the program's.
                 </td>
             </tr>
             <tr>

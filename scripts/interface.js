@@ -5191,12 +5191,55 @@ class AttributionNode extends NodeWithAccordion{
             }
         }
         if(run!==this.forestRun) return
+        /* LA COUPURE SUGGÉRÉE EST APPLIQUÉE TOUTE SEULE, ET UNE SEULE FOIS.
+
+           C'est ce que faisait Igor: son `kruskal4mass` s'arrêtait sur son critère
+           statistique, donc l'arbre qui en sortait était DÉJÀ coupé, et la
+           marche sur la courbe servait à comprendre pourquoi — pas à la
+           provoquer. Sans cela, un vrai spectre donne un réseau où presque tout
+           est relié, et la liste des groupes n'apprend rien.
+
+           Elle n'est appliquée que si le détecteur a trouvé une VRAIE marche
+           (`index` strictement entre 0 et le nombre de liens): « aucune marche
+           saillante » et « pas assez de liens » rendent le compte entier, donc
+           la condition les écarte d'elle-même. */
+        if(await this.autoApplyForestCut(keepCut)){
+            return
+        }
         this.forests=forests
         this.forestComponents=components
         this.forestErrors=errors
         this.renderForestButton(false)
         this.forestBusy=false
         this.renderForest()
+    }
+
+    /* LA COUPURE AUTOMATIQUE, ET ELLE EST UN SECOND PASSAGE.
+
+       Le noyau rend la courbe ENTIÈRE même quand il est coupé — c'est elle qui
+       montre où l'on coupe — donc il faut d'abord le calculer pour connaître la
+       marche, puis le recalculer pour l'appliquer. Deux appels au noyau, donc:
+       le second est le seul qui publie, et il est marqué `keepCut` pour ne pas
+       boucler.
+
+       On ne l'économiserait qu'en rejouant seulement l'union-find sur la courbe
+       déjà rendue; le noyau ne rend pas son état interne, et surtout ce
+       chemin-là ne serait testé que par lui-même. Deux appels, c'est le prix
+       d'un seul chemin de calcul. */
+    async autoApplyForestCut(keepCut){
+        if(keepCut) return false
+        const suggestion=this.forestSuggestion
+        const weights=this.forestWeights??[]
+        if(!suggestion) return false
+        if(!(suggestion.index>0&&suggestion.index<weights.length)) return false
+        this.forestCut=suggestion.index
+        /* ON SE SOUVIENT QUE C'EST LE PROGRAMME QUI A COUPÉ, parce que la ligne
+           du dessous le dira. Écrire « coupure à la marche détectée » sans dire
+           qui l'a posée laisserait croire que l'utilisateur l'a choisie — et il
+           vient de le voir apparaître. */
+        this.forestCutAutomatic=true
+        await this.startForest({keepCut:true})
+        return true
     }
 
     /* LE BOUTON PENDANT LE CALCUL, et il le dit sur lui-même.
@@ -5279,6 +5322,10 @@ class AttributionNode extends NodeWithAccordion{
     async setForestCut(rank){
         if(this.forestBusy) return
         this.forestCut=Math.max(1,Math.round(rank))
+        /* ICI C'EST L'UTILISATEUR, même s'il reprend la suggestion par un
+           double-clic: la ligne du dessous dira qu'il l'a posée lui-même, et
+           non que le programme l'a trouvée. */
+        this.forestCutAutomatic=false
         await this.startForest({keepCut:true})
     }
 
@@ -5301,6 +5348,28 @@ class AttributionNode extends NodeWithAccordion{
        comme un calcul faux, pas comme un graphique mal aligné. */
     forestPlotLeft=0.10
     forestPlotRight=0.01
+
+    /* LE CODE COULEUR, ET CE SONT LES COULEURS DE L'APPLICATION.
+
+       Rien n'est inventé ici. Le vert est l'accent lime des dossiers
+       (`--accent`, `rgba(172,255,47,·)`), le blanc est le texte (`--text`), le
+       bleu est celui des listes ionisantes et du champ de sonde
+       (`rgba(120,180,255,·)`). Le rouge ne vient pas de la palette — c'est le
+       seul ajout, et il est justifié : il ne sert qu'à montrer ce que la
+       coupure a JETÉ, donc il doit être la seule couleur que le reste du
+       panneau n'emploie pas.
+
+       LA RÉPARTITION: la DONNÉE est verte, la DÉCISION est bleue, ce qui est
+       ÉLIMINÉ est rouge. Trois rôles, trois couleurs, et aucune n'est
+       ambivalente — un trait qui change de couleur selon qu'on l'a choisi ou
+       suggéré serait illisible. */
+    forestColors={
+        curve:"#aef22e",           // --accent, le lime des dossiers
+        suggestion:"#dfe6ee",      // --text, le blanc des libellés
+        cut:"#78b4ff",             // rgba(120,180,255), les listes ionisantes
+        discarded:"#d9534f",       // ce que la coupure a jeté
+        wash:"rgba(217,83,79,0.10)"
+    }
 
     /* LE DESSIN, et il ne dépend que du NŒUD.
 
@@ -5354,53 +5423,51 @@ class AttributionNode extends NodeWithAccordion{
             return height-3-((Math.log10(Math.max(value,floor))-Math.log10(floor))/decades)*(height-6)
         }
         const xOf=rank=>left+(weights.length<2?usable/2:(rank/(weights.length-1))*usable)
-        /* LE TRACE, en une passe, et SANS lissage.
+        /* LE TRACE, en DEUX PASSES, et c'est ce qui rend la coupure lisible.
 
-           Un lissage changerait les valeurs affichées pour de la beauté — et ici
-           chaque point est une erreur MESURÉE, pas un échantillon d'une fonction.
-           On dessine donc la suite des points.
+           La courbe est tracée d'abord en vert jusqu'à la coupure, puis en rouge
+           au-delà — donc on VOIT ce que le réseau a refusé, sans avoir à lire un
+           nombre. Un trait d'une seule couleur obligeait à compter les points,
+           et un remplissage de la moitié gardée colorait le graphique entier.
 
-           LE PAS S'ADAPTE À LA LARGEUR: au-delà de deux points par pixel, on en
+           Le pas s'adapte à la largeur: au-delà de deux points par pixel, on en
            saute. Cela change l'allure, jamais le classement — donc jamais la
-           coupure proposée ni le curseur, qui travaillent sur `weights` et pas sur
-           ce qui est tracé. C'est ce qui permet à la même fonction de dessiner
-           dix liens et cinquante mille sans que l'une des deux coûte plus cher. */
-        ctx.strokeStyle="#e03030"
-        ctx.lineWidth=1
-        ctx.beginPath()
-        const stride=Math.max(1,Math.ceil(weights.length/usable))
-        let first=true
-        for(let rank=0;rank<weights.length;rank+=stride){
-            const x=xOf(rank)
-            const y=yOf(weights[rank])
-            if(first){ ctx.moveTo(x,y); first=false }
-            else ctx.lineTo(x,y)
+           coupure, ni le curseur, qui travaillent sur `weights` et pas sur ce qui
+           est tracé. */
+        const cut=this.forestDrawCut??this.forestCut??weights.length
+        const kept=Math.max(0,Math.min(cut,weights.length))
+        /* LE LAVAGE ROUGE, avant les traits: il doit passer SOUS la courbe,
+           sinon il l'efface — et c'est la courbe qu'on vient lire. */
+        if(kept<weights.length){
+            const x=xOf(kept)
+            ctx.fillStyle=this.forestColors.wash
+            ctx.fillRect(x,0,width-x,height)
         }
-        /* LE DERNIER POINT EST DESSINÉ QUOI QU'IL ARRIVE: sans lui la courbe
-           s'arrête un cran avant sa fin, et la fin est justement la partie qui
-           regarde le texte — « ces liens-là, on ne les croit pas ». */
-        if(weights.length>1){
-            const x=xOf(weights.length-1)
-            const y=yOf(weights[weights.length-1])
+        const stride=Math.max(1,Math.ceil(weights.length/usable))
+        const strokeRange=(from,to,color)=>{
+            if(!(to>from)) return
+            ctx.strokeStyle=color
+            ctx.lineWidth=1
+            ctx.beginPath()
+            let first=true
+            for(let rank=from;rank<to;rank+=stride){
+                const x=xOf(rank)
+                const y=yOf(weights[rank])
+                if(first){ ctx.moveTo(x,y); first=false }
+                else ctx.lineTo(x,y)
+            }
+            /* LE DERNIER POINT DE LA PASSE EST DESSINÉ QUOI QU'IL ARRIVE: sans
+               lui la courbe s'arrête un cran avant sa fin, et la fin est
+               justement la partie qui regarde le texte — « ces liens-là, on ne
+               les croit pas ». */
+            const x=xOf(to-1)
+            const y=yOf(weights[to-1])
             if(first) ctx.moveTo(x,y)
             else ctx.lineTo(x,y)
+            ctx.stroke()
         }
-        ctx.stroke()
-        /* LE GARDÉ, À GAUCHE DE LA COUPURE, et il est PLEIN.
-
-           C'est la moitié de la courbe qui devient un arbre. Sans le remplissage,
-           « ce qui est gardé » se lit en comptant les points à l'œil, et c'est
-           précisément ce qu'on demande à un graphique d'éviter. */
-        const cut=this.forestDrawCut??weights.length
-        if(cut<weights.length){
-            ctx.save()
-            ctx.beginPath()
-            ctx.rect(left,0,Math.max(0,xOf(cut)-left),height)
-            ctx.clip()
-            ctx.fillStyle="rgba(224,48,48,0.16)"
-            ctx.fillRect(left,0,width,height)
-            ctx.restore()
-        }
+        strokeRange(0,kept,this.forestColors.curve)
+        strokeRange(kept,weights.length,this.forestColors.discarded)
         this.drawForestMarks(ctx,{xOf,yOf,width,height,left,usable})
     }
 
@@ -5414,12 +5481,12 @@ class AttributionNode extends NodeWithAccordion{
     drawForestMarks(ctx,{xOf,yOf,width,height,left,usable}){
         const weights=this.forestWeights??[]
         const suggestion=this.forestSuggestion
-        const cut=this.forestDrawCut??weights.length
+        const cut=this.forestDrawCut??this.forestCut??weights.length
         /* LE CERCLE, D'ABORD, POUR QU'IL RESTE VISIBLE SOUS LE TRAIT. */
         if(suggestion&&suggestion.index<weights.length&&suggestion.index>0){
             const x=xOf(suggestion.index)
             const y=yOf(weights[suggestion.index])
-            ctx.strokeStyle="rgba(255,255,255,0.85)"
+            ctx.strokeStyle=this.forestColors.suggestion
             ctx.lineWidth=1.5
             ctx.beginPath()
             ctx.arc(x,y,5,0,2*Math.PI)
@@ -5427,7 +5494,7 @@ class AttributionNode extends NodeWithAccordion{
         }
         if(cut>0&&cut<weights.length){
             const x=xOf(cut)
-            ctx.strokeStyle="#40d060"
+            ctx.strokeStyle=this.forestColors.cut
             ctx.lineWidth=1.5
             ctx.beginPath()
             ctx.moveTo(x,0)
@@ -5809,9 +5876,16 @@ class AttributionNode extends NodeWithAccordion{
             /* ON DIT QUAND MÊME CE QUE LE DÉTECTEUR PENSE, même quand
                l'utilisateur a choisi ailleurs: sinon une coupure manuelle
                devient une affirmation, alors qu'elle n'est qu'un choix. */
-            parts.push(suggestion.index===used
-                ?`cut at the detected step (${suggestion.reason})`
-                :`detector suggested ${suggestion.index} (${suggestion.reason})`)
+            if(suggestion.index===used){
+                parts.push(`cut at the detected step (${suggestion.reason})`)
+                /* ET SI C'EST LE PROGRAMME QUI L'A POSÉE, ON LE DIT. La
+                   coupure est automatique au premier calcul: sans le mot, la
+                   ligne ferait croire que l'utilisateur l'a choisie, et il ne
+                   l'a pas fait — il vient de la voir apparaître. */
+                if(this.forestCutAutomatic) parts.push("applied on its own")
+            }else{
+                parts.push(`detector suggested ${suggestion.index} (${suggestion.reason})`)
+            }
         }
         parts.push("click the curve to cut elsewhere, double-click to take the suggestion")
         this.forestCurveLabel.textContent=parts.join("  ·  ")

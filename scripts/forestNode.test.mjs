@@ -20,6 +20,11 @@ const WORKER=readFileSync(new URL("./kernelWorker.js",import.meta.url),"utf8")
 const POOL=readFileSync(new URL("./workerPool.js",import.meta.url),"utf8")
 const SERVER=readFileSync(new URL("../index.js",import.meta.url),"utf8")
 const FOREST=readFileSync(new URL("./forest.js",import.meta.url),"utf8")
+/* LA FEUILLE DE STYLE, pour une seule chose: que les couleurs du graphique
+   soient LUES dans la palette du programme plutôt que recopiées dans le test.
+   Une constante dupliquée finit toujours par diverger de celle qu'elle vérifie,
+   et le test continue de passer en vérifiant l'ancienne. */
+const MAIN_CSS=readFileSync(new URL("../styles/main.css",import.meta.url),"utf8")
 
 /* LA TRANCHE, entre deux ancres, et les deux sont vérifiées: une ancre
    manquante donnerait une tranche vide, et un test qui passe sur une tranche
@@ -132,6 +137,125 @@ test("the link row has NO min, max or ratio",()=>{
     }
     /* Et elle garde ce qui, lui, informe: les blocs isotopiques du groupe. */
     assert.match(row,/forestIsotopeBlocks\(index\)/)
+})
+
+test("the curve is drawn in the app's own colours, by ROLE",()=>{
+    /* LE DESSIN EST EXÉCUTÉ, PAS LU.
+
+       Un test qui vérifierait `forestColors` ne prouverait rien: il dirait que la
+       palette est écrite, pas que le tracé s'en sert. Alors on ÉVALUE
+       `drawForestCurve` — la méthode est découpée du fichier et appelée sur un
+       faux nœud dont le contexte 2D enregistre ce qu'on lui demande.
+
+       C'est la technique de `collectionReader.test.mjs` appliquée au dessin:
+       on prouve la couleur EMPLOYÉE, pas la couleur DÉCLARÉE. */
+    const source=method("drawForestCurve","drawForestMarks")
+    /* LES COULEURS VIENNENT DE LA PALETTE DU PROGRAMME, lue dans la feuille de
+       style — pas recopiées ici: une constante dupliquée dans un test finit par
+       diverger de celle qu'elle vérifie. */
+    const accent=/--accent:\s*(#[0-9a-f]{6})/i.exec(MAIN_CSS)?.[1]
+    const text=/--text:\s*(#[0-9a-f]{6})/i.exec(MAIN_CSS)?.[1]
+    assert.ok(accent&&text,"the palette variables must be readable from main.css")
+    assert.match(NODE,new RegExp(`curve:"${accent}"`),
+        `the curve must use the app accent ${accent}`)
+    assert.match(NODE,new RegExp(`suggestion:"${text}"`),
+        `the suggestion circle must use the app text colour ${text}`)
+    assert.match(NODE,/cut:"#78b4ff"/,
+        "the cut line must use the blue the ionising lists already use")
+    assert.match(NODE,/discarded:"#d9534f"/)
+
+    /* ET LE DESSIN EST EXÉCUTÉ POUR DE VRAI. `window` est un paramètre de la
+       FABRIQUE, pas de la méthode: celle-ci s'appelle avec le nœud en `this` et
+       son premier argument — le rang qu'on fait glisser, absent ici. */
+    const evaluate=(name,upTo)=>new Function("window",
+        "return "+method(name,upTo).replace(/^(\s*)/,"$1function "))({devicePixelRatio:1})
+    const calls=[]
+    const context={
+        lineWidth:1,font:"",textAlign:"",
+        strokeStyle:"#000",fillStyle:"#000",
+        setTransform(){},clearRect(){},fillRect(){},beginPath(){},moveTo(){},lineTo(){},
+        arc(x,y,r){ calls.push({op:"arc",color:this.strokeStyle,x,y,r}) },
+        stroke(){ calls.push({op:"stroke",color:this.strokeStyle}) },
+        fillText(){}
+    }
+    const canvas={
+        width:0,height:0,
+        getContext:()=>context,
+        getBoundingClientRect:()=>({left:0,top:0,width:300,height:150})
+    }
+    /* LE NŒUD MINIMAL. On n'en fournit rien de plus: toute dépendance
+       supplémentaire serait un candidat à faire vibrer la méthode. */
+    const node={
+        forestCanvas:canvas,
+        forestColors:{
+            curve:accent,suggestion:text,cut:"#78b4ff",
+            discarded:"#d9534f",wash:"rgba(217,83,79,0.10)"
+        },
+        forestWeights:Array.from({length:20},(_,i)=>0.01+i*0.001),
+        forestSuggestion:{index:8,reason:"first step"},
+        forestPlotLeft:0.10,forestPlotRight:0.01,
+        forestCut:8,forestDrawCut:null,
+        drawForestMarks(){ calls.push({op:"marks"}) }
+    }
+    evaluate("drawForestCurve","drawForestMarks").call(node,null)
+    const stroked=calls.filter(call=>call.op==="stroke").map(call=>call.color)
+    assert.ok(stroked.includes(accent),`the kept links must be drawn in ${accent}`)
+    assert.ok(stroked.includes("#d9534f"),"the discarded links must be drawn in red")
+    assert.ok(calls.some(call=>call.op==="marks"))
+
+    /* ET LES MARQUES, qui sont le CONTRÔLE: le cercle sur la suggestion, le trait
+       sur la coupure. Deux couleurs, deux rôles, et ils ne doivent jamais se
+       confondre — c'est la seule chose que le panneau demande à voir. */
+    const marks=evaluate("drawForestMarks","forestGroupList")
+    marks.call(node,context,{
+        xOf:rank=>10+rank*14, yOf:()=>80, width:300, height:150, left:30, usable:250
+    })
+    const arcs=calls.filter(call=>call.op==="arc")
+    assert.equal(arcs.length,1,"exactly one circle: the suggestion")
+    assert.equal(arcs[0].color,text,`the suggestion circle must be ${text}`)
+    const blue=calls.filter(call=>call.op==="stroke"&&call.color==="#78b4ff")
+    assert.equal(blue.length,1,"exactly one blue line: the applied cut")
+})
+
+test("the suggested cut is applied on its own, like Igor did",()=>{
+    /* SANS ÇA, LE PREMIER RÉSEAU GARDE TOUT. Le noyau rend toute la courbe tant
+       qu'aucune coupure n'est posée, donc un vrai spectre — où presque toute
+       paire de pics tombe près d'une référence — donne un composant unique.
+       C'est ce que faisait Igor: son critère statistique ARRÊTAIT la
+       construction, et la marche expliquait l'arrêt au lieu de le provoquer. */
+    const auto=method("async autoApplyForestCut","renderForestButton")
+    /* ELLE NE S'APPLIQUE QU'UNE FOIS, sinon elle bouclerait: le second passage
+       est marqué `keepCut`, et c'est cette garde qui l'en empêche. */
+    assert.match(auto,/if\(keepCut\) return false/)
+    assert.match(auto,/keepCut:true/)
+    /* ET SEULEMENT SI LE DÉTECTEUR A TROUVÉ UNE VRAIE MARCHE: « aucune marche
+       saillante » et « pas assez de liens » rendent le compte entier, donc la
+       borne les écarte d'elle-même. Sans elle, une courbe plate serait coupée à
+       un rang arbitraire. */
+    assert.match(auto,/suggestion\.index>0&&\s*suggestion\.index<weights\.length/)
+    /* ET ELLE SE DÉCLENCHE AVANT LA PUBLICATION, sinon l'écran montre un instant
+       l'arbre non coupé. */
+    const grown=method("async startForest","async autoApplyForestCut")
+    const at=grown.indexOf("autoApplyForestCut")
+    const publish=grown.indexOf("this.forests=forests")
+    assert.ok(at>=0&&publish>=0)
+    assert.ok(at<publish,"the automatic cut must happen BEFORE the results are published")
+})
+
+test("the legend says WHO cut, because the cut arrives by itself",()=>{
+    /* LA COUPURE APPARAÎT TOUTE SEULE au premier calcul. Si la légende disait
+       simplement « cut at the detected step », l'utilisateur lirait qu'il a
+       choisi — et il vient de le voir apparaître. Un panneau qui affirme une
+       décision que personne n'a prise est pire qu'un panneau muet. */
+    const legend=method("renderForestCurveLine","forestForestOf")
+    assert.match(legend,/forestCutAutomatic/,
+        "the legend must distinguish an automatic cut from a manual one")
+    /* ET LE DOUBLON NE COMPTE PAS COMME UN CHOIX: reprendre la suggestion d'un
+       double-clic, c'est encore l'utilisateur qui agit. */
+    assert.match(method("async setForestCut","applySuggestedCut"),
+        /forestCutAutomatic=false/)
+    assert.match(method("async autoApplyForestCut","renderForestButton"),
+        /forestCutAutomatic=true/)
 })
 
 test("the node class is BRACED, so its methods are methods",()=>{
