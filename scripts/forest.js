@@ -497,3 +497,397 @@ export function suggestWeightCut(weights,{significance=CUT_SIGNIFICANCE,minPoint
     }
     return {index:count,reason:"no step stands out: keep every link"}
 }
+
+/* =========================================================================
+   LE GRAPHE, tel qu'un ÉCRAN peut le dessiner.
+
+   `forestComponents` rend des LIGNES: `6 peak(s), root 180.1028, CH₂×3`. C'est
+   la lecture d'un composant, et elle est parfaite pour une liste. Ce qu'un
+   écran ne peut pas faire, c'est montrer trois cents pics reliés en étoile — et
+   c'est pourtant là que se lit la qualité d'un réseau: un groupe où tous les
+   liens sont courts est une molécule, un groupe dont la moitié des liens sont à
+   la limite de la fenêtre est du bruit qui a trouvé une forme.
+
+   Donc on rend le MÊME objet sous une autre forme: des sommets qui portent leur
+   masse, leur intensité et leur degré, et des arêtes qui portent leur erreur.
+   Les deux viennent des MEMES tableaux que la ligne lit — rien n'est recalculé,
+   et une ligne qui ment ferait mentir le graphique tout autant.
+   ========================================================================= */
+
+/* LE DÉFAUT DE MASSE, et il est la seule chose qui distingue deux pics voisins.
+
+   La définition est celle de la spectrométrie haute résolution: la partie
+   fractionnaire AU-DESSUS de la masse nominale, donc `m − ⌊m⌋`, dans [0,1).
+
+   `Math.round` donnerait l'inverse — un pic à 199.9999 aurait un défaut de
+   0.0001 — et c'est exactement le pic le plus caractéristique d'un spectre qui
+   serait écarté. La partie fractionnaire est donc le bon choix, et il n'a pas
+   de paramètre: changer sa définition changerait ce que « le plus spécifique »
+   veut dire, et ce mot doit vouloir dire une seule chose dans le programme. */
+export function massDefect(mass){
+    return Number.isFinite(mass)?mass-Math.floor(mass):0
+}
+
+/* UN GRAPHE PAR COMPOSANT, et il est complet ou il n'existe pas.
+
+   Un sommet de degré zéro — un pic seul, que rien ne relie — n'est dans aucune
+   arête, donc une lecture qui neinio que les arêtes perdrait les pics isolés…
+   et `componentCount` les compte. Le compte du noyau est donc la seule longueur
+   qui ne ment pas, et c'est elle qui décide de la boucle: un composant annoncé à
+   six sommets pour trois arêtes est complet quand même, et l'afficher à moitié
+   serait pire que de ne pas l'afficher.
+
+   `masses` est indexé comme le noyau, donc dans l'ordre TRIÉ des pics: c'est
+   cet ordre que portent `u` et `v`, et la ligne n'en a pas besoin — d'où la
+   présence explicite du tableau ici. */
+export function forestGraph(components,{masses=[],intensities=[]}={}){
+    return (components??[]).map(component=>{
+        const seen=new Map()
+        const keep=index=>{
+            if(!Number.isInteger(index)||index<0||seen.has(index)) return
+            const mass=Number(masses?.[index])
+            if(!Number.isFinite(mass)) return
+            seen.set(index,{
+                index,
+                mass,
+                intensity:Number(intensities?.[index])||0,
+                defect:massDefect(mass),
+                degree:0,
+                isRoot:index===component.root
+            })
+        }
+        /* LA RACINE D'ABORD: elle est le seul sommet que le noyau NOMME, et un
+           groupe d'un seul pic n'a aucune arête pour la faire apparaître. */
+        keep(component.root)
+        const links=[]
+        for(const link of component.links??[]){
+            keep(link.u)
+            keep(link.v)
+            if(!seen.has(link.u)||!seen.has(link.v)) continue
+            seen.get(link.u).degree++
+            seen.get(link.v).degree++
+            links.push({
+                u:link.u,
+                v:link.v,
+                weight:Number(link.weight),
+                standard:link.standard,
+                label:link.label??null
+            })
+        }
+        const vertices=[...seen.values()].sort((a,b)=>a.mass-b.mass)
+        return {
+            rank:component.rank,
+            size:component.size??vertices.length,
+            vertices,
+            links,
+            /* LA MASSE MOYENNE, et elle sert à deux choses: choisir la racine, et
+               dire à l'écran où est le CENTRE d'un groupe. Un groupe dont la
+               moyenne est très au-dessus du mode n'est pas un groupe, c'est une
+               traîne de pics sans lien — et le dessin le montre. */
+            meanMass:vertices.length
+                ?vertices.reduce((n,vertex)=>n+vertex.mass,0)/vertices.length
+                :0,
+            span:vertices.length?vertices[vertices.length-1].mass-vertices[0].mass:0,
+            /* L'ÉNERGIE TOTALE, l'erreur déjà cumulée que la ligne affiche. Elle
+               est reprise telle quelle: c'est la somme des `weight` du noyau, et
+               la recalculer en JavaScript donnerait un nombre différent au
+               dernier bit, donc deux affichages qui ne concordent pas. */
+            weight:Number(component.weight)||0,
+            totalIntensity:vertices.reduce((n,vertex)=>n+vertex.intensity,0)
+        }
+    })
+}
+
+
+/* LA RACINE D'UN GROUPE, et c'est le SEUL endroit du programme qui décide quel
+   pic sert de point de départ à une attribution.
+
+   LA RÈGLE, en deux temps, et c'est celle du cahier des charges:
+
+     1. le pic le plus PROCHE DE LA MOYENNE EN MASSE — parce que la moyenne d'un
+        groupe de pics est la position la plus probable de la molécule, et qu'un
+        pic à l'extrémité d'un groupe est un fragment ou un adduit;
+     2. à distance égale, celui au DÉFAUT DE MASSE LE PLUS ÉLEVÉ — parce que
+        parmi des candidats équivalents le plus fractionnaire est le plus
+        spécifique: à ppm donnée, un pic rare et très nominal ne laisse qu'une
+        formule, un pic médian en laisse dix.
+
+   LA FENÊTRE. « Le plus proche de la moyenne » sans fenêtre ne sélectionne
+   qu'un seul point — le plus proche, point. Un groupe de quatre cents pics n'a
+   pas de point central, il a une NUÉE autour du centre, et c'est dans la nuée
+   que le défaut de masse départage. On retient donc d'abord ceux qui sont à
+   `window` de l'étendue autour de la moyenne, et c'est DANS ce lot que le
+   défaut tranche. Dix pour cent de l'étendue: assez large pour englober la
+   nuée, assez étroit pour ne pas descendre dans la traîne.
+
+   CE QUI EST RENDU, et pourquoi autant: `candidates` dit combien de pics
+   concurraient, donc un utilisateur qui n'aime pas le choix voit tout de suite
+   qu'il y en avait d'autres. Un choix qu'on ne peut pas contester n'est pas un
+   choix. */
+export function forestRoot(graph,{window:share=0.1}={}){
+    const vertices=graph?.vertices??[]
+    const usable=vertices.filter(vertex=>Number.isFinite(vertex.mass))
+    if(!usable.length) return {index:null,reason:"the group has no measurable peak"}
+    const mean=usable.reduce((n,vertex)=>n+vertex.mass,0)/usable.length
+    const span=usable[usable.length-1].mass-usable[0].mass
+    /* UN GROUPE D'UN SEUL PIC n'a pas d'étendue, donc toute fenêtre le garderait
+       et le défaut déciderait — sur un seul candidat il n'y a rien à décider, et
+       c'est lui. Le cas est traité pour que la fenêtre ne serve pas à exclure
+       l'unique pic qu'il reste. */
+    const width=span>0?span*share:Infinity
+    const candidates=usable.filter(vertex=>Math.abs(vertex.mass-mean)<=width)
+    let best=candidates[0]??usable[0]
+    for(const vertex of candidates){
+        const better=vertex.defect>best.defect
+            /* À DÉFAUT ÉGAL, LE PLUS CENTRÉ. Deux pics ne peuvent pas partager un
+               défaut de masse ET une masse, donc ce départage n'arrive presque
+               jamais; il est là pour que la fonction soit TOTALE et qu'un jeu
+               d'essai ne puisse ni la faire boucler ni lui faire rendre le
+               premier trouvé. */
+            ||(vertex.defect===best.defect&&Math.abs(vertex.mass-mean)<Math.abs(best.mass-mean))
+        if(better) best=vertex
+    }
+    return {
+        index:best.index,
+        mass:best.mass,
+        defect:best.defect,
+        meanMass:mean,
+        candidates:candidates.length,
+        reason:usable.length===1
+            ?"the group is a single peak"
+            :`${best.defect.toFixed(4)} defect, among ${candidates.length} near the ${mean.toFixed(4)} mean`
+    }
+}
+
+
+/* LA MISE EN PLACE, et elle est EXÉCUTÉE ICI, pas à chaque image.
+
+   Un moteur de force qui tourne à chaque `requestAnimationFrame` recalcule le
+   même résultat cinquante fois par seconde pendant que l'utilisateur regarde.
+   On le calcule UNE FOIS, quand le graphe change, et le dessin ne fait plus que
+   lire des positions.
+
+   ET ELLE EST DÉTERMINISTE. Aucun tirage aléatoire: les sommets partent d'un
+   cercle rangé par masse croissante — ce qui est déjà une mise en page qui veut
+   quelque chose, puisque l'ordre des masses est l'ordre de construction du
+   réseau — et les itérations sont déterministes. Un graphique qui change de
+   forme à chaque « Grow network » ne permet pas de comparer deux réseaux, et
+   c'est la comparaison qui sert.
+
+   LA GRILLE. La répulsion ne s'évalue que sur les paires proches. En exact elle
+   coûte O(n²) par itération: deux cents itérations sur mille sommets, c'est
+   deux cents millions de paires, et le panneau se figerait plusieurs secondes.
+   La grille rend le coût indépendant de la taille du groupe, au prix d'une
+   approximation que personne ne voit — deux pics très éloignés se repoussent
+   déjà très peu. */
+function repulse(positions,count,k,cutoff,cellSize){
+    const grid=new Map()
+    const cellOf=index=>
+        `${Math.floor(positions[index*2]/cellSize)},${Math.floor(positions[index*2+1]/cellSize)}`
+    for(let i=0;i<count;i++){
+        const key=cellOf(i)
+        let bucket=grid.get(key)
+        if(!bucket){ bucket=[]; grid.set(key,bucket) }
+        bucket.push(i)
+    }
+    for(const bucket of grid.values()){
+        for(const i of bucket){
+            const [cx,cy]=cellOf(i).split(",")
+            for(let dx=-1;dx<=1;dx++){
+                for(let dy=-1;dy<=1;dy++){
+                    const other=grid.get(`${Number(cx)+dx},${Number(cy)+dy}`)
+                    if(!other) continue
+                    for(const j of other){
+                        if(j<=i) continue
+                        let px=positions[j*2]-positions[i*2]
+                        let py=positions[j*2+1]-positions[i*2+1]
+                        let distance=Math.hypot(px,py)
+                        /* DEUX SOMMETS AU MÊME POINT, et la répulsion est une
+                           division par cette distance: sans ce plancher le
+                           résultat vaut l'infini et la mise en page explose. Il
+                           vaut un millième de la longueur idéale — assez pour
+                           lever l'indétermination, trop petit pour se voir. */
+                        if(distance<1e-6){
+                            px=(i%2?1:-1)*1e-3
+                            py=(j%2?1:-1)*1e-3
+                            distance=Math.hypot(px,py)
+                        }
+                        if(distance>cutoff) continue
+                        const push=k*cutoff*cutoff/(distance*distance)/distance
+                        positions[i*2]-=px*push
+                        positions[i*2+1]-=py*push
+                        positions[j*2]+=px*push
+                        positions[j*2+1]+=py*push
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/* LA MISE EN PLACE D'UN GROUPE, et c'est du FRUCHTERMAN–REINGOLD.
+
+   Trois forces, et chacune répond à une question:
+     — la RÉPULSION empêche deux pics d'être superposés, et sa portée est
+       limitée: au-delà de deux longueurs idéales ils ne se repoussent plus,
+       sinon un groupe de mille sommets s'étale sur un plan sans fin;
+     — l'ATTRAACTION tire le long des liens, d'autant plus fort que l'erreur est
+       faible — c'est la physique du panneau: un lien à 0.05 Da est un lien
+       solide et doit serrer les deux pics, un lien à 0.48 Da est une
+       coïncidence et doit rester lâche;
+     — la GRAVITÉ ramène le tout au centre, sans quoi un groupe sans lien — un
+       pic isolé — dériverait à l'infini.
+
+   L'ERREUR PILOTE LA LONGUEUR DU LIEN, et c'est ce qui rend le graphique utile:
+   la forme d'un groupe devient lisible sans lire un seul nombre. */
+function layoutGroup(graph,{iterations,ideal}){
+    const count=graph.vertices.length
+    const positions=new Float64Array(count*2)
+    if(!count) return positions
+    /* LE CERCLE INITIAL, rangé par masse — donc le plus léger en tête, et les
+       sommets déjà dans l'ordre où le réseau les a construits. */
+    for(let i=0;i<count;i++){
+        const angle=2*Math.PI*i/count
+        positions[i*2]=ideal*Math.cos(angle)
+        positions[i*2+1]=ideal*Math.sin(angle)
+    }
+    if(count===1) return positions
+    /* LA PLUS FORTE ERREUR DU GROUPE, et elle fixe l'échelle. La comparer à
+       l'erreur MOYENNE — ou à la médiane — écraserait le groupe contre son
+       lien le plus faible dès qu'un seul pic est absurde, et un groupe est
+       précisément ce qui doit rester lisible. */
+    const worst=graph.links.reduce((n,link)=>Math.max(n,link.weight||0),0)||1
+    const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
+    const cooling=Math.pow(0.02,1/Math.max(1,iterations-1))
+    for(let round=0;round<iterations;round++){
+        repulse(positions,count,1,ideal*2,ideal*2)
+        for(const link of graph.links){
+            const u=byIndex.get(link.u)
+            const v=byIndex.get(link.v)
+            if(u===undefined||v===undefined) continue
+            /* LE LIEN EST D'AUTANT PLUS COURT QUE L'ERREUR EST FAIBLE. On ne
+               rend pas la formule, on rend son ORDRE: un lien à 10 % de la plus
+               forte erreur tire à 10 % de la longueur minimale, un lien à 90 %
+               tire à 90 %. */
+            const slack=Math.min(1,Math.max(0.02,(link.weight||0)/worst))
+            const rest=ideal*(0.2+slack)
+            const dx=positions[v*2]-positions[u*2]
+            const dy=positions[v*2+1]-positions[u*2+1]
+            const distance=Math.max(1e-6,Math.hypot(dx,dy))
+            const pull=(distance-rest)/distance*0.5
+            positions[u*2]+=dx*pull
+            positions[u*2+1]+=dy*pull
+            positions[v*2]-=dx*pull
+            positions[v*2+1]-=dy*pull
+        }
+        for(let i=0;i<count;i++){
+            positions[i*2]-=positions[i*2]*0.02
+            positions[i*2+1]-=positions[i*2+1]*0.02
+        }
+        /* LE REFROIDISSEMENT, et il est la seule chose qui rende la suite
+           convergente: sans lui les sommets continuent d'osciller et le
+           résultat dépend du nombre d'itérations, donc du résumé accroché à la
+           fenêtre — deux tailles de fenêtre donneraient deux réseaux différents
+           pour le même spectre. */
+        if(round<iterations-1){
+            for(let i=0;i<positions.length;i++) positions[i]*=cooling
+        }
+    }
+    return positions
+}
+
+
+/* LA MISE EN PAGE DES GROUPES, et c'est une GRILLE À CASES ET NON UNE VAGUE.
+
+   Les groupes n'ont pas la même taille: il y a un composant de quatre cents pics
+   et six composants de deux. Les poser en grille régulière leur donne la même
+   place, donc le petit groupe devient un point invisible au milieu d'un carré
+   vide — et c'est le petit groupe qu'on veut voir, parce que c'est là qu'une
+   attribution est facile à vérifier.
+
+   ALORS CHACUN REÇOIT SA CELLULE, dans une grille dont on choisit la largeur.
+   La grille est `columns` colonnes et autant de lignes qu'il faut: c'est la
+   seule disposition qui tienne sur une largeur donnée sans mesurer quoi que ce
+   soit, et elle est STABLE — ajouter un groupe décale ceux qui suivent, mais ne
+   redimensionne aucun de ceux qui précèdent. Une disposition dont la taille
+   dépend du nombre de groupes ferait sautiller tout le graphique à chaque
+   réseau. */
+export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=180,ideal=26}={}){
+    const list=(graphs??[]).filter(graph=>(graph?.vertices?.length??0)>0)
+    if(!list.length) return {width,height,groups:[],columns:0,rows:0}
+    const span=width-2*margin
+    const spanHeight=height-2*margin
+    /* UNE COLONNE PAR DÉFAUT pour un groupe, et une grille carrée pour beaucoup.
+       Le nombre de colonnes est borné par la largeur: une colonne de moins de
+       90 px ne perdrait plus ses groupes, elle les rognerait. */
+    const fit=Math.max(1,Math.floor(span/90))
+    const cols=Math.max(1,Math.min(fit,columns>0?columns:Math.ceil(Math.sqrt(list.length))))
+    const rows=Math.ceil(list.length/cols)
+    const cellWidth=(span-(cols-1)*gap)/cols
+    const cellHeight=(spanHeight-(rows-1)*gap)/rows
+    /* LE PLUS GRAND GROUPE REMPLIT SA CASE, et tous les autres sont ramenés à
+       LA MÊME ÉCHELLE — celle du plus grand. Une échelle par groupe ferait d'un
+       groupe de deux pics une tache qui occupe toute sa case: on perdrait
+       exactement l'information qu'on est venu chercher, savoir qu'il est petit. */
+    const placed=list.map(graph=>{
+        const positions=layoutGroup(graph,{iterations,ideal})
+        let minX=Infinity
+        let maxX=-Infinity
+        let minY=Infinity
+        let maxY=-Infinity
+        for(let i=0;i<graph.vertices.length;i++){
+            minX=Math.min(minX,positions[i*2])
+            maxX=Math.max(maxX,positions[i*2])
+            minY=Math.min(minY,positions[i*2+1])
+            maxY=Math.max(maxY,positions[i*2+1])
+        }
+        if(!Number.isFinite(minX)){ minX=0; maxX=0; minY=0; maxY=0 }
+        return {
+            graph,
+            positions,
+            minX,
+            minY,
+            w:Math.max(1e-6,maxX-minX),
+            h:Math.max(1e-6,maxY-minY)
+        }
+    })
+    const widest=placed.reduce((n,entry)=>Math.max(n,entry.w),0)||1
+    const tallest=placed.reduce((n,entry)=>Math.max(n,entry.h),0)||1
+    const scale=Math.min(cellWidth/widest,cellHeight/tallest)
+    const groups=placed.map((entry,index)=>{
+        const column=index%cols
+        const row=Math.floor(index/cols)
+        /* LA CELLULE EST CENTRÉE DANS SA CASE: un groupe étroit pose son centre
+           au milieu de la case, donc les pics isolés restent au milieu de leur
+           colonne au lieu de coller au bord de l'écran. */
+        const cellX=margin+column*(cellWidth+gap)
+        const cellY=margin+row*(cellHeight+gap)
+        const drawWidth=entry.w*scale
+        const drawHeight=entry.h*scale
+        const offsetX=cellX+(cellWidth-drawWidth)/2
+        const offsetY=cellY+(cellHeight-drawHeight)/2
+        const points=entry.graph.vertices.map((vertex,i)=>({
+            index:vertex.index,
+            x:offsetX+(entry.positions[i*2]-entry.minX)*scale,
+            y:offsetY+(entry.positions[i*2+1]-entry.minY)*scale
+        }))
+        const xs=points.map(point=>point.x)
+        const ys=points.map(point=>point.y)
+        return {
+            rank:entry.graph.rank,
+            size:entry.graph.size,
+            points,
+            /* LA BOÎTE, et elle sert à deux choses: savoir si un sommet est
+               visible, et savoir où cliquer dessus. Elle est calculée ICI et non
+               relue au dessin, parce qu'un dessin qui recalcule son échelle est
+               un dessin qui n'en a qu'une. */
+            box:{
+                x:Math.min(...xs),y:Math.min(...ys),
+                width:Math.max(...xs)-Math.min(...xs),
+                height:Math.max(...ys)-Math.min(...ys)
+            }
+        }
+    })
+    return {width,height,groups,columns:cols,rows}
+}

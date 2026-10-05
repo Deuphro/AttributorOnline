@@ -24,6 +24,10 @@ import {
     componentLine,
     growForest,
     suggestWeightCut,
+    forestGraph,
+    forestRoot,
+    layoutForests,
+    massDefect,
     DEFAULT_LINK_TOLERANCE,
     CUT_SIGNIFICANCE,
     CUT_MIN_POINTS
@@ -306,4 +310,124 @@ test("the cut removes the worst LINK, never a peak",()=>{
     assert.equal(cut.cutUsed,1)
     /* LA COURBE, elle, reste entière: c'est elle qui montre la coupure. */
     assert.equal(cut.weights.length,whole.weights.length)
+})
+
+/* ===========================================================================
+   LE GRAPHE ET SA MISE EN PLACE — ce que l'écran va dessiner.
+
+   Ces trois fonctions n'ont pas de noyau et pas de DOM, donc elles se testent
+   comme une loi de physique: on leur donne un réseau, et on vérifie qu'elles
+   disent ce qu'un panneau honnête doit montrer.
+   =========================================================================== */
+
+/* LE DÉFAUT DE MASSE, et le cas qui tranche sa définition.
+
+   199.9999 est le pic le plus caractéristique qu'un spectre puisse contenir — il
+   ne laisse qu'une formule à 10 ppm. Avec `Math.round` son défaut vaudrait
+   0.0001 et il serait le MOINS spécifique de la série. La fonction teste donc le
+   cas exact qui sépare les deux définitions, plutôt qu'un nombre quelconque qui
+   passerait avec l'une comme avec l'autre. */
+test("the mass defect is the FRACTIONAL part, not the distance to an integer",()=>{
+    assert.equal(massDefect(199.9999).toFixed(4),"0.9999")
+    assert.equal(massDefect(180.1028).toFixed(4),"0.1028")
+    assert.equal(massDefect(180).toFixed(4),"0.0000")
+    /* UN NOMBRE NON FINI ne vaut pas « un défaut de zéro »: il ne vaut rien, et
+       le dire par un nombre laisserait croire à une mesure. */
+    assert.equal(massDefect(NaN),0)
+})
+
+test("the graph keeps the peaks that NO link mentions",()=>{
+    /* LE COMPTE DU NOYAU EST LA SEULE LONGUEUR FIABLE. Un pic seul n'apparaît
+       dans aucune arête, donc un graphe bâti sur les arêtes perdrait les
+       composants de taille 1 — et le panneau afficherait un réseau qui perd des
+       pics, ce qu'il n'a pas le droit de faire. */
+    const components=[
+        {rank:0,root:0,size:1,weight:0,links:[]},
+        {rank:1,root:1,size:3,weight:0.2,links:[
+            {u:1,v:2,weight:0.05,standard:0,label:"CH2"},
+            {u:2,v:3,weight:0.15,standard:0,label:"CH2"}
+        ]}
+    ]
+    const masses=[100.5,200.1,214.11,228.13]
+    const graphs=forestGraph(components,{masses,intensities:[10,20,30,40]})
+    assert.equal(graphs[0].vertices.length,1,"the lone peak must survive")
+    assert.equal(graphs[0].vertices[0].mass,100.5)
+    assert.ok(graphs[0].vertices[0].isRoot)
+    /* ET LES DEGRÉS, parce qu'ils sont ce qui distingue un pic central d'un pic
+       de bout de chaîne. */
+    assert.deepEqual(graphs[1].vertices.map(v=>v.degree),[1,2,1])
+    assert.deepEqual(graphs[1].vertices.map(v=>v.intensity),[20,30,40])
+
+test("the root is the most DEFECTIVE peak near the mean, and it says how many ran",()=>{
+    /* LE JEU EST FAIT POUR QUE LES DEUX RÈGLES DISENT DES CHOSES
+       DIFFÉRENTES. Trois pics sont à égalité autour de la moyenne, donc « le plus
+       proche » ne peut pas trancher — et c'est le défaut qui doit le faire. */
+    const masses=[100.0001,296.10,300.90,305.55,400.0001]
+    const components=[{
+        rank:0,root:0,size:masses.length,weight:0,
+        links:masses.map((_,i)=>i?{u:i-1,v:i,weight:0.1,standard:0,label:"x"}:null).filter(Boolean)
+    }]
+    const graph=forestGraph(components,{masses})[0]
+    const root=forestRoot(graph)
+    assert.equal(root.candidates,3,`the window must hold the three central peaks, got ${root.candidates}`)
+    /* 300.90 bat 296.10, qui est plus CENTRÉ que lui: le défaut l'emporte. C'est
+       le sens exact de la règle — sinon le second temps ne servirait à rien. */
+    assert.equal(masses[root.index],300.90)
+    /* ET LE COMPTE DES CONCURRENTS EST RENDU, parce qu'un choix qu'on ne peut
+       pas contester n'est pas un choix: l'utilisateur doit voir qu'il y en avait
+       d'autres, et combien. */
+    assert.match(root.reason,/defect/)
+})
+
+test("a group of ONE peak is its own root, whatever the window",()=>{
+    const graph=forestGraph(
+        [{rank:0,root:3,size:1,weight:0,links:[]}],
+        {masses:[1,2,3,180.1028]}
+    )[0]
+    const root=forestRoot(graph)
+    assert.equal(root.index,3)
+    assert.equal(root.mass,180.1028)
+    assert.match(root.reason,/single peak/)
+})
+
+test("the layout is DETERMINISTIC, or two networks cannot be compared",()=>{
+    const masses=Array.from({length:24},(_,i)=>100+i*14.01565)
+    const components=[{
+        rank:0,root:0,size:masses.length,weight:0,
+        links:masses.map((_,i)=>i?{u:i-1,v:i,weight:0.02+i*0.01,standard:0,label:"CH2"}:null).filter(Boolean)
+    }]
+    const graphs=forestGraph(components,{masses})
+    const once=layoutForests(graphs,{width:600,height:400})
+    const twice=layoutForests(graphs,{width:600,height:400})
+    /* LE MÊME RÉSEAU, DEUX FOIS, DONNE LA MÊME IMAGE. Sans cela, chaque
+       « Grow network » redessinerait le même groupe autrement et l'utilisateur
+       n'aurait plus rien à comparer d'un run à l'autre. */
+    assert.deepEqual(
+        once.groups[0].points.map(point=>[point.x,point.y]),
+        twice.groups[0].points.map(point=>[point.x,point.y])
+    )
+})
+
+test("every drawn point lands INSIDE the canvas it was given",()=>{
+    const masses=Array.from({length:40},(_,i)=>100+i*7.00783)
+    const components=[{
+        rank:0,root:0,size:masses.length,weight:0,
+        links:masses.map((_,i)=>i?{u:i-1,v:i,weight:0.4,standard:0,label:"H2"}:null).filter(Boolean)
+    }]
+    const graphs=forestGraph(components,{masses})
+    /* TROIS FORMES DE FENÊTRE, parce que c'est la forme qui casse: un panneau
+       réduit en largeur, en hauteur, ou les deux. Un sommet tracé hors du cadre
+       est un sommet qu'on ne peut plus cliquer. */
+    for(const box of [{width:300,height:200},{width:900,height:120},{width:200,height:900}]){
+        const layout=layoutForests(graphs,box)
+        for(const group of layout.groups){
+            for(const point of group.points){
+                assert.ok(Number.isFinite(point.x)&&Number.isFinite(point.y),
+                    "a position must be a number, never NaN")
+                assert.ok(point.x>=0&&point.x<=box.width,`x=${point.x} outside ${box.width}`)
+                assert.ok(point.y>=0&&point.y<=box.height,`y=${point.y} outside ${box.height}`)
+            }
+        }
+    }
+})
 })
