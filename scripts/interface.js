@@ -16,7 +16,7 @@ import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKern
 //minimum spanning forest over the measured points. `growForest` is the JS oracle
 //of the Rust kernel, not a second implementation — forestParity.test.mjs proves
 //the two give the same tree (see forest.js).
-import {forestStandards,forestComponents,componentLine,growForest,DEFAULT_LINK_TOLERANCE} from "./forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,DEFAULT_LINK_TOLERANCE} from "./forest.js"
 //where the nodes go, and which two of them get wired together by themselves.
 //Pure functions over plain descriptors, so the whole thing is testable
 //without a browser (see layout.test.mjs).
@@ -4999,7 +4999,7 @@ class AttributionNode extends NodeWithAccordion{
        donc exactement le même arbre, pas une approximation. Un repli « approché »
        laisserait deux physiques dans le programme, et celle qui répondrait serait
        celle qu'on ne testerait pas. */
-    async growForestAsync(wave,standards){
+    async growForestAsync(wave,standards,cut=0){
         const half=wave.size/2
         const x=new Float64Array(half)
         const y=new Float64Array(half)
@@ -5019,7 +5019,11 @@ class AttributionNode extends NodeWithAccordion{
             intensities:Array.from(points.order.map(index=>points.y[index])),
             standards:standards.masses,
             tolerance:Number.isFinite(tolerance)&&tolerance>0?tolerance:DEFAULT_LINK_TOLERANCE,
-            degreeMax:Number.isFinite(degreeMax)&&degreeMax>0?degreeMax:0
+            degreeMax:Number.isFinite(degreeMax)&&degreeMax>0?degreeMax:0,
+            /* LA COUPURE PART AU NOYAU, et non au retour: c'est le noyau qui
+               possède les poids triés, donc lui seul peut dire « prends les N
+               meilleurs » sans les renvoyer d'abord pour être recoupés. */
+            limit:Number.isFinite(cut)&&cut>0?cut:0
         }}
         let forest=null
         try{
@@ -5040,8 +5044,15 @@ class AttributionNode extends NodeWithAccordion{
        dans `forestComponents` — donc dans un fichier testable sans DOM — et le
        panneau ne fait que les peindre. C'est le découpage que
        `collectionReader.test.mjs` a établi pour la moitié DOM du programme. */
-    async startForest(){
+    async startForest({keepCut=false}={}){
         const run=++this.forestRun
+        /* LA COUPURE EST UN RANG DE POIDS, PAS UNE INDICE DE COMPOSANT.
+
+           Le noyau trie les candidats par erreur croissante, donc « garder les
+           N premiers» et « garder les N meilleurs» sont la même chose — et c'est
+           ce second sens qui a un sens physique. */
+        if(!keepCut) this.forestCut=0
+        this.forestBusy=true
         const {waves,skipped}=this.collectInputWaves()
         this.forestSkipped=skipped
         if(!this.plan?.items?.length||!waves.length){
@@ -5078,8 +5089,17 @@ class AttributionNode extends NodeWithAccordion{
             const wave=waves[i]
             const title=wave.metadata?.title??`input ${i+1}`
             try{
-                const {forest,points}=await this.growForestAsync(wave,standards)
+                const {forest,points}=await this.growForestAsync(wave,standards,this.forestCut)
                 forests.push(forest)
+                /* LA COURBE VIENT AVEC L'ARBRE, donc elle ne peut pas dater d'un
+                   autre calcul: elle est rendue par le même appel sur le même
+                   préfixe trié. On ne la prend qu'au PREMIER lot — sinon deux
+                   spectres se disputeraient la même courbe, et le curseur
+                   couperait un graphe avec la courbe de l'autre. */
+                if(i===0){
+                    this.forestWeights=forest.weights??[]
+                    this.forestSuggestion=suggestWeightCut(this.forestWeights)
+                }
                 components.push({
                     title,
                     points,
@@ -5099,6 +5119,7 @@ class AttributionNode extends NodeWithAccordion{
         this.forestComponents=components
         this.forestErrors=errors
         this.renderForestButton(false)
+        this.forestBusy=false
         this.renderForest()
     }
 
@@ -5119,10 +5140,242 @@ class AttributionNode extends NodeWithAccordion{
             :"link the measured peaks whose m/z gap matches a reference mass"
     }
 
+    /* LE CURSEUR, GLISSÉ, ET L'ARBRE RECALCULÉ AU RELÂCHEMENT.
+
+       Le calcul est refait à chaque relâchement, jamais pendant le glissement:
+       un noyau par pixel déplacé transformerait un geste de lecture en calcul
+       de plusieurs secondes. Pendant le geste on ne dessine que le trait — ce
+       qui est instantané — et le panneau ne change de contenu qu'à la fin.
+
+       LE GESTE EST UN CLICK, PAS UN DRAG, et c'est délibéré: sur une courbe de
+       cinq mille points, viser un rang au pixel près est faisable; viser une
+       VALEUR au pixel près, non. Un glissement ajoute donc de la précision et
+       retire de la certitude — et l'utilisateur voit où il coupe. */
+    wireForestCursor(){
+        const canvas=this.forestCanvas
+        if(!canvas) return
+        let dragging=false
+        const rankAt=event=>{
+            const weights=this.forestWeights
+            if(!weights?.length) return null
+            const box=canvas.getBoundingClientRect()
+            const ratio=(event.clientX-box.left)/Math.max(1,box.width)
+            /* LE MARGE EST DANS LE DESSIN, ET DONC DANS LA CONVERSION: si le
+               tracé commence à 6 % de la largeur, le pixel 0 ne doit pas
+               correspondre au rang 0. Deux conversions du même calcul, c'est un
+               curseur décalé d'une fraction de la largeur. */
+            const usable=Math.max(1e-6,this.forestPlotLeft/box.width+
+                (box.width-this.forestPlotLeft-this.forestPlotRight)/box.width)
+            const along=Math.max(0,Math.min(1,(ratio-this.forestPlotLeft/box.width)/usable))
+            return Math.round(along*(weights.length-1))
+        }
+        canvas.addEventListener("pointerdown",event=>{
+            if(!this.forestWeights?.length) return
+            dragging=true
+            canvas.setPointerCapture?.(event.pointerId)
+            const rank=rankAt(event)
+            if(rank!==null) this.drawForestCurve(rank)
+        })
+        canvas.addEventListener("pointermove",event=>{
+            if(!dragging) return
+            const rank=rankAt(event)
+            if(rank!==null) this.drawForestCurve(rank)
+        })
+        const finish=event=>{
+            if(!dragging) return
+            dragging=false
+            const rank=rankAt(event)
+            if(rank!==null) this.setForestCut(rank)
+        }
+        canvas.addEventListener("pointerup",finish)
+        canvas.addEventListener("pointercancel",()=>{ dragging=false })
+        canvas.addEventListener("dblclick",()=>this.applySuggestedCut())
+    }
+
+    /* APPLIQUER UNE COUPURE, et c'est un NOUVEAU CALCUL COMPLET.
+
+       La coupure ne se dessine pas: elle se reconstruit par-dessus le même
+       trié, donc Kruskal doit repasser. On pourrait s'économiser ce calcul en
+       rejouant seulement l'union-find, mais le noyau ne rend pas son état
+       interne — et un « mode rapide » qui ne serait testé que par lui-même
+       finirait par diverger du chemin normal. Le coût est celui d'un appel de
+       plus, et le noyau est fait pour ça. */
+    async setForestCut(rank){
+        if(this.forestBusy) return
+        this.forestCut=Math.max(1,Math.round(rank))
+        await this.startForest({keepCut:true})
+    }
+
+    /* LA COUPURE SUGGÉRÉE, et elle s'applique en UN geste.
+
+       Le bouton n'est pas « appliquer la suggestion » mais le double-clic sur
+       la courbe: couper est un réglage, et un réglage se pose là où se lit la
+       chose qu'il règle. Le bouton, lui, reste « Grow network ». */
+    applySuggestedCut(){
+        if(!this.forestSuggestion) return
+        this.setForestCut(this.forestSuggestion.index)
+    }
+
+    /* LES MARGES DU DESSIN, et elles sont SUR LE NŒUD, pas dans le dessin.
+
+       Le curseur doit convertir un pixel en rang, et cette conversion doit
+       employer les mêmes marges que le tracé. Les garder dans une variable
+       d'instance plutôt que dans le corps du dessin, c'est la seule façon que
+       les deux ne divergent pas — et un curseur décalé d'une marge se lit
+       comme un calcul faux, pas comme un graphique mal aligné. */
+    forestPlotLeft=0.10
+    forestPlotRight=0.01
+
+    /* LE DESSIN, et il ne dépend que du NŒUD.
+
+       Tout ce qu'il lui faut — la courbe, la coupure en cours, celle que le
+       détecteur suggère — vit sur le nœud. Il n'a donc aucun état propre, et un
+       redessin demandé par un réglage ne peut pas afficher la courbe d'un ancien
+       calcul: il n'y a rien d'autre à afficher. */
+    drawForestCurve(dragRank=null){
+        const canvas=this.forestCanvas
+        if(!canvas) return
+        const weights=this.forestWeights??[]
+        const ratio=window.devicePixelRatio??1
+        const box=canvas.getBoundingClientRect()
+        const width=Math.max(80,Math.round(box.width))
+        const height=Math.max(80,Math.round(box.height))
+        /* LE CANVAS EST MIS À L'ÉCHELLE DU DISPOSITIF, sinon la courbe est
+           floue sur tout écran à haute densité — et une courbe floue fait poser
+           le curseur au mauvais pixel. */
+        if(canvas.width!==Math.round(width*ratio)||canvas.height!==Math.round(height*ratio)){
+            canvas.width=Math.round(width*ratio)
+            canvas.height=Math.round(height*ratio)
+        }
+        const ctx=canvas.getContext("2d")
+        ctx.setTransform(ratio,0,0,ratio,0,0)
+        ctx.clearRect(0,0,width,height)
+        if(!weights.length){
+            ctx.fillStyle="rgba(255,255,255,0.45)"
+            ctx.font="11px system-ui, sans-serif"
+            ctx.textAlign="center"
+            ctx.fillText("no link yet — press Grow network",width/2,height/2)
+            return
+        }
+        const left=this.forestPlotLeft*width
+        const right=this.forestPlotRight*width
+        const usable=Math.max(1,width-left-right)
+        /* L'ÉCHELLE LOG, ET LE PLANCHER N'EST PAS UN DÉTAIL DE DESSIN.
+
+           Les erreurs vont de 1e-7 à 1 Da: six ordres de grandeur, donc une
+           échelle linéaire écraserait tout le bas de la courbe — et le bas est
+           justement ce qui distingue un lien crédible d'un lien au hasard. Le
+           plancher est le plus petit poids NON NUL, ramené d'un cran: un zéro
+           exact n'a pas de logarithme, et le plateau du FT-ICR doit quand même se
+           voir — au plancher, ce qui est honnête plutôt que flatteur. */
+        const positive=weights.filter(weight=>Number.isFinite(weight)&&weight>0)
+        const smallest=positive.length?Math.min(...positive):1e-6
+        const floor=smallest/10
+        const top=Math.max(...positive,smallest*10)
+        const decades=Math.max(1,Math.log10(top/floor))
+        const yOf=weight=>{
+            const value=Number.isFinite(weight)&&weight>0?weight:floor
+            return height-3-((Math.log10(Math.max(value,floor))-Math.log10(floor))/decades)*(height-6)
+        }
+        const xOf=rank=>left+(weights.length<2?usable/2:(rank/(weights.length-1))*usable)
+        /* LE TRACE, en une passe, et SANS lissage.
+
+           Un lissage changerait les valeurs affichées pour de la beauté — et ici
+           chaque point est une erreur MESURÉE, pas un échantillon d'une fonction.
+           On dessine donc la suite des points.
+
+           LE PAS S'ADAPTE À LA LARGEUR: au-delà de deux points par pixel, on en
+           saute. Cela change l'allure, jamais le classement — donc jamais la
+           coupure proposée ni le curseur, qui travaillent sur `weights` et pas sur
+           ce qui est tracé. C'est ce qui permet à la même fonction de dessiner
+           dix liens et cinquante mille sans que l'une des deux coûte plus cher. */
+        ctx.strokeStyle="#e03030"
+        ctx.lineWidth=1
+        ctx.beginPath()
+        const stride=Math.max(1,Math.ceil(weights.length/usable))
+        let first=true
+        for(let rank=0;rank<weights.length;rank+=stride){
+            const x=xOf(rank)
+            const y=yOf(weights[rank])
+            if(first){ ctx.moveTo(x,y); first=false }
+            else ctx.lineTo(x,y)
+        }
+        /* LE DERNIER POINT EST DESSINÉ QUOI QU'IL ARRIVE: sans lui la courbe
+           s'arrête un cran avant sa fin, et la fin est justement la partie qui
+           regarde le texte — « ces liens-là, on ne les croit pas ». */
+        if(weights.length>1){
+            const x=xOf(weights.length-1)
+            const y=yOf(weights[weights.length-1])
+            if(first) ctx.moveTo(x,y)
+            else ctx.lineTo(x,y)
+        }
+        ctx.stroke()
+        /* LE GARDÉ, À GAUCHE DE LA COUPURE, et il est PLEIN.
+
+           C'est la moitié de la courbe qui devient un arbre. Sans le remplissage,
+           « ce qui est gardé » se lit en comptant les points à l'œil, et c'est
+           précisément ce qu'on demande à un graphique d'éviter. */
+        const cut=this.forestDrawCut??weights.length
+        if(cut<weights.length){
+            ctx.save()
+            ctx.beginPath()
+            ctx.rect(left,0,Math.max(0,xOf(cut)-left),height)
+            ctx.clip()
+            ctx.fillStyle="rgba(224,48,48,0.16)"
+            ctx.fillRect(left,0,width,height)
+            ctx.restore()
+        }
+        this.drawForestMarks(ctx,{xOf,yOf,width,height,left,usable})
+    }
+
+    /* LES MARQUES: LA COUPURE, ET LA MARCHE SUGGÉRÉE.
+
+       Deux traits et non un, parce que ce sont deux choses: le trait VERT est ce
+       que le curseur a choisi, le CERCLE est ce que le détecteur proposerait. Ils
+       se confondent quand l'utilisateur accepte la suggestion — et c'est la
+       bonne nouvelle, pas un défaut: la ligne verte s'est posée exactement là où
+       l'algorithme voyait la même marche. */
+    drawForestMarks(ctx,{xOf,yOf,width,height,left,usable}){
+        const weights=this.forestWeights??[]
+        const suggestion=this.forestSuggestion
+        const cut=this.forestDrawCut??weights.length
+        /* LE CERCLE, D'ABORD, POUR QU'IL RESTE VISIBLE SOUS LE TRAIT. */
+        if(suggestion&&suggestion.index<weights.length&&suggestion.index>0){
+            const x=xOf(suggestion.index)
+            const y=yOf(weights[suggestion.index])
+            ctx.strokeStyle="rgba(255,255,255,0.85)"
+            ctx.lineWidth=1.5
+            ctx.beginPath()
+            ctx.arc(x,y,5,0,2*Math.PI)
+            ctx.stroke()
+        }
+        if(cut>0&&cut<weights.length){
+            const x=xOf(cut)
+            ctx.strokeStyle="#40d060"
+            ctx.lineWidth=1.5
+            ctx.beginPath()
+            ctx.moveTo(x,0)
+            ctx.lineTo(x,height)
+            ctx.stroke()
+        }
+        /* LES GRADUATIONS, deux en suffisent: le nombre de liens, et l'ordre de
+           grandeur de l'erreur. Un axe de plus serait de l'encre pour rien — le
+           lecteur veut savoir « combien » et « à quel niveau », pas lire une
+           échelle logarithmique entière. */
+        ctx.fillStyle="rgba(255,255,255,0.55)"
+        ctx.font="9px system-ui, sans-serif"
+        ctx.textAlign="left"
+        ctx.fillText(`${weights.length}`,left,height-1)
+        ctx.textAlign="right"
+        ctx.fillText(`${weights.length-1}`,width-this.forestPlotRight*width,height-1)
+        ctx.textAlign="left"
+        ctx.fillText(this.forestCurveTopLabel??"",left+1,9)
+    }
+
     /* LE PANNEAU DU RÉSEAU, et il ne fait qu'une chose de plus que le gauche:
        il rend le résultat. Les réglages y sont parce qu'ils bornent l'arbre, et
        ils sont donc dans la même colonne que lui — mais le LECTEUR est le
-       bouton et la liste, pas les cases. */
+       bouton, la courbe et la liste, pas les cases. */
     setupForestPanel(){
         if(!this.forestAccordion) return
         const content=this.forestAccordion.DOMelt.content
@@ -5179,6 +5432,31 @@ class AttributionNode extends NodeWithAccordion{
         })
         this.forestButton.addEventListener("click",()=>this.startForest())
         content.appendChild(this.forestButton)
+        /* LA COURBE DES POIDS, et c'est ELLE qui rend le résultat lisible.
+
+           Une liste de composants dit QUOI il reste, mais pas POURQUOI on a
+           arrêté là: sans la courbe, un groupe de trois pics et un groupe de
+           quatorze se lisent de la même façon. La courbe est l'argument — les
+           erreurs des liens, triées — et le curseur est la décision.
+
+           Un `<canvas>` 2D, et non le Plot2D du programme: ce n'est pas une
+           trace de spectre mais un profil en échelle log avec un curseur, et
+           Plot2DWebGL dessine des séries sur des axes, pas une distribution
+           d'ordres de grandeur. Le réutiliser ici coûterait plus de code caché
+           qu'il n'y en a dans un canvas, et il ne gère pas le glissement du
+           curseur. */
+        this.forestCanvas=CE("canvas",{className:"an-forest-curve"},[])
+        stylize(this.forestCanvas,{
+            width:"100%",height:"150px",display:"block",
+            background:"rgba(255,255,255,0.04)",
+            border:"1px solid rgba(255,255,255,0.15)",
+            borderRadius:"3px",cursor:"crosshair",touchAction:"none"
+        })
+        content.appendChild(this.forestCanvas)
+        this.forestCurveLabel=CE("div",{className:"an-forest-label"},[])
+        stylize(this.forestCurveLabel,{fontSize:"0.75em",lineHeight:"1.35",opacity:"0.85"})
+        content.appendChild(this.forestCurveLabel)
+        this.wireForestCursor()
         /* LA LECTURE, et elle est RENDUE TOUTE SEULE quand elle arrive.
 
            `forest.js` fait la conversion ligne par ligne et `componentLine` la
@@ -5250,8 +5528,43 @@ class AttributionNode extends NodeWithAccordion{
                     :""))
         }
         if(this.forestReadout) this.forestReadout.textContent=lines.join("\n")
+        /* LA COURBE EST REDESSINÉE À CHAQUE LECTURE, et c'est gratuit: le
+           tracé tient dans un canvas de 300 points et ne fait aucun calcul.
+           Elle doit suivre les RÉGLAGES — un changement de fenêtre de lien
+           change les poids — donc la peindre à la main serait une deuxième
+           vérité à maintenir. */
+        this.drawForestCurve(this.forestDrawCut??this.forestCut??null)
+        this.renderForestCurveLine()
         this.renderForestList()
     }
+
+    /* LA PHRASE SOUS LA COURBE, et elle dit CE QUI EST GARDÉ.
+
+       Un graphique sans légende oblige à compter les points; une légende sans
+       graphique laisse deviner où l'on coupe. Les deux ensemble disent en une
+       ligne ce que la liste des groupes va montrer en détail. */
+    renderForestCurveLine(){
+        if(!this.forestCurveLabel) return
+        const weights=this.forestWeights??[]
+        if(!weights.length){
+            this.forestCurveLabel.textContent=""
+            return
+        }
+        const used=this.forestCut||weights.length
+        const suggestion=this.forestSuggestion
+        const parts=[`${used} of ${weights.length} link(s) kept`]
+        if(this.forestCut&&suggestion){
+            /* ON DIT QUAND MÊME CE QUE LE DÉTECTEUR PENSE, même quand
+               l'utilisateur a choisi ailleurs: sinon une coupure manuelle
+               devient une affirmation, alors qu'elle n'est qu'un choix. */
+            parts.push(suggestion.index===used
+                ?`cut at the detected step (${suggestion.reason})`
+                :`detector suggested ${suggestion.index} (${suggestion.reason})`)
+        }
+        parts.push("click the curve to cut elsewhere, double-click to take the suggestion")
+        this.forestCurveLabel.textContent=parts.join("  ·  ")
+    }
+
 
     /* L'ARBRE D'UN LOT, et le lien entre les deux tableaux est ISOLÉ ICI.
 

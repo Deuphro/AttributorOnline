@@ -24,13 +24,14 @@ import assert from "node:assert/strict"
 import {forest_grow} from "../XOP/rust-extension/pkg-node/attribrustor.js"
 import {growForest} from "./forest.js"
 
-const throughRust=({masses,intensities,standards,tolerance=0.5,degreeMax=0})=>{
+const throughRust=({masses,intensities,standards,tolerance=0.5,degreeMax=0,limit=0})=>{
     const forest=forest_grow(
         Float64Array.from(masses),
         Float64Array.from(intensities),
         Float64Array.from(standards),
         tolerance,
-        degreeMax
+        degreeMax,
+        limit
     )
     return {
         edgeU:Array.from(forest.edge_u),
@@ -45,7 +46,9 @@ const throughRust=({masses,intensities,standards,tolerance=0.5,degreeMax=0})=>{
         componentWeight:Array.from(forest.component_weight),
         componentRootMass:Array.from(forest.component_root_mass),
         componentPeakMass:Array.from(forest.component_peak_mass),
+        weights:Array.from(forest.weights),
         candidates:forest.candidates,
+        cutUsed:forest.cut_used,
         isolated:forest.isolated,
         edgeCount:forest.edge_count,
         componentCount:forest.component_count
@@ -86,9 +89,14 @@ const compareBothSides=(input,label)=>{
     close(rust.componentWeight,js.componentWeight,`${label}: component weight`)
     close(rust.componentRootMass,js.componentRootMass,`${label}: root mass`)
     close(rust.componentPeakMass,js.componentPeakMass,`${label}: peak mass`)
-    sameIntegers([rust.candidates,rust.isolated,rust.edgeCount,rust.componentCount],
-        [js.candidates,js.isolated,js.edgeCount,js.componentCount],
+    sameIntegers([rust.candidates,rust.isolated,rust.edgeCount,rust.componentCount,rust.cutUsed],
+        [js.candidates,js.isolated,js.edgeCount,js.componentCount,js.cutUsed],
         `${label}: counters`)
+    /* LA COURBE EST COMPARÉE ELLE AUSSI, et dans l'ordre: c'est elle que le
+       panneau trace et sur laquelle on place le curseur, donc deux courbes
+       égales en nombre et différentes en ordre donneraient deux graphiques
+       différents pour le même spectre. */
+    close(rust.weights,js.weights,`${label}: the weight curve`)
     return {rust,js}
 }
 /* LES CAS, et chacun vise une règle à risque.
@@ -163,4 +171,54 @@ test("the two circuits agree on a dense spectrum",()=>{
        deux circuits pourraient être d'accord en ne calculant presque rien. */
     assert.ok(rust.candidates>500,`only ${rust.candidates} candidate links`)
     assert.ok(rust.edgeCount>200,`only ${rust.edgeCount} kept links`)
+})
+test("the two circuits agree on a CUT curve, weight by weight",()=>{
+    /* La coupure est le NOUVEAU paramètre, donc elle a sa propre parité: un
+       préfixe pris des deux côtés doit donner le même arbre ET la même courbe.
+       Une courbe tronquée des deux côtés mais décalée d'un rang donnerait deux
+       graphiques différents — et le curseur se poserait au mauvais endroit. */
+    const masses=[]
+    const intensities=[]
+    for(let i=0;i<300;i++){
+        masses.push(100+i*0.53+((i%5)-2)*0.013)
+        intensities.push(20+(i*53)%811)
+    }
+    const standards=[14.0156,15.9949,17.0265,27.9949,29.0378,30.0106,16.0313,18.0106]
+    for(const limit of [1,5,37,300,0,9999]){
+        const {rust,js}=compareBothSides({
+            masses,intensities,standards,tolerance:0.03,degreeMax:3,limit
+        },`cut at ${limit}`)
+        assert.equal(rust.weights.length,js.weights.length)
+        /* Une coupure qui mord RÉDUIT l'arbre; une coupure absente le laisse
+           entier. Sans cette assertion, deux circuits qui ignoreraient tous deux
+           le paramètre passeraient la parité. */
+        if(limit>0&&limit<rust.candidates){
+            assert.ok(rust.cutUsed<=limit,`cut at ${limit} used ${rust.cutUsed}`)
+        }else{
+            assert.equal(rust.cutUsed,rust.candidates)
+        }
+    }
+})
+
+test("the two circuits agree when FT-ICR gives zero-error links",()=>{
+    /* Des liens d'erreur EXACTEMENT NULS: c'est le cas que tu décrivais, et il
+       ne doit pas être un cas particulier du noyau. Les deux circuits doivent
+       rendre la même courbe, zéros compris — donc le même plateau, donc le même
+       point de départ pour le curseur. */
+    const masses=[]
+    const intensities=[]
+    for(let i=0;i<120;i++){
+        masses.push(100+i*14)
+        intensities.push(10+i)
+    }
+    const standards=[14.0]
+    const {rust,js}=compareBothSides({
+        masses,intensities,standards,tolerance:0.0+1e-9,degreeMax:0
+    },"zero errors")
+    assert.ok(rust.weights.length>0,"there is something to plot")
+    /* Le plateau existe vraiment, sinon le test ne teste pas le cas qu'il
+       prétend couvrir. */
+    assert.ok(rust.weights.filter(w=>w===0).length>10,
+        "the fixture must actually produce zero-error links")
+    assert.deepEqual(js.weights.map(w=>w===0),rust.weights.map(w=>w===0))
 })

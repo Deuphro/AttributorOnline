@@ -1368,7 +1368,9 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
         → {edges[], components[]}          // TIME 2 — the heavy compute
     → forestComponents(forest, standards)  // TIME 3 — one row per group
         → root mass, size, tallest peak, total error, and its own links
-    → click a row → the Probe field, which attributes the group's lightest peak</pre>
+    → click a row → the Probe field, which attributes the group's lightest peak
+    → the weight curve is drawn (log y); click it to cut the tree there
+    → suggestWeightCut(weights) → where the first significant step is</pre>
 
         <table class="spec">
             <tr>
@@ -1420,6 +1422,38 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
                     <code>forestParity.test.mjs</code> proves the two give the same tree, edge by edge,
                     on a 900-peak spectrum. The network never repaints the node status: that status
                     belongs to the attribution, which is a different calculation.
+                </td>
+            </tr>
+            <tr>
+                <td>The cut</td>
+                <td>
+                    Kruskal consumes a <strong>prefix</strong> of the sorted weights: a cut of
+                    <em>n</em> means "the <em>n</em> best links, and nothing else". The curve of every
+                    candidate weight — sorted, log scale — is drawn in the panel, and the cut is a
+                    <strong>cursor</strong> on it. It is not a filter: no peak ever disappears, only the
+                    worst links, so a group may split but can never lose a member.
+                </td>
+            </tr>
+            <tr>
+                <td>Finding the step</td>
+                <td>
+                    <code>suggestWeightCut</code> returns the first gap that exceeds
+                    <strong>8× the local spread</strong> of the steps — the criterion
+                    <code>antiradio.rs</code> already uses for peak widths, so "significant" means the
+                    same thing across the program. The default is only a default: clicking elsewhere on
+                    the curve overrides it, and double-click takes the suggestion back. The circle marks
+                    what the detector suggests; the green line marks what you chose.
+                </td>
+            </tr>
+            <tr>
+                <td>FT-ICR</td>
+                <td>
+                    A zero-error link is the <strong>best possible</strong> link, and on a Fourier-transform
+                    instrument they happen: the sorted curve then starts with a plateau at exactly zero,
+                    whose exit is its largest gap — and a naive detector cuts there, keeping three links
+                    and discarding the rest. So the leading run of identical values is <strong>skipped</strong>
+                    and the search for the step starts after it. All the zero-error links are kept; the cut
+                    falls further along, where the step is real.
                 </td>
             </tr>
         </table>

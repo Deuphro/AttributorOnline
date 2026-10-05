@@ -117,13 +117,13 @@ function nearestReference(sorted,gap){
         STRICTEMENT inférieure à la fenêtre;
      3. Kruskal accepte par poids croissant, puis par (u, v) croissant, ce qui
         rend l'arbre indépendant du tri interne. */
-export function growForest({masses,intensities,standards,tolerance=DEFAULT_LINK_TOLERANCE,degreeMax=0}={}){
+export function growForest({masses,intensities,standards,tolerance=DEFAULT_LINK_TOLERANCE,degreeMax=0,limit=0}={}){
     const empty=()=>({
         edgeU:[],edgeV:[],edgeWeight:[],edgeStandard:[],degree:[],
         componentOf:[],componentRoot:[],componentSize:[],
         componentMaxIntensity:[],componentWeight:[],
         componentRootMass:[],componentPeakMass:[],
-        candidates:0,isolated:0,edgeCount:0,componentCount:0
+        weights:[],candidates:0,cutUsed:0,isolated:0,edgeCount:0,componentCount:0
     })
     const n=masses?.length??0
     /* LES REFUS, ET ILS SONT LES MÊMES QUE CEUX DU NOYAU.
@@ -158,7 +158,20 @@ export function growForest({masses,intensities,standards,tolerance=DEFAULT_LINK_
         }
     }
     candidates.sort((a,b)=>a.weight-b.weight||a.u-b.u||a.v-b.v)
-/* L'UNION-FIND, avec compression de chemin: c'est elle qui rend le coût
+/* LA COUPURE, ET ELLE SE COMPTE ICI — pas plus loin.
+
+   `limit` est un rang dans la liste DÉJÀ triée: l'arbre se construit sur les
+   `limit` meilleurs candidats et sur eux seuls. C'est ce que faisait Igor, dont
+   la boucle s'arrêtait sur un critère statistique; ici l'arrêt est décidé
+   ailleurs — sur la courbe — et il ne change que le bout de la liste, jamais
+   son ordre. La courbe, elle, se rend ENTIÈRE: c'est elle qui montre où passe
+   la coupure, donc la tronquer l'empêcherait de la montrer. */
+    const cut=Number.isFinite(limit)&&limit>0
+        ?Math.min(Math.trunc(limit),candidates.length)
+        :candidates.length
+    const curve=candidates.map(candidate=>candidate.weight)
+
+    /* L'UNION-FIND, avec compression de chemin: c'est elle qui rend le coût
        amorti quasi constant quand le graphe est une longue chaîne. */
     const parent=new Int32Array(n)
     const size=new Int32Array(n)
@@ -172,7 +185,7 @@ export function growForest({masses,intensities,standards,tolerance=DEFAULT_LINK_
     const cap=Number.isFinite(degreeMax)&&degreeMax>0?Math.trunc(degreeMax):0
     const degree=new Int32Array(n)
     const kept=[]
-    for(const edge of candidates){
+    for(const edge of candidates.slice(0,cut)){
         const ru=find(edge.u)
         const rv=find(edge.v)
         if(ru===rv) continue
@@ -248,7 +261,9 @@ export function growForest({masses,intensities,standards,tolerance=DEFAULT_LINK_
     forest.componentPeakMass=order.map(rank=>
         Number.isFinite(peakMassByRank[rank])?peakMassByRank[rank]:0)
     forest.componentWeight=Array.from(componentWeight)
+    forest.weights=curve
     forest.candidates=candidates.length
+    forest.cutUsed=cut
     forest.isolated=Array.from(degree).filter(d=>d===0).length
     forest.edgeCount=kept.length
     forest.componentCount=order.length
@@ -309,4 +324,146 @@ export function componentLine(component,{tolDigits=3}={}){
     if(component.size>1) parts.push(`Σ error ${error} Da`)
     if(chain) parts.push(chain)
     return parts.join("  ·  ")
+}
+/* ===========================================================================
+   LA COUPURE, ET OÙ LA TROUVER.
+
+   `suggestWeightCut` cherche, dans les poids déjà triés, le RANG après lequel
+   le réseau cesse d'être crédible — la « marche » de la photo. C'est le premier
+   écart entre deux poids consécutifs qui sort nettement du bruit de fond.
+
+   LE CHOIX DE L'ÉCART, ET NON UN SEUIL SUR L'ERREUR.
+
+   Igor cumulait les points tant que la distribution gardait un « caractère
+   gaussien » — tant qu'un modèle de référence expliquait mieux la courbe qu'au
+   point précédent — et il s'arrêtait quand il expliquait moins bien. C'est
+   élégant, mais ça suppose une LOI: il faut savoir à quoi comparer. Ici on ne
+   suppose rien sur la forme, on regarde la texture locale: un écart qui vaut
+   `z` fois l'écart typique n'est pas du bruit, c'est une marche. C'est le
+   critère déjà employé par le filtre anti-radio sur les largeurs de pic, donc la
+   maison a déjà décidé de ce qu'elle appelle « significatif ».
+
+   LE FT-ICR, ET POURQUOI C'ÉTAIT PEU ROBUSTE.
+
+   Un spectromètre FT donne parfois une erreur NULLE: deux pics dont l'écart
+   tombe exactement sur la référence. La courbe commence alors par un plateau à
+   zéro, l'échelle logarithmique n'a rien à y tracer, et l'écart entre ce
+   plateau et la suite est le plus grand de toute la courbe — donc, naïvement,
+   la première marche EST le passage de zéro à la première valeur positive. Une
+   coupure là-dessus garderait trois liens et jetterait tout le reste.
+
+   LA RÉPONSE EST DE NE PAS REGARDER LE PREMIER SAUT, MAIS LE PREMIER SAUT
+   PARMIIS CEUX QUI SUIVENT UNE PARTIE DE COURBE: on saute le bloc de valeurs
+   identiques au minimum, et on ne cherche la marche que dans ce qui reste, une
+   fois qu'il y a assez de points pour juger. Un plateau de zéros garde ainsi
+   TOUS ses liens — ils sont les meilleurs, après tout — et la coupure tombe
+   plus loin, là où la marche est réelle.
+   =========================================================================== */
+
+/* LE PASSAGE MAD → σ, et le seuil de significativité.
+
+   Les deux sont des conventions de la maison, reprises telles quelles
+   d'`antiradio.rs`: 1.4826 rend la médiane de l'écart absolu comparable à une
+   déviation standard pour une gaussienne, et 8 est le rapport au-dessus duquel
+   un écart n'est plus du bruit. */
+const MAD_TO_SIGMA=1.4826
+export const CUT_SIGNIFICANCE=8
+/* Combien de points il faut surveying avant de se prononcer.
+
+   Sans minimum, deux points suffisent: n'importe quelle paire a « une marche »,
+   et la fonction proposerait une coupure fondée sur du bruit. Huit est le même
+   plancher que le filtre anti-radio. */
+export const CUT_MIN_POINTS=8
+
+/* LA MÉDIANE, ET ELLE TRIE ELLE-MÊME.
+
+   Une médiane qui exige une liste triée est une médiane qui rend n'importe quoi
+   en silence: l'appelant qui lui passe `[...écarts]` sans trier obtient l'élément
+   DU MILIEU, pas le médian — et ici cela donnait un seuil deux fois trop haut,
+   donc aucune marche trouvée sur une courbe qui en avait une. Elle trie donc sa
+   propre copie, et le tri est fait une fois de plus que nécessaire: sur quelques
+   dizaines de nombres, c'est la quantité d'énergie la moins chère du programme,
+   et c'est le prix d'une fonction dont on ne peut pas se tromper d'appel. */
+const median=values=>{
+    if(!values?.length) return NaN
+    const sorted=[...values].sort((a,b)=>a-b)
+    const middle=sorted.length>>1
+    return sorted.length%2===1?sorted[middle]:0.5*(sorted[middle-1]+sorted[middle])
+}
+/* LA MARCHE, RENDUE COMME UN RANG DE POIDS CONSERVÉS.
+
+   Couper après les `k` premiers poids revient à passer `k` au noyau, donc le
+   rang rendu EST la longueur du préfixe. Une fonction qui rendait un indice
+   d'écart obligerait l'appelant à recompter — et à le recompter différemment
+   selon qu'il compte les écarts avant ou après: c'est ainsi que naissent les
+   coupes décalées d'un cran. */
+export function suggestWeightCut(weights,{significance=CUT_SIGNIFICANCE,minPoints=CUT_MIN_POINTS}={}){
+    const count=weights?.length??0
+    if(count<minPoints+1) return {index:count,reason:"not enough links to judge"}
+    /* LE PLATEAU INITIAL, et c'est le cas FT-ICR.
+
+       On saute les valeurs STRICTEMENT égales à la première. Elles sont aussi
+       bonnes les unes que les autres — les garder toutes ne coûte rien et
+       n'introduit rien de faux — et surtout le passage de zéro à la première
+       valeur positive n'est PAS une marche: c'est la sortie du plancher de
+       mesure, et c'est le plus grand écart de la courbe. */
+    let start=0
+    while(start+1<count&&weights[start+1]===weights[start]) start++
+    const tail=weights.slice(start+1)
+    /* Il faut de quoi comparer: sans une queue de points, aucun écart ne peut
+       être jugé « anormal », et la fonction rendrait une absence de preuve
+       comme une preuve d'absence de marche. */
+    if(tail.length<minPoints) return {index:count,reason:"not enough links after the zero plateau"}
+    const steps=[]
+    for(let i=1;i<tail.length;i++) steps.push(tail[i]-tail[i-1])
+    const positive=steps.filter(step=>step>0)
+    /* QUE DES ÉCARTS NULS: une courbe plate n'a pas de marche, et en inventer une
+       reviendrait à couper au hasard — donc on garde tout et on le dit. */
+    if(!positive.length) return {index:count,reason:"every link has the same error"}
+    /* L'ÉCHELLE, prise sur les écarts POSITIFS seulement.
+
+       Les écarts nuls sont la texture normale d'une courbe d'erreurs — deux
+       liens peuvent tomber sur la même erreur — et les compter ferait tomber la
+       médiane à zéro, donc n'importe quel écart NON nul semblerait
+       significatif. */
+    const centre=median(positive)
+    const spread=MAD_TO_SIGMA*median(positive.map(step=>Math.abs(step-centre)))
+    /* L'ÉCHELLE, ET ELLE SE REPOSE SUR LE PAS TYPIQUE.
+
+       Le MAD d'une série dont tous les pas sont IDENTIQUES vaut zéro — ou, en
+       flottant, 1e-19, ce qui n'est pas mieux. C'est le cas de la queue d'une
+       courbe après un plateau à zéros: dix-huit pas de 1e-4 et un pas de 0.9,
+       donc une médiane d'écarts qui vaut « presque rien », et un seuil si petit
+       que le PREMIER pas ordinaire passe pour une marche. Une coupure à cet
+       endroit garderait un seul lien.
+
+       Donc l'échelle n'est jamais en dessous du pas TYPIQUE: « significatif »
+       veut dire « huit fois plus grand que le pas qu'on voit d'ordinaire », et
+       le pas ordinaire est la seule grandeur qui ne s'effondre pas. */
+    const floor=median(positive)
+    const reference=Math.max(spread,floor)
+    for(let i=0;i<steps.length;i++){
+        const step=steps[i]
+        if(step<=0) continue
+        /* LA MARCHE EST LE PREMIER ÉCART QUI DÉPASSE LE BRUIT.
+
+           On compare au niveau de référence, pas au plus grand écart de la
+           courbe: ce serait la fin de la distribution — des pics sans voisin —
+           et la couper laisserait tous les groupes de l'échantillon fusionnés en
+           un seul. */
+        if(reference>0&&step>significance*reference){
+            return {
+                /* LE RANG EST CELUI DU POINT HAUT DE LA MARCHE, et c'est le
+                   point qui doit TOMBER: couper « après le saut » garderait le
+                   lien fautif, qui est précisément celui qu'on veut laisser
+                   dehors. Donc on rend l'indice du point haut, qui est aussi le
+                   nombre de poids conservés. */
+                index:start+2+i,
+                step,
+                reference,
+                reason:`first step above ${significance}x the local spread`
+            }
+        }
+    }
+    return {index:count,reason:"no step stands out: keep every link"}
 }

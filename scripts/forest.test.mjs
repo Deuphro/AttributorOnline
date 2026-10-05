@@ -23,7 +23,10 @@ import {
     forestComponents,
     componentLine,
     growForest,
-    DEFAULT_LINK_TOLERANCE
+    suggestWeightCut,
+    DEFAULT_LINK_TOLERANCE,
+    CUT_SIGNIFICANCE,
+    CUT_MIN_POINTS
 } from "./forest.js"
 import {Element} from "./chemistry.js"
 import {buildPlan} from "./attribution.js"
@@ -153,4 +156,114 @@ test("a single peak does not claim a total error",()=>{
     const lonely=components.find(component=>component.size===1)
     assert.ok(lonely)
     assert.doesNotMatch(componentLine(lonely),/error/)
+})
+/* ===========================================================================
+   LA COUPURE, et le détecteur de marche.
+
+   C'est la partie qui a cassé en Igor, et le test du FT-ICR est LE test: un
+   spectromètre FT donne parfois une erreur exactement nulle, donc la courbe
+   commence par un plateau à zéro et le premier écart de la courbe — le plus
+   grand — n'est pas une marche, c'est la sortie du plancher de mesure.
+   =========================================================================== */
+
+/* UNE COURBE SANS MARCHE SE COUPE AU BOUT.
+
+   Des écarts tous égaux: aucune marche n'existe, et en inventer une couperait
+   au hasard. La fonction doit donc rendre la LONGUEUR et le dire — unIndexes
+   constant sans raison se lirait comme une mesure. */
+test("a flat curve keeps every link, and says so",()=>{
+    const flat=Array.from({length:40},(_,i)=>0.01+i*0.001)
+    const cut=suggestWeightCut(flat)
+    assert.equal(cut.index,flat.length)
+    /* Le MOTIF EST VÉRIFIÉ, mais pas son texte exact: deux formulations honnêtes
+       décrivent le même refus (« aucun écart saillant » et « toutes les erreurs
+       sont égales »), et un test qui épinglerait l'une des deux échouerait au
+       prochain changement de mot sans qu'aucune physique bouge. Ce qui compte est
+       qu'il y ait une raison, et qu'elle soit lisible par l'utilisateur. */
+    assert.ok(typeof cut.reason==="string"&&cut.reason.length>0)
+})
+
+/* LA PREMIÈRE MARCHE, ET ELLE EST TROUVÉE.
+
+   Vingt erreurs serrées autour de 0.01, puis un saut de 0.5. Le détecteur doit
+   s'arrêter JUSTE AVANT le saut: couper après garderait le lien fautif, qui est
+   précisément celui qu'on veut laisser tomber. */
+test("the first step is found, and the cut falls just before it",()=>{
+    const tight=Array.from({length:20},(_,i)=>0.010+i*0.0001)
+    const curve=[...tight,0.5,...Array.from({length:20},(_,i)=>0.6+i*0.01)]
+    const cut=suggestWeightCut(curve)
+    assert.equal(cut.index,20,"the cut must keep the 20 tight links and drop the 0.5 one")
+    assert.ok(cut.step>0.4,"the reported step is the one that was found")
+    assert.match(cut.reason,/first step/)
+})
+
+/* LE FT-ICR: UN PLATEAU À ZÉRO NE DOIT PAS ÊTRE PRIS POUR UNE MARCHE.
+
+   C'est le cas que tu décrivais. Vingt liens d'erreur exactement nulle — le
+   meilleur accord possible — puis une queue normale. Le premier écart de la
+   courbe vaut tout le passage de 0 à 1e-4, et une détection naïve couperait là:
+   elle garderait vingt liens et jetterait tout ce qui suit.
+
+   La coupe attendue est APRÈS le plateau, là où la vraie marche se trouve. */
+test("a zero plateau is not mistaken for a step",()=>{
+    const zeros=Array.from({length:20},()=>0)
+    const tail=[
+        1e-4,2e-4,3e-4,4e-4,5e-4,6e-4,7e-4,8e-4,9e-4,1e-3,
+        1.1e-3,1.2e-3,1.3e-3,1.4e-3,1.5e-3,1.6e-3,1.7e-3,1.8e-3
+    ]
+    const jump=Array.from({length:12},(_,i)=>0.9+i*0.05)
+    const curve=[...zeros,...tail,...jump]
+    const cut=suggestWeightCut(curve)
+    assert.ok(cut.index>20,
+        `the cut fell inside the zero plateau (index ${cut.index}): the FT-ICR case`)
+    assert.ok(cut.index<=zeros.length+tail.length,
+        `the cut must fall BEFORE the jump, not after it (index ${cut.index})`)
+})
+
+/* UNE COURBE TROP COURTE NE SE TRANCHE PAS.
+
+   Deux points ont toujours « une marche » entre eux: proposer une coupure
+   fondée sur deux points serait du bruit habillé en décision. */
+test("too few links to judge, and it says so",()=>{
+    const cut=suggestWeightCut([0.01,0.9])
+    assert.equal(cut.index,2)
+    assert.match(cut.reason,/not enough/)
+})
+
+/* LE SEUIL EST UN PARAMÈTRE, et il se lit comme la constante qu'il est.
+
+   8 est repris d'`antiradio.rs` pour que « significatif » veuille dire la même
+   chose dans tout le programme — mais il doit pouvoir être remonté quand un
+   instrument est plus bruyant, donc il n'est pas écrit en dur dans la boucle. */
+test("the significance is a parameter, not a hidden constant",()=>{
+    const tight=Array.from({length:20},(_,i)=>0.010+i*0.0001)
+    const curve=[...tight,0.5,...Array.from({length:20},(_,i)=>0.6+i*0.01)]
+    const strict=suggestWeightCut(curve,{significance:200})
+    const loose=suggestWeightCut(curve,{significance:2})
+    assert.equal(strict.index,curve.length,"a huge threshold finds no step")
+    assert.ok(loose.index<=20,"a tiny threshold finds one immediately")
+    assert.equal(CUT_SIGNIFICANCE,8)
+    assert.equal(CUT_MIN_POINTS,8)
+})
+
+/* LA COUPURE PASSEE AU NOYAU RETIRE LE MAUVAIS LIEN, pas le PIC.
+
+   C'est la différence entre une coupure et un filtre: aucun point ne disparaît,
+   seul le lien le plus fautif cesse d'exister, donc un groupe peut se scinder en
+   deux et jamais perdre un sommet. */
+test("the cut removes the worst LINK, never a peak",()=>{
+    const masses=[100.0,114.01,128.02,142.10]
+    const intensities=[1,2,3,4]
+    const whole=growForest({masses,intensities,standards:[14.0]})
+    assert.equal(whole.componentCount,1)
+    assert.equal(whole.componentSize[0],4)
+    const cut=growForest({masses,intensities,standards:[14.0],limit:1})
+    assert.equal(cut.componentCount,3)
+    assert.equal(cut.componentSize[0],2)
+    /* Et le nombre de points reste le même de part et d'autre — c'est ce qui
+       distingue « couper un lien » de « filtrer des pics ». */
+    assert.equal(cut.componentSize.reduce((a,b)=>a+b,0),4)
+    assert.equal(cut.cutUsed,1)
+    /* LA COURBE, elle, reste entière: c'est elle qui montre la coupure. */
+    assert.equal(cut.weights.length,whole.weights.length)
 })

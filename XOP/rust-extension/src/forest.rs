@@ -62,7 +62,16 @@ pub struct Forest {
     component_weight: Vec<f64>,
     component_root_mass: Vec<f64>,
     component_peak_mass: Vec<f64>,
+    /// LES POIDS TRIÉS, tous, avant la coupure — c'est la courbe.
+    ///
+    /// Igor ne gardait que les poids qu'il consommait, mais il en avait besoin
+    /// pour la courbe qu'il affichait: sans elle, on ne voit pas APRÈS QUOI
+    /// couper. Le noyau les rend donc tous, triés, et `cut_used` dit combien
+    /// Kruskal a effectivement consommés.
+    weights: Vec<f64>,
     candidates: f64,
+    /// COMBIEN DE CANDIDATS KRUSKAL A CONSOMMÉS, donc où s'arrête l'arbre.
+    cut_used: f64,
     isolated: f64,
 }
 #[wasm_bindgen]
@@ -131,6 +140,18 @@ impl Forest {
     #[wasm_bindgen(getter)]
     pub fn candidates(&self) -> f64 {
         self.candidates
+    }
+    /// LA COURBE: tous les poids, triés. C'est ce que le panneau trace, et ce
+    /// sur quoi se règle la coupure.
+    #[wasm_bindgen(getter)]
+    pub fn weights(&self) -> Vec<f64> {
+        self.weights.clone()
+    }
+    /// Où s'arrête l'arbre: combien de candidats Kruskal a consommés. Inférieur
+    /// à `candidates` quand la coupure a mordu, égal sinon.
+    #[wasm_bindgen(getter)]
+    pub fn cut_used(&self) -> f64 {
+        self.cut_used
     }
     #[wasm_bindgen(getter)]
     pub fn isolated(&self) -> f64 {
@@ -254,7 +275,9 @@ fn empty_forest() -> Forest {
         component_weight: Vec::new(),
         component_root_mass: Vec::new(),
         component_peak_mass: Vec::new(),
+        weights: Vec::new(),
         candidates: 0.0,
+        cut_used: 0.0,
         isolated: 0.0,
     }
 }
@@ -273,6 +296,12 @@ fn empty_forest() -> Forest {
 ///
 /// `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
 /// « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
+///
+/// `limit` est LA COUPURE: combien de candidats, dans l'ordre des poids
+/// croissants, Kruskal est autorisé à consommer. `<= 0` les prend tous — c'est le
+/// `GrowForest` d'Igor. C'est ici, et nulle part ailleurs, que la coupure agit:
+/// l'arbre se construit par dessus un PRÉFIXE de la liste triée, donc changer la
+/// coupure ne change que le nombre d'arêtes considérées, jamais leur ordre.
 #[wasm_bindgen]
 pub fn forest_grow(
     masses: &[f64],
@@ -280,6 +309,7 @@ pub fn forest_grow(
     standards: &[f64],
     tolerance: f64,
     degree_max: f64,
+    limit: f64,
 ) -> Forest {
     let n = masses.len();
     /* LES REFUS, ET ILS SONT ÉCRITS.
@@ -365,10 +395,26 @@ pub fn forest_grow(
     } else {
         Some(degree_max as usize)
     };
+    /* LA COUPURE, ET ELLE SE COMPTE ICI.
+
+       `limit` est un rang dans la liste DÉJÀ triée, donc l'arbre se construit
+       sur les `limit` meilleurs candidats et sur eux seuls. C'est exactement ce
+       que faisait Igor, dont la boucle s'arrêtait sur un critère statistique;
+       ici l'arrêt est décidé ailleurs — sur la courbe — et il se rule pas
+       elles: la coupure déplace le bout de la courbe et rien d'autre.
+
+       La courbe, elle, se rend ENTIÈRE: c'est elle qui montre où passe la
+       coupure, donc la tronquer à la coupure l'empêcherait de la montrer. */
+    let cut = if limit.is_finite() && limit > 0.0 {
+        (limit as usize).min(candidates.len())
+    } else {
+        candidates.len()
+    };
+    let curve: Vec<f64> = candidates.iter().map(|c| c.weight).collect();
     let mut union_find = UnionFind::new(n);
     let mut degree = vec![0usize; n];
     let mut kept: Vec<Candidate> = Vec::new();
-    for edge in candidates {
+    for edge in candidates.into_iter().take(cut) {
         if union_find.find(edge.u) == union_find.find(edge.v) {
             continue;
         }
@@ -485,7 +531,9 @@ pub fn forest_grow(
         component_weight,
         component_root_mass,
         component_peak_mass,
+        weights: curve,
         candidates: found,
+        cut_used: cut as f64,
         isolated,
     }
 }
@@ -493,13 +541,24 @@ pub fn forest_grow(
 mod tests {
     use super::*;
 
+    /* LE PORTE-ENTRÉE DES TESTS, et il est là pour une raison.
+
+       `forest_grow` prend six arguments, dont la coupure, et aucun test de ce
+       fichier ne s'intéresse à la coupure: ils veulent tous l'arbre COMPLET.
+       Écrire `0` à chaque appel mettrait un sixième argument que personne ne lit
+       devant chaque assertion — et le jour où la signature grandit, vingt
+       appels à corriger au lieu d'un. */
+    fn grow(masses: &[f64], intensities: &[f64], standards: &[f64], tolerance: f64, degree_max: f64) -> Forest {
+        forest_grow(masses, intensities, standards, tolerance, degree_max, 0.0)
+    }
+
     /* LE TEST DE BASE: deux pics séparés d'une référence, au centième de Dalton.
 
        C'est le cas que `calcBestof` doit accrocher, et il ne doit le faire
        qu'une fois: une arête, un composant. */
     #[test]
     fn links_two_peaks_on_a_reference() {
-        let forest = forest_grow(&[100.0, 114.02], &[10.0, 20.0], &[14.0], 0.5, 0.0);
+        let forest = grow(&[100.0, 114.02], &[10.0, 20.0], &[14.0], 0.5, 0.0);
         assert_eq!(forest.edge_count(), 1.0);
         assert_eq!(forest.edge_u[0], 0.0);
         assert_eq!(forest.edge_v[0], 1.0);
@@ -515,7 +574,7 @@ mod tests {
        personne ne peut lire l'erreur. */
     #[test]
     fn refuses_a_gap_outside_the_window() {
-        let forest = forest_grow(&[100.0, 114.6], &[10.0, 20.0], &[14.0], 0.5, 0.0);
+        let forest = grow(&[100.0, 114.6], &[10.0, 20.0], &[14.0], 0.5, 0.0);
         assert_eq!(forest.edge_count(), 0.0);
         assert_eq!(forest.candidates, 0.0);
         assert_eq!(forest.component_count(), 2.0);
@@ -532,7 +591,7 @@ mod tests {
        (0.10) passerait avant A–C (0.08) et l'arbre pèserait 0.12. */
     #[test]
     fn sorts_weights_before_building() {
-        let forest = forest_grow(
+        let forest = grow(
             &[100.0, 114.10, 128.08],
             &[1.0, 1.0, 1.0],
             &[14.0, 28.0],
@@ -556,10 +615,10 @@ mod tests {
     fn degree_cap_holds_at_the_limit() {
         let masses = [100.0, 114.10, 130.30, 148.45];
         let standards = [14.0, 30.0, 48.0];
-        let free = forest_grow(&masses, &[1.0, 1.0, 1.0, 1.0], &standards, 0.5, 0.0);
+        let free = grow(&masses, &[1.0, 1.0, 1.0, 1.0], &standards, 0.5, 0.0);
         assert_eq!(free.edge_count(), 3.0);
         assert_eq!(free.degree[0], 3.0);
-        let capped = forest_grow(&masses, &[1.0, 1.0, 1.0, 1.0], &standards, 0.5, 2.0);
+        let capped = grow(&masses, &[1.0, 1.0, 1.0, 1.0], &standards, 0.5, 2.0);
         assert_eq!(capped.edge_count(), 2.0);
         assert!(capped.degree.iter().all(|d| *d <= 2.0));
     }
@@ -570,7 +629,7 @@ mod tests {
        que c'est l'ancêtre. */
     #[test]
     fn reports_the_tallest_peak_of_each_component() {
-        let forest = forest_grow(&[100.0, 114.01, 128.02], &[5.0, 900.0, 7.0], &[14.0], 0.5, 0.0);
+        let forest = grow(&[100.0, 114.01, 128.02], &[5.0, 900.0, 7.0], &[14.0], 0.5, 0.0);
         assert_eq!(forest.component_count(), 1.0);
         assert_eq!(forest.component_max_intensity[0], 900.0);
         assert_eq!(forest.component_root[0], 0.0);
@@ -585,7 +644,7 @@ mod tests {
        commence par ce qui explique le plus de signal. */
     #[test]
     fn orders_components_by_size() {
-        let forest = forest_grow(
+        let forest = grow(
             &[100.0, 114.01, 128.02, 300.0],
             &[1.0, 1.0, 1.0, 9.0],
             &[14.0],
@@ -604,7 +663,7 @@ mod tests {
        92 pics ont disparu, donc l'isolé est compté ET listé. */
     #[test]
     fn an_isolated_peak_is_its_own_component() {
-        let forest = forest_grow(
+        let forest = grow(
             &[100.0, 114.01, 128.02, 400.0],
             &[1.0, 1.0, 1.0, 1.0],
             &[14.0],
@@ -629,10 +688,10 @@ mod tests {
     #[test]
     fn nearest_reference_wins_and_ties_go_to_the_lowest_index() {
         //gap 10.25: 0.25 des deux côtés, et les deux sont exacts en binaire
-        let tie = forest_grow(&[100.0, 110.25], &[1.0, 1.0], &[10.0, 10.5], 0.5, 0.0);
+        let tie = grow(&[100.0, 110.25], &[1.0, 1.0], &[10.0, 10.5], 0.5, 0.0);
         assert_eq!(tie.edge_standard[0], 0.0);
         //gap 10.4: la référence à 10.5 est à 0.1, celle à 10.0 à 0.4
-        let nearer = forest_grow(&[100.0, 110.4], &[1.0, 1.0], &[10.0, 10.5], 0.5, 0.0);
+        let nearer = grow(&[100.0, 110.4], &[1.0, 1.0], &[10.0, 10.5], 0.5, 0.0);
         assert_eq!(nearer.edge_standard[0], 1.0);
     }
 /* L'ARRÊT PRÉCOCE NE CHANGE RIEN AU RÉSULTAT.
@@ -644,7 +703,7 @@ mod tests {
     #[test]
     fn the_early_break_loses_no_edge() {
         let masses = [100.0, 114.01, 128.02, 900.0];
-        let forest = forest_grow(&masses, &[1.0, 1.0, 1.0, 1.0], &[14.0], 0.5, 0.0);
+        let forest = grow(&masses, &[1.0, 1.0, 1.0, 1.0], &[14.0], 0.5, 0.0);
         assert_eq!(forest.edge_count(), 2.0);
         assert_eq!(forest.component_count(), 2.0);
         assert_eq!(forest.component_size[0], 3.0);
@@ -658,14 +717,14 @@ mod tests {
     #[test]
     fn refuses_impossible_windows() {
         let peaks = [100.0, 114.0];
-        assert_eq!(forest_grow(&peaks, &[1.0, 1.0], &[14.0], -1.0, 0.0).edge_count(), 0.0);
-        assert_eq!(forest_grow(&peaks, &[1.0, 1.0], &[14.0], 0.0, 0.0).edge_count(), 0.0);
-        assert_eq!(forest_grow(&peaks, &[1.0, 1.0], &[], 0.5, 0.0).edge_count(), 0.0);
-        assert_eq!(forest_grow(&[], &[], &[14.0], 0.5, 0.0).edge_count(), 0.0);
+        assert_eq!(grow(&peaks, &[1.0, 1.0], &[14.0], -1.0, 0.0).edge_count(), 0.0);
+        assert_eq!(grow(&peaks, &[1.0, 1.0], &[14.0], 0.0, 0.0).edge_count(), 0.0);
+        assert_eq!(grow(&peaks, &[1.0, 1.0], &[], 0.5, 0.0).edge_count(), 0.0);
+        assert_eq!(grow(&[], &[], &[14.0], 0.5, 0.0).edge_count(), 0.0);
         /* Une liste de masses et une liste d'intensités de tailles différentes
            est une erreur d'APPELANT, pas un cas limite: les appairer lirait
            hors du bord de l'une des deux. */
-        assert_eq!(forest_grow(&peaks, &[1.0], &[14.0], 0.5, 0.0).edge_count(), 0.0);
+        assert_eq!(grow(&peaks, &[1.0], &[14.0], 0.5, 0.0).edge_count(), 0.0);
     }
 
     /* DEUX EXÉCUTIONS, LE MÊME ARBRE.
@@ -677,8 +736,8 @@ mod tests {
     #[test]
     fn the_result_is_deterministic() {
         let masses = [100.0, 114.0, 128.1, 142.05, 156.2];
-        let first = forest_grow(&masses, &[3.0, 1.0, 4.0, 1.0, 5.0], &[14.0, 28.0], 0.5, 0.0);
-        let second = forest_grow(&masses, &[3.0, 1.0, 4.0, 1.0, 5.0], &[14.0, 28.0], 0.5, 0.0);
+        let first = grow(&masses, &[3.0, 1.0, 4.0, 1.0, 5.0], &[14.0, 28.0], 0.5, 0.0);
+        let second = grow(&masses, &[3.0, 1.0, 4.0, 1.0, 5.0], &[14.0, 28.0], 0.5, 0.0);
         assert_eq!(first.edge_u, second.edge_u);
         assert_eq!(first.edge_v, second.edge_v);
         assert_eq!(first.edge_weight, second.edge_weight);
@@ -693,7 +752,7 @@ mod tests {
        score. */
     #[test]
     fn component_weight_counts_kept_edges_only() {
-        let forest = forest_grow(&[100.0, 114.10, 128.05], &[1.0, 1.0, 1.0], &[14.0, 28.0], 0.5, 0.0);
+        let forest = grow(&[100.0, 114.10, 128.05], &[1.0, 1.0, 1.0], &[14.0, 28.0], 0.5, 0.0);
         let kept: f64 = forest.edge_weight.iter().sum();
         assert!(forest.candidates > forest.edge_count());
         assert_eq!(forest.component_count(), 1.0);
@@ -708,9 +767,94 @@ mod tests {
     #[test]
     fn the_sorted_input_contract_is_what_makes_the_break_safe() {
         let sorted = [100.0, 114.0, 128.0, 142.0];
-        let forest = forest_grow(&sorted, &[1.0; 4], &[14.0], 0.5, 0.0);
+        let forest = grow(&sorted, &[1.0; 4], &[14.0], 0.5, 0.0);
         assert_eq!(forest.edge_count(), 3.0);
         assert_eq!(forest.component_count(), 1.0);
         assert_eq!(forest.component_size[0], 4.0);
+    }
+/* LA COUPURE COUPE, ET ELLE NE COUPE QUE ÇA.
+
+       Trois pics, trois candidats de poids 0.02, 0.05 et 0.08. Sans coupure
+       l'arbre en prend deux (le troisième fermerait un cycle). Avec une
+       coupure à 1, il n'en prend qu'UN: c'est bien la liste qui est tronquée,
+       pas l'ordre qui change. */
+    #[test]
+    fn the_cut_takes_a_prefix_of_the_sorted_candidates() {
+        let masses = [100.0, 114.02, 128.07];
+        let intensities = [1.0, 1.0, 1.0];
+        let standards = [14.0, 28.0];
+        let whole = grow(&masses, &intensities, &standards, 0.5, 0.0);
+        let cut = forest_grow(&masses, &intensities, &standards, 0.5, 0.0, 1.0);
+        assert_eq!(whole.edge_count(), 2.0);
+        assert_eq!(cut.edge_count(), 1.0);
+        assert_eq!(cut.cut_used, 1.0);
+        assert_eq!(whole.cut_used, 3.0);
+        /* Et l'arête gardée est bien la MEILLEURE, pas la première trouvée. */
+        assert!((cut.edge_weight[0] - 0.02).abs() < 1e-9);
+    }
+
+    /* LA COURBE EST ENTIÈRE, même quand l'arbre est coupé.
+
+       C'est le but de la courbe: sans elle, on ne voit pas APRÈS QUOI couper.
+       La tronquer à la coupure l'empêcherait de montrer ce qui vient après. */
+    #[test]
+    fn the_curve_survives_the_cut() {
+        let masses = [100.0, 114.02, 128.07];
+        let forest = forest_grow(&masses, &[1.0, 1.0, 1.0], &[14.0, 28.0], 0.5, 0.0, 1.0);
+        assert_eq!(forest.weights.len(), 3);
+        assert!(forest.weights.windows(2).all(|w| w[0] <= w[1]),
+            "the curve must be sorted, it is drawn as it is");
+        assert!((forest.weights[0] - 0.02).abs() < 1e-9);
+    }
+
+    /* UNE COUPURE ABSURDE EST RAMENÉE À LA LONGUEUR DE LA LISTE.
+
+       Le curseur de l'écran peut dépasser le nombre de candidats; demander
+       1000 sur une liste de 3 doit rendre les 3, et non paniquer ni boucler. */
+    #[test]
+    fn an_overshooting_cut_is_clamped() {
+        let masses = [100.0, 114.02];
+        let forest = forest_grow(&masses, &[1.0, 1.0], &[14.0], 0.5, 0.0, 1000.0);
+        assert_eq!(forest.cut_used, forest.candidates);
+        assert_eq!(forest.edge_count(), 1.0);
+    }
+
+    /* UNE COUPURE NULLE ET UNE COUPURE ABSENTE SONT LA MÊME CHOSE.
+
+       `<= 0` veut dire « tout garder», parce que c'est ce que vaut un curseur
+       qu'on n'a pas touché — et parce que c'est le `GrowForest` d'Igor. */
+    #[test]
+    fn a_zero_cut_keeps_everything() {
+        let masses = [100.0, 114.02, 128.07];
+        let none = grow(&masses, &[1.0, 1.0, 1.0], &[14.0, 28.0], 0.5, 0.0);
+        let zero = forest_grow(&masses, &[1.0, 1.0, 1.0], &[14.0, 28.0], 0.5, 0.0, 0.0);
+        assert_eq!(none.cut_used, zero.cut_used);
+        assert_eq!(none.edge_count(), zero.edge_count());
+    }
+
+    /* LA COUPURE SÉPARE, ET LES GROUPES RESTANTS SONT CEUX DES MEILLEURS LIENS.
+
+       Quatre pics en chaîne par 14 Da: trois candidats, d'erreurs 0.01, 0.01
+       et 0.08. Couper après le PREMIER lien laisse les pics 0 et 1 ensemble et
+       les deux autres seuls — trois groupes. Couper après le deuxième laisserait
+       un groupe de TROIS: la coupure ne fait pas disparaître un pic, elle
+       retire le lien le plus mauvais, et c'est ce qui la distingue d'un filtre. */
+    #[test]
+    fn the_cut_splits_groups_without_reordering_the_rest() {
+        let masses = [100.0, 114.01, 128.02, 142.10];
+        let intensities = [1.0, 1.0, 1.0, 1.0];
+        let whole = grow(&masses, &intensities, &[14.0], 0.5, 0.0);
+        assert_eq!(whole.component_count(), 1.0);
+        assert_eq!(whole.component_size[0], 4.0);
+        let cut = forest_grow(&masses, &intensities, &[14.0], 0.5, 0.0, 1.0);
+        assert_eq!(cut.component_count(), 3.0);
+        /* Le groupe qui reste est celui du MEILLEUR lien, donc il garde la masse
+           la plus légère — et il n'est pas « le premier trouvé ». */
+        assert_eq!(cut.component_size[0], 2.0);
+        assert_eq!(cut.component_root_mass[0], 100.0);
+        /* L'erreur est 0.01 AU PRÈS: 114.01 − 100 − 14 n'est pas exactement
+           0.01 en binaire, et une égalité stricte ferait échouer le test sur un
+           arrondi que l'écran n'affiche jamais (il montre trois décimales). */
+        assert!((cut.edge_weight[0] - 0.01).abs() < 1e-9);
     }
 }

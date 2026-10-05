@@ -340,7 +340,7 @@ const kernels={
        same reason `attributionCriblemixed` turns its `Reading` rows into plain
        objects HERE rather than in the node. */
     async attributionForest({params}){
-        const {masses,intensities,standards,tolerance,degreeMax}=params??{}
+        const {masses,intensities,standards,tolerance,degreeMax,limit}=params??{}
         try{
             await ensureWasm()
             if(typeof rust.forest_grow!=="function"){
@@ -351,7 +351,8 @@ const kernels={
                 Float64Array.from(intensities??[]),
                 Float64Array.from(standards??[]),
                 Number(tolerance),
-                Number(degreeMax??0)
+                Number(degreeMax??0),
+                Number(limit??0)
             )
             return {
                 forest:{
@@ -367,7 +368,13 @@ const kernels={
                     componentWeight:toFloat64(forest.component_weight),
                     componentRootMass:toFloat64(forest.component_root_mass),
                     componentPeakMass:toFloat64(forest.component_peak_mass),
+                    /* LA COURBE ET LA COUPURE, et elles voyagent avec l'arbre:
+                       c'est un seul appel qui donne le graphique, le rang
+                       suggéré et le résultat, donc les trois ne peuvent pas
+                       diverger — ils viennent tous du même tri. */
+                    weights:toFloat64(forest.weights),
                     candidates:forest.candidates,
+                    cutUsed:forest.cut_used,
                     isolated:forest.isolated,
                     edgeCount:forest.edge_count,
                     componentCount:forest.component_count

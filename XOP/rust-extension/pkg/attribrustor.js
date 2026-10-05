@@ -236,6 +236,47 @@ export function crible_heap(item_masses, item_charges, caps, max_mass, limit) {
     }
 }
 
+/**
+* L'arbre couvrant de poids minimal sur des points MESURÉS.
+*
+* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
+* précoce de la boucle des paires, et le seul prérequis que la fonction ne
+* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
+* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
+* écrit est un bug qui n'apparaît qu'à l'écran.
+*
+* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
+* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
+* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
+* `forest.js` le fait, à partir des briques du plan.
+*
+* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
+* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
+*
+* `limit` est LA COUPURE: combien de candidats, dans l'ordre des poids
+* croissants, Kruskal est autorisé à consommer. `<= 0` les prend tous — c'est le
+* `GrowForest` d'Igor. C'est ici, et nulle part ailleurs, que la coupure agit:
+* l'arbre se construit par dessus un PRÉFIXE de la liste triée, donc changer la
+* coupure ne change que le nombre d'arêtes considérées, jamais leur ordre.
+* @param {Float64Array} masses
+* @param {Float64Array} intensities
+* @param {Float64Array} standards
+* @param {number} tolerance
+* @param {number} degree_max
+* @param {number} limit
+* @returns {Forest}
+*/
+export function forest_grow(masses, intensities, standards, tolerance, degree_max, limit) {
+    const ptr0 = passArrayF64ToWasm0(masses, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(intensities, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(standards, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.forest_grow(ptr0, len0, ptr1, len1, ptr2, len2, tolerance, degree_max, limit);
+    return Forest.__wrap(ret);
+}
+
 const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder('utf-8') : { encode: () => { throw Error('TextEncoder not available') } } );
 
 const encodeString = (typeof cachedTextEncoder.encodeInto === 'function'
@@ -339,40 +380,6 @@ export function classify_persistence_0d(births, deaths, points_x, points_y, poin
     const len6 = WASM_VECTOR_LEN;
     const ret = wasm.classify_persistence_0d(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, slope, ptr5, len5, ptr6, len6);
     return PersistenceClassification.__wrap(ret);
-}
-
-/**
-* L'arbre couvrant de poids minimal sur des points MESURÉS.
-*
-* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
-* précoce de la boucle des paires, et le seul prérequis que la fonction ne
-* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
-* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
-* écrit est un bug qui n'apparaît qu'à l'écran.
-*
-* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
-* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
-* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
-* `forest.js` le fait, à partir des briques du plan.
-*
-* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
-* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
-* @param {Float64Array} masses
-* @param {Float64Array} intensities
-* @param {Float64Array} standards
-* @param {number} tolerance
-* @param {number} degree_max
-* @returns {Forest}
-*/
-export function forest_grow(masses, intensities, standards, tolerance, degree_max) {
-    const ptr0 = passArrayF64ToWasm0(masses, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(intensities, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(standards, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.forest_grow(ptr0, len0, ptr1, len1, ptr2, len2, tolerance, degree_max);
-    return Forest.__wrap(ret);
 }
 
 /**
@@ -907,6 +914,33 @@ export class Forest {
     */
     get candidates() {
         const ret = wasm.forest_candidates(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+    * LA COURBE: tous les poids, triés. C'est ce que le panneau trace, et ce
+    * sur quoi se règle la coupure.
+    * @returns {Float64Array}
+    */
+    get weights() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.forest_weights(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * Où s'arrête l'arbre: combien de candidats Kruskal a consommés. Inférieur
+    * à `candidates` quand la coupure a mordu, égal sinon.
+    * @returns {number}
+    */
+    get cut_used() {
+        const ret = wasm.forest_cut_used(this.__wbg_ptr);
         return ret;
     }
     /**

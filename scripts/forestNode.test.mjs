@@ -40,7 +40,42 @@ const NODE=slice(
     "the attribution node"
 )
 
+/* UNE TRANCHE DE MÉTHODE, et elle s'accroche sur le NOM, pas sur la signature.
+
+   Les ancres littérales `growForestAsync(wave,standards){` se sont cassées le
+   jour où la méthode a gagné un paramètre — et le test a échoué pour avoir eu
+   raison de ce qui arrive au programme. Une ancre de test doit survivre aux
+   changements de paramètres, donc elle s'arrête au nom.
+
+   `async` fait partie de l'ancre parce que la ligne doit commencer par quatre
+   espaces SUIVIS du mot-clé: sans cela, une ancre sur `growForestAsync(` ne
+   matcherait jamais la ligne `async growForestAsync(`, et le test échouerait
+   pour une raison qui n'a rien à voir avec ce qu'il vérifie. */
+const method=(name,upTo)=>slice(
+    NODE,
+    `    ${name}(`,
+    `    ${upTo}(`,
+    `${name}…${upTo}`
+)
+
 const SETTINGS=["forestTolerance","forestDegreeMax","forestCharge"]
+
+test("no method is DEFINED TWICE in the node",()=>{
+    /* Une méthode écrite deux fois est un bug SILENCIEUX: la seconde écrase la
+       première, le fichier compile, et le symptôme n'apparaît qu'à l'écran —
+       ici, le stub de `renderForest` avait effacé tout le readout et ne
+       manquait qu'un rapport muet. Aucun des autres tests ne l'aurait vu: ils
+       lisaient du texte, et le texte du stub était là.
+
+       On compte donc les définitions de niveau classe — quatre espaces, un nom,
+       une parenthèse — et on refuse qu'un nom revienne. */
+    const definitions=[...NODE.matchAll(/^ {4}(?:async )?([A-Za-z_$][\w$]*)\s*\(/gm)].map(m=>m[1])
+    const seen=new Map()
+    for(const name of definitions) seen.set(name,(seen.get(name)??0)+1)
+    const twice=[...seen.entries()].filter(([,count])=>count>1).map(([name])=>name)
+    assert.deepEqual(twice,[],
+        `these methods are defined more than once, and the last one silently wins: ${twice.join(", ")}`)
+})
 
 test("the node class is BRACED, so its methods are methods",()=>{
     /* Le fichier COMPILAIT avec une accolade manquante: la méthode suivante
@@ -117,7 +152,7 @@ test("the three steps of Igor's oracle are all here",()=>{
     /* `formatStds` → la liste de références, `GrowForest` → l'arbre,
        `CompteTribue` → la liste des composantes. */
     assert.match(NODE,/buildForestPlan\(\)\{/)
-    assert.match(NODE,/growForestAsync\(wave,standards\)\{/)
+    assert.match(NODE,/growForestAsync\(wave,standards/)
     assert.match(NODE,/forestComponents\(forest,standards\)/)
     /* ET LE CALCUL VA DANS LE WORKER, pas sur le thread principal: c'est la
        raison d'être du noyau Rust. Une régression ici ne se verrait qu'à la
@@ -126,26 +161,26 @@ test("the three steps of Igor's oracle are all here",()=>{
 })
 
 test("the node falls back on the SAME calculation, and says so",()=>{
-    const method=slice(NODE,"    async growForestAsync(wave,standards){","    /* TEMPS 3","growForestAsync")
+    const grown=method("async growForestAsync","async startForest")
     /* Un repli « approché » laisserait deux physiques dans le programme, et celle
        qui répondrait serait celle qu'on ne testerait pas. */
-    assert.match(method,/growForest\(payload\.params\)/)
-    assert.match(method,/console\.warn\("\[network\] kernel unavailable, JS fallback:"/)
+    assert.match(grown,/growForest\(payload\.params\)/)
+    assert.match(grown,/console\.warn\("\[network\] kernel unavailable, JS fallback:"/)
     /* Et le repli ne se déclenche que sur un NOYAU INDISPONIBLE, jamais sur un
        résultat: un arbre vide est un résultat, pas une panne. */
-    assert.match(method,/if\(!forest\) throw new Error/)
+    assert.match(grown,/if\(!forest\) throw new Error/)
 })
 
 test("the network never repaints the NODE status",()=>{
     /* Le statut du nœud raconte l'ATTRIBUTION. Le repeindre après un réseau
        donnerait un nœud vert au-dessus d'un readout d'attributions vide, alors
        que l'attribution n'a peut-être jamais été lancée. */
-    const method=slice(NODE,"    async startForest(){","    renderForestButton(busy){","startForest")
-    assert.ok(!/setStatus\(/.test(method),
+    const grown=method("async startForest","renderForestButton")
+    assert.ok(!/setStatus\(/.test(grown),
         "startForest must not set the node status: that status belongs to the attribution")
     /* L'attente se lit sur le bouton, qui appartient au panneau qui travaille. */
-    assert.match(method,/this\.renderForestButton\(true\)/)
-    assert.match(method,/this\.renderForestButton\(false\)/)
+    assert.match(grown,/this\.renderForestButton\(true\)/)
+    assert.match(grown,/this\.renderForestButton\(false\)/)
 })
 
 test("the network panel is created, registered AND killed with the node",()=>{

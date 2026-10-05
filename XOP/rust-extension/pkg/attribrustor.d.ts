@@ -72,6 +72,37 @@ export function crible_mixed_radix(item_masses: Float64Array, item_charges: Floa
 */
 export function crible_heap(item_masses: Float64Array, item_charges: Float64Array, caps: Uint32Array, max_mass: number, limit: number): Float64Array;
 /**
+* L'arbre couvrant de poids minimal sur des points MESURÉS.
+*
+* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
+* précoce de la boucle des paires, et le seul prérequis que la fonction ne
+* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
+* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
+* écrit est un bug qui n'apparaît qu'à l'écran.
+*
+* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
+* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
+* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
+* `forest.js` le fait, à partir des briques du plan.
+*
+* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
+* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
+*
+* `limit` est LA COUPURE: combien de candidats, dans l'ordre des poids
+* croissants, Kruskal est autorisé à consommer. `<= 0` les prend tous — c'est le
+* `GrowForest` d'Igor. C'est ici, et nulle part ailleurs, que la coupure agit:
+* l'arbre se construit par dessus un PRÉFIXE de la liste triée, donc changer la
+* coupure ne change que le nombre d'arêtes considérées, jamais leur ordre.
+* @param {Float64Array} masses
+* @param {Float64Array} intensities
+* @param {Float64Array} standards
+* @param {number} tolerance
+* @param {number} degree_max
+* @param {number} limit
+* @returns {Forest}
+*/
+export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number, limit: number): Forest;
+/**
 * Computes one H0 interval per input point. `core` is canonical:
 * [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
 * Superlevel activates points by decreasing Y; sublevel by increasing Y.
@@ -97,30 +128,6 @@ export function persistent_homology_0d_waves(core: Float64Array, stride: number,
 * @returns {PersistenceClassification}
 */
 export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number, integrated_mass: Float64Array, centroid_x: Float64Array): PersistenceClassification;
-/**
-* L'arbre couvrant de poids minimal sur des points MESURÉS.
-*
-* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
-* précoce de la boucle des paires, et le seul prérequis que la fonction ne
-* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
-* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
-* écrit est un bug qui n'apparaît qu'à l'écran.
-*
-* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
-* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
-* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
-* `forest.js` le fait, à partir des briques du plan.
-*
-* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
-* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
-* @param {Float64Array} masses
-* @param {Float64Array} intensities
-* @param {Float64Array} standards
-* @param {number} tolerance
-* @param {number} degree_max
-* @returns {Forest}
-*/
-export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number): Forest;
 /**
 * Where the SELECTED method wants the low cursor to sit, as a single number.
 *
@@ -322,6 +329,11 @@ export class Forest {
 */
   readonly component_weight: Float64Array;
 /**
+* Où s'arrête l'arbre: combien de candidats Kruskal a consommés. Inférieur
+* à `candidates` quand la coupure a mordu, égal sinon.
+*/
+  readonly cut_used: number;
+/**
 */
   readonly degree: Float64Array;
 /**
@@ -345,6 +357,11 @@ export class Forest {
 /**
 */
   readonly isolated: number;
+/**
+* LA COURBE: tous les poids, triés. C'est ce que le panneau trace, et ce
+* sur quoi se règle la coupure.
+*/
+  readonly weights: Float64Array;
 }
 /**
 */
@@ -533,6 +550,26 @@ export interface InitOutput {
   readonly reading_counts: (a: number, b: number) => void;
   readonly crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
   readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+  readonly __wbg_forest_free: (a: number) => void;
+  readonly forest_edge_u: (a: number, b: number) => void;
+  readonly forest_edge_v: (a: number, b: number) => void;
+  readonly forest_edge_weight: (a: number, b: number) => void;
+  readonly forest_edge_standard: (a: number, b: number) => void;
+  readonly forest_degree: (a: number, b: number) => void;
+  readonly forest_component_of: (a: number, b: number) => void;
+  readonly forest_component_root: (a: number, b: number) => void;
+  readonly forest_component_size: (a: number, b: number) => void;
+  readonly forest_component_max_intensity: (a: number, b: number) => void;
+  readonly forest_component_weight: (a: number, b: number) => void;
+  readonly forest_component_root_mass: (a: number, b: number) => void;
+  readonly forest_component_peak_mass: (a: number, b: number) => void;
+  readonly forest_candidates: (a: number) => number;
+  readonly forest_weights: (a: number, b: number) => void;
+  readonly forest_cut_used: (a: number) => number;
+  readonly forest_isolated: (a: number) => number;
+  readonly forest_edge_count: (a: number) => number;
+  readonly forest_component_count: (a: number) => number;
+  readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
   readonly __wbg_persistenceanalysis_free: (a: number) => void;
   readonly persistenceanalysis_births: (a: number, b: number) => void;
   readonly persistenceanalysis_deaths: (a: number, b: number) => void;
@@ -555,24 +592,6 @@ export interface InitOutput {
   readonly persistenceclassification_kept_integrated_mass: (a: number, b: number) => void;
   readonly persistenceclassification_kept_centroid_x: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_births: (a: number, b: number) => void;
-  readonly __wbg_forest_free: (a: number) => void;
-  readonly forest_edge_u: (a: number, b: number) => void;
-  readonly forest_edge_v: (a: number, b: number) => void;
-  readonly forest_edge_weight: (a: number, b: number) => void;
-  readonly forest_edge_standard: (a: number, b: number) => void;
-  readonly forest_degree: (a: number, b: number) => void;
-  readonly forest_component_of: (a: number, b: number) => void;
-  readonly forest_component_root: (a: number, b: number) => void;
-  readonly forest_component_size: (a: number, b: number) => void;
-  readonly forest_component_max_intensity: (a: number, b: number) => void;
-  readonly forest_component_weight: (a: number, b: number) => void;
-  readonly forest_component_root_mass: (a: number, b: number) => void;
-  readonly forest_component_peak_mass: (a: number, b: number) => void;
-  readonly forest_candidates: (a: number) => number;
-  readonly forest_isolated: (a: number) => number;
-  readonly forest_edge_count: (a: number) => number;
-  readonly forest_component_count: (a: number) => number;
-  readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
   readonly __wbg_trimresult_free: (a: number) => void;
   readonly trimresult_points_x: (a: number, b: number) => void;
   readonly trimresult_points_y: (a: number, b: number) => void;
