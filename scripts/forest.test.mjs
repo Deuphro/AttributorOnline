@@ -157,6 +157,46 @@ test("a single peak does not claim a total error",()=>{
     assert.ok(lonely)
     assert.doesNotMatch(componentLine(lonely),/error/)
 })
+
+/* LES LIENS SONT ABRÉGÉS, ET LE DÉCOMPTE EST CELUI DES LIENS.
+
+   C'est la demande qui a fait ce format: une chaîne affichait « CH₂ » une fois
+   par lien et la ligne dépassait le panneau. « CH₂×6 » tient en quatre
+   caractères — et il faut le COMPTE, pas seulement la présence. */
+test("repeated links are counted, not repeated",()=>{
+    const masses=[100.0]
+    for(let i=1;i<7;i++) masses.push(masses[i-1]+14.01)
+    const forest=growForest({
+        masses,intensities:[1,2,3,4,5,6,7],standards:[14.0156]
+    })
+    const components=forestComponents(forest,{labels:["CH₂"]})
+    const chain=components.find(component=>component.size===7)
+    assert.ok(chain,`expected a seven-peak chain, got ${components.length} component(s)`)
+    /* SEPT pics font SIX liens: un arbre de couverture relie n sommets par
+       n-1 arêtes. Le compte est donc « CH₂×6 », et c'est ce qui distingue une
+       chaîne d'un groupe où un pic est relié deux fois. */
+    assert.equal(chain.links.length,6)
+    const line=componentLine(chain)
+    assert.match(line,/CH₂×6/)
+    assert.doesNotMatch(line,/CH₂, CH₂/)
+})
+
+/* ET LE RÉSIDU EST COMPTÉ, jamais effacé.
+
+   Un groupe dont les liens utilisent sept formules différentes ne doit pas
+   laisser croire qu'il n'y en a que quatre: la ligne tronquée sans compte
+   dirait que la liste est complète. */
+test("links beyond the summary are counted, not dropped silently",()=>{
+    const labels=["A","B","C","D","E","F"]
+    const links=labels.map((label,i)=>({u:i,v:i+1,weight:0.01,standard:i,label}))
+    const component={
+        rank:0,root:0,rootMass:100,peakMass:200,size:8,maxIntensity:1,
+        weight:0.06,links
+    }
+    const line=componentLine(component)
+    assert.match(line,/A, B, C, D/)
+    assert.match(line,/\+2 others/)
+})
 /* ===========================================================================
    LA COUPURE, et le détecteur de marche.
 

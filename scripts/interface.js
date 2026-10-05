@@ -2975,6 +2975,28 @@ class AttributionNode extends NodeWithAccordion{
         this.parameters.forestTolerance=DEFAULT_LINK_TOLERANCE
         this.parameters.forestDegreeMax=0
         this.parameters.forestCharge=0
+        /* LA LISTE DE LIAISON, ET ELLE EST AUTONOME.
+
+           C'est l'équivalent du `Stds_Obs` d'Igor: la liste des masses qui
+           servent à RELIER les pics, et elle ne dépend en rien de la liste des
+           groupes à combiner. Les deux questions sont différentes, et les
+           confondre oblige à choisir entre deux usages légitimes:
+
+             — relier seulement les familles CH2, mais attribuer la formule de
+               départ avec tout le jeu CH2/NH/O/C;
+             — relier avec tout le jeu, et n'attribuer qu'avec CH2.
+
+           Avec une liste partagée, une seule des deux est possible. Donc deux
+           listes, deux panneaux, et AUCUN lien entre elles: changer la liste de
+           gauche ne touche pas le réseau, et changer celle de droite ne touche
+           ni le crible ni ses sorties.
+
+           LE DÉFAUT EST CH2 SEUL, et c'est un choix de lecture: c'est le cas
+           dont la lecture est la plus nette — des pics séparés d'une masse de
+           CH2 forment une chaîne qu'on peut suivre à l'œil — et une liste
+           courte rend les liens de la ligne de groupe lisibles. On l'ajoute
+           depuis le champ, au-dessus des bornes. */
+        this.parameters.forestGroups=[{group:"CH2"}]
         /* la liste de références du dernier calcul, et les arbres par entrée */
         this.forestPlan=null
         this.forests=[]
@@ -3210,6 +3232,12 @@ class AttributionNode extends NodeWithAccordion{
        elle vivait de son côté. */
     refreshForestPlan(){
         this.buildForestPlan()
+        /* LA LISTE EST REDESSINÉE AVEC LE PLAN, et c'est la seule fois qu'elle
+           change sans que l'utilisateur agisse. Sans cette ligne, la table
+           attendrait le prochain « Grow network » pour montrer les blocs
+           isotopiques d'un groupe ajouté — donc une ligne muette sous un nom
+           qu'on vient de taper. */
+        this.renderForestGroupTable()
         this.renderForest()
         return this.forestPlan
     }
@@ -4827,14 +4855,19 @@ class AttributionNode extends NodeWithAccordion{
                reproduirait. Ce qui PART, c'est l'intention. */
             forestTolerance:this.parameters.forestTolerance,
             forestDegreeMax:this.parameters.forestDegreeMax,
-            forestCharge:this.parameters.forestCharge
+            forestCharge:this.parameters.forestCharge,
+            /* LA LISTE DE LIAISON PART ELLE AUSSI, et c'est la seule partie du
+               panneau qui soit une LISTE comme celle de gauche: une session
+               rechargée sans elle perdrait les groupes qu'on avait choisis de
+               lier, et le réseau retomberait sur CH2 seul sans rien le dire. */
+            forestGroups:this.forestGroupList()
         }
     }
 
     restoreState(state){
         if(!state) return
         for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm","probeMass",
-            "forestTolerance","forestDegreeMax","forestCharge"]){
+            "forestTolerance","forestDegreeMax","forestCharge","forestGroups"]){
             if(state[name]!==undefined&&state[name]!==null){
                 this.parameters[name]=state[name]
             }
@@ -4970,7 +5003,50 @@ class AttributionNode extends NodeWithAccordion{
     buildForestPlan(){
         const asked=Number(this.parameters.forestCharge)
         const charge=Number.isFinite(asked)&&asked>0?Math.abs(asked):0
-        this.forestPlan=forestStandards(this.plan,{charge})
+        /* LE PLAN DE LIAISON, ET IL EST SÉPARÉ DU PLAN D'ATTRIBUTION.
+
+           On ne peut pas prendre `this.plan`: ses briques viennent de la liste de
+           gauche, et c'est précisément ce qu'on veut pouvoir ignorer. On bâtit
+           donc un PLAN PROPRE à partir de la liste de droite — avec le même
+           constructeur, donc les mêmes lectures, les mêmes diagnostics et les
+           mêmes règles d'isotopes, sans rien réécrire.
+
+           AUCUN ADDUCT ICI, et c'est délibéré: une référence sert à comparer des
+           ÉCARTS de m/z, et un adduit porte une charge, pas un incrément de
+           masse. `chargeAuto` est donc désactivé et les bornes mises à 0 — une
+           brique de masse n'a pas de charge, et c'est le seul moyen d'éviter
+           qu'un plan sans adduct hérite d'un `chargeSet` qui n'a aucun sens
+           ici. */
+        const groups=this.forestGroupList()
+        let bricks=null
+        const diagnostics=[]
+        if(!groups.length){
+            diagnostics.push("no group to link with: add one above, or the network has no reference")
+        }
+        if(this.loadedTable){
+            try{
+                bricks=buildPlan({
+                    combining:groups,
+                    ionising:[],
+                    ratio:1,
+                    chargeMin:0,chargeMax:0,
+                    chargeAuto:false,
+                    table:this.loadedTable
+                })
+                diagnostics.push(...bricks.diagnostics)
+            }catch(error){
+                /* UNE LISTE ILLISIBLE EST UNE PANNE DE LECTURE, pas de
+                   physique: le panneau doit rester affichable et le dire, sinon
+                   l'utilisateur croit que l'application est cassée alors que
+                   c'est sa liste qui l'est. */
+                diagnostics.push(`the groups to link could not be read: ${error.message}`)
+                bricks=null
+            }
+        }else{
+            diagnostics.push("the periodic table is still loading — no reference mass yet")
+        }
+        this.forestLinkPlan=bricks
+        this.forestPlan=forestStandards(bricks??{items:[]},{charge})
         /* La liste des charges ATTEIGNABLES est affichée quand le champ est à 0,
            parce que c'est elle qui décide de la division: sans cette ligne,
            « 0 » se lirait « charge nulle » alors qu'il veut dire « celle du
@@ -5372,10 +5448,174 @@ class AttributionNode extends NodeWithAccordion{
         ctx.fillText(this.forestCurveTopLabel??"",left+1,9)
     }
 
+    /* LA LISTE DES GROUPES DE LIAISON, et elle est le MIROIR de celle de gauche.
+
+       Même cadre, même police, même bouton de suppression: une liste qu'on lit
+       différemment des deux côtés de l'écran ferait douter le lecteur sur ce qui
+       est réglé où. Trois colonnes disparaissent, et c'est le fond de la
+       différence:
+
+       — `min`/`max` n'ont pas de sens ici. Une référence sert à comparer des
+         écarts, pas à compter des occurrences: borner un lien à « au moins
+         deux » n'aurait aucun effet, donc une case qui n'en a pas est une case
+         qui ment.
+       — `ratio` non plus, dans la forme où il est présenté à gauche. Il
+         ouvrirait les isotopes d'un groupe, donc il changerait la liste de
+         liens — or c'est ici que la liste EST le réglage. Un isotope
+         supplémentaire ne se règle pas dans une case de la ligne: il s'ajoute
+         comme une ligne, avec son nom.
+
+       La ligne est donc formule + suppression, et les DEUX blocs isotopiques
+       possibles d'un même groupe apparaissent en dessous, comme à gauche: c'est
+       ce qui dit si « 13C » a été écrit ou si le groupe n'en a qu'un. */
+    forestGroupList(){
+        /* `readGroups` est la MÊME lecture que celle de gauche, donc une
+           session ancienne — qui portait une chaîne — se relit ici sans
+           migration. Elle donne aussi les défauts par groupe, et ces défauts
+           n'ont aucun effet: ils servent à `buildPlan`, qui a besoin d'un
+           `{min,max,ratio}` même quand personne ne les saisit. */
+        return this.readGroups(this.parameters.forestGroups,"combining")
+    }
+
+    renderForestGroupTable(){
+        const table=this.forestGroupTable
+        if(!table) return
+        table.rows.replaceChildren()
+        const groups=this.forestGroupList()
+        if(!groups.length){
+            const empty=CE("div",{},["— no group to link with —"])
+            stylize(empty,{fontSize:"0.8em",opacity:"0.5",padding:"2px"})
+            table.rows.appendChild(empty)
+            return
+        }
+        groups.forEach((entry,index)=>{
+            table.rows.appendChild(this.drawForestGroupRow(entry,index))
+        })
+    }
+
+    drawForestGroupRow(entry,index){
+        const row=CE("div",{},[])
+        stylize(row,{
+            display:"grid",gap:"3px",alignItems:"center",
+            gridTemplateColumns:"1fr 1.6em"
+        })
+        const name=CE("span",{},[String(entry.group)])
+        stylize(name,{
+            fontSize:"0.85em",fontFamily:"monospace",overflow:"hidden",
+            textOverflow:"ellipsis",whiteSpace:"nowrap"
+        })
+        name.title=entry.group
+        row.appendChild(name)
+        const remove=CE("button",{type:"button",title:"Stop using this group to link"},["✕"])
+        stylize(remove,{
+            fontSize:"0.8em",lineHeight:"1",padding:"2px",cursor:"pointer",
+            color:"inherit",background:"rgba(255,255,255,0.08)",
+            border:"1px solid rgba(255,255,255,0.15)",borderRadius:"2px"
+        })
+        remove.addEventListener("click",()=>{
+            const groups=this.forestGroupList()
+            if(!groups[index]) return
+            groups.splice(index,1)
+            this.commitForestGroups(groups)
+        })
+        row.appendChild(remove)
+        /* LES BLOCS ISOTOPIQUES, sur la rangée du dessous et en pleine largeur,
+           comme à gauche. Sans eux, écrire « 13C » ne se distinguerait pas d'une
+           coquille: le groupe le plus probable serait pris, silencieusement. */
+        const blocks=this.forestIsotopeBlocks(index)
+        const listing=CE("div",{},[
+            blocks.length
+                ? blocks.map(block=>block.notation).join("  ·  ")
+                : "— no isotope block —"
+        ])
+        stylize(listing,{
+            gridColumn:"1 / -1",minWidth:0,
+            fontSize:"0.72em",fontFamily:"monospace",opacity:"0.72",
+            paddingTop:"1px",paddingBottom:"3px",lineHeight:"1.5",
+            wordBreak:"break-word",textAlign:"left"
+        })
+        listing.title=blocks.length
+            ? blocks.map(block=>`${block.notation} — ${block.mass.toFixed(4)} Da`).join("\n")
+            : "this group produced no mass: check its spelling"
+        row.appendChild(listing)
+        return row
+    }
+
+    /* LES BRIQUES D'UNE LIGNE DE LIAISON, lues sur le plan DE LIAISON.
+
+       `this.plan` est le plan d'attribution et ne dit rien de cette liste;
+       lire ses briques ici afficherait les groupes de gauche sous la liste de
+       droite — c'est-à-dire l'erreur exacte que la liste autonome existe pour
+       éviter. */
+    forestIsotopeBlocks(index){
+        const key=`combining#${index}`
+        const source=this.forestLinkPlan?.combinables??[]
+        return source
+            .filter(block=>block.groupIndex===key)
+            .map(block=>({
+                notation:prettyNotation(block.notation),
+                key:block.key,
+                mass:block.atomicMass
+            }))
+    }
+
+    /* AJOUTER OU RETIRER UN GROUPE DE LIAISON.
+
+       Le réseau n'est PAS relancé: une liste de groupes change les masses de
+       référence, donc elle change l'arbre — mais l'arbre ne se lit qu'après un
+       « Grow network », comme le reste du panneau. Relancer ici viderait la
+       courbe et la liste à chaque frappe, et l'utilisateur verrait un panneau
+       clignoter au lieu de voir sa liste.
+
+       Le réseau reste donc marqué comme à recalculer, ce qui est exactement ce
+       que le nœud sait dire. */
+    commitForestGroups(groups){
+        this.parameters.forestGroups=groups
+        this.renderForestGroupTable()
+        this.refreshForestPlan()
+    }
+
+    addForestGroup(value){
+        const text=String(value??"").trim()
+        if(!text) return
+        const groups=this.forestGroupList()
+        groups.push({group:text})
+        this.commitForestGroups(groups)
+        if(this.forestGroupInput) this.forestGroupInput.value=""
+    }
+    /*   il rend le résultat. Les réglages y sont parce qu'ils bornent l'arbre, et
+       ils sont donc dans la même colonne que lui — mais le LECTEUR est le
+       bouton, la courbe et la liste, pas les cases. */
     /* LE PANNEAU DU RÉSEAU, et il ne fait qu'une chose de plus que le gauche:
        il rend le résultat. Les réglages y sont parce qu'ils bornent l'arbre, et
        ils sont donc dans la même colonne que lui — mais le LECTEUR est le
-       bouton, la courbe et la liste, pas les cases. */
+       bouton, la courbe et la liste, pas les cases.
+
+       L'ORDRE EST CELUI DE LA DÉCISION: d'abord QUOI relier, ensuite À QUELLE
+       PRÉCISION, enfin COMBIEN de liens. C'est l'ordre dans lequel on se pose
+       les questions, et il place la liste juste au-dessus des bornes comme tu
+       l'as demandé. */
+    forestLinkTable(content,label){
+        const box=CE("div",{className:"an-group-table"},[])
+        const caption=CE("div",{className:"an-caption"},[label])
+        const rows=CE("div",{className:"an-group-rows"},[])
+        stylize(caption,{fontSize:"0.8em",opacity:"0.85"})
+        stylize(box,{
+            display:"flex",flexDirection:"column",gap:"3px",
+            padding:"5px 6px 6px",
+            border:"1px solid rgba(255,255,255,0.14)",borderRadius:"4px",
+            background:"rgba(255,255,255,0.025)",
+            marginBottom:"8px"
+        })
+        /* LE TITRE DIT À QUOI ÇA SERT, parce que deux listes de groupes sur un
+           même écran ne se devinent pas: celle de gauche décide des FORMULES,
+           celle-ci des LIENS. */
+        caption.title="The masses used to link two measured peaks. Independent of the combining groups: link on CH2 only while attributing with the full set"
+        box.append(caption,rows)
+        content.appendChild(box)
+        return {box,rows}
+    }
+
     setupForestPanel(){
         if(!this.forestAccordion) return
         const content=this.forestAccordion.DOMelt.content
@@ -5387,7 +5627,19 @@ class AttributionNode extends NodeWithAccordion{
             padding:"4px",
             gap:"4px"
         })
-        /* LES TROIS RÉGLAGES SUR DEUX RANGÉES, parce qu'ils vont par paires.
+        /* LA LISTE D'ABORD: le champ d'ajout, puis le cadre, comme à gauche où
+           le champ est AU-DESSUS de sa liste et non à côté — les deux se lisent
+           ensemble parce qu'ils font deux gestes différents. */
+        this.forestGroupInput=this.field(content,
+            "Add a group to link",
+            "",
+            {onCommit:(value)=>this.addForestGroup(value)},
+            "CH2, NH, O, 13C... Adds one row to the table below. Enter applies it. This list is INDEPENDENT of the combining groups on the left: it decides what links peaks, not what formulas are attributed"
+        )
+        this.forestGroupTable=this.forestLinkTable(content,"Groups to link")
+        this.renderForestGroupTable()
+
+    /* LES TROIS RÉGLAGES SUR DEUX RANGÉES, parce qu'ils vont par paires.
 
            La fenêtre et le plafond sont tous deux des bornes de l'arbre, et les
            poser l'un sous l'autre les ferait passer pour une hiérarchie. La

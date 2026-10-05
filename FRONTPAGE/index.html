@@ -1358,9 +1358,11 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
 
         <h4>Data flow</h4>
         <pre>combining[], ionising[], ratio, table
-    → buildPlan(...)                       // the SAME plan as the attribution
-    → forestStandards(plan, charge)        // TIME 1 — the reference list
-        → one reference per combining brick, mass/|z|; adducts refused, and said
+    → buildPlan(...)                       // the attribution's OWN plan, left panel
+forestGroups[]                             // the panel on the right, INDEPENDENT
+    → buildPlan({combining:forestGroups, ionising:[], chargeAuto:false})
+    → forestStandards(linkPlan, charge)    // TIME 1 — the reference list
+        → one reference per linking brick, mass/|z|; adducts refused, and said
     → per input wave, "Grow network"
         → SortedPoints(x[], y[])           // masses sorted for the kernel's early break
         → worker: attributionForest({masses, intensities, standards, tolerance, degreeMax})
@@ -1380,11 +1382,34 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             <tr>
                 <td>Reference list</td>
                 <td>
-                    One entry per <em>combining</em> brick of the current plan, divided by the charge.
-                    <strong>Adducts are excluded</strong>: they carry a charge, not a mass increment, and
-                    comparing them to m/z gaps would link peaks for no reason. The charge field
-                    <code>0</code> means "the plan's", so the list can never drift from the group tables
-                    on the left.
+                    One entry per <strong>group of the link list</strong> — and that list is
+                    <strong>autonomous</strong>: it is not the combining list. This is what makes the
+                    "link on CH<sub>2</sub> only, attribute with the whole CH<sub>2</sub>/NH/O/C set"
+                    case possible, which a shared list makes impossible. Adducts are
+                    <strong>excluded</strong>: they carry a charge, not a mass increment. The charge
+                    field <code>0</code> means "the plan's", so the list can never drift.
+                </td>
+            </tr>
+            <tr>
+                <td>Link row</td>
+                <td>
+                    Formula and a delete button — <strong>no min, max or ratio</strong>. A reference
+                    serves to compare <em>gaps</em>, so a count bound has no meaning here, and a box
+                    with no effect on the tree is a box that lies about the row. Extra isotopes are
+                    <strong>added as rows</strong> (write <code>13C</code>) rather than opened with a
+                    threshold: on this panel the list <em>is</em> the setting. The isotope blocks are
+                    still shown under each row, so a mistyped <code>13C</code> is visible instead of
+                    silently reading as plain C.
+                </td>
+            </tr>
+            <tr>
+                <td>Group row text</td>
+                <td>
+                    Links are <strong>counted</strong>, not repeated: a seven-peak chain reads
+                    <code>CH₂×6</code> (seven vertices, six arcs) rather than <code>CH₂, CH₂, …</code>,
+                    and anything past the first four distinct formulas is reported as
+                    <code>+N others</code> rather than dropped. The groups themselves are clickable,
+                    in size order; the first one is the biggest.
                 </td>
             </tr>
             <tr>

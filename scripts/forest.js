@@ -311,12 +311,19 @@ export function forestComponents(forest,standards={}){
    Le format est une décision de DONNÉE, pas de mise en page: la même chaîne
    sert au panneau, à une infobulle et à un `console.log` de débogage, donc
    elle ne peut pas vivre dans un `textContent` du DOM où personne ne la
-   retrouverait. */
+   retrouverait.
+
+   LES LIENS SONT REGROUPÉS, parce qu'une chaîne de six pics affiche six fois
+   la même formule et que la ligne finit par dépasser le panneau. « CH₂×5 »
+   dit la même chose en un tiers de la place, et le compte est l'information
+   qui manque à la version DÉVELOPPÉE — « combien de liens de ce type », pas
+   « quels pics », que l'infobulle donne déjà.
+
+   LE DÉCOMPTE EST CELUI DES LIENS, PAS CELUI DES SOMMETS: un groupe de six pics
+   reliés en chaîne a cinq liens, et dire « CH₂×5 » est exact. */
 export function componentLine(component,{tolDigits=3}={}){
     const error=(component.weight??0).toFixed(tolDigits)
-    const chain=component.links
-        .map(link=>link.label??`#${link.standard}`)
-        .join(", ")
+    const chain=abbreviateLinks(component.links)
     const parts=[
         `${component.size} peak(s)`,
         `root ${component.rootMass.toFixed(4)}`
@@ -324,6 +331,29 @@ export function componentLine(component,{tolDigits=3}={}){
     if(component.size>1) parts.push(`Σ error ${error} Da`)
     if(chain) parts.push(chain)
     return parts.join("  ·  ")
+}
+
+/* LES LIENS RÉSUMÉS, et le résumé est trié par NOMBRE DÉCROISSANT.
+
+   Le tri n'est pas cosmétique: sans lui, l'ordre dépend de l'ordre des arêtes,
+   qui est celui du tri des poids — donc deux spectres voisins donneraient deux
+   lignes qui se ressemblent mais ne se comparent pas à l'œil. */
+function abbreviateLinks(links,maxDistinct=4){
+    if(!links?.length) return ""
+    const counts=new Map()
+    for(const link of links){
+        const key=link.label??`#${link.standard}`
+        counts.set(key,(counts.get(key)??0)+1)
+    }
+    const ranked=[...counts.entries()].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0])))
+    const shown=ranked.slice(0,maxDistinct).map(([label,n])=>n>1?`${label}×${n}`:label)
+    if(ranked.length>maxDistinct){
+        /* LE RESTE EST COMPTÉ, PAS EFFACÉ: « …+3 autres » dit qu'il y en a, et
+           une ligne qui n'en dit rien ferait croire que la liste est complète. */
+        const hidden=ranked.slice(maxDistinct).reduce((total,[,n])=>total+n,0)
+        shown.push(`+${hidden} other${hidden>1?"s":""}`)
+    }
+    return shown.join(", ")
 }
 /* ===========================================================================
    LA COUPURE, ET OÙ LA TROUVER.

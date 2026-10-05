@@ -77,6 +77,63 @@ test("no method is DEFINED TWICE in the node",()=>{
         `these methods are defined more than once, and the last one silently wins: ${twice.join(", ")}`)
 })
 
+test("the LINK list is its own, and is not the attribution plan",()=>{
+    /* L'AUTONOMIE EST LE MOTIF DE LA DEMANDE: relier sur CH2 seul tout en
+       attribuant avec CH2/NH/O/C. Elle se vérifie ici de deux façons — la liste
+       existe comme paramètre, et le plan de LIAISON se construit SUR ELLE, pas
+       sur `this.plan`.
+
+       Si `buildForestPlan` reprenait `this.plan`, le code passerait tous les
+       tests voisins et le réseau relierait avec les groupes de gauche: le bug
+       serait « ça marche, et c'est faux ». */
+    assert.match(NODE,/this\.parameters\.forestGroups=\[\{group:"CH2"\}\]/,
+        "the link list must exist as its own parameter, defaulting to CH2 alone")
+    const builder=method("buildForestPlan","async growForestAsync")
+    /* AUCUN ADDUCT DANS LE PLAN DE LIAISON: un adduit porte une charge, pas un
+       incrément de masse, donc le comparer à des écarts de m/z ne veut rien
+       dire. */
+    assert.match(builder,/ionising:\[\]/)
+    assert.match(builder,/chargeAuto:false/)
+    /* ET IL SE BATIT SUR LA LISTE DE LIAISON, pas sur le plan d'attribution. */
+    assert.match(builder,/combining:groups/)
+    assert.ok(!/combining:this\.groupList/.test(builder),
+        "the link plan must not read the attribution group list")
+})
+
+test("the link list crosses every place a setting has to cross",()=>{
+    const serialised=slice(NODE,"    serializeState(){","    restoreState(","serializeState")
+    const restored=slice(NODE,"    restoreState(state){","    syncUI(){","restoreState")
+    assert.ok(serialised.includes("forestGroups"),
+        "forestGroups is not serialised: a session would lose the groups it linked on")
+    assert.ok(restored.includes(`"forestGroups"`),
+        "forestGroups is not in restoreState's list: a session would fall back to CH2")
+})
+
+test("the link list sits ABOVE the window and the degree cap",()=>{
+    /* L'ORDRE EST L'ORDRE DES QUESTIONS: quoi relier, à quelle précision,
+       combien de liens. C'est ce qui a été demandé, et c'est ce qui se lit. */
+    const panel=slice(NODE,"    setupForestPanel(){","    commitForestNumber(","setupForestPanel")
+    const list=panel.indexOf(`forestLinkTable(content,"Groups to link")`)
+    const windowField=panel.indexOf("Link window (Da)")
+    const degree=panel.indexOf("Max degree")
+    assert.ok(list>=0,"the link list is missing from the panel")
+    assert.ok(windowField>list,"the link list must come before the link window")
+    assert.ok(degree>windowField,"the window and the degree cap stay side by side")
+})
+
+test("the link row has NO min, max or ratio",()=>{
+    /* Trois colonnes qui n'ont aucun effet sur le calcul sont trois cases qui
+       mentent sur le rôle de la ligne. Une borne « au moins deux occurrences »
+       n'a pas de sens quand une référence sert à comparer des ÉCARTS. */
+    const row=method("drawForestGroupRow","forestIsotopeBlocks")
+    for(const dead of ["boundCell","\"min\"","\"max\"","\"ratio\""]){
+        assert.ok(!row.includes(dead),
+            `the link row still offers ${dead}: it would have no effect on the tree`)
+    }
+    /* Et elle garde ce qui, lui, informe: les blocs isotopiques du groupe. */
+    assert.match(row,/forestIsotopeBlocks\(index\)/)
+})
+
 test("the node class is BRACED, so its methods are methods",()=>{
     /* Le fichier COMPILAIT avec une accolade manquante: la méthode suivante
        devenait un LABEL suivi d'un bloc, donc du code mort — et le nœud aurait
