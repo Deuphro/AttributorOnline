@@ -226,7 +226,7 @@
         </div>
         <div class="card">
             <h3>📂 Flexible import</h3>
-            <p>Load delimited text files with configurable separator and columns, or convert raw <code>.raw</code> files through the msConvert service.</p>
+            <p>Load delimited text files with configurable separator and columns, or convert raw <code>.raw</code> files through the msConvert service. <strong>Direct native <code>.raw</code> import</strong> is also available via the thermorawfile Rust crate (no .NET/DLL required).</p>
         </div>
         <div class="card">
             <h3>💾 Portable sessions</h3>
@@ -1700,7 +1700,13 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
 </main>
 
 <footer>
-    Attributor Online — Mass spectrometry &amp; formula attribution · IPAG
+    Attributor Online — Mass spectrometry & formula attribution · IPAG<br>
+    <span style="font-size:0.75em;opacity:0.7;margin-top:8px;display:block;">
+        Thermo <code>.raw</code> parsing via <a href="https://crates.io/crates/thermorawfile" target="_blank" style="color:#aef22e;">thermorawfile</a> (MIT OR Apache-2.0) by <strong>David Teschner</strong> (theGreatHerrLebert).<br>
+        Binary layout derived from <a href="https://github.com/proteinspector/unthermo" target="_blank" style="color:#aef22e;">unthermo</a> (Apache-2.0) by <strong>Pieter Kelchtermans</strong> (proteinspector),<br>
+        <a href="https://github.com/Sigilweaver/OpenTFRaw" target="_blank" style="color:#aef22e;">OpenTFRaw</a> (Apache-2.0) by <strong>Nathan Riley</strong> (Sigilweaver), and <a href="https://github.com/geneselkov/unfinnigan" target="_blank" style="color:#aef22e;">unfinnigan</a> by <strong>Gene Selkov</strong>.<br>
+        Full license details in <a href="/THIRD_PARTY_LICENSES.md" target="_blank" style="color:#aef22e;">THIRD_PARTY_LICENSES.md</a>.
+    </span>
 </footer>
 
 </body>
