@@ -1,0 +1,3128 @@
+//! Pure-Rust reader for Thermo Finnigan `.raw` files (no .NET / RawFileReader DLL).
+//!
+//! Binary layout reconstructed from clean-room, public-data sources: `unthermo`
+//! (Apache-2.0, Pieter Kelchtermans / proteinspector), `OpenTFRaw` (Apache-2.0,
+//! reverse-engineered from public PRIDE deposits), and `unfinnigan` (Gene Selkov).
+//! The v66 scan-event layout, preamble offsets, and frequency↔m/z calibration all
+//! agree with those public sources. No Thermo SDK, DLL, or proprietary code is
+//! used or linked.
+//!
+//! The centroid record width is not documented by those open sources, but it is
+//! self-describing from the file and was re-derived purely from public data: each
+//! scan's packet header gives the peak-list word count, and `words == 1 + 2*n`
+//! (n peaks) selects the 8-byte `{ f32 m/z, f32 int }` record while `words == 1 + 3*n`
+//! selects the 12-byte `{ f64 m/z, f32 int }` record (see [`centroid_record_width`]).
+//! Validated against genuine public PRIDE deposits — e.g. PXD060431 (Orbitrap) and
+//! PXD061065 (Astral) — where the word count fixes the width per scan and the
+//! f64-m/z interpretation yields monotonic fragment m/z inside each scan's own
+//! bounds. The width is per scan, not per instrument. No RawFileReader, SDK, or
+//! proprietary code is involved.
+//!
+//! Scope of this foundation: structural chain + centroid peak lists + the
+//! Adler-32 integrity checksum, for file revisions >= 64 (Orbitrap-era). Profile
+//! (FTMS) packets and rev < 64 run-header layout are TODO.
+
+use std::io;
+use std::path::Path;
+
+pub mod generic_record;
+
+/// Size of the fixed file header that precedes the sequencer row.
+pub const FILE_HEADER_SIZE: usize = 1356;
+/// Offset of the 4-byte little-endian Adler-32 checksum inside the file header.
+pub const CHECKSUM_OFFSET: usize = 148;
+/// The checksum covers at most the first 10 MiB of the file.
+pub const CHECKSUM_LIMIT: usize = 10_485_760;
+
+/// A little-endian sequential cursor over a byte slice.
+struct Cur<'a> {
+    b: &'a [u8],
+    p: usize,
+}
+
+impl<'a> Cur<'a> {
+    fn new(b: &'a [u8], p: usize) -> Self {
+        Cur { b, p }
+    }
+    fn u16(&mut self) -> u16 {
+        let v = u16::from_le_bytes(self.b[self.p..self.p + 2].try_into().unwrap());
+        self.p += 2;
+        v
+    }
+    fn u32(&mut self) -> u32 {
+        let v = u32::from_le_bytes(self.b[self.p..self.p + 4].try_into().unwrap());
+        self.p += 4;
+        v
+    }
+    fn i32(&mut self) -> i32 {
+        let v = i32::from_le_bytes(self.b[self.p..self.p + 4].try_into().unwrap());
+        self.p += 4;
+        v
+    }
+    fn u64(&mut self) -> u64 {
+        let v = u64::from_le_bytes(self.b[self.p..self.p + 8].try_into().unwrap());
+        self.p += 8;
+        v
+    }
+    fn f32(&mut self) -> f32 {
+        let v = f32::from_le_bytes(self.b[self.p..self.p + 4].try_into().unwrap());
+        self.p += 4;
+        v
+    }
+    fn f64(&mut self) -> f64 {
+        let v = f64::from_le_bytes(self.b[self.p..self.p + 8].try_into().unwrap());
+        self.p += 8;
+        v
+    }
+    fn skip(&mut self, n: usize) {
+        self.p += n;
+    }
+    /// A Thermo PascalString: i32 length (in UTF-16 code units) + len*2 bytes.
+    fn skip_pascal(&mut self) {
+        let n = self.i32();
+        if n > 0 {
+            self.p += (n as usize) * 2;
+        }
+    }
+}
+
+/// One entry of the scan index (rev >= 64 layout, 88 bytes for rev 66).
+#[derive(Clone, Debug)]
+pub struct ScanIndexEntry {
+    pub data_packet_size: u32,
+    /// Offset of the scan's data packet, relative to the run header's `data_addr`.
+    pub offset: u64,
+    pub time: f64,
+    pub total_current: f64,
+    pub base_mz: f64,
+    pub low_mz: f64,
+    pub high_mz: f64,
+}
+
+/// A single centroid peak.
+#[derive(Clone, Copy, Debug)]
+pub struct Peak {
+    pub mz: f64,
+    pub intensity: f32,
+}
+
+/// A decoded FTMS profile: a frequency grid plus contiguous signal chunks.
+///
+/// The profile is stored as a sparse set of `chunks` over a uniform frequency
+/// grid (`first_value` + bin·`step`). Converting a bin to m/z needs the
+/// per-scan frequency→m/z calibration (not yet ported), so this struct exposes
+/// the grid verbatim — enough to rewrite intensities in place
+/// ([`RawFile::set_profile_intensities`]) on a template's real m/z grid.
+#[derive(Clone, Debug)]
+pub struct Profile {
+    pub first_value: f64,
+    pub step: f64,
+    /// Total number of bins in the (sparse) grid.
+    pub nbins: u32,
+    pub chunks: Vec<ProfileChunk>,
+}
+
+impl Profile {
+    /// Total number of stored signal points across all chunks.
+    pub fn point_count(&self) -> usize {
+        self.chunks.iter().map(|c| c.signal.len()).sum()
+    }
+
+    /// m/z of a grid bin under `calib`.
+    pub fn mz_of_bin(&self, bin: u32, calib: &Calibration) -> f64 {
+        calib.mz(self.first_value + bin as f64 * self.step)
+    }
+
+    /// Nearest grid bin for a target m/z under `calib` (rounded), or `None` if
+    /// the m/z is unreachable.
+    pub fn bin_of_mz(&self, mz: f64, calib: &Calibration) -> Option<i64> {
+        let f = calib.freq(mz)?;
+        Some(((f - self.first_value) / self.step).round() as i64)
+    }
+}
+
+/// One contiguous run of profile signal points starting at `first_bin`.
+#[derive(Clone, Debug)]
+pub struct ProfileChunk {
+    pub first_bin: u32,
+    pub fudge: f32,
+    pub signal: Vec<f32>,
+}
+
+/// Per-scan frequency↔m/z calibration for an FTMS profile.
+///
+/// The profile is sampled on a uniform frequency grid (`f = first_value +
+/// bin·step`, from [`Profile`]); this maps frequency to m/z. Two forms exist,
+/// keyed by `nparam` (per OpenTFRaw §32 / unfinnigan, from public PRIDE data):
+/// `nparam == 4` → `m/z = a + b/f + c/f²`; `nparam ∈ {5, 7}` →
+/// `m/z = a + b/f² + c/f⁴`. The inverse (m/z→frequency) is what lets a writer
+/// place a peak at an arbitrary m/z onto the grid.
+#[derive(Clone, Copy, Debug)]
+pub struct Calibration {
+    pub nparam: u32,
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+}
+
+impl Calibration {
+    /// Frequency-grid value → m/z.
+    pub fn mz(&self, f: f64) -> f64 {
+        match self.nparam {
+            4 => self.a + self.b / f + self.c / (f * f),
+            _ => self.a + self.b / (f * f) + self.c / (f * f * f * f),
+        }
+    }
+
+    /// m/z → frequency-grid value (inverse of [`Calibration::mz`]). Returns
+    /// `None` if the target is unreachable: non-finite inputs, no real root, or
+    /// no root yielding a positive, finite frequency.
+    ///
+    /// Solves `c·x² + b·x + (a − mz) = 0` where `x = 1/f` (nparam 4) or
+    /// `x = 1/f²` (nparam 5/7), handling the degenerate linear case (`c == 0`),
+    /// and selecting — among the candidate roots — the positive-frequency one
+    /// that maps back closest to the requested m/z.
+    pub fn freq(&self, mz: f64) -> Option<f64> {
+        if ![mz, self.a, self.b, self.c].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        let d = self.a - mz; // c·x² + b·x + d = 0
+        let xs: [Option<f64>; 2] = if self.c == 0.0 {
+            // Linear: b·x + d = 0.
+            if self.b == 0.0 {
+                return None;
+            }
+            [Some(-d / self.b), None]
+        } else {
+            let disc = self.b * self.b - 4.0 * self.c * d;
+            if disc < 0.0 {
+                return None;
+            }
+            let s = disc.sqrt();
+            [
+                Some((-self.b + s) / (2.0 * self.c)),
+                Some((-self.b - s) / (2.0 * self.c)),
+            ]
+        };
+        let mut best: Option<f64> = None;
+        let mut best_err = f64::INFINITY;
+        for x in xs.into_iter().flatten() {
+            if !x.is_finite() || x <= 0.0 {
+                continue; // need positive frequency
+            }
+            let f = match self.nparam {
+                4 => 1.0 / x,
+                _ => 1.0 / x.sqrt(),
+            };
+            if !f.is_finite() || f <= 0.0 {
+                continue;
+            }
+            let err = (self.mz(f) - mz).abs();
+            if err < best_err {
+                best_err = err;
+                best = Some(f);
+            }
+        }
+        best
+    }
+}
+
+/// Acquisition date/time from the RawFileInfo preamble (local time, as recorded).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcquisitionDate {
+    pub year: u16,
+    pub month: u16,
+    pub day: u16,
+    pub hour: u16,
+    pub minute: u16,
+    pub second: u16,
+    pub millisecond: u16,
+}
+
+impl AcquisitionDate {
+    fn new(
+        year: u16,
+        month: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millisecond: u16,
+    ) -> Option<Self> {
+        // A real acquisition has a plausible Y/M/D; otherwise the field is unset/garbage.
+        ((1990..=2100).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day))
+            .then_some(Self { year, month, day, hour, minute, second, millisecond })
+    }
+
+    /// Build from a Unix timestamp (seconds) via Hinnant's civil-from-days algorithm.
+    fn from_unix(secs: f64) -> Option<Self> {
+        if !secs.is_finite() || secs <= 0.0 {
+            return None;
+        }
+        let secs = secs as i64;
+        let days = secs.div_euclid(86_400);
+        let rem = secs.rem_euclid(86_400);
+        let (hour, minute, second) =
+            ((rem / 3600) as u16, ((rem % 3600) / 60) as u16, (rem % 60) as u16);
+        let z = days + 719_468;
+        let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = (doy - (153 * mp + 2) / 5 + 1) as u16;
+        let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u16;
+        let year = (y + i64::from(month <= 2)) as u16;
+        Self::new(year, month, day, hour, minute, second, 0)
+    }
+
+    /// `YYYY-MM-DD HH:MM:SS`.
+    pub fn to_iso(&self) -> String {
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
+        )
+    }
+}
+
+/// Acquisition date from the FileHeader audit-start tag (a Windows FILETIME at offset 0x28),
+/// the reliable source when the RawFileInfo preamble date is unset (newer firmware).
+fn audit_acquisition_date(bytes: &[u8]) -> Option<AcquisitionDate> {
+    let ft = u64::from_le_bytes(bytes.get(0x28..0x30)?.try_into().ok()?);
+    if ft == 0 {
+        return None;
+    }
+    let unix = (ft as f64 / 10_000_000.0) - 11_644_473_600.0; // FILETIME (100 ns since 1601) → Unix s
+    AcquisitionDate::from_unix(unix)
+}
+
+/// Known Thermo instrument model names, longest-prefix first (so "Orbitrap Fusion Lumos"
+/// matches before "Orbitrap Fusion"). Ported from OpenTFRaw (Apache-2.0).
+const MODEL_REGISTRY: &[&str] = &[
+    "Orbitrap Astral", "Orbitrap Ascend", "Orbitrap Fusion Lumos", "Orbitrap Eclipse",
+    "Orbitrap Fusion", "Orbitrap Exploris 480", "Orbitrap Exploris 240", "Orbitrap Exploris 120",
+    "Orbitrap Exploris MX", "Orbitrap Exploris GC 240", "Orbitrap Exploris", "Q Exactive HF-X",
+    "Q Exactive UHMR", "Q Exactive Plus", "Q Exactive HF", "Q Exactive GC", "Q Exactive Focus",
+    "Q Exactive", "LTQ Orbitrap Velos Pro", "LTQ Orbitrap Velos ETD", "LTQ Orbitrap Velos",
+    "LTQ Orbitrap Elite", "LTQ Orbitrap Discovery", "LTQ Orbitrap XL ETD", "LTQ Orbitrap XL",
+    "LTQ Orbitrap", "Orbitrap Elite", "Orbitrap Velos Pro", "Orbitrap Velos", "Orbitrap Discovery",
+    "Orbitrap XL", "LTQ FT Ultra", "LTQ FT", "LTQ Velos Pro", "LTQ Velos ETD", "LTQ Velos",
+    "LTQ XL ETD", "LTQ XL", "LTQ", "LCQ Fleet", "LCQ Advantage", "LCQ Deca XP Plus", "LCQ Deca XP",
+    "LCQ Deca", "LCQ Classic", "LCQ DUO", "LCQ", "TSQ Quantiva", "TSQ Quantum Ultra AM",
+    "TSQ Quantum Ultra", "TSQ Quantum Access", "TSQ Quantum Discovery", "TSQ Quantum", "TSQ Vantage",
+    "TSQ Endura", "TSQ Altis Plus", "TSQ Altis", "TSQ 8000 Evo", "TSQ 9000", "TSQ",
+];
+
+fn utf16le(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// Detect the instrument model by scanning the file's metadata window (start of file up to
+/// `data_addr`, capped at 64 KiB) for a known model name (UTF-16LE). Ported from OpenTFRaw.
+fn detect_model(bytes: &[u8], data_addr: u64) -> Option<&'static str> {
+    let cap = (64 * 1024).min(data_addr as usize).min(bytes.len());
+    let window = bytes.get(..cap)?;
+    for &name in MODEL_REGISTRY {
+        let needle = utf16le(name);
+        if needle.len() <= window.len() && window.windows(needle.len()).any(|w| w == needle.as_slice()) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+struct MsRunHeader {
+    first_scan: u32,
+    last_scan: u32,
+    scan_index_addr: u64,
+    data_addr: u64,
+    error_log_addr: u64,
+    scantrailer_addr: u64,
+    scanparams_addr: u64,
+}
+
+// Scan-event field offsets within a fixed-size event record (rev 66), per the
+// OpenTFRaw v66 scan-event layout (§22; 136-byte preamble). unthermo's
+// variable-length v66 layout differs. Events are a contiguous fixed-stride array
+// in [scantrailer+4, scanparams).
+const EV_MS_ORDER: usize = 6; // preamble: 1 = MS1, 2 = MS2
+const EV_ANALYZER: usize = 40; // 0 = ITMS, 4 = FTMS
+const EV_ISO_CENTER: usize = 140; // f64 precursor / isolation-window center m/z
+const EV_ISO_WIDTH: usize = 148; // f64 isolation width
+const EV_COLLISION_ENERGY: usize = 156; // f64 collision energy
+
+/// The acquisition descriptor for one scan: MS order, analyzer, and (for MS2)
+/// the quadrupole isolation window + collision energy.
+#[derive(Clone, Copy, Debug)]
+pub struct ScanEvent {
+    pub ms_order: u8,
+    pub analyzer: u8,
+    pub isolation_center: f64,
+    pub isolation_width: f64,
+    pub collision_energy: f64,
+}
+
+/// A parsed Thermo `.raw` file held entirely in memory.
+pub struct RawFile {
+    pub bytes: Vec<u8>,
+    pub version: u32,
+    pub first_scan: u32,
+    pub last_scan: u32,
+    pub scan_index_addr: u64,
+    pub data_addr: u64,
+    pub scantrailer_addr: u64,
+    pub scanparams_addr: u64,
+    /// Base address of the MS device's RunHeader. Needed to relocate the run-header's
+    /// section pointers when a packet is repacked to a different size.
+    pub ms_runheader_addr: u64,
+    /// Controller directory: (file-header byte offset of each RunHeaderAddr u64, its
+    /// value). Lets a repack relocate every device's run header pointer.
+    pub controller_dir: Vec<(usize, u64)>,
+    /// MS device's error-log address (used as the scan-params lower bound on read).
+    pub error_log_addr: u64,
+    /// Fixed stride of a scan-event record (bytes); 0 if it could not be derived.
+    pub scan_event_size: usize,
+    /// Absolute byte offset of each scan's event record, one per scan (first..=last).
+    /// Empty if the scan events could not be decoded. Authoritative for both fixed-
+    /// stride and variable-length layouts (see `walk_variable_scan_events`).
+    scan_event_offsets: Vec<usize>,
+    pub index: Vec<ScanIndexEntry>,
+    /// Per-scan trailer parameters (v64+ scan-parameters GenericRecord stream); empty if absent.
+    scan_params: Vec<generic_record::GenericRecord>,
+    /// Acquisition date from the RawFileInfo preamble (None if absent/implausible).
+    pub acquired: Option<AcquisitionDate>,
+    /// Instrument model detected from the file's metadata window (None if unrecognized).
+    pub instrument_model: Option<&'static str>,
+}
+
+fn err(msg: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+/// Canonical message for the "authored payload exceeds the scan's packet budget"
+/// overflow returned by [`RawFile::author_centroids`] / [`RawFile::author_profile`].
+/// Exposed so callers can recover from it (by repacking) without sniffing a free-form
+/// string; pair with [`is_over_budget`].
+pub const OVER_BUDGET_MSG: &str = "authored payload exceeds the scan's packet budget";
+
+/// True iff `e` is the over-budget overflow from an in-place `author_*` write — the one
+/// error a caller can recover from with [`RawFile::repack_centroids`] /
+/// [`RawFile::repack_profile`]. Detects the error by its canonical kind+message rather
+/// than a substring, so it can't be confused with an unrelated `InvalidData` error.
+pub fn is_over_budget(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::InvalidData && e.to_string() == OVER_BUDGET_MSG
+}
+
+/// Outcome of an `author_profile` / `overlay_profile` call: what was written and what was dropped.
+///
+/// A peak whose m/z falls outside the scan's frequency grid (or is unreachable by the calibration) is a
+/// peak the instrument could never have recorded on THIS scan — so it is **dropped**, not treated as an
+/// error, and accounted here. (Whole-call errors remain for degenerate inputs: a non-finite input m/z or
+/// a degenerate grid.) Callers that care about lost signal should inspect `dropped_intensity` — a peak
+/// COUNT can look harmless while a dominant precursor/isotope envelope was silently lost.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ProfileWriteResult {
+    /// Distinct grid bins written (peaks landing on one bin are merged into it).
+    pub written_bins: usize,
+    /// Peaks dropped with a bin below the grid (bin < 0).
+    pub dropped_below_range: usize,
+    /// Peaks dropped with a bin at/above the grid (bin >= nbins).
+    pub dropped_above_range: usize,
+    /// Peaks dropped because the calibration had no valid frequency for that m/z.
+    pub dropped_unreachable: usize,
+    /// Total intensity of all dropped peaks (ion current lost).
+    pub dropped_intensity: f64,
+    /// Bins that received more than one peak (contributions summed).
+    pub merged_bins: usize,
+    /// Bins whose summed intensity was clamped to the `f32` ceiling (never wraps).
+    pub saturated_bins: usize,
+}
+
+impl ProfileWriteResult {
+    /// Total peaks dropped for any reason.
+    pub fn dropped_total(&self) -> usize {
+        self.dropped_below_range + self.dropped_above_range + self.dropped_unreachable
+    }
+
+    /// Fold another result into this one (for a run-level tally across many authored scans).
+    pub fn accumulate(&mut self, o: &ProfileWriteResult) {
+        self.written_bins += o.written_bins;
+        self.dropped_below_range += o.dropped_below_range;
+        self.dropped_above_range += o.dropped_above_range;
+        self.dropped_unreachable += o.dropped_unreachable;
+        self.dropped_intensity += o.dropped_intensity;
+        self.merged_bins += o.merged_bins;
+        self.saturated_bins += o.saturated_bins;
+    }
+}
+
+/// Width of a centroid peak record, selected per scan.
+///
+/// Centroid record width in BYTES, from the EXACT peaklist-word equation.
+///
+/// `peaklist_size` counts 4-byte words including the leading `u32` peak count, so a
+/// list of `count` peaks of `r` words each is `1 + r*count` words. Two layouts:
+/// - narrow (Astral ASTMS, and older FTMS e.g. QE-HF): `{ f32 m/z, f32 int }`,
+///   2 words = 8 bytes  ⇔  `peaklist_size == 1 + 2*count`
+/// - wide (FTMS f64 m/z, e.g. Orbitrap Velos/Exploris): `{ f64 m/z, f32 int }`,
+///   3 words = 12 bytes ⇔  `peaklist_size == 1 + 3*count`
+///
+/// Returns `None` for any other (ambiguous / unknown) layout. Detection MUST be exact
+/// rather than a `(size-1)/count` quotient, which integer-division-rounds an
+/// off-by-a-few-words packet into the wrong class and then silently truncates f64 m/z
+/// to f32 (or mis-reads it) while the checksum still validates. Write callers fail
+/// closed on `None`; the read helper falls back to narrow (lenient decode).
+fn centroid_record_width(peaklist_size: u32, count: u32) -> Option<usize> {
+    let (w, c) = (peaklist_size as u64, count as u64);
+    if w == 1 + 2 * c {
+        Some(8)
+    } else if w == 1 + 3 * c {
+        Some(12)
+    } else {
+        None
+    }
+}
+
+/// Whether a centroid peak list uses the wide (12-byte) record. Read-path helper:
+/// an ambiguous layout falls back to narrow (lenient decode of whatever peaks are
+/// present); the write path uses [`centroid_record_width`] directly and fails closed.
+fn peak_is_wide(peaklist_size: u32, count: u32) -> bool {
+    centroid_record_width(peaklist_size, count) == Some(12)
+}
+
+impl RawFile {
+    /// Read and parse a `.raw` file (structural chain + scan index).
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let bytes = std::fs::read(path)?;
+        Self::from_bytes(bytes)
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> io::Result<Self> {
+        if bytes.len() < FILE_HEADER_SIZE {
+            return Err(err("file shorter than header"));
+        }
+        let version = read_version(&bytes);
+        if version < 64 {
+            return Err(err(
+                "this foundation supports file revision >= 64 (Orbitrap-era); rev < 64 is TODO",
+            ));
+        }
+
+        // Walk FileHeader -> SequencerRow -> AutoSamplerInfo -> RawFileInfo to
+        // recover the run-header addresses.
+        let mut c = Cur::new(&bytes, FILE_HEADER_SIZE);
+        // SequencerRow (v >= 60)
+        c.skip(64); // InjectionData fixed part
+        for _ in 0..13 {
+            c.skip_pascal();
+        }
+        c.skip_pascal();
+        c.skip_pascal();
+        c.skip_pascal();
+        c.u32();
+        for _ in 0..15 {
+            c.skip_pascal();
+        }
+        // AutoSamplerInfo
+        c.skip(24);
+        c.skip_pascal();
+        // RawFileInfo preamble
+        c.u32(); // method-file-present
+        let year = c.u16();
+        let month = c.u16();
+        let _day_of_week = c.u16();
+        let day = c.u16();
+        let hour = c.u16();
+        let minute = c.u16();
+        let second = c.u16();
+        let millisecond = c.u16();
+        let acquired = AcquisitionDate::new(year, month, day, hour, minute, second, millisecond)
+            .or_else(|| audit_acquisition_date(&bytes));
+        c.u32(); // unknown1
+        c.u32(); // data_addr32
+        let nctrl = c.u32();
+        c.u32();
+        c.u32();
+        c.u32();
+        c.skip(764); // Padding1
+        c.u64(); // data_addr (64-bit)
+        c.u64(); // unknown6
+        // Controller directory: (byte offset of the RunHeaderAddr u64 in the file
+        // header, the RunHeaderAddr value). Kept whole so a repack can relocate every
+        // device's run header, not just the MS one.
+        let mut controller_dir: Vec<(usize, u64)> = Vec::with_capacity(nctrl as usize);
+        for _ in 0..nctrl {
+            let off = c.p;
+            let addr = c.u64(); // RunHeaderAddr
+            c.u64(); // unknown7
+            controller_dir.push((off, addr));
+        }
+
+        // The MS device is the run header whose scan-trailer address is non-zero. A
+        // controller whose RunHeaderAddr is out of range is skipped (read_runheader →
+        // None) rather than panicking.
+        let ms_pos = controller_dir
+            .iter()
+            .position(|&(_, a)| {
+                read_runheader(&bytes, a as usize).is_some_and(|rh| rh.scantrailer_addr != 0)
+            })
+            .ok_or_else(|| err("no MS run header found"))?;
+        let ms = read_runheader(&bytes, controller_dir[ms_pos].1 as usize)
+            .ok_or_else(|| err("MS run header address out of range"))?;
+        let ms_runheader_addr = controller_dir[ms_pos].1;
+
+        let n = (ms.last_scan - ms.first_scan + 1) as usize;
+        let entry_size = scan_index_entry_size(version);
+        let mut index = Vec::with_capacity(n);
+        let mut ic = Cur::new(&bytes, ms.scan_index_addr as usize);
+        for _ in 0..n {
+            let start = ic.p;
+            ic.skip(20); // Offset32, Index, Scanevent, Scansegment, Next, Unknown1
+            let data_packet_size = ic.u32();
+            let time = ic.f64();
+            let total_current = ic.f64();
+            let _base_intensity = ic.f64();
+            let base_mz = ic.f64();
+            let low_mz = ic.f64();
+            let high_mz = ic.f64();
+            let offset = ic.u64();
+            ic.p = start + entry_size;
+            index.push(ScanIndexEntry {
+                data_packet_size,
+                offset,
+                time,
+                total_current,
+                base_mz,
+                low_mz,
+                high_mz,
+            });
+        }
+
+        // Scan events live in [scantrailer+4, scanparams). Two layouts:
+        //  - FIXED-stride (Astral, Velos): every event padded to the same size, so the
+        //    stride is region/n exactly.
+        //  - VARIABLE-length (Orbitrap Fusion-class): MS1 events are shorter than MS2
+        //    (no reaction record), so there is no single stride; the per-event offsets
+        //    must be derived by walking the event grammar.
+        // `scan_event_size` is kept as the fixed stride (0 when variable);
+        // `scan_event_offsets` is the authoritative per-scan offset table for both.
+        let region = (ms.scanparams_addr).saturating_sub(ms.scantrailer_addr + 4) as usize;
+        let scan_event_size = if n > 0 && region >= n && region % n == 0 {
+            region / n
+        } else {
+            0
+        };
+        let base = (ms.scantrailer_addr as usize).saturating_add(4);
+        let scan_event_offsets: Vec<usize> = if scan_event_size > 0 {
+            // Checked: a corrupt stride/address yields an empty table (→ no scan events)
+            // rather than wrapped offsets.
+            (0..n)
+                .map(|i| i.checked_mul(scan_event_size).and_then(|d| base.checked_add(d)))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            walk_variable_scan_events(&bytes, base, ms.scanparams_addr as usize, n)
+                .unwrap_or_default()
+        };
+
+        // Best-effort: per-scan trailer parameters (v64+). Failure → empty, file still opens.
+        let scan_params =
+            read_scan_params(&bytes, ms.error_log_addr, ms.scantrailer_addr, ms.scanparams_addr, n);
+        let instrument_model = detect_model(&bytes, ms.data_addr);
+
+        Ok(RawFile {
+            bytes,
+            version,
+            first_scan: ms.first_scan,
+            last_scan: ms.last_scan,
+            scan_index_addr: ms.scan_index_addr,
+            data_addr: ms.data_addr,
+            scantrailer_addr: ms.scantrailer_addr,
+            scanparams_addr: ms.scanparams_addr,
+            ms_runheader_addr,
+            controller_dir,
+            error_log_addr: ms.error_log_addr,
+            scan_event_size,
+            scan_event_offsets,
+            index,
+            scan_params,
+            acquired,
+            instrument_model,
+        })
+    }
+
+    pub fn scan_count(&self) -> usize {
+        self.index.len()
+    }
+
+    /// Per-scan trailer parameters (AGC, ion-injection time, charge, FAIMS, NCE, ...) from
+    /// the v64+ scan-parameters stream. `None` if the stream was absent or `scan` is out of range.
+    pub fn scan_params(&self, scan: u32) -> Option<ScanParams<'_>> {
+        let idx = scan.checked_sub(self.first_scan)? as usize;
+        self.scan_params.get(idx).map(ScanParams)
+    }
+
+    /// Read the centroid peak list for `scan` (1-based). Returns an empty vec for
+    /// profile-only scans (FTMS profile decoding is TODO).
+    pub fn centroid_peaks(&self, scan: u32) -> Vec<Peak> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Vec::new();
+        }
+        let e = &self.index[(scan - self.first_scan) as usize];
+        let pos = (self.data_addr + e.offset) as usize;
+        let mut c = Cur::new(&self.bytes, pos);
+        let _unknown1 = c.u32();
+        let profile_size = c.u32();
+        let peaklist_size = c.u32();
+        let _layout = c.u32();
+        c.skip(16); // descriptor/unknown/triplet stream sizes + unknown2
+        let _low = c.f32();
+        let _high = c.f32();
+        let mut peaks = Vec::new();
+        if profile_size == 0 && peaklist_size > 0 {
+            let count = c.u32();
+            let wide = peak_is_wide(peaklist_size, count);
+            peaks.reserve(count as usize);
+            for _ in 0..count {
+                let mz = if wide { c.f64() } else { c.f32() as f64 };
+                let intensity = c.f32();
+                peaks.push(Peak { mz, intensity });
+            }
+        }
+        peaks
+    }
+
+    /// Decode the FTMS profile for `scan` (1-based), or `None` if the scan has
+    /// no profile (centroid-only, e.g. ASTMS MS2). The profile is the chunked
+    /// frequency-grid signal that precedes the centroid label list in the packet.
+    pub fn profile(&self, scan: u32) -> Option<Profile> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return None;
+        }
+        let e = &self.index[(scan - self.first_scan) as usize];
+        let pos = (self.data_addr + e.offset) as usize;
+        let mut c = Cur::new(&self.bytes, pos);
+        let _unknown1 = c.u32();
+        let profile_size = c.u32();
+        let _peaklist_size = c.u32();
+        let layout = c.u32();
+        c.skip(16);
+        let _low = c.f32();
+        let _high = c.f32();
+        if profile_size == 0 {
+            return None;
+        }
+        let first_value = c.f64();
+        let step = c.f64();
+        let peak_count = c.u32();
+        let nbins = c.u32();
+        let mut chunks = Vec::with_capacity(peak_count as usize);
+        for _ in 0..peak_count {
+            let first_bin = c.u32();
+            let cn = c.u32();
+            // Fudge is present only when the packet layout flag is non-zero.
+            let fudge = if layout > 0 { c.f32() } else { 0.0 };
+            let mut signal = Vec::with_capacity(cn as usize);
+            for _ in 0..cn {
+                signal.push(c.f32());
+            }
+            chunks.push(ProfileChunk {
+                first_bin,
+                fudge,
+                signal,
+            });
+        }
+        Some(Profile {
+            first_value,
+            step,
+            nbins,
+            chunks,
+        })
+    }
+
+    /// Read the FTMS frequency↔m/z calibration from a scan-event byte offset.
+    ///
+    /// rev66 MS1 scan-event layout (per OpenTFRaw §22 / unfinnigan, public-data RE):
+    /// `Nparam u32 @ +216`, then `A/B/C f64 @ +236 / +244 / +252`. Returns
+    /// `None` if `nparam` is not a recognised value (4/5/7) — e.g. a non-MS1
+    /// event. Locating the event offset for an arbitrary scan needs the
+    /// variable-length scan-event walk (MS1 events are longer than MS2); for
+    /// the first scan the offset is `scantrailer_addr + 4`.
+    pub fn calibration_at_event(&self, event_offset: usize) -> Option<Calibration> {
+        // The calibration record — nparam (u32) followed by a@+20, b@+28, c@+36 (f64) — sits
+        // at a revision-dependent offset within the trailer event: Astral at +216 (nparam=5),
+        // Exploris/Q-Exactive at +160 (nparam=7). Try those two KNOWN offsets first so an
+        // accidental earlier byte pattern can't mask the real record; only then fall back to
+        // scanning the event for the first plausible record (handles unknown revisions).
+        let base = event_offset;
+        let plausible = |o: usize| -> Option<Calibration> {
+            if o + 44 > self.bytes.len() {
+                return None;
+            }
+            let nparam = u32::from_le_bytes(self.bytes[o..o + 4].try_into().unwrap());
+            if !matches!(nparam, 4 | 5 | 7) {
+                return None;
+            }
+            let rd = |k: usize| f64::from_le_bytes(self.bytes[o + k..o + k + 8].try_into().unwrap());
+            let (a, b, c) = (rd(20), rd(28), rd(36));
+            if a.is_finite()
+                && b.is_finite()
+                && c.is_finite()
+                && a.abs() < 1e6
+                && b.abs() > 1.0
+                && b.abs() < 1e15
+                && c.abs() < 1e18
+            {
+                Some(Calibration { nparam, a, b, c })
+            } else {
+                None
+            }
+        };
+        // Known revision offsets first.
+        for known in [216usize, 160] {
+            if let Some(cal) = plausible(base + known) {
+                return Some(cal);
+            }
+        }
+        // Fallback: scan the event for the first plausible record.
+        let limit = (base + 4096).min(self.bytes.len());
+        let mut o = base;
+        while o + 44 <= limit {
+            if let Some(cal) = plausible(o) {
+                return Some(cal);
+            }
+            o += 4;
+        }
+        None
+    }
+
+    /// The checksum stored in the file header.
+    pub fn stored_checksum(&self) -> u32 {
+        stored_checksum(&self.bytes)
+    }
+
+    /// Recompute the checksum over the current bytes.
+    pub fn compute_checksum(&self) -> u32 {
+        compute_checksum(&self.bytes)
+    }
+
+    /// Whether the stored checksum matches the content (what RawFileReader verifies).
+    pub fn checksum_valid(&self) -> bool {
+        self.stored_checksum() == self.compute_checksum()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Writer (template-mutation): rewrite scan data in an existing file, then fix
+// the index stats and the integrity checksum. Same-count peak rewrites need no
+// offset rebuild; variable counts are TODO.
+// ---------------------------------------------------------------------------
+
+fn put_u32(b: &mut [u8], off: usize, v: u32) {
+    b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+}
+fn put_f32(b: &mut [u8], off: usize, v: f32) {
+    b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+}
+fn put_f64(b: &mut [u8], off: usize, v: f64) {
+    b[off..off + 8].copy_from_slice(&v.to_le_bytes());
+}
+fn put_u64(b: &mut [u8], off: usize, v: u64) {
+    b[off..off + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+// Run-header (rev >= 64) 64-bit section-pointer byte offsets, matching the fixed walk
+// in `read_runheader`. Kept here as named constants so the repack relocation and the
+// reader can't drift apart. `RH_END` is the first byte past the last pointer — used to
+// bounds-check a run header before patching it. (The 10 u32 "…Addr32" slots that
+// precede these are zeroed on rev >= 64 — counts/flags, not live address mirrors — so
+// there is nothing to relocate there.)
+const RH_SCAN_INDEX: usize = 7408;
+const RH_DATA: usize = 7416;
+const RH_INSTLOG: usize = 7424;
+const RH_ERROR_LOG: usize = 7432;
+const RH_SCANTRAILER: usize = 7448;
+const RH_SCANPARAMS: usize = 7456;
+const RH_END: usize = RH_SCANPARAMS + 8;
+/// Every run-header section pointer that can legitimately point INTO or AFTER the data
+/// section, so must be relocated when the data section grows/shrinks. `RH_DATA` is
+/// included because a non-MS controller's data can sit after the MS data region; the MS
+/// controller's own `data` is < the splice boundary and is left untouched by the shift.
+const RH_SECTION_PTRS: [usize; 6] = [
+    RH_SCAN_INDEX,
+    RH_DATA,
+    RH_INSTLOG,
+    RH_ERROR_LOG,
+    RH_SCANTRAILER,
+    RH_SCANPARAMS,
+];
+
+/// Per-scan summary statistics that go into the scan-index entry, computed while a
+/// packet is built so the build step is splice-free (used by the single and batch
+/// repack paths).
+#[derive(Clone, Copy)]
+struct PacketStats {
+    tic: f64,
+    base_int: f64,
+    base_mz: f64,
+    low_mz: f64,
+    high_mz: f64,
+}
+
+/// One scan to rewrite in a batch [`RawFile::repack_many`].
+pub enum ScanEdit<'a> {
+    /// Replace `scan`'s centroid peak list.
+    Centroids { scan: u32, peaks: &'a [(f64, f32)] },
+    /// Replace `scan`'s FTMS profile (binned onto its existing grid via `calib`).
+    Profile { scan: u32, peaks: &'a [(f64, f32)], calib: &'a Calibration },
+}
+
+impl ScanEdit<'_> {
+    fn scan(&self) -> u32 {
+        match *self {
+            ScanEdit::Centroids { scan, .. } | ScanEdit::Profile { scan, .. } => scan,
+        }
+    }
+}
+
+/// Shift a stored address by `delta` iff it sits at/after the splice `boundary`.
+/// Checked: a relocation that would overflow/underflow a u64 is a hard error rather
+/// than a silent wrap into a self-consistent-but-corrupt file.
+fn shift_addr(a: u64, boundary: u64, delta: i64) -> io::Result<u64> {
+    if a >= boundary {
+        a.checked_add_signed(delta)
+            .ok_or_else(|| err("repack: relocated address overflowed u64"))
+    } else {
+        Ok(a)
+    }
+}
+
+impl RawFile {
+    /// Overwrite a scan's centroid peak list in place. The new list must have the
+    /// **same number of peaks** as the current one (variable counts require a scan-
+    /// index offset rebuild — TODO). Recomputes the scan-index stats (TIC, base
+    /// peak, m/z range) and the packet-header m/z range so the file stays
+    /// internally consistent. Call [`RawFile::save`] afterwards to fix the checksum.
+    pub fn set_centroid_peaks(&mut self, scan: u32, peaks: &[Peak]) -> io::Result<()> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        let idx = (scan - self.first_scan) as usize;
+        let entry = self.index[idx].clone();
+        let pkt = (self.data_addr + entry.offset) as usize;
+
+        let profile_size = u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap());
+        let peaklist_size = u32::from_le_bytes(self.bytes[pkt + 8..pkt + 12].try_into().unwrap());
+        if profile_size != 0 || peaklist_size == 0 {
+            return Err(err("not a centroid-only scan (profile rewrite is TODO)"));
+        }
+        let count = u32::from_le_bytes(self.bytes[pkt + 40..pkt + 44].try_into().unwrap()) as usize;
+        if peaks.len() != count {
+            return Err(err(
+                "peak count must equal the existing count (variable-count rewrite is TODO)",
+            ));
+        }
+
+        // Peak record width is analyzer-dependent: 12 bytes { f64 m/z, f32 int }
+        // for FTMS, 8 bytes { f32 m/z, f32 int } for the Astral analyzer (ASTMS).
+        // Require an EXACT words-per-peak (2 or 3) before mutating — a malformed
+        // size must not silently mis-stride and overwrite past the peaklist.
+        if count == 0 {
+            return Err(err("empty peaklist"));
+        }
+        let body = (peaklist_size as usize).saturating_sub(1); // minus the u32 count word
+        let wide = match (body % count, body / count) {
+            (0, 3) => true,
+            (0, 2) => false,
+            _ => return Err(err("inconsistent peaklist_size / count (not 2 or 3 words/peak)")),
+        };
+        let stride = if wide { 12 } else { 8 };
+        let peaks_off = pkt + 44;
+        let mut tic = 0f64;
+        let mut base_mz = 0f64;
+        let mut base_int = 0f64;
+        let mut low_mz = f64::INFINITY;
+        let mut high_mz = f64::NEG_INFINITY;
+        for (i, p) in peaks.iter().enumerate() {
+            // Stats must reflect the value actually stored, so for the narrow
+            // form use the f32-rounded m/z (what the reader will read back).
+            let mz_stored = if wide { p.mz } else { (p.mz as f32) as f64 };
+            if wide {
+                put_f64(&mut self.bytes, peaks_off + i * stride, p.mz);
+                put_f32(&mut self.bytes, peaks_off + i * stride + 8, p.intensity);
+            } else {
+                put_f32(&mut self.bytes, peaks_off + i * stride, p.mz as f32);
+                put_f32(&mut self.bytes, peaks_off + i * stride + 4, p.intensity);
+            }
+            tic += p.intensity as f64;
+            if (p.intensity as f64) > base_int {
+                base_int = p.intensity as f64;
+                base_mz = mz_stored;
+            }
+            low_mz = low_mz.min(mz_stored);
+            high_mz = high_mz.max(mz_stored);
+        }
+        if peaks.is_empty() {
+            low_mz = 0.0;
+            high_mz = 0.0;
+        }
+
+        // Packet header m/z range (f32 @ +32 / +36).
+        put_f32(&mut self.bytes, pkt + 32, low_mz as f32);
+        put_f32(&mut self.bytes, pkt + 36, high_mz as f32);
+
+        // Scan-index entry stats (f64): TIC @ +32, base-int @ +40, base-mz @ +48,
+        // low-mz @ +56, high-mz @ +64.
+        let ea = self.scan_index_addr as usize + idx * scan_index_entry_size(self.version);
+        put_f64(&mut self.bytes, ea + 32, tic);
+        put_f64(&mut self.bytes, ea + 40, base_int);
+        put_f64(&mut self.bytes, ea + 48, base_mz);
+        put_f64(&mut self.bytes, ea + 56, low_mz);
+        put_f64(&mut self.bytes, ea + 64, high_mz);
+
+        // Refresh the cached entry.
+        self.index[idx] = ScanIndexEntry {
+            total_current: tic,
+            base_mz,
+            low_mz,
+            high_mz,
+            ..entry
+        };
+        Ok(())
+    }
+
+    /// Overwrite an FTMS profile's signal intensities in place, in chunk order.
+    ///
+    /// `signal` must have the same total length as the existing profile
+    /// ([`Profile::point_count`]); the frequency grid (chunk first-bins / step /
+    /// m/z calibration) is preserved, so this rewrites intensities onto the
+    /// template's real m/z axis — the basis for emitting a simulated MS1 onto a
+    /// real Astral/Orbitrap grid. Recomputes the scan-index TIC and base
+    /// intensity; the m/z range and base-peak m/z are left unchanged (the grid
+    /// is unchanged, and base-peak m/z needs the frequency→m/z calibration,
+    /// which is a follow-up). Call [`RawFile::save`] to fix the checksum.
+    pub fn set_profile_intensities(&mut self, scan: u32, signal: &[f32]) -> io::Result<()> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        let idx = (scan - self.first_scan) as usize;
+        let entry = self.index[idx].clone();
+        let pkt = (self.data_addr + entry.offset) as usize;
+
+        let profile_size = u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap());
+        if profile_size == 0 {
+            return Err(err("scan has no profile (centroid-only)"));
+        }
+        let layout = u32::from_le_bytes(self.bytes[pkt + 12..pkt + 16].try_into().unwrap());
+
+        // Walk the chunk headers to collect the byte offset of every signal value.
+        let mut c = Cur::new(&self.bytes, pkt + 40);
+        let _first_value = c.f64();
+        let _step = c.f64();
+        let peak_count = c.u32();
+        let _nbins = c.u32();
+        let mut offsets: Vec<usize> = Vec::new();
+        for _ in 0..peak_count {
+            let _first_bin = c.u32();
+            let cn = c.u32();
+            if layout > 0 {
+                c.skip(4); // fudge
+            }
+            for _ in 0..cn {
+                offsets.push(c.p);
+                c.skip(4);
+            }
+        }
+        if signal.len() != offsets.len() {
+            return Err(err(
+                "signal length must equal the existing profile point count (Profile::point_count)",
+            ));
+        }
+
+        let mut tic = 0f64;
+        let mut base_int = 0f64;
+        for (&off, &v) in offsets.iter().zip(signal) {
+            put_f32(&mut self.bytes, off, v);
+            tic += v as f64;
+            base_int = base_int.max(v as f64);
+        }
+
+        // Scan-index entry: TIC @ +32, base-int @ +40. base-mz/low-mz/high-mz
+        // are left as-is (grid unchanged; base-peak m/z needs the calibration).
+        let ea = self.scan_index_addr as usize + idx * scan_index_entry_size(self.version);
+        put_f64(&mut self.bytes, ea + 32, tic);
+        put_f64(&mut self.bytes, ea + 40, base_int);
+        self.index[idx] = ScanIndexEntry {
+            total_current: tic,
+            ..entry
+        };
+        Ok(())
+    }
+
+    /// Author a *new* FTMS profile of arbitrary peak count into `scan`, placing
+    /// each `(m/z, intensity)` at its exact grid bin via `calib`.
+    ///
+    /// Unlike [`RawFile::set_profile_intensities`] (which keeps the existing
+    /// point count), this rebuilds the profile section with one single-bin chunk
+    /// per peak — so the peak count is arbitrary. It stays within the scan's
+    /// existing packet byte budget (a sparse synthetic spectrum is far smaller
+    /// than a real dense profile) and keeps both the scan-index `offset` *and*
+    /// `DataPacketSize` unchanged — the rebuilt sections are bounded by their own
+    /// size fields and the leftover bytes are zeroed slack inside the packet, so
+    /// neither index-based nor sequential packet walking is disturbed and no
+    /// downstream offset/address rebuild is needed. Emits a coherent profile +
+    /// centroid peaklist + peak-descriptor list (all length K); the centroid
+    /// record width matches the scan's native width. Recomputes the scan-index
+    /// stats (TIC, base peak m/z via `calib`, m/z range). Call [`RawFile::save`]
+    /// to fix the checksum.
+    ///
+    /// Errors if the scan has no profile, a peak is unreachable by `calib`, the
+    /// new packet would exceed the existing one, or the packet is malformed.
+    pub fn author_profile(
+        &mut self,
+        scan: u32,
+        peaks: &[(f64, f32)],
+        calib: &Calibration,
+    ) -> io::Result<ProfileWriteResult> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        if peaks.len() > u16::MAX as usize {
+            // Descriptor index is a u16; refuse counts that would wrap it.
+            return Err(err("too many peaks (max 65535 per authored profile)"));
+        }
+        let idx = (scan - self.first_scan) as usize;
+        let entry = self.index[idx].clone();
+        let pkt = (self.data_addr + entry.offset) as usize;
+        let old_len = entry.data_packet_size as usize;
+
+        // Validate the packet's byte span against actual storage + the next packet.
+        if pkt.checked_add(old_len).map_or(true, |e| e > self.bytes.len()) {
+            return Err(err("packet extends past end of file"));
+        }
+        if idx + 1 < self.index.len() {
+            let next = (self.data_addr + self.index[idx + 1].offset) as usize;
+            if next < pkt || next - pkt < old_len {
+                return Err(err("packet would overrun the next scan's data"));
+            }
+        }
+
+        // Grid + layout come from the existing profile packet.
+        let prof = self
+            .profile(scan)
+            .ok_or_else(|| err("scan has no FTMS profile to take the grid from"))?;
+        let layout = u32::from_le_bytes(self.bytes[pkt + 12..pkt + 16].try_into().unwrap());
+        let (first_value, step, nbins) = (prof.first_value, prof.step, prof.nbins);
+        if step == 0.0 || !step.is_finite() || !first_value.is_finite() {
+            return Err(err("profile grid is degenerate (step/first_value not finite)"));
+        }
+
+        // Native centroid record width: read the original peaklist size + count.
+        let orig_profile_words =
+            u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap()) as usize;
+        let orig_peaklist_words =
+            u32::from_le_bytes(self.bytes[pkt + 8..pkt + 12].try_into().unwrap());
+        let pl_off = pkt + 40 + orig_profile_words * 4;
+        let centroid_wide = if orig_peaklist_words > 0 && pl_off + 4 <= self.bytes.len() {
+            let cnt = u32::from_le_bytes(self.bytes[pl_off..pl_off + 4].try_into().unwrap());
+            peak_is_wide(orig_peaklist_words, cnt)
+        } else {
+            true // default to the 12-byte FTMS form if no native peaklist
+        };
+
+        // Map each peak to its exact grid bin. A peak the instrument could never have recorded on this
+        // scan (unreachable by the calibration, or a bin outside the grid) is DROPPED and accounted, not
+        // treated as a whole-call error — a simulated survey legitimately spans past a scan's mass range.
+        // A non-finite INPUT m/z is a caller bug and still a hard error.
+        let mut result = ProfileWriteResult::default();
+        let mut binned: Vec<(u32, f32)> = Vec::with_capacity(peaks.len());
+        for &(mz, inten) in peaks {
+            if !mz.is_finite() {
+                return Err(err("non-finite peak m/z"));
+            }
+            if !inten.is_finite() || inten < 0.0 {
+                return Err(err("peak intensity must be finite and non-negative"));
+            }
+            let f = match calib.freq(mz) {
+                Some(f) => f,
+                None => {
+                    result.dropped_unreachable += 1;
+                    result.dropped_intensity += inten as f64;
+                    continue;
+                }
+            };
+            let bin = ((f - first_value) / step).round();
+            if !bin.is_finite() || bin < 0.0 {
+                result.dropped_below_range += 1;
+                result.dropped_intensity += inten as f64;
+                continue;
+            }
+            if bin >= nbins as f64 {
+                result.dropped_above_range += 1;
+                result.dropped_intensity += inten as f64;
+                continue;
+            }
+            binned.push((bin as u32, inten));
+        }
+        binned.sort_by_key(|x| x.0);
+        // Merge peaks on the same bin, summing in f64 (an f32 running sum can lose or overflow), then
+        // clamp to the f32 ceiling — never wrap.
+        let mut chunks: Vec<(u32, f32)> = Vec::with_capacity(binned.len());
+        let mut acc_f64: Vec<f64> = Vec::with_capacity(binned.len());
+        for (bin, inten) in binned {
+            match chunks.last_mut() {
+                Some(last) if last.0 == bin => {
+                    *acc_f64.last_mut().unwrap() += inten as f64;
+                    result.merged_bins += 1;
+                }
+                _ => {
+                    chunks.push((bin, 0.0));
+                    acc_f64.push(inten as f64);
+                }
+            }
+        }
+        // Finalise each bin's intensity from the f64 accumulator with saturation accounting.
+        for (c, &sum) in chunks.iter_mut().zip(acc_f64.iter()) {
+            if sum > f32::MAX as f64 {
+                c.1 = f32::MAX;
+                result.saturated_bins += 1;
+            } else {
+                c.1 = sum as f32;
+            }
+        }
+
+        let k = chunks.len();
+        // Mirror the original packet structure so RawFileReader decodes it: a
+        // profile (one single-bin chunk per peak) AND a coherent centroid
+        // peaklist + peak-descriptor list, all of length K (in the real file
+        // peak_count == peaklist count == descriptor_list_size).
+        let unknown1 = u32::from_le_bytes(self.bytes[pkt..pkt + 4].try_into().unwrap());
+        let chunk_bytes = if layout > 0 { 16usize } else { 12 };
+        let centroid_bytes = if centroid_wide { 12usize } else { 8 }; // {f64|f32 mz, f32 int}
+        // Sizes via checked arithmetic (k is already bounded to <= u16::MAX).
+        let profile_bytes = 16 + 8 + k * chunk_bytes; // firstval+step + peakcount+nbins + chunks
+        let peaklist_bytes = 4 + k * centroid_bytes; // count u32 + K centroid records
+        let descriptor_bytes = k * 4; // K * {u16 index, u8 flags, u8 charge}
+        let new_len = 40 + profile_bytes + peaklist_bytes + descriptor_bytes;
+        if new_len > old_len {
+            return Err(err(OVER_BUDGET_MSG));
+        }
+        let profile_words = u32::try_from(profile_bytes / 4).map_err(|_| err("profile too large"))?;
+        let peaklist_words =
+            u32::try_from(peaklist_bytes / 4).map_err(|_| err("peaklist too large"))?;
+        let k_u32 = k as u32; // k <= u16::MAX, fits u32
+
+        // Stats over the authored peaks.
+        let mut tic = 0f64;
+        let mut base_int = 0f64;
+        let mut base_mz = 0f64;
+        let mut low_mz = f64::INFINITY;
+        let mut high_mz = f64::NEG_INFINITY;
+        for &(bin, inten) in &chunks {
+            let mz = calib.mz(first_value + bin as f64 * step);
+            tic += inten as f64;
+            if inten as f64 > base_int {
+                base_int = inten as f64;
+                base_mz = mz;
+            }
+            low_mz = low_mz.min(mz);
+            high_mz = high_mz.max(mz);
+        }
+        if chunks.is_empty() {
+            low_mz = 0.0;
+            high_mz = 0.0;
+        }
+
+        // Write the header (preserve unknown1; peak_count == peaklist == descriptors == K).
+        put_u32(&mut self.bytes, pkt, unknown1);
+        put_u32(&mut self.bytes, pkt + 4, profile_words); // profile_size (words)
+        put_u32(&mut self.bytes, pkt + 8, peaklist_words); // peaklist_size (words)
+        put_u32(&mut self.bytes, pkt + 12, layout); // layout (governs fudge)
+        put_u32(&mut self.bytes, pkt + 16, k_u32); // descriptor_list_size
+        put_u32(&mut self.bytes, pkt + 20, 0); // unknown_stream_size
+        put_u32(&mut self.bytes, pkt + 24, 0); // triplet_stream_size
+        put_u32(&mut self.bytes, pkt + 28, 0); // unknown2
+        put_f32(&mut self.bytes, pkt + 32, low_mz as f32);
+        put_f32(&mut self.bytes, pkt + 36, high_mz as f32);
+
+        // Write the profile (one single-bin chunk per peak).
+        let mut o = pkt + 40;
+        put_f64(&mut self.bytes, o, first_value);
+        put_f64(&mut self.bytes, o + 8, step);
+        put_u32(&mut self.bytes, o + 16, k_u32); // peak_count
+        put_u32(&mut self.bytes, o + 20, nbins); // nbins (grid)
+        o += 24;
+        for &(bin, inten) in &chunks {
+            put_u32(&mut self.bytes, o, bin);
+            put_u32(&mut self.bytes, o + 4, 1); // nbins in chunk
+            o += 8;
+            if layout > 0 {
+                put_f32(&mut self.bytes, o, 0.0); // fudge
+                o += 4;
+            }
+            put_f32(&mut self.bytes, o, inten);
+            o += 4;
+        }
+        // Centroid peaklist: count + native-width records ({f64|f32 m/z, f32 int}).
+        put_u32(&mut self.bytes, o, k_u32);
+        o += 4;
+        for &(bin, inten) in &chunks {
+            let mz = calib.mz(first_value + bin as f64 * step);
+            if centroid_wide {
+                put_f64(&mut self.bytes, o, mz);
+                put_f32(&mut self.bytes, o + 8, inten);
+            } else {
+                put_f32(&mut self.bytes, o, mz as f32);
+                put_f32(&mut self.bytes, o + 4, inten);
+            }
+            o += centroid_bytes;
+        }
+        // Peak-descriptor list: {u16 index, u8 flags, u8 charge} per peak.
+        for i in 0..k {
+            self.bytes[o..o + 2].copy_from_slice(&(i as u16).to_le_bytes());
+            self.bytes[o + 2] = 0; // flags
+            self.bytes[o + 3] = 0; // charge
+            o += 4;
+        }
+        debug_assert_eq!(o, pkt + new_len);
+        // Zero the slack up to the old packet end.
+        for b in &mut self.bytes[pkt + new_len..pkt + old_len] {
+            *b = 0;
+        }
+
+        // Update the scan-index stats only. DataPacketSize AND offset are left
+        // unchanged: the rebuilt sections are bounded by their own size fields,
+        // the remaining bytes are zeroed slack inside the packet's original span,
+        // so both index-based and sequential packet walking stay valid.
+        let ea = self.scan_index_addr as usize + idx * scan_index_entry_size(self.version);
+        put_f64(&mut self.bytes, ea + 32, tic);
+        put_f64(&mut self.bytes, ea + 40, base_int);
+        put_f64(&mut self.bytes, ea + 48, base_mz);
+        put_f64(&mut self.bytes, ea + 56, low_mz);
+        put_f64(&mut self.bytes, ea + 64, high_mz);
+        self.index[idx] = ScanIndexEntry {
+            total_current: tic,
+            base_mz,
+            low_mz,
+            high_mz,
+            ..entry
+        };
+        result.written_bins = chunks.len();
+        Ok(result)
+    }
+
+    /// Overlay simulated peaks onto a scan's **existing** FTMS profile (real⊕sim).
+    ///
+    /// Reads the real profile, adds each simulated peak's intensity at its exact
+    /// grid bin (summing where a sim peak lands on an occupied bin), rebuilds the
+    /// profile as contiguous chunks, and rewrites within the packet budget
+    /// (offset + DataPacketSize unchanged, slack zeroed). The real analyte+noise
+    /// signal is **retained**, so a peptide the simulation also generates can
+    /// appear twice — this is real+sim, not a noise-only background.
+    pub fn overlay_profile(
+        &mut self,
+        scan: u32,
+        sim_peaks: &[(f64, f32)],
+        calib: &Calibration,
+    ) -> io::Result<()> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        let idx = (scan - self.first_scan) as usize;
+        let entry = self.index[idx].clone();
+        let pkt = (self.data_addr + entry.offset) as usize;
+        let old_len = entry.data_packet_size as usize;
+        if pkt.checked_add(old_len).map_or(true, |e| e > self.bytes.len()) {
+            return Err(err("packet extends past end of file"));
+        }
+        if idx + 1 < self.index.len() {
+            let next = (self.data_addr + self.index[idx + 1].offset) as usize;
+            if next < pkt || next - pkt < old_len {
+                return Err(err("packet would overrun the next scan's data"));
+            }
+        }
+
+        let prof = self
+            .profile(scan)
+            .ok_or_else(|| err("scan has no FTMS profile"))?;
+        let (first_value, step, nbins) = (prof.first_value, prof.step, prof.nbins);
+        if step == 0.0 || !step.is_finite() || !first_value.is_finite() {
+            return Err(err("profile grid is degenerate"));
+        }
+        let layout = u32::from_le_bytes(self.bytes[pkt + 12..pkt + 16].try_into().unwrap());
+        let unknown1 = u32::from_le_bytes(self.bytes[pkt..pkt + 4].try_into().unwrap());
+        // Native centroid width from the original peaklist.
+        let orig_profile_words =
+            u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap()) as usize;
+        let orig_peaklist_words =
+            u32::from_le_bytes(self.bytes[pkt + 8..pkt + 12].try_into().unwrap());
+        let pl_off = pkt + 40 + orig_profile_words * 4;
+        let centroid_wide = if orig_peaklist_words > 0 && pl_off + 4 <= self.bytes.len() {
+            let cnt = u32::from_le_bytes(self.bytes[pl_off..pl_off + 4].try_into().unwrap());
+            peak_is_wide(orig_peaklist_words, cnt)
+        } else {
+            true
+        };
+
+        // Accumulate the real signal per bin in f64 (lossless for f32 reals and
+        // avoids losing small simulated contributions beside large real ones),
+        // then add the simulated peaks.
+        use std::collections::BTreeMap;
+        let mut acc: BTreeMap<u32, f64> = BTreeMap::new();
+        for ch in &prof.chunks {
+            for (j, &v) in ch.signal.iter().enumerate() {
+                *acc.entry(ch.first_bin + j as u32).or_insert(0.0) += v as f64;
+            }
+        }
+        // Out-of-range / calibration-unreachable sim peaks are DROPPED (consistent with author_profile),
+        // not errored — an overlaid simulated survey legitimately spans past this scan's mass range.
+        for &(mz, inten) in sim_peaks {
+            if !inten.is_finite() || inten < 0.0 {
+                return Err(err("sim peak intensity must be finite and non-negative"));
+            }
+            let f = match calib.freq(mz) {
+                Some(f) => f,
+                None => continue, // unreachable by this calibration — drop
+            };
+            let b = ((f - first_value) / step).round();
+            if !b.is_finite() || b < 0.0 || b >= nbins as f64 {
+                continue; // outside the scan's frequency grid — drop
+            }
+            *acc.entry(b as u32).or_insert(0.0) += inten as f64;
+        }
+
+        // Build contiguous chunks; convert accumulated f64 → f32 (the stored
+        // signal type), rejecting any overflow to non-finite.
+        struct Ck {
+            first_bin: u32,
+            signal: Vec<f32>,
+        }
+        let mut chunks: Vec<Ck> = Vec::new();
+        for (bin, vf) in acc {
+            let v = vf as f32;
+            if !v.is_finite() {
+                return Err(err("accumulated profile intensity overflowed to non-finite"));
+            }
+            match chunks.last_mut() {
+                Some(c) if c.first_bin + c.signal.len() as u32 == bin => c.signal.push(v),
+                _ => chunks.push(Ck {
+                    first_bin: bin,
+                    signal: vec![v],
+                }),
+            }
+        }
+        let num_chunks = chunks.len();
+        if num_chunks > u16::MAX as usize {
+            return Err(err("too many profile chunks (max 65535)"));
+        }
+
+        let chunk_hdr = if layout > 0 { 12usize } else { 8 };
+        let centroid_bytes = if centroid_wide { 12usize } else { 8 };
+        let total_points: usize = chunks.iter().map(|c| c.signal.len()).sum();
+        let profile_bytes = 16 + 8 + num_chunks * chunk_hdr + total_points * 4;
+        let peaklist_bytes = 4 + num_chunks * centroid_bytes;
+        let descriptor_bytes = num_chunks * 4;
+        let new_len = 40 + profile_bytes + peaklist_bytes + descriptor_bytes;
+        if new_len > old_len {
+            return Err(err("overlaid profile exceeds the scan's packet budget"));
+        }
+        let profile_words =
+            u32::try_from(profile_bytes / 4).map_err(|_| err("profile too large"))?;
+        let peaklist_words =
+            u32::try_from(peaklist_bytes / 4).map_err(|_| err("peaklist too large"))?;
+        let nc = num_chunks as u32;
+
+        // Stats over all points; per-chunk apex centroid for the peaklist.
+        let mut tic = 0f64;
+        let mut base_int = 0f64;
+        let mut base_mz = 0f64;
+        let mut low_mz = f64::INFINITY;
+        let mut high_mz = f64::NEG_INFINITY;
+        let mut centroids: Vec<(f64, f32)> = Vec::with_capacity(num_chunks);
+        for c in &chunks {
+            let (mut apex_v, mut apex_bin) = (f32::NEG_INFINITY, c.first_bin);
+            for (j, &v) in c.signal.iter().enumerate() {
+                tic += v as f64;
+                let bin = c.first_bin + j as u32;
+                let mz = calib.mz(first_value + bin as f64 * step);
+                low_mz = low_mz.min(mz);
+                high_mz = high_mz.max(mz);
+                if v as f64 > base_int {
+                    base_int = v as f64;
+                    base_mz = mz;
+                }
+                if v > apex_v {
+                    apex_v = v;
+                    apex_bin = bin;
+                }
+            }
+            centroids.push((calib.mz(first_value + apex_bin as f64 * step), apex_v));
+        }
+        if chunks.is_empty() {
+            low_mz = 0.0;
+            high_mz = 0.0;
+        }
+
+        // Header.
+        put_u32(&mut self.bytes, pkt, unknown1);
+        put_u32(&mut self.bytes, pkt + 4, profile_words);
+        put_u32(&mut self.bytes, pkt + 8, peaklist_words);
+        put_u32(&mut self.bytes, pkt + 12, layout);
+        put_u32(&mut self.bytes, pkt + 16, nc);
+        put_u32(&mut self.bytes, pkt + 20, 0);
+        put_u32(&mut self.bytes, pkt + 24, 0);
+        put_u32(&mut self.bytes, pkt + 28, 0);
+        put_f32(&mut self.bytes, pkt + 32, low_mz as f32);
+        put_f32(&mut self.bytes, pkt + 36, high_mz as f32);
+        // Profile.
+        let mut o = pkt + 40;
+        put_f64(&mut self.bytes, o, first_value);
+        put_f64(&mut self.bytes, o + 8, step);
+        put_u32(&mut self.bytes, o + 16, nc);
+        put_u32(&mut self.bytes, o + 20, nbins);
+        o += 24;
+        for c in &chunks {
+            put_u32(&mut self.bytes, o, c.first_bin);
+            put_u32(&mut self.bytes, o + 4, c.signal.len() as u32);
+            o += 8;
+            if layout > 0 {
+                put_f32(&mut self.bytes, o, 0.0);
+                o += 4;
+            }
+            for &v in &c.signal {
+                put_f32(&mut self.bytes, o, v);
+                o += 4;
+            }
+        }
+        // Centroid peaklist (per-chunk apex).
+        put_u32(&mut self.bytes, o, nc);
+        o += 4;
+        for &(mz, inten) in &centroids {
+            if centroid_wide {
+                put_f64(&mut self.bytes, o, mz);
+                put_f32(&mut self.bytes, o + 8, inten);
+            } else {
+                put_f32(&mut self.bytes, o, mz as f32);
+                put_f32(&mut self.bytes, o + 4, inten);
+            }
+            o += centroid_bytes;
+        }
+        // Descriptors.
+        for i in 0..num_chunks {
+            self.bytes[o..o + 2].copy_from_slice(&(i as u16).to_le_bytes());
+            self.bytes[o + 2] = 0;
+            self.bytes[o + 3] = 0;
+            o += 4;
+        }
+        debug_assert_eq!(o, pkt + new_len);
+        for b in &mut self.bytes[pkt + new_len..pkt + old_len] {
+            *b = 0;
+        }
+        let ea = self.scan_index_addr as usize + idx * scan_index_entry_size(self.version);
+        put_f64(&mut self.bytes, ea + 32, tic);
+        put_f64(&mut self.bytes, ea + 40, base_int);
+        put_f64(&mut self.bytes, ea + 48, base_mz);
+        put_f64(&mut self.bytes, ea + 56, low_mz);
+        put_f64(&mut self.bytes, ea + 64, high_mz);
+        self.index[idx] = ScanIndexEntry {
+            total_current: tic,
+            base_mz,
+            low_mz,
+            high_mz,
+            ..entry
+        };
+        Ok(())
+    }
+
+    /// Overlay simulated centroids onto a scan's **existing** centroid list
+    /// (real⊕sim for ASTMS MS2). Merges the real peaks with `sim_peaks`, combining
+    /// any within `merge_tol_ppm` (intensity-weighted m/z, summed intensity), and
+    /// rewrites via [`RawFile::author_centroids`]. Real signal is retained.
+    pub fn overlay_centroids(
+        &mut self,
+        scan: u32,
+        sim_peaks: &[(f64, f32)],
+        merge_tol_ppm: f64,
+    ) -> io::Result<()> {
+        if !merge_tol_ppm.is_finite() || merge_tol_ppm < 0.0 {
+            return Err(err("merge_tol_ppm must be finite and non-negative"));
+        }
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        // Require a centroid-only scan: centroid_peaks() returns empty for a
+        // profile scan, which would otherwise let us silently discard the real
+        // FTMS profile. (Use overlay_profile for profile scans.)
+        let idx = (scan - self.first_scan) as usize;
+        let pkt = (self.data_addr + self.index[idx].offset) as usize;
+        if pkt + 12 > self.bytes.len() {
+            return Err(err("packet extends past end of file"));
+        }
+        let profile_size = u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap());
+        let peaklist_size = u32::from_le_bytes(self.bytes[pkt + 8..pkt + 12].try_into().unwrap());
+        if profile_size != 0 || peaklist_size == 0 {
+            return Err(err(
+                "overlay_centroids requires a centroid-only scan (use overlay_profile for FTMS profile)",
+            ));
+        }
+
+        let mut all: Vec<(f64, f32)> = self
+            .centroid_peaks(scan)
+            .iter()
+            .map(|p| (p.mz, p.intensity))
+            .collect();
+        for &(mz, inten) in sim_peaks {
+            if !mz.is_finite() || mz <= 0.0 || !inten.is_finite() || inten < 0.0 {
+                return Err(err("sim centroid must have finite m/z>0 and finite intensity>=0"));
+            }
+            all.push((mz, inten));
+        }
+        all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Cluster by transitive adjacency: a peak merges into the current cluster
+        // when it is within tolerance of the PREVIOUS INPUT peak (not the moving
+        // intensity-weighted centroid), so A–B–C chains coalesce correctly.
+        let mut merged: Vec<(f64, f32)> = Vec::with_capacity(all.len());
+        let mut last_in_mz = f64::NEG_INFINITY;
+        for (mz, inten) in all {
+            let adjacent =
+                last_in_mz.is_finite() && (mz - last_in_mz).abs() / mz * 1.0e6 <= merge_tol_ppm;
+            if adjacent {
+                if let Some((pmz, pint)) = merged.last_mut() {
+                    let w = *pint as f64 + inten as f64;
+                    if w > 0.0 {
+                        *pmz = (*pmz * *pint as f64 + mz * inten as f64) / w;
+                    }
+                    *pint += inten;
+                }
+            } else {
+                merged.push((mz, inten));
+            }
+            last_in_mz = mz;
+        }
+        self.author_centroids(scan, &merged)
+    }
+
+    /// Author a *new* centroid-only spectrum of arbitrary peak count into `scan`
+    /// (e.g. an Astral ASTMS MS2 scan), writing the peaks directly — centroids
+    /// store m/z, so no calibration is needed.
+    ///
+    /// Like [`RawFile::author_profile`] but for centroid-only packets: emits a
+    /// peaklist (native record width) + a matching peak-descriptor list, stays
+    /// within the existing packet budget, and keeps the scan-index `offset` and
+    /// `DataPacketSize` unchanged (rebuilt sections are bounded by their size
+    /// fields; the remainder is zeroed slack). Recomputes the scan-index stats.
+    /// Call [`RawFile::save`] to fix the checksum.
+    pub fn author_centroids(&mut self, scan: u32, peaks: &[(f64, f32)]) -> io::Result<()> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        if peaks.len() > u16::MAX as usize {
+            return Err(err("too many peaks (max 65535 per authored spectrum)"));
+        }
+        let idx = (scan - self.first_scan) as usize;
+        let entry = self.index[idx].clone();
+        let pkt = (self.data_addr + entry.offset) as usize;
+        let old_len = entry.data_packet_size as usize;
+        if pkt.checked_add(old_len).map_or(true, |e| e > self.bytes.len()) {
+            return Err(err("packet extends past end of file"));
+        }
+        if idx + 1 < self.index.len() {
+            let next = (self.data_addr + self.index[idx + 1].offset) as usize;
+            if next < pkt || next - pkt < old_len {
+                return Err(err("packet would overrun the next scan's data"));
+            }
+        }
+
+        let unknown1 = u32::from_le_bytes(self.bytes[pkt..pkt + 4].try_into().unwrap());
+        let layout = u32::from_le_bytes(self.bytes[pkt + 12..pkt + 16].try_into().unwrap());
+        // Native centroid record width from the existing centroid-only packet
+        // (profile_size == 0 ⇒ peaklist count is at +40).
+        let profile_size = u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap());
+        let peaklist_words = u32::from_le_bytes(self.bytes[pkt + 8..pkt + 12].try_into().unwrap());
+        // Determine the native centroid record width from the EXISTING packet and FAIL
+        // CLOSED on an unrecognized layout — writing the wrong width silently corrupts
+        // m/z (truncates f64->f32, or shifts every record) while the Adler-32 still
+        // validates, the worst kind of failure. An empty native peaklist carries no
+        // width signal, so default to narrow (the dominant centroid form: ASTMS MS2 and
+        // older-FTMS MS2 are both narrow).
+        let centroid_bytes: usize = if profile_size == 0 && pkt + 44 <= self.bytes.len() {
+            let cnt = u32::from_le_bytes(self.bytes[pkt + 40..pkt + 44].try_into().unwrap());
+            if cnt == 0 {
+                8
+            } else {
+                centroid_record_width(peaklist_words, cnt).ok_or_else(|| {
+                    err("centroid packet has an unrecognized peaklist layout (words \
+                         match neither 1+2*count nor 1+3*count); refusing to author to \
+                         avoid silent m/z corruption")
+                })?
+            }
+        } else if profile_size == 0 {
+            8 // packet too short to read the count field — narrow default
+        } else {
+            // author_centroids targets centroid-only packets; a profile-bearing packet
+            // is not something we can safely rewrite as a pure peak list.
+            return Err(err("author_centroids: packet is not centroid-only (has a profile)"));
+        };
+        let centroid_wide = centroid_bytes == 12;
+
+        // Validate inputs, sort by m/z.
+        let mut pk: Vec<(f64, f32)> = peaks.to_vec();
+        for &(mz, inten) in &pk {
+            if !mz.is_finite() || mz <= 0.0 || !inten.is_finite() || inten < 0.0 {
+                return Err(err("centroid must have finite m/z>0 and finite intensity>=0"));
+            }
+        }
+        pk.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let k = pk.len();
+        let new_pl_bytes = 4 + k * centroid_bytes;
+        let descriptor_bytes = k * 4;
+        let new_len = 40 + new_pl_bytes + descriptor_bytes;
+        if new_len > old_len {
+            return Err(err(OVER_BUDGET_MSG));
+        }
+        let new_pl_words =
+            u32::try_from(new_pl_bytes / 4).map_err(|_| err("peaklist too large"))?;
+        let k_u32 = k as u32;
+
+        // Stats.
+        let mut tic = 0f64;
+        let mut base_int = 0f64;
+        let mut base_mz = 0f64;
+        let mut low_mz = f64::INFINITY;
+        let mut high_mz = f64::NEG_INFINITY;
+        for &(mz, inten) in &pk {
+            // Stats must reflect the value actually stored (narrow = f32 m/z).
+            let mz_stored = if centroid_wide { mz } else { (mz as f32) as f64 };
+            tic += inten as f64;
+            if inten as f64 > base_int {
+                base_int = inten as f64;
+                base_mz = mz_stored;
+            }
+            low_mz = low_mz.min(mz_stored);
+            high_mz = high_mz.max(mz_stored);
+        }
+        if pk.is_empty() {
+            low_mz = 0.0;
+            high_mz = 0.0;
+        }
+
+        // Header: profile_size = 0, peaklist + descriptors of length K.
+        put_u32(&mut self.bytes, pkt, unknown1);
+        put_u32(&mut self.bytes, pkt + 4, 0); // profile_size
+        put_u32(&mut self.bytes, pkt + 8, new_pl_words); // peaklist_size (words)
+        put_u32(&mut self.bytes, pkt + 12, layout);
+        put_u32(&mut self.bytes, pkt + 16, k_u32); // descriptor_list_size
+        put_u32(&mut self.bytes, pkt + 20, 0); // unknown_stream_size
+        put_u32(&mut self.bytes, pkt + 24, 0); // triplet_stream_size
+        put_u32(&mut self.bytes, pkt + 28, 0); // unknown2
+        put_f32(&mut self.bytes, pkt + 32, low_mz as f32);
+        put_f32(&mut self.bytes, pkt + 36, high_mz as f32);
+
+        // Peaklist: count + native-width records.
+        let mut o = pkt + 40;
+        put_u32(&mut self.bytes, o, k_u32);
+        o += 4;
+        for &(mz, inten) in &pk {
+            if centroid_wide {
+                put_f64(&mut self.bytes, o, mz);
+                put_f32(&mut self.bytes, o + 8, inten);
+            } else {
+                put_f32(&mut self.bytes, o, mz as f32);
+                put_f32(&mut self.bytes, o + 4, inten);
+            }
+            o += centroid_bytes;
+        }
+        // Peak-descriptor list.
+        for i in 0..k {
+            self.bytes[o..o + 2].copy_from_slice(&(i as u16).to_le_bytes());
+            self.bytes[o + 2] = 0;
+            self.bytes[o + 3] = 0;
+            o += 4;
+        }
+        debug_assert_eq!(o, pkt + new_len);
+        for b in &mut self.bytes[pkt + new_len..pkt + old_len] {
+            *b = 0;
+        }
+
+        // Scan-index stats; offset + DataPacketSize unchanged.
+        let ea = self.scan_index_addr as usize + idx * scan_index_entry_size(self.version);
+        put_f64(&mut self.bytes, ea + 32, tic);
+        put_f64(&mut self.bytes, ea + 40, base_int);
+        put_f64(&mut self.bytes, ea + 48, base_mz);
+        put_f64(&mut self.bytes, ea + 56, low_mz);
+        put_f64(&mut self.bytes, ea + 64, high_mz);
+        self.index[idx] = ScanIndexEntry {
+            total_current: tic,
+            base_mz,
+            low_mz,
+            high_mz,
+            ..entry
+        };
+        Ok(())
+    }
+
+    /// Repack a scan's centroid peak list to a DIFFERENT size, growing or shrinking
+    /// the file as needed.
+    ///
+    /// Unlike [`RawFile::author_centroids`] (in-place; fails when the new peak list
+    /// exceeds the existing packet budget), this splices the data section and
+    /// relocates every file region that sits after the packet — rewriting the
+    /// scan-index offsets and the run-header section pointers so the file stays
+    /// internally consistent. Call [`RawFile::save`] afterwards to fix the checksum.
+    ///
+    /// PARITY SCOPE (Tier 1, see THERMO_RAW_AUTHORING.md): this patches the pointers
+    /// the pure-Rust reader consults — the controller directory, the run-header 64-bit
+    /// section addresses, and the per-entry 64-bit `Offset` + 32-bit `Offset32`. It
+    /// does NOT yet patch the run-header 32-bit mirror addresses, nor any internal
+    /// pointers inside the instrument-method / log / tune sections. Validate output
+    /// against the official RawFileReader before trusting it for production.
+    pub fn repack_centroids(&mut self, scan: u32, peaks: &[(f64, f32)]) -> io::Result<()> {
+        let (p, s) = self.build_centroid_packet(scan, peaks)?;
+        let idx = (scan - self.first_scan) as usize;
+        let pkt = (self.data_addr + self.index[idx].offset) as usize;
+        let old_len = self.index[idx].data_packet_size as usize;
+        self.splice_packet_and_relocate(idx, pkt, old_len, p, s)
+    }
+
+    /// Build the replacement centroid packet bytes + summary stats for `scan` WITHOUT
+    /// mutating the file. Shared by [`repack_centroids`] (single splice) and
+    /// [`repack_many`] (one-pass rebuild).
+    fn build_centroid_packet(
+        &self,
+        scan: u32,
+        peaks: &[(f64, f32)],
+    ) -> io::Result<(Vec<u8>, PacketStats)> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        if peaks.len() > u16::MAX as usize {
+            return Err(err("too many peaks (max 65535 per authored spectrum)"));
+        }
+        let idx = (scan - self.first_scan) as usize;
+        let entry = self.index[idx].clone();
+        let pkt = (self.data_addr + entry.offset) as usize;
+        let old_len = entry.data_packet_size as usize;
+        if pkt.checked_add(old_len).map_or(true, |e| e > self.bytes.len()) {
+            return Err(err("packet extends past end of file"));
+        }
+        if old_len < 40 {
+            // The 40-byte packet header is read at fixed offsets below; a corrupt
+            // DataPacketSize smaller than that would read into the next packet.
+            return Err(err("packet too short to be a valid scan packet"));
+        }
+
+        // Native centroid record width from the existing packet (mirrors author_centroids).
+        let unknown1 = u32::from_le_bytes(self.bytes[pkt..pkt + 4].try_into().unwrap());
+        let layout = u32::from_le_bytes(self.bytes[pkt + 12..pkt + 16].try_into().unwrap());
+        let profile_size = u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap());
+        let peaklist_words = u32::from_le_bytes(self.bytes[pkt + 8..pkt + 12].try_into().unwrap());
+        let centroid_bytes: usize = if profile_size == 0 && pkt + 44 <= self.bytes.len() {
+            let cnt = u32::from_le_bytes(self.bytes[pkt + 40..pkt + 44].try_into().unwrap());
+            if cnt == 0 {
+                8
+            } else {
+                centroid_record_width(peaklist_words, cnt).ok_or_else(|| {
+                    err("centroid packet has an unrecognized peaklist layout; refusing to repack")
+                })?
+            }
+        } else if profile_size == 0 {
+            8
+        } else {
+            return Err(err("repack_centroids: packet is not centroid-only (has a profile)"));
+        };
+        let centroid_wide = centroid_bytes == 12;
+
+        // Validate + sort.
+        let mut pk: Vec<(f64, f32)> = peaks.to_vec();
+        for &(mz, inten) in &pk {
+            if !mz.is_finite() || mz <= 0.0 || !inten.is_finite() || inten < 0.0 {
+                return Err(err("centroid must have finite m/z>0 and finite intensity>=0"));
+            }
+        }
+        pk.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let k = pk.len();
+        let new_pl_bytes = 4 + k * centroid_bytes;
+        let new_len = 40 + new_pl_bytes + k * 4;
+        let new_pl_words = u32::try_from(new_pl_bytes / 4).map_err(|_| err("peaklist too large"))?;
+        let k_u32 = k as u32;
+
+        // Stats.
+        let mut tic = 0f64;
+        let mut base_int = 0f64;
+        let mut base_mz = 0f64;
+        let mut low_mz = f64::INFINITY;
+        let mut high_mz = f64::NEG_INFINITY;
+        for &(mz, inten) in &pk {
+            let mz_stored = if centroid_wide { mz } else { (mz as f32) as f64 };
+            tic += inten as f64;
+            if inten as f64 > base_int {
+                base_int = inten as f64;
+                base_mz = mz_stored;
+            }
+            low_mz = low_mz.min(mz_stored);
+            high_mz = high_mz.max(mz_stored);
+        }
+        if pk.is_empty() {
+            low_mz = 0.0;
+            high_mz = 0.0;
+        }
+
+        // Build the replacement packet (header + peaklist + descriptors), exact length.
+        let mut p = vec![0u8; new_len];
+        put_u32(&mut p, 0, unknown1);
+        put_u32(&mut p, 4, 0); // profile_size
+        put_u32(&mut p, 8, new_pl_words); // peaklist_size (words)
+        put_u32(&mut p, 12, layout);
+        put_u32(&mut p, 16, k_u32); // descriptor_list_size
+        put_f32(&mut p, 32, low_mz as f32);
+        put_f32(&mut p, 36, high_mz as f32);
+        let mut o = 40;
+        put_u32(&mut p, o, k_u32);
+        o += 4;
+        for &(mz, inten) in &pk {
+            if centroid_wide {
+                put_f64(&mut p, o, mz);
+                put_f32(&mut p, o + 8, inten);
+            } else {
+                put_f32(&mut p, o, mz as f32);
+                put_f32(&mut p, o + 4, inten);
+            }
+            o += centroid_bytes;
+        }
+        for i in 0..k {
+            p[o..o + 2].copy_from_slice(&(i as u16).to_le_bytes());
+            o += 4;
+        }
+        debug_assert_eq!(o, new_len);
+
+        Ok((p, PacketStats { tic, base_int, base_mz, low_mz, high_mz }))
+    }
+
+    /// Splice a freshly-built packet in place of scan `idx`'s old packet and relocate
+    /// every file region that physically follows it, so the section-address graph
+    /// stays consistent. Shared by [`repack_centroids`] and [`repack_profile`].
+    ///
+    /// Relocates: the controller directory, the MS run-header 64-bit section pointers
+    /// (scan_index / instlog / error_log / scantrailer / scanparams — data start is
+    /// fixed), and every scan-index entry's `Offset`/`Offset32`. Writes the grown
+    /// scan's `DataPacketSize` + summary stats. NOT relocated (Tier 1 TODO): run-header
+    /// 32-bit mirror addresses and any internal pointers inside method/log/tune streams.
+    #[allow(clippy::too_many_arguments)]
+    fn splice_packet_and_relocate(
+        &mut self,
+        idx: usize,
+        pkt: usize,
+        old_len: usize,
+        new_packet: Vec<u8>,
+        stats: PacketStats,
+    ) -> io::Result<()> {
+        // Invariant: the packet must lie strictly inside the data section, between
+        // `data_addr` and the scan index. A corrupt offset that violates this could
+        // otherwise produce a self-consistent-but-invalid file.
+        if (pkt as u64) < self.data_addr {
+            return Err(err("repack: packet starts before the data section"));
+        }
+        if (pkt + old_len) as u64 > self.scan_index_addr {
+            return Err(err("repack: packet extends past the data section"));
+        }
+
+        let new_len = new_packet.len();
+        let delta: i64 = new_len as i64 - old_len as i64;
+        self.bytes.splice(pkt..pkt + old_len, new_packet);
+
+        // Any stored address at/after the end of the OLD packet moved by `delta`.
+        let boundary = (pkt + old_len) as u64;
+        self.relocate_sections_after(boundary, delta)?;
+
+        // In-memory index: relocate by PHYSICAL packet address, not scan-number order —
+        // every entry (except the edited one) whose packet starts at/after the boundary
+        // moved by `delta`. `offset` is relative to `data_addr` (which never moves).
+        for j in 0..self.index.len() {
+            if j == idx {
+                continue;
+            }
+            let abs = self.data_addr + self.index[j].offset;
+            if abs >= boundary {
+                self.index[j].offset = shift_addr(self.index[j].offset, 0, delta)?;
+            }
+        }
+        self.index[idx].data_packet_size = new_len as u32;
+        self.write_index_offsets()?;
+        self.write_index_stats(idx, stats);
+        Ok(())
+    }
+
+    /// Relocate every file region that physically follows `boundary` by `delta`: each
+    /// controller-directory pointer, each controller's run-header section pointers, and
+    /// the cached MS section addresses. The scan-index ENTRIES are relocated separately
+    /// by the caller, which owns the per-entry model. Shared by the single-splice and
+    /// batch-rebuild repack paths.
+    fn relocate_sections_after(&mut self, boundary: u64, delta: i64) -> io::Result<()> {
+        // Doing ALL controllers (not just MS) covers a non-MS device whose sections
+        // follow the MS data region. The MS controller's own `data` pointer is
+        // < boundary, so the shift leaves it untouched.
+        for i in 0..self.controller_dir.len() {
+            let (ptr_off, addr) = self.controller_dir[i];
+            let new_addr = shift_addr(addr, boundary, delta)?;
+            if new_addr != addr {
+                put_u64(&mut self.bytes, ptr_off, new_addr);
+                self.controller_dir[i].1 = new_addr;
+            }
+            let rh = new_addr as usize;
+            // Bounds-check before touching the fixed pointer slots; a run header too
+            // short to contain them carries no section pointers to relocate.
+            if rh.checked_add(RH_END).map_or(true, |e| e > self.bytes.len()) {
+                continue;
+            }
+            for poff in RH_SECTION_PTRS {
+                let cur = u64::from_le_bytes(self.bytes[rh + poff..rh + poff + 8].try_into().unwrap());
+                let nb = shift_addr(cur, boundary, delta)?;
+                if nb != cur {
+                    put_u64(&mut self.bytes, rh + poff, nb);
+                }
+            }
+            // (The 32-bit "…Addr32" slots preceding these are zeroed on rev >= 64 —
+            // counts/flags, not live address mirrors — so there is nothing to relocate.)
+        }
+        self.ms_runheader_addr = shift_addr(self.ms_runheader_addr, boundary, delta)?;
+        self.scan_index_addr = shift_addr(self.scan_index_addr, boundary, delta)?;
+        self.scantrailer_addr = shift_addr(self.scantrailer_addr, boundary, delta)?;
+        self.scanparams_addr = shift_addr(self.scanparams_addr, boundary, delta)?;
+        self.error_log_addr = shift_addr(self.error_log_addr, boundary, delta)?;
+        Ok(())
+    }
+
+    /// Rewrite every scan-index entry's Offset (u64 @ +72) and DataPacketSize (@ +20)
+    /// from the in-memory model, plus the 32-bit Offset32 mirror (@ +0) IF this file
+    /// populates it (rev >= 64 zeroes it — the 64-bit Offset is authoritative; preserve
+    /// that rather than fabricate). Decided per FILE: a populated-mirror file may
+    /// legitimately have a zero first entry, which a per-entry test would misread.
+    fn write_index_offsets(&mut self) -> io::Result<()> {
+        let esz = scan_index_entry_size(self.version);
+        let six = self.scan_index_addr as usize;
+        let populates_offset32 = (0..self.index.len()).any(|j| {
+            let ea = six + j * esz;
+            u32::from_le_bytes(self.bytes[ea..ea + 4].try_into().unwrap()) != 0
+        });
+        for j in 0..self.index.len() {
+            let ea = six + j * esz;
+            let off = self.index[j].offset;
+            let size = self.index[j].data_packet_size;
+            if populates_offset32 {
+                let off32 = u32::try_from(off).map_err(|_| {
+                    err("repack: scan offset exceeds the 32-bit Offset32 mirror (>4 GB data section unsupported)")
+                })?;
+                put_u32(&mut self.bytes, ea, off32);
+            }
+            put_u32(&mut self.bytes, ea + 20, size);
+            put_u64(&mut self.bytes, ea + 72, off);
+        }
+        Ok(())
+    }
+
+    /// Write one entry's summary stats (@ +32..) and sync the cached index entry.
+    fn write_index_stats(&mut self, idx: usize, s: PacketStats) {
+        let esz = scan_index_entry_size(self.version);
+        let ea = self.scan_index_addr as usize + idx * esz;
+        put_f64(&mut self.bytes, ea + 32, s.tic);
+        put_f64(&mut self.bytes, ea + 40, s.base_int);
+        put_f64(&mut self.bytes, ea + 48, s.base_mz);
+        put_f64(&mut self.bytes, ea + 56, s.low_mz);
+        put_f64(&mut self.bytes, ea + 64, s.high_mz);
+        let entry = self.index[idx].clone();
+        self.index[idx] = ScanIndexEntry {
+            total_current: s.tic,
+            base_mz: s.base_mz,
+            low_mz: s.low_mz,
+            high_mz: s.high_mz,
+            ..entry
+        };
+    }
+
+    /// Apply many scan edits in a SINGLE O(total-bytes) rebuild of the data section,
+    /// instead of one splice per edit (which is O(edits × file size) because each splice
+    /// memmoves the whole tail). Use this when growing many scans past the template
+    /// budget — e.g. a simulation that raises the peak cap above what the template slots
+    /// hold, so most scans overflow.
+    ///
+    /// Requires the data section to be contiguous packets in scan order (the Thermo
+    /// norm); otherwise it errors rather than risk a corrupt rebuild — fall back to
+    /// per-scan repack. Call [`RawFile::save`] afterwards.
+    pub fn repack_many(&mut self, edits: &[ScanEdit]) -> io::Result<()> {
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let mut replaced: std::collections::HashMap<usize, (Vec<u8>, PacketStats)> =
+            std::collections::HashMap::new();
+        for e in edits {
+            let scan = e.scan();
+            if scan < self.first_scan || scan > self.last_scan {
+                return Err(err("repack_many: scan out of range"));
+            }
+            let idx = (scan - self.first_scan) as usize;
+            if replaced.contains_key(&idx) {
+                return Err(err("repack_many: duplicate scan in edit list"));
+            }
+            let built = match e {
+                ScanEdit::Centroids { scan, peaks } => self.build_centroid_packet(*scan, peaks)?,
+                ScanEdit::Profile { scan, peaks, calib } => {
+                    self.build_profile_packet(*scan, peaks, calib)?
+                }
+            };
+            replaced.insert(idx, built);
+        }
+
+        // The data section must be contiguous packets in scan order for a clean rebuild.
+        let n = self.index.len();
+        let data_start = self.data_addr as usize;
+        let mut expected = 0u64;
+        for j in 0..n {
+            if self.index[j].offset != expected {
+                return Err(err(
+                    "repack_many: data section not contiguous/in-order; use per-scan repack",
+                ));
+            }
+            expected += self.index[j].data_packet_size as u64;
+        }
+        let old_data_len = expected as usize;
+        let old_data_end = data_start + old_data_len;
+        if old_data_end > self.bytes.len() || old_data_end as u64 > self.scan_index_addr {
+            return Err(err("repack_many: data section overruns file / scan index"));
+        }
+
+        // Lay out the new data section in one pass: edited packets replace, others copy.
+        let mut new_data: Vec<u8> = Vec::with_capacity(old_data_len);
+        let mut new_off = vec![0u64; n];
+        let mut new_size = vec![0u32; n];
+        for j in 0..n {
+            new_off[j] = new_data.len() as u64;
+            if let Some((bytes, _)) = replaced.get(&j) {
+                new_data.extend_from_slice(bytes);
+                new_size[j] = bytes.len() as u32;
+            } else {
+                let pkt = data_start + self.index[j].offset as usize;
+                let sz = self.index[j].data_packet_size as usize;
+                new_data.extend_from_slice(&self.bytes[pkt..pkt + sz]);
+                new_size[j] = sz as u32;
+            }
+        }
+        let delta: i64 = new_data.len() as i64 - old_data_len as i64;
+
+        // ONE splice of the entire data section, then relocate the trailing graph once.
+        self.bytes.splice(data_start..old_data_end, new_data);
+        self.relocate_sections_after(old_data_end as u64, delta)?;
+
+        for j in 0..n {
+            self.index[j].offset = new_off[j];
+            self.index[j].data_packet_size = new_size[j];
+        }
+        self.write_index_offsets()?;
+        for (&idx, (_, stats)) in &replaced {
+            self.write_index_stats(idx, *stats);
+        }
+        Ok(())
+    }
+
+    /// Repack a scan's FTMS profile to a DIFFERENT number of peaks, growing or
+    /// shrinking the file as needed — the profile counterpart of [`repack_centroids`].
+    ///
+    /// Like [`author_profile`] it bins each `(m/z, intensity)` onto the scan's existing
+    /// frequency grid and writes one single-bin chunk per peak plus a coherent centroid
+    /// peaklist + descriptor list, but instead of failing when the rebuilt packet
+    /// exceeds the original budget it splices and relocates (see
+    /// [`splice_packet_and_relocate`]). The grid (first_value/step/nbins) and the m/z
+    /// calibration are preserved. Call [`save`] afterwards to fix the checksum.
+    pub fn repack_profile(
+        &mut self,
+        scan: u32,
+        peaks: &[(f64, f32)],
+        calib: &Calibration,
+    ) -> io::Result<()> {
+        let (p, s) = self.build_profile_packet(scan, peaks, calib)?;
+        let idx = (scan - self.first_scan) as usize;
+        let pkt = (self.data_addr + self.index[idx].offset) as usize;
+        let old_len = self.index[idx].data_packet_size as usize;
+        self.splice_packet_and_relocate(idx, pkt, old_len, p, s)
+    }
+
+    /// Build the replacement profile packet bytes + stats for `scan` WITHOUT mutating the
+    /// file. Shared by [`repack_profile`] (single splice) and [`repack_many`].
+    fn build_profile_packet(
+        &self,
+        scan: u32,
+        peaks: &[(f64, f32)],
+        calib: &Calibration,
+    ) -> io::Result<(Vec<u8>, PacketStats)> {
+        if scan < self.first_scan || scan > self.last_scan {
+            return Err(err("scan out of range"));
+        }
+        if peaks.len() > u16::MAX as usize {
+            return Err(err("too many peaks (max 65535 per authored profile)"));
+        }
+        let idx = (scan - self.first_scan) as usize;
+        let entry = self.index[idx].clone();
+        let pkt = (self.data_addr + entry.offset) as usize;
+        let old_len = entry.data_packet_size as usize;
+        if pkt.checked_add(old_len).map_or(true, |e| e > self.bytes.len()) {
+            return Err(err("packet extends past end of file"));
+        }
+        if old_len < 40 {
+            // The 40-byte packet header is read at fixed offsets below; a corrupt
+            // DataPacketSize smaller than that would read into the next packet.
+            return Err(err("packet too short to be a valid scan packet"));
+        }
+
+        let prof = self
+            .profile(scan)
+            .ok_or_else(|| err("scan has no FTMS profile to take the grid from"))?;
+        let layout = u32::from_le_bytes(self.bytes[pkt + 12..pkt + 16].try_into().unwrap());
+        let (first_value, step, nbins) = (prof.first_value, prof.step, prof.nbins);
+        if step == 0.0 || !step.is_finite() || !first_value.is_finite() {
+            return Err(err("profile grid is degenerate (step/first_value not finite)"));
+        }
+        let orig_profile_words =
+            u32::from_le_bytes(self.bytes[pkt + 4..pkt + 8].try_into().unwrap()) as usize;
+        let orig_peaklist_words =
+            u32::from_le_bytes(self.bytes[pkt + 8..pkt + 12].try_into().unwrap());
+        let pl_off = pkt + 40 + orig_profile_words * 4;
+        let centroid_wide = if orig_peaklist_words > 0 && pl_off + 4 <= self.bytes.len() {
+            let cnt = u32::from_le_bytes(self.bytes[pl_off..pl_off + 4].try_into().unwrap());
+            peak_is_wide(orig_peaklist_words, cnt)
+        } else {
+            true
+        };
+        let unknown1 = u32::from_le_bytes(self.bytes[pkt..pkt + 4].try_into().unwrap());
+
+        // Bin peaks onto the existing grid; merge collisions (same as author_profile). Out-of-range /
+        // calibration-unreachable peaks are DROPPED (consistent with author_profile) so the deferred
+        // over-budget repack path is robust to a broad simulated survey. NB: the per-scan drop tally is
+        // not surfaced here (this path returns only bytes+stats); a run-level tally for repacked scans is
+        // a follow-up. Degenerate inputs (non-finite / m/z<=0) remain hard errors.
+        let mut binned: Vec<(u32, f32)> = Vec::with_capacity(peaks.len());
+        for &(mz, inten) in peaks {
+            if !mz.is_finite() || mz <= 0.0 || !inten.is_finite() || inten < 0.0 {
+                return Err(err("profile peak must have finite m/z>0 and finite intensity>=0"));
+            }
+            let f = match calib.freq(mz) {
+                Some(f) => f,
+                None => continue, // unreachable by this calibration — drop
+            };
+            let bin = ((f - first_value) / step).round();
+            if !bin.is_finite() || bin < 0.0 || bin >= nbins as f64 {
+                continue; // outside the scan's frequency grid — drop
+            }
+            binned.push((bin as u32, inten));
+        }
+        binned.sort_by_key(|x| x.0);
+        // Merge collisions in f64 then clamp to the f32 ceiling (never wrap) — consistent with
+        // author_profile, so a deferred/over-budget scan encodes the same as an in-budget one.
+        let mut chunks: Vec<(u32, f32)> = Vec::with_capacity(binned.len());
+        let mut acc: Vec<f64> = Vec::with_capacity(binned.len());
+        for (bin, inten) in binned {
+            match chunks.last_mut() {
+                Some(last) if last.0 == bin => *acc.last_mut().unwrap() += inten as f64,
+                _ => { chunks.push((bin, 0.0)); acc.push(inten as f64); }
+            }
+        }
+        for (c, &sum) in chunks.iter_mut().zip(acc.iter()) {
+            c.1 = if sum > f32::MAX as f64 { f32::MAX } else { sum as f32 };
+        }
+
+        let k = chunks.len();
+        let chunk_bytes = if layout > 0 { 16usize } else { 12 };
+        let centroid_bytes = if centroid_wide { 12usize } else { 8 };
+        let profile_bytes = 16 + 8 + k * chunk_bytes;
+        let peaklist_bytes = 4 + k * centroid_bytes;
+        let descriptor_bytes = k * 4;
+        let new_len = 40 + profile_bytes + peaklist_bytes + descriptor_bytes;
+        let profile_words = u32::try_from(profile_bytes / 4).map_err(|_| err("profile too large"))?;
+        let peaklist_words =
+            u32::try_from(peaklist_bytes / 4).map_err(|_| err("peaklist too large"))?;
+        let k_u32 = k as u32;
+
+        // Stats.
+        let mut tic = 0f64;
+        let mut base_int = 0f64;
+        let mut base_mz = 0f64;
+        let mut low_mz = f64::INFINITY;
+        let mut high_mz = f64::NEG_INFINITY;
+        for &(bin, inten) in &chunks {
+            let mz = calib.mz(first_value + bin as f64 * step);
+            tic += inten as f64;
+            if inten as f64 > base_int {
+                base_int = inten as f64;
+                base_mz = mz;
+            }
+            low_mz = low_mz.min(mz);
+            high_mz = high_mz.max(mz);
+        }
+        if chunks.is_empty() {
+            low_mz = 0.0;
+            high_mz = 0.0;
+        }
+
+        // Build the replacement packet into a buffer (exact length), mirroring author_profile.
+        let mut p = vec![0u8; new_len];
+        put_u32(&mut p, 0, unknown1);
+        put_u32(&mut p, 4, profile_words);
+        put_u32(&mut p, 8, peaklist_words);
+        put_u32(&mut p, 12, layout);
+        put_u32(&mut p, 16, k_u32);
+        put_f32(&mut p, 32, low_mz as f32);
+        put_f32(&mut p, 36, high_mz as f32);
+        let mut o = 40;
+        put_f64(&mut p, o, first_value);
+        put_f64(&mut p, o + 8, step);
+        put_u32(&mut p, o + 16, k_u32);
+        put_u32(&mut p, o + 20, nbins);
+        o += 24;
+        for &(bin, inten) in &chunks {
+            put_u32(&mut p, o, bin);
+            put_u32(&mut p, o + 4, 1);
+            o += 8;
+            if layout > 0 {
+                put_f32(&mut p, o, 0.0);
+                o += 4;
+            }
+            put_f32(&mut p, o, inten);
+            o += 4;
+        }
+        put_u32(&mut p, o, k_u32);
+        o += 4;
+        for &(bin, inten) in &chunks {
+            let mz = calib.mz(first_value + bin as f64 * step);
+            if centroid_wide {
+                put_f64(&mut p, o, mz);
+                put_f32(&mut p, o + 8, inten);
+            } else {
+                put_f32(&mut p, o, mz as f32);
+                put_f32(&mut p, o + 4, inten);
+            }
+            o += centroid_bytes;
+        }
+        for i in 0..k {
+            p[o..o + 2].copy_from_slice(&(i as u16).to_le_bytes());
+            o += 4;
+        }
+        debug_assert_eq!(o, new_len);
+
+        Ok((p, PacketStats { tic, base_int, base_mz, low_mz, high_mz }))
+    }
+
+    /// Recompute and write the Adler-32 integrity checksum into the header.
+    pub fn recompute_checksum(&mut self) {
+        let crc = compute_checksum(&self.bytes);
+        put_u32(&mut self.bytes, CHECKSUM_OFFSET, crc);
+    }
+
+    /// Fix the checksum and write the file to disk.
+    pub fn save<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
+        self.recompute_checksum();
+        std::fs::write(path, &self.bytes)
+    }
+
+    fn scan_event_offset(&self, scan: u32) -> Option<usize> {
+        if scan < self.first_scan {
+            return None;
+        }
+        self.scan_event_offsets
+            .get((scan - self.first_scan) as usize)
+            .copied()
+    }
+
+    /// Whether per-scan scan events (ms-level, isolation, CE) could be decoded for this
+    /// file. False for a layout whose event grammar we can't walk — callers that need
+    /// reliable per-scan metadata should check this rather than assume.
+    pub fn has_scan_events(&self) -> bool {
+        !self.scan_event_offsets.is_empty()
+    }
+
+    /// Absolute byte offset of `scan`'s scan-event record (None if undecoded). Lets a
+    /// caller inspect/author event fields beyond the `ScanEvent` accessors.
+    pub fn scan_event_byte_offset(&self, scan: u32) -> Option<usize> {
+        self.scan_event_offset(scan)
+    }
+
+    /// Decode the scan-event mass-range block — `[(low, high)]` after the reactions:
+    /// `nprec u32 @ +136`, reactions (56 B each), then `nranges u32`, then `nranges`
+    /// `(f64 low, f64 high)` records. This is the per-event acquisition/scan range
+    /// (e.g. the fragment 150–2000 m/z range for an MS2), **distinct** from the reaction's
+    /// isolation window. Returns `None` if undecodable.
+    pub fn scan_event_ranges(&self, scan: u32) -> Option<Vec<(f64, f64)>> {
+        // Checked arithmetic + bounded counts, mirroring walk_variable_scan_events: a
+        // malformed event yields None, never a panic/wrap.
+        let off = self.scan_event_offset(scan)?;
+        let u32at = |o: usize| -> Option<u32> {
+            self.bytes.get(o..o.checked_add(4)?).map(|s| u32::from_le_bytes(s.try_into().unwrap()))
+        };
+        let f64at = |o: usize| -> Option<f64> {
+            self.bytes.get(o..o.checked_add(8)?).map(|s| f64::from_le_bytes(s.try_into().unwrap()))
+        };
+        let nprec = u32at(off.checked_add(136)?)? as usize;
+        if nprec > 16 {
+            return None;
+        }
+        let nranges_pos = off.checked_add(140)?.checked_add(nprec.checked_mul(56)?)?;
+        let nranges = u32at(nranges_pos)? as usize;
+        if nranges > 64 {
+            return None;
+        }
+        let mut ranges = Vec::with_capacity(nranges);
+        let mut p = nranges_pos.checked_add(4)?;
+        for _ in 0..nranges {
+            ranges.push((f64at(p)?, f64at(p.checked_add(8)?)?));
+            p = p.checked_add(16)?;
+        }
+        Some(ranges)
+    }
+
+    /// Re-window every MSn (`ms_order >= 2`) scan in place to a new DIA scheme (Tier-2
+    /// increment 3a, same-cardinality: scan count/cadence unchanged). `assign(scan,
+    /// current_event)` returns the new `(center, width, collision_energy)`, or `None` to
+    /// leave that scan. Returns the count re-windowed. Call [`save`] afterwards.
+    ///
+    /// This is `set_isolation` per scan. **For the v66 Orbitrap Fusion + Astral DIA layouts
+    /// we audited** (`examples/window_provenance.rs`), the isolation window is encoded only
+    /// in the reaction record — the scan-event range block, scan-index low/high, and filter
+    /// `[lo-hi]` are the fragment scan range (not the window), the trailer carries no DIA
+    /// precursor, and the filter is *synthesized* by RawFileReader (no cached string) — so
+    /// nothing else needs patching. A non-audited layout / older revision / independent
+    /// consumer could differ; re-validate with RawFileReader (reaction **and** filter) on a
+    /// new layout. (Changing the window *count* — finer/coarser tiling — is increment 3b.)
+    ///
+    /// NB: this is **metadata** re-windowing — it relabels the precursor isolation; it does
+    /// not move peaks. On a *real* template the spectrum was physically acquired under the
+    /// old window, so re-windowing-then-keeping-real-peaks is a synthetic reassignment, not
+    /// a physical transform. (In the TimSim path the peaks are simulated afresh, so this
+    /// caveat doesn't apply there.)
+    pub fn rewindow_in_place(
+        &mut self,
+        mut assign: impl FnMut(u32, &ScanEvent) -> Option<(f64, f64, f64)>,
+    ) -> io::Result<usize> {
+        let mut n = 0;
+        for scan in self.first_scan..=self.last_scan {
+            let Some(ev) = self.scan_event(scan) else { continue };
+            if ev.ms_order < 2 {
+                continue;
+            }
+            if let Some((center, width, ce)) = assign(scan, &ev) {
+                self.set_isolation(scan, center, width, ce)?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Read the acquisition descriptor (MS order, analyzer, isolation, CE) for `scan`.
+    pub fn scan_event(&self, scan: u32) -> Option<ScanEvent> {
+        let o = self.scan_event_offset(scan)?;
+        let f64at = |off: usize| f64::from_le_bytes(self.bytes[off..off + 8].try_into().unwrap());
+        Some(ScanEvent {
+            ms_order: self.bytes[o + EV_MS_ORDER],
+            analyzer: self.bytes[o + EV_ANALYZER],
+            isolation_center: f64at(o + EV_ISO_CENTER),
+            isolation_width: f64at(o + EV_ISO_WIDTH),
+            collision_energy: f64at(o + EV_COLLISION_ENERGY),
+        })
+    }
+
+    /// Construct the human-readable scan filter line from the scan-event preamble,
+    /// e.g. `FTMS + c NSI d Full ms2 542.30@hcd35.00 [100.00-1600.00]`. `None` if the
+    /// scan or its event record is out of range. Preamble field codes follow OpenTFRaw §22.
+    pub fn scan_filter(&self, scan: u32) -> Option<String> {
+        let o = self.scan_event_offset(scan)?;
+        let byte = |off: usize| self.bytes.get(o + off).copied();
+        let f64at = |off: usize| -> Option<f64> {
+            self.bytes
+                .get(o + off..o + off + 8)
+                .map(|s| f64::from_le_bytes(s.try_into().unwrap()))
+        };
+        let analyzer = match byte(EV_ANALYZER)? {
+            0 => "ITMS",
+            1 => "TQMS",
+            2 => "SQMS",
+            3 => "TOFMS",
+            4 => "FTMS",
+            5 => "Sector",
+            _ => "",
+        };
+        let polarity = match byte(4)? {
+            0 => "-",
+            1 => "+",
+            _ => "",
+        };
+        let scan_mode = match byte(5)? {
+            0 => "c",
+            1 => "p",
+            _ => "",
+        };
+        let ms_power = byte(EV_MS_ORDER)?;
+        let scan_type = match byte(7)? {
+            0 => "Full",
+            1 => "Z",
+            2 => "SIM",
+            3 => "SRM",
+            4 => "CRM",
+            6 => "Q1",
+            7 => "Q3",
+            _ => "",
+        };
+        let ionization = match byte(11)? {
+            0 => "EI",
+            1 => "CI",
+            2 => "FAB",
+            3 => "ESI",
+            4 => "APCI",
+            5 => "NSI",
+            6 => "TSI",
+            7 => "FD",
+            8 => "MALDI",
+            9 => "GD",
+            _ => "",
+        };
+        let mut parts: Vec<String> = [analyzer, polarity, scan_mode, ionization]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+        if byte(10)? == 1 {
+            parts.push("d".into());
+        }
+        if byte(32)? == 1 {
+            parts.push("w".into());
+        }
+        if !scan_type.is_empty() {
+            parts.push(scan_type.into());
+        }
+        parts.push(if ms_power <= 1 { "ms".into() } else { format!("ms{ms_power}") });
+        if ms_power >= 2 {
+            let act = match byte(24)? {
+                1 => "hcd",
+                4 => "cid",
+                _ => "",
+            };
+            let center = f64at(EV_ISO_CENTER).unwrap_or(0.0);
+            let energy = f64at(EV_COLLISION_ENERGY).unwrap_or(0.0);
+            parts.push(format!("{center:.2}@{act}{energy:.2}"));
+        }
+        let entry = self.index.get(scan.checked_sub(self.first_scan)? as usize)?;
+        Some(format!("{} [{:.2}-{:.2}]", parts.join(" "), entry.low_mz, entry.high_mz))
+    }
+
+    /// Author an MS2 isolation window: set the precursor / window-center m/z,
+    /// isolation width, and collision energy for `scan`. Call [`RawFile::save`]
+    /// afterwards to fix the checksum.
+    pub fn set_isolation(
+        &mut self,
+        scan: u32,
+        center: f64,
+        width: f64,
+        collision_energy: f64,
+    ) -> io::Result<()> {
+        let o = self
+            .scan_event_offset(scan)
+            .ok_or_else(|| err("no scan event (unknown event stride or scan out of range)"))?;
+        put_f64(&mut self.bytes, o + EV_ISO_CENTER, center);
+        put_f64(&mut self.bytes, o + EV_ISO_WIDTH, width);
+        put_f64(&mut self.bytes, o + EV_COLLISION_ENERGY, collision_energy);
+        Ok(())
+    }
+}
+
+fn read_version(b: &[u8]) -> u32 {
+    u32::from_le_bytes(b[36..40].try_into().unwrap())
+}
+
+/// Walk the variable-length scan-event stream (Orbitrap Fusion-class) to derive each
+/// event's absolute byte offset. Returns one offset per scan, or `None` if the grammar
+/// doesn't fit — a fail-safe: a layout we can't model yields no offsets rather than
+/// silently wrong per-scan metadata.
+///
+/// Event grammar (rev 66; reverse-engineered and validated against Orbitrap Fusion
+/// DIA + DDA — the walk consumes `[base, region_end)` exactly over `n` events and the
+/// decoded ms-order / isolation match the official RawFileReader):
+/// ```text
+///   preamble[136]
+///   nprec:   u32                 (0 for MS1, >=1 for MSn)
+///   reaction[nprec]              (56 bytes each: precursor m/z @+0, isolation width @+8, energy @+16, +flags)
+///   nranges: u32
+///   range[nranges]               (16 bytes each: low f64, high f64)
+///   calibration: u32 nparam, then 40 + 4*nparam bytes  =>  block = 44 + 4*nparam
+/// ```
+/// (calib block: nparam=5 → 64 bytes (Astral), nparam=7 → 72 bytes (Fusion).)
+fn walk_variable_scan_events(b: &[u8], base: usize, region_end: usize, n: usize) -> Option<Vec<usize>> {
+    const PREAMBLE: usize = 136;
+    const REACTION: usize = 56;
+    const RANGE: usize = 16;
+    // All offset arithmetic is checked: a malformed/foreign file (e.g. a garbage-huge
+    // scantrailer address) must yield `None`, never a panic (debug) or wrapped offset
+    // (release). u32at reads a u32 only if the 4-byte window is fully in bounds.
+    let u32at = |o: usize| -> Option<u32> {
+        let end = o.checked_add(4)?;
+        b.get(o..end).map(|s| u32::from_le_bytes(s.try_into().unwrap()))
+    };
+    let mut offsets = Vec::with_capacity(n.min(1 << 20));
+    let mut off = base;
+    for _ in 0..n {
+        if off.checked_add(PREAMBLE + 4).map_or(true, |e| e > region_end) {
+            return None;
+        }
+        offsets.push(off);
+        let nprec = u32at(off + PREAMBLE)? as usize;
+        if nprec > 16 {
+            return None; // implausible reaction count → grammar mismatch
+        }
+        // nprec/nranges/nparam are bounded above, so the per-event products are small;
+        // checked_add still guards against an overflowing base offset.
+        let nranges_pos = (off + PREAMBLE + 4).checked_add(nprec * REACTION)?;
+        let nranges = u32at(nranges_pos)? as usize;
+        if nranges > 64 {
+            return None;
+        }
+        let calib_pos = nranges_pos.checked_add(4 + nranges * RANGE)?;
+        let nparam = u32at(calib_pos)? as usize;
+        if nparam > 64 {
+            return None;
+        }
+        off = calib_pos.checked_add(44 + 4 * nparam)?;
+        if off > region_end {
+            return None;
+        }
+    }
+    // A correct grammar consumes the event region EXACTLY; otherwise treat it as
+    // undecodable (None) rather than trust offsets derived from a mismatched model.
+    // (Exact byte accounting + the decoded ms-order/isolation matching RawFileReader on
+    // real Fusion data is the correctness evidence; exact match alone is necessary, not
+    // sufficient — a layout with identical block sizes but moved fields could still slip.)
+    (off == region_end).then_some(offsets)
+}
+
+/// Run-header parse for rev >= 64 (64-bit addresses). Returns `None` if `addr` (a
+/// controller-directory RunHeaderAddr) does not leave room for the whole fixed
+/// run-header span: a malformed or foreign-layout file can point it past EOF, and a
+/// raw slice panic here aborts the whole process across the PyO3 boundary. `None` lets
+/// the caller skip that controller and try the next.
+fn read_runheader(b: &[u8], addr: usize) -> Option<MsRunHeader> {
+    if addr.checked_add(RH_END).map_or(true, |end| end > b.len()) {
+        return None;
+    }
+    // SampleInfo: FirstScanNumber @ +8, LastScanNumber @ +12.
+    let first_scan = u32::from_le_bytes(b[addr + 8..addr + 12].try_into().unwrap());
+    let last_scan = u32::from_le_bytes(b[addr + 12..addr + 16].try_into().unwrap());
+    let mut c = Cur::new(b, addr);
+    c.skip(592); // SampleInfo
+    c.skip(6 * 520); // Filename1..6
+    c.skip(16); // Unknown1, Unknown2 (f64)
+    c.skip(7 * 520); // Filename7..13
+    c.skip(40); // ScantrailerAddr32 .. Unknown8 (10x u32)
+    let scan_index_addr = c.u64();
+    let data_addr = c.u64();
+    c.u64(); // InstlogAddr
+    let error_log_addr = c.u64();
+    c.u64(); // Unknown9
+    let scantrailer_addr = c.u64();
+    let scanparams_addr = c.u64();
+    Some(MsRunHeader {
+        first_scan,
+        last_scan,
+        scan_index_addr,
+        data_addr,
+        error_log_addr,
+        scantrailer_addr,
+        scanparams_addr,
+    })
+}
+
+/// Best-effort decode of the v64+ per-scan trailer-parameters stream: locate the schema
+/// (GenericDataHeader) in `[error_log_addr, scantrailer_addr)` by signature + expected record
+/// size, then read one fixed-stride record per scan from `scanparams_addr`. Any failure (no
+/// schema, truncation, malformed) yields an empty vec — the file still opens.
+fn read_scan_params(
+    bytes: &[u8],
+    error_log_addr: u64,
+    scantrailer_addr: u64,
+    scanparams_addr: u64,
+    num_scans: usize,
+) -> Vec<generic_record::GenericRecord> {
+    use generic_record::{GenericDataHeader, GenericRecord, SliceReader};
+    let start = error_log_addr as usize;
+    let trailer = scantrailer_addr as usize;
+    let params = scanparams_addr as usize;
+    if num_scans == 0 || start == 0 || start >= trailer || trailer > bytes.len() || params >= bytes.len() {
+        return Vec::new();
+    }
+    let expected = {
+        let tail = bytes.len().saturating_sub(params);
+        let per = tail / num_scans;
+        (per >= 4).then_some(per)
+    };
+    let scan_distance = trailer - start;
+    let mut r = SliceReader::new(bytes);
+    (|| -> io::Result<Vec<GenericRecord>> {
+        r.seek_to(start)?;
+        let hdr = match GenericDataHeader::find_forward(&mut r, scan_distance, expected)? {
+            Some(h) => h,
+            None => return Ok(Vec::new()),
+        };
+        r.seek_to(params)?;
+        let mut out = Vec::with_capacity(num_scans);
+        for _ in 0..num_scans {
+            out.push(GenericRecord::read(&mut r, &hdr)?);
+        }
+        Ok(out)
+    })()
+    .unwrap_or_default()
+}
+
+/// Typed, label-driven view over one scan's trailer record. Labels vary by instrument and
+/// firmware, so each accessor returns `Option` and tries known variants. Label→field mappings
+/// mirror OpenTFRaw's `ScanParams` (Apache-2.0). The underlying [`generic_record::GenericRecord`]
+/// is available via [`ScanParams::record`] for any label not covered here.
+pub struct ScanParams<'a>(&'a generic_record::GenericRecord);
+
+impl<'a> ScanParams<'a> {
+    /// The raw decoded record (query arbitrary labels via its `get_*` methods).
+    pub fn record(&self) -> &'a generic_record::GenericRecord {
+        self.0
+    }
+    pub fn ion_injection_time_ms(&self) -> Option<f64> {
+        self.0
+            .get_f64("Ion Injection Time (ms):")
+            .or_else(|| self.0.get_f64("Ion Inject Time (ms):"))
+    }
+    pub fn charge_state(&self) -> Option<i32> {
+        self.0.get_i32("Charge State:")
+    }
+    pub fn monoisotopic_mz(&self) -> Option<f64> {
+        self.0
+            .get_f64("Monoisotopic M/Z:")
+            .or_else(|| self.0.get_f64("MS2 Isolation M/Z:"))
+            .or_else(|| self.0.get_f64("Isolation Center M/Z:"))
+            .or_else(|| self.0.get_f64("Precursor M/Z:"))
+    }
+    pub fn agc_target(&self) -> Option<i32> {
+        self.0.get_i32("AGC Target:")
+    }
+    pub fn micro_scan_count(&self) -> Option<i32> {
+        self.0.get_i32("Micro Scan Count:")
+    }
+    pub fn master_scan_number(&self) -> Option<i32> {
+        self.0
+            .get_i32("Master Scan Number:")
+            .or_else(|| self.0.get_i32("Master Index:"))
+    }
+    pub fn elapsed_scan_time_s(&self) -> Option<f64> {
+        self.0.get_f64("Elapsed Scan Time (sec):")
+    }
+    pub fn max_ion_time_ms(&self) -> Option<f64> {
+        self.0.get_f64("Max. Ion Time (ms):")
+    }
+    pub fn isolation_width_mz(&self) -> Option<f64> {
+        self.0
+            .get_f64("MS2 Isolation Width:")
+            .or_else(|| self.0.get_f64("MSn Isolation Width:"))
+            .or_else(|| self.0.get_f64("Isolation Width (M/Z):"))
+            .or_else(|| self.0.get_f64("MS2 Isolation Width (M/Z):"))
+    }
+}
+
+fn scan_index_entry_size(version: u32) -> usize {
+    match version {
+        v if v < 64 => 72,
+        64 => 80,
+        _ => 88,
+    }
+}
+
+/// The 4-byte little-endian Adler-32 stored at [CHECKSUM_OFFSET].
+pub fn stored_checksum(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes(bytes[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 4].try_into().unwrap())
+}
+
+/// Compute the Thermo integrity checksum: Adler-32 (seed 0) over the first
+/// `min(len, 10 MiB)` bytes, with the 4-byte checksum field zeroed.
+pub fn compute_checksum(bytes: &[u8]) -> u32 {
+    let n = bytes.len().min(CHECKSUM_LIMIT);
+    let mut buf = bytes[..n].to_vec();
+    for i in CHECKSUM_OFFSET..CHECKSUM_OFFSET + 4 {
+        buf[i] = 0;
+    }
+    adler32_seed0(&buf)
+}
+
+/// Adler-32 with a zero seed (Thermo's non-standard initialisation; matches
+/// `zlib.adler32(data, 0)`).
+fn adler32_seed0(data: &[u8]) -> u32 {
+    const BASE: u32 = 65521;
+    let mut a: u32 = 0;
+    let mut b: u32 = 0;
+    for &x in data {
+        a = (a + x as u32) % BASE;
+        b = (b + a) % BASE;
+    }
+    (b << 16) | a
+}
+
+// ---------------------------------------------------------------------------
+// Robustness guards. Every Thermo failure we hit was a *silent* mis-read or
+// mis-write that round-tripped through our own code (an Exploris run decoded as
+// all-MS1; authored peaks that read back wrong). These check parse/author output
+// against independent invariants instead of trusting self-consistency.
+// ---------------------------------------------------------------------------
+
+/// Result of [`RawFile::scan_event_consistency`] — a parse-level scan-event probe.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScanEventConsistency {
+    /// Scans whose event parsed.
+    pub n_checked: u32,
+    /// MS1 (`ms_order <= 1`) scans seen.
+    pub n_ms1: u32,
+    /// MSn (`ms_order >= 2`) scans seen.
+    pub n_msn: u32,
+    /// Scans whose level <-> isolation relationship is contradictory.
+    pub n_inconsistent: u32,
+    /// Scans in range whose event could not be parsed.
+    pub n_unparsed: u32,
+}
+
+impl ScanEventConsistency {
+    /// Whether the scan-event levels look reliably decoded: at least one scan
+    /// checked, no MSn-without-isolation contradictions, and both MS1 and MSn
+    /// present. A `false` is a *gross* mis-read signature (e.g. a run decoded as
+    /// all-MS1, or MSn scans missing their isolation window).
+    ///
+    /// LIMITATION: this is a cheap smoke test, not a complete validator. A *subtle*
+    /// partial level-swap (some MS2 mislabeled MS1 but still carrying a plausible
+    /// isolation field) satisfies these invariants and passes — catching that needs
+    /// an external reference (a different parser), not self-consistency.
+    pub fn looks_consistent(&self) -> bool {
+        self.n_checked > 0 && self.n_inconsistent == 0 && self.n_ms1 > 0 && self.n_msn > 0
+    }
+}
+
+/// Pure comparison core for [`RawFile::verify_centroids`] — split out so the
+/// round-trip tolerance logic is unit-testable without a file. Compares two
+/// centroid lists as m/z-sorted sets (the stored order is m/z-ascending,
+/// independent of author order). `Ok` iff equal length and every peak matches
+/// within `mz_tol_ppm` (floored at 1e-4 Th) and a small relative+absolute
+/// intensity tolerance.
+fn compare_centroids(got: &[(f64, f32)], want: &[(f64, f32)], mz_tol_ppm: f64) -> Result<(), String> {
+    if !mz_tol_ppm.is_finite() || mz_tol_ppm < 0.0 {
+        return Err(format!("invalid m/z tolerance {} ppm", mz_tol_ppm));
+    }
+    if got.len() != want.len() {
+        return Err(format!("read back {} centroids, authored {}", got.len(), want.len()));
+    }
+    // Reject non-finite values up front: a NaN m/z or intensity would otherwise slip
+    // through every `>` comparison (NaN comparisons are false) and pass silently.
+    for (label, list) in [("read-back", got), ("authored", want)] {
+        for (i, p) in list.iter().enumerate() {
+            if !p.0.is_finite() || !p.1.is_finite() {
+                return Err(format!("{} peak {}: non-finite m/z {} / intensity {}", label, i, p.0, p.1));
+            }
+        }
+    }
+    // Sort by (m/z, intensity) — the intensity tie-break makes the pairwise match
+    // deterministic when two peaks share an m/z (otherwise sort order, hence the
+    // verdict, would depend on input order). Non-finite already rejected, so unwrap is safe.
+    let key = |a: &&(f64, f32), b: &&(f64, f32)| {
+        a.0.partial_cmp(&b.0).unwrap().then(a.1.partial_cmp(&b.1).unwrap())
+    };
+    let mut g: Vec<&(f64, f32)> = got.iter().collect();
+    let mut w: Vec<&(f64, f32)> = want.iter().collect();
+    g.sort_by(key);
+    w.sort_by(key);
+    for (i, (gp, wp)) in g.iter().zip(w.iter()).enumerate() {
+        let mz_tol = (wp.0 * mz_tol_ppm * 1e-6).max(1e-4);
+        if (gp.0 - wp.0).abs() > mz_tol {
+            return Err(format!(
+                "peak {}: m/z read back {:.5} != authored {:.5} (tol {:.4} Th)",
+                i, gp.0, wp.0, mz_tol
+            ));
+        }
+        let int_tol = wp.1.abs() * 1e-3 + 1e-3;
+        if (gp.1 - wp.1).abs() > int_tol {
+            return Err(format!(
+                "peak {}: intensity read back {} != authored {}",
+                i, gp.1, wp.1
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl RawFile {
+    /// Robustness (reader): scan-event level/isolation self-consistency over the
+    /// first `k` scans (clamped to the file). Two parse-level invariants a correctly
+    /// decoded file satisfies: every MSn scan carries an isolation window, and both
+    /// MS1 and MSn levels are present. A violation (e.g. a run decoded as all-MS1, or
+    /// MSn scans missing their isolation window) means the scan-event preamble was
+    /// mis-decoded for this file's revision (the silent Exploris-class mis-read). We
+    /// deliberately do NOT assume MS1 lacks an isolation field — real MS1 events carry
+    /// a non-zero center, so that direction false-positives. Parse-level only: no
+    /// DIA/DDA or "useful template" judgement; that belongs to the consumer.
+    pub fn scan_event_consistency(&self, k: u32) -> ScanEventConsistency {
+        let mut c = ScanEventConsistency::default();
+        if k == 0 || self.last_scan < self.first_scan {
+            return c;
+        }
+        let span = self.last_scan - self.first_scan + 1;
+        let n = k.min(span);
+        for s in self.first_scan..(self.first_scan + n) {
+            let ev = match self.scan_event(s) {
+                Some(e) => e,
+                None => {
+                    c.n_unparsed += 1;
+                    continue;
+                }
+            };
+            c.n_checked += 1;
+            let has_iso = ev.isolation_center > 0.0 && ev.isolation_width > 0.0;
+            if ev.ms_order <= 1 {
+                // NB: a survey MS1's isolation field is NOT reliably zero across
+                // instruments — real MS1 events carry a non-zero center — so we do
+                // not flag "MS1 with isolation" (it false-positives on valid files).
+                c.n_ms1 += 1;
+            } else {
+                c.n_msn += 1;
+                if !has_iso {
+                    c.n_inconsistent += 1; // an MSn without an isolation window is mis-decoded
+                }
+            }
+        }
+        c
+    }
+
+    /// Robustness (writer): re-read `scan`'s centroids from the (just-authored)
+    /// in-memory bytes and verify they round-trip to `expected` within tolerance —
+    /// catching an authoring/encoding bug at write time instead of in a downstream
+    /// search. Order-independent (compares m/z-sorted sets).
+    pub fn verify_centroids(
+        &self,
+        scan: u32,
+        expected: &[(f64, f32)],
+        mz_tol_ppm: f64,
+    ) -> io::Result<()> {
+        let got: Vec<(f64, f32)> = self
+            .centroid_peaks(scan)
+            .iter()
+            .map(|p| (p.mz, p.intensity))
+            .collect();
+        compare_centroids(&got, expected, mz_tol_ppm)
+            .map_err(|m| err(&format!("write read-back failed for scan {}: {}", scan, m)))
+    }
+
+    /// Like [`RawFile::author_centroids`], but immediately verifies the round-trip:
+    /// the authored peaks must read back within `mz_tol_ppm` / intensity tolerance,
+    /// or the call errors instead of silently emitting a malformed scan.
+    pub fn author_centroids_verified(
+        &mut self,
+        scan: u32,
+        peaks: &[(f64, f32)],
+        mz_tol_ppm: f64,
+    ) -> io::Result<()> {
+        self.author_centroids(scan, peaks)?;
+        self.verify_centroids(scan, peaks, mz_tol_ppm)
+    }
+}
+
+#[cfg(test)]
+mod repack_index_convention_tests {
+    use super::{scan_index_entry_size, RawFile};
+
+    // rev>=64 zeroes the scan-index Offset32 mirror (@ +0); the 64-bit Offset (@ +72)
+    // is authoritative. A grow-repack must PRESERVE that convention — not fabricate a
+    // non-zero Offset32 — while keeping the 64-bit offsets contiguous and correct.
+    #[test]
+    fn repack_preserves_offset32_zero_and_offsets_contiguous() {
+        let path = format!("{}/tests/data/small2.RAW", env!("CARGO_MANIFEST_DIR"));
+        let before = RawFile::open(&path).unwrap();
+        let esz = scan_index_entry_size(before.version);
+        let six0 = before.scan_index_addr as usize;
+        // Precondition: the fixture really does zero every Offset32.
+        assert!(
+            (0..before.index.len()).all(|j| {
+                let ea = six0 + j * esz;
+                u32::from_le_bytes(before.bytes[ea..ea + 4].try_into().unwrap()) == 0
+            }),
+            "fixture precondition: all Offset32 are zero on rev>=64"
+        );
+
+        let mut rf = RawFile::open(&path).unwrap();
+        let n = before.centroid_peaks(2).len();
+        let grown: Vec<(f64, f32)> =
+            (0..n * 3).map(|i| (250.0 + i as f64 * 0.5, 700.0 + i as f32)).collect();
+        rf.repack_centroids(2, &grown).unwrap();
+
+        // Independent relocation check vs the ORIGINAL file: growing scan idx=2 by
+        // `delta` bytes must leave entries 0..=2 at their original offset and shift
+        // every later entry by exactly `delta` — proving the math, not just that disk
+        // agrees with the in-memory model.
+        let idx = (2 - before.first_scan) as usize; // scan number 2 -> index slot
+        let delta = rf.index[idx].data_packet_size as i64 - before.index[idx].data_packet_size as i64;
+        assert!(delta > 0, "test expects a grow (delta={delta})");
+        let six = rf.scan_index_addr as usize;
+        for j in 0..rf.index.len() {
+            let want = if j <= idx {
+                before.index[j].offset
+            } else {
+                (before.index[j].offset as i64 + delta) as u64
+            };
+            assert_eq!(rf.index[j].offset, want, "entry {j} offset relocation wrong");
+            let ea = six + j * esz;
+            assert_eq!(
+                u32::from_le_bytes(rf.bytes[ea..ea + 4].try_into().unwrap()),
+                0,
+                "Offset32 must stay zero after repack (entry {j})"
+            );
+            assert_eq!(
+                u64::from_le_bytes(rf.bytes[ea + 72..ea + 80].try_into().unwrap()),
+                rf.index[j].offset,
+                "Offset(+72) on disk mismatch (entry {j})"
+            );
+        }
+    }
+
+    // Guardrail for the format assumption: none of the 10 u32 slots preceding the
+    // run-header 64-bit pointers is a live address mirror (low-32 of a section pointer)
+    // on the supported rev>=64 fixtures — so leaving them untouched on repack is safe.
+    #[test]
+    fn runheader_addr32_slots_are_not_live_mirrors() {
+        for path in [format!("{}/tests/data/small2.RAW", env!("CARGO_MANIFEST_DIR"))] {
+            let rf = RawFile::open(&path).unwrap();
+            let rh = rf.ms_runheader_addr as usize;
+            let section_low32: Vec<u32> = super::RH_SECTION_PTRS
+                .iter()
+                .map(|&o| u64::from_le_bytes(rf.bytes[rh + o..rh + o + 8].try_into().unwrap()) as u32)
+                .filter(|&v| v != 0)
+                .collect();
+            for slot in 0..10 {
+                let mo = rh + 7368 + slot * 4;
+                let v = u32::from_le_bytes(rf.bytes[mo..mo + 4].try_into().unwrap());
+                assert!(
+                    v == 0 || !section_low32.contains(&v),
+                    "{path}: Addr32 slot {slot} ({v:#x}) looks like a live section mirror"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod centroid_width_tests {
+    use super::{centroid_record_width, peak_is_wide};
+
+    #[test]
+    fn exact_equations() {
+        // narrow: 1 + 2*count words
+        assert_eq!(centroid_record_width(1 + 2 * 732, 732), Some(8)); // real QE-HF MS2
+        assert_eq!(centroid_record_width(1, 0), Some(8)); // empty narrow (1 word: just count)
+        // wide: 1 + 3*count words
+        assert_eq!(centroid_record_width(1 + 3 * 732, 732), Some(12));
+        assert_eq!(centroid_record_width(1 + 3 * 1, 1), Some(12));
+    }
+
+    #[test]
+    fn ambiguous_is_none_not_a_guess() {
+        // off by a few words (e.g. trailing descriptor/unknown bytes counted) must NOT
+        // be rounded into a class by integer division — it is unrecognized.
+        assert_eq!(centroid_record_width(1 + 2 * 732 + 5, 732), None);
+        assert_eq!(centroid_record_width(1 + 3 * 732 - 1, 732), None);
+        assert_eq!(centroid_record_width(0, 10), None);
+    }
+
+    #[test]
+    fn peak_is_wide_matches_width() {
+        assert!(!peak_is_wide(1 + 2 * 100, 100)); // narrow
+        assert!(peak_is_wide(1 + 3 * 100, 100)); // wide
+        assert!(!peak_is_wide(1 + 2 * 100 + 3, 100)); // ambiguous -> narrow (lenient read)
+    }
+}
+
+#[cfg(test)]
+mod robustness_tests {
+    use super::{compare_centroids, ScanEventConsistency};
+
+    #[test]
+    fn compare_centroids_matches_sorted_sets() {
+        // author order differs from stored (m/z-ascending) order -> still matches
+        let want = [(500.25_f64, 10.0_f32), (175.12, 100.0), (300.50, 50.0)];
+        let got = [(175.12_f64, 100.0_f32), (300.50, 50.0), (500.25, 10.0)];
+        assert!(compare_centroids(&got, &want, 5.0).is_ok());
+    }
+
+    #[test]
+    fn compare_centroids_rejects_count_mismatch() {
+        let want = [(175.12_f64, 100.0_f32), (300.50, 50.0)];
+        let got = [(175.12_f64, 100.0_f32)];
+        assert!(compare_centroids(&got, &want, 5.0).is_err());
+    }
+
+    #[test]
+    fn compare_centroids_mz_tolerance() {
+        let want = [(500.000_f64, 10.0_f32)];
+        assert!(compare_centroids(&[(500.0100, 10.0)], &want, 5.0).is_err()); // ~20 ppm: reject
+        assert!(compare_centroids(&[(500.0010, 10.0)], &want, 5.0).is_ok()); //  ~2 ppm: accept
+    }
+
+    #[test]
+    fn compare_centroids_rejects_intensity_drift() {
+        let want = [(500.0_f64, 100.0_f32)];
+        assert!(compare_centroids(&[(500.0, 150.0)], &want, 5.0).is_err());
+    }
+
+    #[test]
+    fn compare_centroids_rejects_non_finite() {
+        // NaN/inf must NOT slip through (a `>` comparison against NaN is false).
+        let want = [(500.0_f64, 100.0_f32)];
+        assert!(compare_centroids(&[(f64::NAN, 100.0)], &want, 5.0).is_err());
+        assert!(compare_centroids(&[(500.0, f32::INFINITY)], &want, 5.0).is_err());
+    }
+
+    #[test]
+    fn compare_centroids_rejects_bad_tolerance() {
+        let want = [(500.0_f64, 100.0_f32)];
+        assert!(compare_centroids(&[(500.0, 100.0)], &want, f64::NAN).is_err());
+        assert!(compare_centroids(&[(500.0, 100.0)], &want, -5.0).is_err());
+    }
+
+    #[test]
+    fn compare_centroids_handles_duplicate_mz_by_intensity_tiebreak() {
+        // two peaks at the same m/z, different intensities, given in opposite orders
+        let want = [(500.0_f64, 10.0_f32), (500.0, 90.0)];
+        let got = [(500.0_f64, 90.0_f32), (500.0, 10.0)];
+        assert!(compare_centroids(&got, &want, 5.0).is_ok());
+        // genuinely different intensities at the shared m/z must still fail
+        let bad = [(500.0_f64, 90.0_f32), (500.0, 11.0)];
+        assert!(compare_centroids(&bad, &want, 5.0).is_err());
+    }
+
+    #[test]
+    fn scan_event_consistency_verdict() {
+        type S = ScanEventConsistency;
+        let ok = S { n_checked: 10, n_ms1: 1, n_msn: 9, n_inconsistent: 0, n_unparsed: 0 };
+        assert!(ok.looks_consistent());
+        // all-MS1 (no MSn) -> the Exploris mis-read signature
+        let all_ms1 = S { n_checked: 10, n_ms1: 10, n_msn: 0, n_inconsistent: 0, n_unparsed: 0 };
+        assert!(!all_ms1.looks_consistent());
+        // a level<->isolation contradiction
+        let contra = S { n_checked: 10, n_ms1: 1, n_msn: 9, n_inconsistent: 3, n_unparsed: 0 };
+        assert!(!contra.looks_consistent());
+        // nothing parsed
+        assert!(!S::default().looks_consistent());
+    }
+
+    #[test]
+    fn scan_event_consistency_on_real_fixture() {
+        // Opt-in: set THERMORAWFILE_TEST_RAW to a known-good DIA .raw to exercise the
+        // reader-side probe end to end. Skipped when unset (CI has no vendor fixtures).
+        let path = match std::env::var("THERMORAWFILE_TEST_RAW") {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let rf = super::RawFile::open(&path).expect("open fixture");
+        let c = rf.scan_event_consistency(2000);
+        assert!(c.looks_consistent(), "fixture scan-events look mis-decoded: {:?}", c);
+    }
+}

@@ -72,6 +72,14 @@ export function crible_mixed_radix(item_masses: Float64Array, item_charges: Floa
 */
 export function crible_heap(item_masses: Float64Array, item_charges: Float64Array, caps: Uint32Array, max_mass: number, limit: number): Float64Array;
 /**
+* Parse a Thermo .raw file and return centroid peaks for each scan.
+* Returns flat arrays for easy WASM/JS interop.
+* @param {Uint8Array} data
+* @param {any} options
+* @returns {any}
+*/
+export function parse_thermo_raw(data: Uint8Array, options: any): any;
+/**
 * L'arbre couvrant de poids minimal sur des points MESURÉS.
 *
 * `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
@@ -181,6 +189,21 @@ export function trim_apply(core: Float64Array, stride: number, low_bound: number
 */
 export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
 /**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core: Float64Array, mz: number): Float64Array;
+/**
 * A z READ FROM THE DATA, which is a different thing from the 3σ convention.
 *
 * The MAD is a spread; the cut has to be somewhere. When the widths form one
@@ -266,21 +289,6 @@ export function zeros_matrix(n: number): Int32Array;
 * @returns {Float64Array}
 */
 export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
-/**
-* Applies the F-KMD transform to a canonical core.
-*
-* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
-* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
-* without a second reshape.
-*
-* The output y is the DEFECT, and the input y (the intensities) is not carried
-* over: the caller asked for one value per point, and the defect is that value.
-* Intensities stay reachable on the input wave, which the caller still holds.
-* @param {Float64Array} core
-* @param {number} mz
-* @returns {Float64Array}
-*/
-export function fkmd(core: Float64Array, mz: number): Float64Array;
 /**
 * Ce que rend `forest_grow`.
 *
@@ -550,6 +558,7 @@ export interface InitOutput {
   readonly reading_counts: (a: number, b: number) => void;
   readonly crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
   readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+  readonly parse_thermo_raw: (a: number, b: number, c: number, d: number) => void;
   readonly __wbg_forest_free: (a: number) => void;
   readonly forest_edge_u: (a: number, b: number) => void;
   readonly forest_edge_v: (a: number, b: number) => void;
@@ -609,6 +618,7 @@ export interface InitOutput {
   readonly trimresult_low_bound: (a: number) => number;
   readonly trimresult_high_bound: (a: number) => number;
   readonly trimresult_kept_count: (a: number) => number;
+  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
   readonly __wbg_radiodecision_free: (a: number) => void;
   readonly radiodecision_points_x: (a: number, b: number) => void;
   readonly radiodecision_points_y: (a: number, b: number) => void;
@@ -628,11 +638,10 @@ export interface InitOutput {
   readonly sieve: (a: number) => void;
   readonly zeros_matrix: (a: number, b: number) => void;
   readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
-  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
-  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_exn_store: (a: number) => void;
 }
 

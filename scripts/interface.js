@@ -946,6 +946,355 @@ class DelimitedTextNode extends NodeWithAccordion{
     }
 }
 
+class ThermoRawNode extends NodeWithAccordion{
+    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+        super(title,[],[[]],origin,destinationFlow,position)
+        this.parameters.source={
+            fileName:"",
+            raw:new Uint8Array(0),
+            spectra:[],
+            selectedScan:0
+        }
+    }
+    registered(e){
+        if(e.detail.msg.caster !== this){
+            return
+        }
+        super.registered(e)
+        this.renderAccordion()
+    }
+    serializeState(){
+        return {
+            source:this.parameters.source,
+            status:this.status
+        }
+    }
+    restoreState(state){
+        if(state?.source){
+            this.parameters.source={...state.source}
+        }
+        if(this.parameters.source.spectra?.length){
+            const waves=this.parameters.source.spectra.map((spec,idx)=>{
+                if(spec.mz.length===0) return null
+                return Wave.fromCoordinates(
+                    new Float64Array(spec.mz),
+                    new Float64Array(spec.intensity),
+                    {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel},
+                    ["m/z","intensity"]
+                )
+            }).filter(w=>w!==null)
+            this.outputs[0]=waves
+        }else{
+            this.outputs[0]=[]
+        }
+        this.status=state?.status??(this.parameters.source.spectra?.length?"resolved":"floating")
+        this.renderAccordion()
+    }
+    async startResolve(){
+        if(!this.parameters.source.spectra.length){
+            this.outputs[0]=[]
+            this.status="floating"
+            return
+        }
+        console.log("[ThermoRawNode] startResolve, spectra:", this.parameters.source.spectra)
+        const waves=this.parameters.source.spectra.map((spec,idx)=>{
+            console.log("[ThermoRawNode] spec", idx, ":", spec)
+            if(!spec.mz || spec.mz.length===0) return null
+            return Wave.fromCoordinates(
+                new Float64Array(spec.mz),
+                new Float64Array(spec.intensity),
+                {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel},
+                ["m/z","intensity"]
+            )
+        }).filter(w=>w!==null)
+        console.log("[ThermoRawNode] waves:", waves)
+        this.outputs[0]=waves
+        this.status="resolved"
+    }
+    clear(){
+        this.updateLabel("")
+        this.parameters.source.fileName=""
+        this.parameters.source.raw=new Uint8Array(0)
+        this.parameters.source.spectra=[]
+        this.parameters.source.selectedScan=0
+        this.outputs[0]=[]
+        dispatchEvent(this.events.broadcast.nodeStatusChanged.call(this,"floating"))
+        this.renderAccordion()
+    }
+    updateLabel(fileName){
+        const label=fileName||"Thermo .raw file"
+        this.title=label
+        this.events.label=label
+        this.DOMelt.querySelector("#nodeTitle").textContent=label
+        if(this.accordion){
+            this.accordion.title=label
+            this.accordion.DOMelt.handler.querySelector(".accordion.handler.label").textContent=label
+        }
+        this.fitWidthToTitle()
+}
+        renderAccordion(){
+            if(!this.accordion){
+                return
+            }
+            this.accordion.DOMelt.content.replaceChildren()
+            if(this.status==="resolved"){
+                this.accordion.setSizingMode("viewport",{height:360})
+                const spectra=this.parameters.source.spectra
+                const scanCount=spectra.length
+                const opts=this.parameters.source.options||{}
+                const waves=this.outputs[0]||[]
+                const totalPeaks=waves.reduce((sum,w)=>sum+(w.dims?w.dims[0]:0),0)
+                
+                const loadedScans = String(spectra.filter(s=>s.mz.length>0).length)
+                const scanRange = (opts.firstScan||1) + " - " + (opts.lastScan||"all")
+                const msLevel = opts.msLevelFilter===0?"All":("MS"+opts.msLevelFilter)
+                const rtRange = (opts.rtMin||"auto") + " - " + (opts.rtMax||"auto") + " min"
+                
+                const summary=CE("div",{style:{margin:"10px",padding:"10px",border:"1px solid #444",borderRadius:"5px"}},[
+                    CE("h4",{style:{margin:"0 0 10px 0"}},["Loaded: "+this.parameters.source.fileName]),
+                    CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:"10px"}},[
+                        CE("div",{},[CE("strong",{},["Scans loaded:"]),CE("span",{style:{marginLeft:"5px"}},[loadedScans])]),
+                        CE("div",{},[CE("strong",{},["Total peaks:"]),CE("span",{style:{marginLeft:"5px"}},[String(totalPeaks)])]),
+                        CE("div",{},[CE("strong",{},["Data type:"]),CE("span",{style:{marginLeft:"5px"}},[opts.dataType||"auto"])]),
+                        CE("div",{},[CE("strong",{},["Scan range:"]),CE("span",{style:{marginLeft:"5px"}},[scanRange])]),
+                        CE("div",{},[CE("strong",{},["MS level:"]),CE("span",{style:{marginLeft:"5px"}},[msLevel])]),
+                        CE("div",{},[CE("strong",{},["RT range:"]),CE("span",{style:{marginLeft:"5px"}},[rtRange])]),
+                    ])
+                ])
+                
+                const scanInfo=spectra.map((spec,idx)=>({
+                    scanNumber:spec.scanNumber,
+                    rt:spec.rt,
+                    msLevel:spec.msLevel,
+                    peakCount:spec.mz.length
+                }))
+                const content=CE("div",{style:{
+                    display:"grid",
+                    "grid-template-rows":"auto minmax(0, 1fr) auto",
+                    "min-height":"0",
+                    height:"100%",
+                    overflow:"hidden"
+                }},[])
+                this.accordion.DOMelt.content.appendChild(content)
+                content.appendChild(summary)
+                const table=new Table(scanInfo,["Scan #","RT (min)","MS Level","Peaks"],this.origin,content,{mutable:false})
+                content.appendChild(CE("button",{pilot:this,handleClick:e=>e.target.pilot.clear()},["Clear"]))
+                return
+            }
+            
+            const previewStyle={
+                margin:"5px",
+                borderRadius:"5px",
+                border:"1px solid white",
+                padding:"5px",
+                minHeight:"0",
+                overflow:"auto"
+            }
+            const fileInfo=CE("div",{style:previewStyle},[
+                this.parameters.source.fileName
+                    ?`File: ${this.parameters.source.fileName} (${(this.parameters.source.raw.length/1024/1024).toFixed(2)} MB)`
+                    :"No file loaded"
+            ])
+            const dropzone=CE("div",{className:"dropzone"},["Drop a Thermo .raw file here"])
+            dropzone.addEventListener("dragover",e=>{
+                e.preventDefault()
+                dropzone.classList.add("dragover")
+            })
+            dropzone.addEventListener("dragleave",()=>dropzone.classList.remove("dragover"))
+            dropzone.addEventListener("drop",e=>{
+                e.preventDefault()
+                dropzone.classList.remove("dragover")
+                this.readFile(e.dataTransfer.files[0])
+            })
+            const loader=CE("input",{type:"file",accept:".raw",handleChange:e=>this.readFile(e.target.files[0])},["Select a .raw file"])
+            
+            if(!this.parameters.source.raw.length){
+                // No file yet: show file selection
+                this.accordion.DOMelt.content.appendChild(CE("div",{style:{
+                    display:"grid",
+                    gap:"5px",
+                    minHeight:"0",
+                    height:"100%",
+                    overflow:"hidden",
+                    gridTemplateRows:"auto auto auto"
+                }},[
+                    fileInfo,
+                    dropzone,
+                    loader
+                ]))
+                return
+            }
+            
+            // File loaded but not parsed: show scan metadata + options
+            if(!this.parameters.source.scanMetadata){
+                this.quickScanMetadata()
+            }
+            
+            const meta=this.parameters.source.scanMetadata
+            if(!meta){
+                const loading=CE("div",{style:previewStyle},["Scanning file metadata..."])
+                this.accordion.DOMelt.content.appendChild(CE("div",{style:{
+                    display:"grid",gap:"5px"
+                }},[fileInfo,loading]))
+                return
+            }
+            
+            const options=this.parameters.source.options||{
+                dataType:"auto",
+                firstScan:meta.firstScan,
+                lastScan:meta.lastScan,
+                msLevelFilter:0,
+                rtMin:meta.rtMin,
+                rtMax:meta.rtMax
+            }
+            this.parameters.source.options=options
+            
+            const dataTypeSelect=CE("select",{value:options.dataType,handleInput:e=>{
+                options.dataType=e.target.value
+            }},[
+                CE("option",{value:"auto"},["Auto (centroid -> profile)"]),
+                CE("option",{value:"centroid"},["Centroid only"]),
+                CE("option",{value:"profile"},["Profile only (centroided)"])
+            ])
+            
+            const firstScanInput=CE("input",{type:"number",min:meta.firstScan,max:meta.lastScan,value:options.firstScan,style:{width:"80px"},handleInput:e=>{
+                options.firstScan=Math.max(meta.firstScan,Math.min(meta.lastScan,parseInt(e.target.value)||meta.firstScan))
+            }},[])
+            const lastScanInput=CE("input",{type:"number",min:meta.firstScan,max:meta.lastScan,value:options.lastScan||meta.lastScan,style:{width:"80px"},handleInput:e=>{
+                options.lastScan=Math.max(meta.firstScan,Math.min(meta.lastScan,parseInt(e.target.value)||meta.lastScan))
+            }},[])
+            
+            const msLevelsPresent=meta.msLevelsPresent||[1]
+            const msLevelOptions=[CE("option",{value:"0"},["All MS levels"])]
+            for(const ml of msLevelsPresent){
+                msLevelOptions.push(CE("option",{value:String(ml)},[`MS${ml} only`]))
+            }
+            const msLevelSelect=CE("select",{value:String(options.msLevelFilter),handleInput:e=>{
+                options.msLevelFilter=parseInt(e.target.value)
+            }},msLevelOptions)
+            
+            const rtMinInput=CE("input",{type:"number",step:"0.01",min:meta.rtMin,max:meta.rtMax,value:options.rtMin||"",style:{width:"80px"},placeholder:`${meta.rtMin.toFixed(2)}`,handleInput:e=>{
+                const v=parseFloat(e.target.value)
+                options.rtMin=isNaN(v)?0:Math.max(meta.rtMin,Math.min(meta.rtMax,v))
+            }},[])
+            const rtMaxInput=CE("input",{type:"number",step:"0.01",min:meta.rtMin,max:meta.rtMax,value:options.rtMax||"",style:{width:"80px"},placeholder:`${meta.rtMax.toFixed(2)}`,handleInput:e=>{
+                const v=parseFloat(e.target.value)
+                options.rtMax=isNaN(v)?0:Math.max(meta.rtMin,Math.min(meta.rtMax,v))
+            }},[])
+            
+            const loadButton=CE("button",{pilot:this,handleClick:async e=>{
+                e.target.disabled=true
+                e.target.textContent="Loading..."
+                await e.target.pilot.loadRawFile()
+                e.target.disabled=false
+                e.target.textContent="Load spectra"
+                e.target.pilot.renderAccordion()
+            }},["Load spectra"])
+            
+            const metaInfo=CE("div",{style:previewStyle},[
+                `Scans: ${meta.firstScan}-${meta.lastScan} (${meta.scanCount} total) | `+
+                `RT: ${meta.rtMin.toFixed(2)}-${meta.rtMax.toFixed(2)} min | `+
+                `MS levels: ${msLevelsPresent.join(", ")} | `+
+                `Centroid scans: ${meta.centroidScanCount} | Profile scans: ${meta.profileScanCount}`
+            ])
+            
+            this.accordion.DOMelt.content.appendChild(CE("div",{style:{
+                display:"grid",
+                gap:"5px",
+                minHeight:"0",
+                height:"100%",
+                overflow:"hidden",
+                gridTemplateRows:"auto auto auto auto auto auto auto auto auto"
+            }},[
+                fileInfo,
+                metaInfo,
+                CE("label",{},["Data type",dataTypeSelect]),
+                CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px"}},["First scan",firstScanInput,"Last scan",lastScanInput]),
+                CE("label",{},["MS level filter",msLevelSelect]),
+                CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px"}},["RT min (min)",rtMinInput,"RT max (min)",rtMaxInput]),
+                loadButton
+            ]))
+        }
+    readFile(file){
+        if(!file||!file.name.endsWith(".raw")){
+            return
+        }
+        const reader=new FileReader()
+        reader.onload=()=>{
+            this.parameters.source.fileName=file.name
+            this.updateLabel(file.name)
+            this.parameters.source.raw=new Uint8Array(reader.result)
+            this.parameters.source.scanMetadata=null
+            this.renderAccordion()
+            this.quickScanMetadata()
+        }
+        reader.readAsArrayBuffer(file)
+    }
+    quickScanMetadata(){
+        if(!this.parameters.source.raw.length) return
+        import("./workerPool.js").then(({computePool})=>{
+            computePool.run("parseThermoRaw",{
+                data:Array.from(this.parameters.source.raw),
+                options:{dataType:"auto",firstScan:1,lastScan:0,msLevelFilter:0,rtMin:0,rtMax:0,metadataOnly:true}
+            }).then(result=>{
+                if(result.scanMetadata){
+                    this.parameters.source.scanMetadata=result.scanMetadata
+                    this.renderAccordion()
+                }
+            }).catch(err=>{
+                console.error("Quick scan failed:",err)
+            })
+        })
+    }
+    async loadRawFile(){
+        if(!this.parameters.source.raw.length){
+            return
+        }
+        const {computePool}=await import("./workerPool.js")
+        const options=this.parameters.source.options||{
+            dataType:"auto",
+            firstScan:1,
+            lastScan:0,
+            msLevelFilter:0,
+            rtMin:0,
+            rtMax:0
+        }
+        try{
+            const result=await computePool.run("parseThermoRaw",{
+                data:Array.from(this.parameters.source.raw),
+                options:options
+            })
+            console.log("[ThermoRawNode] worker result:", result)
+            if(result.spectra&&result.spectra.length>0){
+                this.parameters.source.spectra=result.spectra.map(s=>({
+                    mz:s.mz,
+                    intensity:s.intensity,
+                    scanNumber:s.scan_number,
+                    rt:s.rt,
+                    msLevel:s.ms_level
+                }))
+            }else{
+                this.parameters.source.spectra=[]
+            }
+            await this.startResolve()
+        }catch(err){
+            console.error("Failed to parse Thermo .raw file:",err)
+            this.parameters.source.spectra=[]
+            this.outputs[0]=[]
+            this.status="floating"
+        }
+    }
+    suicide(options={}){
+        super.suicide(options)
+    }
+    restoreAfterImport(){
+        super.restoreAfterImport()
+        if(this.parameters.source.spectra?.length){
+            this.startResolve().then(()=>this.renderAccordion())
+        }
+    }
+}
+
 /* classifier: a line through the origin, death = slope Ã— birth. Superlevel
    pairs live strictly below the diagonal (death < birth), so the slope is
    clamped into [MIN, MAX], with MAX just below 1. */
@@ -11793,6 +12142,7 @@ const NODE_CONSTRUCTORS={
     NodeWithRightAccordionGraph,
     SimpleXYPlotNode,
     DelimitedTextNode,
+    ThermoRawNode,
     Operation,
     //the three names the peak-picker has carried: a session saved before the
     //merge names the old nodes, and an unknown type would silently become a
@@ -11872,7 +12222,7 @@ function createNodeForHistory(origin,flow,data){
    the file import and the reload all come through here rather than each picking
    its own spelling. */
 const SELF_SHAPED_NODES=new Set([
-    DelimitedTextNode,Operation,PeakPickingNode,TrimmerNode,FKMDNode,
+    DelimitedTextNode,ThermoRawNode,Operation,PeakPickingNode,TrimmerNode,FKMDNode,
     //ChatNode builds its own (empty) inputs and outputs, so it takes the
     //(title, app, flow, position) signature. Left out of this set, a reload
     //would call it with five arguments and its slots would be the App.
@@ -13046,6 +13396,15 @@ class MainMenu extends Menu{
                     }}}))
                 })
             },
+            importThermoRaw(e){
+                origin.loadThermoRaw(source=>{
+                    dispatchEvent(new CustomEvent('createNode',{detail:{msg:{
+                        title:source.fileName||'Thermo .raw file',
+                        type:'thermoRaw',
+                        source
+                    }}}))
+                })
+            },
             msConvert(e){origin.msConvert()},
             undo(e){origin.history.undo()},
             redo(e){origin.history.redo()},
@@ -13225,6 +13584,21 @@ class MainFlowMenu extends Menu{
                                 {x:180,y:10}
                             )
                             break
+                        case "thermoRaw": {
+                            //self-shaped: no inputs, one multiplexed output
+                            node = new ThermoRawNode(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            if(source){
+                                node.parameters.source=source
+                                node.updateLabel(source.fileName)
+                                node.loadRawFile().then(()=>node.renderAccordion?.())
+                            }
+                            break
+                        }
                         case "random": {
                             const inputs = []
                             const outputs = []
@@ -17301,6 +17675,117 @@ class App{
             command
         ])
         DelimitedTextLoader.DOMelt.content.appendChild(loaderContainer)
+    }
+    loadThermoRaw(onValidate){
+        let ThermoRawLoader=new Dialog("Load Thermo .raw file",this,this.main)
+        let dataVessel={
+            fileName:"",
+            raw:new Uint8Array(0)
+        }
+        const options={
+            dataType:"auto",
+            firstScan:1,
+            lastScan:0,
+            msLevelFilter:0,
+            rtMin:0,
+            rtMax:0
+        }
+        const validate=()=>{
+            if(!dataVessel.raw.length){
+                this.notice?.("No file selected","Please select a Thermo .raw file first.")
+                return
+            }
+            const source={
+                fileName:dataVessel.fileName||"",
+                raw:dataVessel.raw,
+                options:options
+            }
+            if(onValidate){
+                onValidate(source)
+            }
+            ThermoRawLoader.DOMelt.dismisser.click()
+        }
+        const readFile=(file,data)=>{
+            if (!file || !file.name.endsWith(".raw")) {
+                return
+            }
+            data.reader = new FileReader()
+            data.reader.onload = ()=>{
+                data.fileName=file.name
+                data.raw=new Uint8Array(data.reader.result)
+                updatePreview(data)
+            }
+            data.reader.readAsArrayBuffer(file)
+        }
+        const readSingleFile=(e,data)=>{
+            readFile(e.target.files[0],data)
+        }
+        const updatePreview=(vessel)=>{
+            fileInfo.textContent=vessel.fileName
+                ?`File: ${vessel.fileName} (${(vessel.raw.length/1024/1024).toFixed(2)} MB)`
+                :"No file loaded"
+        }
+        const dropzone=CE('div',{className:"dropzone"},["Drop a Thermo .raw file here"])
+        dropzone.addEventListener("dragover",(e)=>{
+            e.preventDefault()
+            dropzone.classList.add("dragover")
+        })
+        dropzone.addEventListener("dragleave",()=>{
+            dropzone.classList.remove("dragover")
+        })
+        dropzone.addEventListener("drop",(e)=>{
+            e.preventDefault()
+            dropzone.classList.remove("dragover")
+            readFile(e.dataTransfer.files[0],dataVessel)
+        })
+        const loaderElement=CE('input',{type:"file",accept:".raw",handleChange:(e)=>{readSingleFile(e,dataVessel)}},["Select a .raw file"])
+        let fileInfo=CE('div',{style:{margin:"5px",padding:"5px",border:"1px solid white",borderRadius:"5px"}},["No file loaded"])
+        
+        const dataTypeSelect=CE("select",{value:options.dataType,handleInput:e=>{
+            options.dataType=e.target.value
+        }},[
+            CE("option",{value:"auto"},["Auto (centroid -> profile)"]),
+            CE("option",{value:"centroid"},["Centroid only"]),
+            CE("option",{value:"profile"},["Profile only (centroided)"])
+        ])
+        
+        const firstScanInput=CE("input",{type:"number",min:1,value:options.firstScan,style:{width:"80px"},handleInput:e=>{
+            options.firstScan=Math.max(1,parseInt(e.target.value)||1)
+        }},[])
+        const lastScanInput=CE("input",{type:"number",min:0,value:options.lastScan,style:{width:"80px"},handleInput:e=>{
+            options.lastScan=Math.max(0,parseInt(e.target.value)||0)
+        }},[])
+        const msLevelSelect=CE("select",{value:String(options.msLevelFilter),handleInput:e=>{
+            options.msLevelFilter=parseInt(e.target.value)
+        }},[
+            CE("option",{value:"0"},["All MS levels"]),
+            CE("option",{value:"1"},["MS1 only"]),
+            CE("option",{value:"2"},["MS2 only"]),
+            CE("option",{value:"3"},["MS3 only"])
+        ])
+        
+        const validator=CE('button',{handleClick:(e)=>{validate()}},["Load"])
+        const command=CE('div',{width:"100%"},[
+            CE('div',{style:{"text-align":"right"}},[validator])
+        ])
+        const loaderContainer=CE('div',{
+            style:{
+                width:"100%",
+                height:"100%",
+                display:"grid",
+                "grid-template-rows":"auto auto auto auto auto auto auto"},
+                "justify-items": "stretch",
+                "align-items": "stretch"
+        },[
+            fileInfo,
+            dropzone,
+            loaderElement,
+            CE("label",{},["Data type",dataTypeSelect]),
+            CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px"}},["First scan",firstScanInput,"Last scan (0=all)",lastScanInput]),
+            CE("label",{},["MS level filter",msLevelSelect]),
+            command
+        ])
+        ThermoRawLoader.DOMelt.content.appendChild(loaderContainer)
     }
     saveSession(options={}){
         if(typeof options === "boolean"){

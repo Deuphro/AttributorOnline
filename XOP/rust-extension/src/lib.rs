@@ -5,6 +5,7 @@ mod attribution;
 mod fkmd;
 mod forest;
 mod persistence;
+mod thermo;
 mod trim;
 pub use antiradio::{anti_radio_filter, anti_radio_guess_z, RadioDecision};
 //the attribution sieve: exhaustive combinations of masses, in rising mass
@@ -22,6 +23,7 @@ pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,
     PersistenceClassification,
 };
+pub use thermo::parse_thermo_raw;
 pub use trim::{trim_apply, trim_guess, trim_histogram, TrimHistogram, TrimResult};
 
 #[wasm_bindgen]

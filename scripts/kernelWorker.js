@@ -414,6 +414,54 @@ const kernels={
             result=trimHistogramJS(core,stride,bins,scale)
         }
         return result
+    },
+    async parseThermoRaw({data,options={}}){
+        let result
+        try{
+            await ensureWasm()
+            if(typeof rust.parse_thermo_raw!=="function"){
+                throw new Error("rust parse_thermo_raw is missing (stale pkg build?)")
+            }
+            const rawResult=rust.parse_thermo_raw(new Uint8Array(data),options)
+            console.log("[kernelWorker] rawResult:", rawResult)
+            
+            // Handle metadata-only response
+            if(rawResult.scanMetadata){
+                console.log("[kernelWorker] metadata-only response")
+                result={scanMetadata:rawResult.scanMetadata}
+                return result
+            }
+            
+            // Convert flat arrays to per-spectrum objects
+            const mz=Array.from(rawResult.mz)
+            const intensity=Array.from(rawResult.intensity)
+            const scanNumbers=Array.from(rawResult.scanNumbers)
+            const rts=Array.from(rawResult.rts)
+            const msLevels=Array.from(rawResult.msLevels)
+            const scanPeakCounts=Array.from(rawResult.scanPeakCounts)
+            
+            const spectra=[]
+            let idx=0
+            for(let i=0;i<scanPeakCounts.length;i++){
+                const count=scanPeakCounts[i]
+                const scanMz=mz.slice(idx,idx+count)
+                const scanIntensity=intensity.slice(idx,idx+count)
+                spectra.push({
+                    mz:scanMz,
+                    intensity:scanIntensity,
+                    scan_number:scanNumbers[idx]??(i+1),
+                    rt:rts[idx]??0,
+                    ms_level:msLevels[idx]??1
+                })
+                idx+=count
+            }
+            console.log("[kernelWorker] converted spectra:", spectra)
+            result={spectra,file_version:rawResult.fileVersion,scan_count:rawResult.scanCount}
+        }catch(err){
+            console.warn("[kernelWorker] rust parseThermoRaw unavailable, JS fallback:",err)
+            result=parseThermoRawJS(data)
+        }
+        return result
     }
 }
 
@@ -818,6 +866,11 @@ function antiRadioFilterJS(core,stride,pointsX,pointsY,pointsIndex,z){
 }
 function clampJS(v){return Number.isFinite(v)?Math.min(1-1e-12,Math.max(1e-9,v)):1-1e-12}
 function keepAllSlopeJS(births,deaths){let r=0;for(let i=0;i<births.length;i++)if(births[i]>0)r=Math.max(r,deaths[i]/births[i]);return r}
+//JS fallback for Thermo .raw parsing - returns empty result since we can't parse .raw in pure JS
+function parseThermoRawJS(data){
+    console.warn("Thermo .raw parsing requires WASM build with thermorawfile crate")
+    return {spectra:[],file_version:0,scan_count:0}
+}
 
 function computePersistentHomology0D_JS(data,mode="sublevel"){
     const n=data.length

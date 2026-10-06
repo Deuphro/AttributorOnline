@@ -9,6 +9,11 @@ wasm-bindgen = "0.2.74"
 # `Reflect`, donc il lui faut l'interface JavaScript. Sans elle, le port devrait
 # inventer sa propre façon de décoder le plan — et donc un second contrat.
 js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+thermorawfile = "0.1"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[patch.crates-io]
+thermorawfile = { path = "../thermorawfile-patched" }

@@ -19,6 +19,7 @@ const defaultMenu={
             Load:{
                 //JSON:(e)=>{},
                 "Delimited Text":(e)=>{dispatchEvent(new CustomEvent('importDelimitedText',{detail:{msg:""}}))},
+                "Thermo .raw":(e)=>{dispatchEvent(new CustomEvent('importThermoRaw',{detail:{msg:""}}))},
             },
             hr:{},
             'Use msConvert':(e)=>{dispatchEvent(new CustomEvent('msConvert',{detail:{msg:""}}))}
@@ -32,6 +33,7 @@ const defaultMenu={
     mainFlowMenu:{
         "Data":{
             "Simple XY file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY file',type:'delimitedText'}}}))},
+            "Thermo .raw file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Thermo .raw file',type:'thermoRaw'}}}))},
         },
         "Operation":{
             "+1 on each pair element":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Operation +1',type:'operation'}}}))},
