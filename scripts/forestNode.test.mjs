@@ -524,6 +524,7 @@ test("the force layout runs ONCE for one graph, not at every repaint",()=>{
        donc un cache qui manque toujours — un test qui vérifierait le cache en
        le remplissant à chaque ligne ne vérifierait rien. */
     const node={
+        forestSelected:new Set([0]),
         forestPlotBox:{clientWidth:600,clientHeight:300},
         forestPlotHeight:260,
         forestGraphs:[{graphs:[{rank:0}]}]
@@ -545,6 +546,7 @@ test("the force layout runs ONCE for one graph, not at every repaint",()=>{
     /* ET DES SOMMETS NEUFS COMPTENT: c'est un nouveau réseau, pas le même. */
     const fresh={graphs:[{rank:1}]}
     node.forestGraphs=[fresh]
+    node.forestSelected=new Set([1])
     call()
     assert.equal(runs,3,"a new graph must lay the graph out again")
     /* PUIS LE MÊME, ENCORE: c'est le cas que le panneau rencontre à chaque

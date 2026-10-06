@@ -3011,7 +3011,6 @@ class AttributionNode extends NodeWithAccordion{
            Les deux sont persistés dans serializeState/restoreState. */
         this.forestSelected=new Set()
         this.forestMinSize=1
-        this.forestLayoutMode="fr"  // "fr" | "mass" | "kmd"
         /* LE MONO TONIQUE DU RÉSEAU, comme celui du resolve.
 
            Un réseau lancé à la main sur trois spectres peut se croiser avec un
@@ -4881,8 +4880,7 @@ class AttributionNode extends NodeWithAccordion{
             forestGroups:this.forestGroupList(),
             /* SÉLECTION ET FILTRE DU RÉSEAU (persistés pour la session). */
             forestSelected:Array.from(this.forestSelected),
-            forestMinSize:this.forestMinSize,
-            forestLayoutMode:this.forestLayoutMode
+            forestMinSize:this.forestMinSize
         }
     }
 
@@ -4890,7 +4888,7 @@ class AttributionNode extends NodeWithAccordion{
         if(!state) return
         for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm","probeMass",
             "forestTolerance","forestDegreeMax","forestCharge","forestGroups",
-            "forestSelected","forestMinSize","forestLayoutMode"]){
+            "forestSelected","forestMinSize"]){
             if(state[name]!==undefined&&state[name]!==null){
                 this.parameters[name]=state[name]
             }
@@ -4972,7 +4970,6 @@ class AttributionNode extends NodeWithAccordion{
         }
         /* CHAMPS DU PANNEAU RÉSEAU (sélection/filtre). */
         if(this.forestMinSizeInput) this.forestMinSizeInput.value=String(this.forestMinSize)
-        if(this.forestLayoutModeSelect) this.forestLayoutModeSelect.value=this.forestLayoutMode
     }
 
     registered(e){
@@ -5137,7 +5134,7 @@ class AttributionNode extends NodeWithAccordion{
        réseaux différents pour un même « Grow network », et la comparaison d'un
        run à l'autre — le seul usage de ce graphique — deviendrait impossible.
 
-       TROIS MODES: "fr" (force-directed), "mass" (étirement par masse), "kmd" (Carbon-KMD). */
+       AFFICHE SEULEMENT LES ARBRES SÉLECTIONNÉS, côte à côte en force-directed. */
     forestOverviewLayout(){
         const box=this.forestPlotBox
         if(!box) return null
@@ -5145,25 +5142,18 @@ class AttributionNode extends NodeWithAccordion{
         if(!batch?.graphs?.length) return null
         const width=Math.max(240,Math.round(box.clientWidth||600))
         const height=Math.max(160,Math.round(box.clientHeight||this.forestPlotHeight||260))
-        /* LA MISE EN PAGE EST MÉMOÏSÉE, ET C'EST LE VRAI COÛT DU PANNEAU.
-           180 itérations de Fruchterman–ReingOLD valent 130 ms sur cinquante
-           groupes et 2,3 s sur mille — et `renderForest` les relançait à chaque
-           ajout de groupe, qui ne change ni les sommets ni la boîte. La clé est
-           donc l'identité des graphes (elle ne bouge que si les composants
-           bougent), la taille de la boîte, ET le mode de layout. */
+        /* FILTRER LES GRAPHES SÉLECTIONNÉS. */
+        const selectedGraphs=batch.graphs.filter(g=>this.forestSelected.has(g.rank))
+        if(!selectedGraphs.length) return null
+        /* LA MISE EN PAGE EST MÉMOÏSÉE, clé = graphes sélectionnés (même objets, même ordre) + taille boîte. */
         const cached=this.forestLayoutOf
-        if(cached&&cached.graphs===batch.graphs
-            &&cached.width===width&&cached.height===height
-            &&cached.mode===this.forestLayoutMode){
+        if(cached&&cached.width===width&&cached.height===height
+            &&cached.graphs.length===selectedGraphs.length
+            &&cached.graphs.every((g,i)=>g===selectedGraphs[i])){
             return cached.layout
         }
-        let layout
-        if(this.forestLayoutMode==="mass"||this.forestLayoutMode==="kmd"){
-            layout=this.layoutForestsMassKMD(batch.graphs,{width,height,mode:this.forestLayoutMode})
-        }else{
-            layout=layoutForests(batch.graphs,{width,height})
-        }
-        this.forestLayoutOf={graphs:batch.graphs,width,height,mode:this.forestLayoutMode,layout}
+        const layout=layoutForests(selectedGraphs,{width,height})
+        this.forestLayoutOf={graphs:selectedGraphs,width,height,layout}
         return layout
     }
 
@@ -5380,77 +5370,6 @@ class AttributionNode extends NodeWithAccordion{
         }
     }
 
-    /* LAYOUT MASSE / KMD — O(n), pas d'itérations.
-    
-       "mass": x = masse, y = profondeur (ou FR existant pour y)
-       "kmd": x = Kendrick Mass (KM = m × 14/14.01565), y = KMD = nominal - KM
-       Les deux sont déterministes, gratuits, et partagent la même clé de cache. */
-    layoutForestsMassKMD(graphs,{width,height,mode}){
-        const list=graphs.filter(graph=>(graph?.vertices?.length??0)>0)
-        if(!list.length) return {width,height,groups:[],columns:0,rows:0}
-        /* Pour KMD: calculer KM et KMD pour chaque sommet */
-        const KM_FACTOR=14/14.01565
-        const allVertices=[]
-        for(const graph of list){
-            for(const vertex of graph.vertices){
-                const mass=vertex.mass
-                const km=mass*KM_FACTOR
-                const nominal=Math.round(km)
-                const kmd=nominal-km
-                allVertices.push({graph,vertex,mass,km,kmd,nominal})
-            }
-        }
-        /* Déterminer l'étendue selon le mode */
-        let minX,maxX,minY,maxY
-        if(mode==="mass"){
-            minX=Math.min(...allVertices.map(v=>v.mass))
-            maxX=Math.max(...allVertices.map(v=>v.mass))
-            minY=Math.min(...allVertices.map(v=>v.vertex.depth??0))
-            maxY=Math.max(...allVertices.map(v=>v.vertex.depth??0))
-        }else{
-            minX=Math.min(...allVertices.map(v=>v.km))
-            maxX=Math.max(...allVertices.map(v=>v.km))
-            minY=Math.min(...allVertices.map(v=>v.kmd))
-            maxY=Math.max(...allVertices.map(v=>v.kmd))
-        }
-        const spanX=maxX-minX||1
-        const spanY=maxY-minY||1
-        const margin=40
-        const plotW=width-2*margin
-        const plotH=height-2*margin
-        const scaleX=plotW/spanX
-        const scaleY=plotH/spanY
-        const scale=Math.min(scaleX,scaleY)
-        const groups=list.map((graph,gi)=>{
-            const points=graph.vertices.map((vertex,vi)=>{
-                let x,y
-                if(mode==="mass"){
-                    x=margin+(vertex.mass-minX)*scale
-                    y=margin+(vertex.depth??0)*scale
-                }else{
-                    const km=vertex.mass*KM_FACTOR
-                    const nominal=Math.round(km)
-                    const kmd=nominal-km
-                    x=margin+(km-minX)*scale
-                    y=margin+(kmd-minY)*scale
-                }
-                return {index:vertex.index,x,y}
-            })
-            const xs=points.map(p=>p.x), ys=points.map(p=>p.y)
-            return {
-                rank:graph.rank??gi,
-                size:graph.size,
-                points,
-                box:{
-                    x:Math.min(...xs),y:Math.min(...ys),
-                    width:Math.max(...xs)-Math.min(...xs),
-                    height:Math.max(...ys)-Math.min(...ys)
-                }
-            }
-        })
-        return {width,height,groups,columns:1,rows:list.length}
-    }
-
     /* LA FENÊTRE EST DANS LE PANNEAU CENTRAL, ET PAS AU-DESSUS DES LISTES.
 
        Le réseau est une LECTURE: on le regarde pour comparer, on ne le règle
@@ -5532,6 +5451,8 @@ class AttributionNode extends NodeWithAccordion{
             background:"rgba(255,255,255,0.04)",
             border:"1px solid rgba(255,255,255,0.15)",borderRadius:"3px"
         })
+        /* FORWARD RESIZE OBSERVER: le plot doit être notifié quand sa boîte change de taille. */
+        this.forestPlotBox.handleResize=()=>this.forestPlot?.handleResize?.()
         content.appendChild(this.forestPlotBox)
 
         /* LE RÉCAPITULATIF, SOUS LE GRAPHE — et non au-dessus. Le graphique
@@ -5551,6 +5472,11 @@ class AttributionNode extends NodeWithAccordion{
         this.forestPlot.parameters.axis.bottom.autoLabel=false
         this.forestPlot.parameters.axis.left.label=""
         this.forestPlot.parameters.axis.bottom.label=""
+
+        /* FORCER UN RESIZE APRÈS CRÉATION: le conteneur peut ne pas avoir sa taille
+           finale au moment où le constructeur appelle drawGraph(). Un rAF assure
+           que le layout est fait avant de mesurer. */
+        requestAnimationFrame(()=>this.forestPlot?.handleResize?.())
 
         /* ET IL EST REPEINT TOUT DE SUITE, pas au prochain resolve: la fenêtre
            vient d'être recréée et montrerait un cadre vide à qui l'ouvrirait
@@ -6462,19 +6388,6 @@ class AttributionNode extends NodeWithAccordion{
         stylize(this.forestDeselectAllBtn,{fontSize:"0.8em",padding:"2px 8px",cursor:"pointer"})
         this.forestDeselectAllBtn.addEventListener("click",()=>this.deselectAllForestTrees())
         selectionRow.appendChild(this.forestDeselectAllBtn)
-        this.forestLayoutModeSelect=CE("select",{
-            title:"Layout mode for the forest graph"
-        },[
-            new Option("Force-directed (FR)","fr"),
-            new Option("Mass stretch","mass"),
-            new Option("Carbon KMD","kmd")
-        ])
-        this.forestLayoutModeSelect.value=this.forestLayoutMode
-        this.forestLayoutModeSelect.addEventListener("change",()=>{
-            this.forestLayoutMode=this.forestLayoutModeSelect.value
-            this.renderForestOverview()
-        })
-        selectionRow.appendChild(this.forestLayoutModeSelect)
         /* LA COURBE DES POIDS, et c'est ELLE qui rend le résultat lisible.
 
            Une liste de composants dit QUOI il reste, mais pas POURQUOI on a
