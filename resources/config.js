@@ -32,12 +32,10 @@ const defaultMenu={
     },
     mainFlowMenu:{
         "Data":{
-            "Simple XY file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY file',type:'delimitedText'}}}))},
+            "Delimited text":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Delimited text',type:'delimitedText'}}}))},
             "Thermo .raw file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Thermo .raw file',type:'thermoRaw'}}}))},
         },
         "Operation":{
-            "+1 on each pair element":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Operation +1',type:'operation'}}}))},
-            "F-KMD":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'F-KMD',type:'fkmd'}}}))},
             "Trimmer":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Trimmer',type:'trimmer'}}}))},
             //One entry for the two stages: the persistence classifier and the
             //anti-radio width filter answer ONE question - which points are
@@ -47,12 +45,26 @@ const defaultMenu={
         },
         "Display":{
             "Simple XY plot":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY plot',type:'simpleXYPlot'}}}))},
+            "F-KMD":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'F-KMD',type:'fkmd'}}}))},
         },
-        "Random and test":{
+        /*"Random and test":{
             "Random simple":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Random',type:'random'}}}))},
             "Random with accordion":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Random with accordion',type:'randomAccordion'}}}))},
             "Random with accordion and graph":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Random with accordion and graph',type:'randomAccordionGraph'}}}))},
             "Right accordion with graph":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Right accordion with graph',type:'rightAccordionGraph'}}}))},
+        },*/
+        
+        "Chemistry":{
+            //The reader, not a producer: it consumes collections of Formula from
+            //any number of parents on ONE input, and shows them.
+            "Formula collections":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Formula collections',type:'formulaCollection'}}}))},
+            //The producer: it takes ANY number of XY waves on ONE input and
+            //renders ONE attribution list per wave. It is a menu entry of its own
+            //rather than a mode of the reader above, because it does not read
+            //Formula: it MAKES them, from a sieve over isotopic and adduct
+            //masses. Folding it into the reader would have meant a node that is
+            //one thing or the other depending on which cable arrived.
+            "Attribution":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Attribution',type:'attribution'}}}))}
         },
         "Flow":{
             Resolve:(e)=>{dispatchEvent(new CustomEvent('resolveFlow',{detail:{msg:""}}))},
@@ -96,18 +108,6 @@ const defaultMenu={
         "Tools":{
             "Chat":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Chat',type:'chat'}}}))}
         },
-        "Chemistry":{
-            //The reader, not a producer: it consumes collections of Formula from
-            //any number of parents on ONE input, and shows them.
-            "Formula collections":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Formula collections',type:'formulaCollection'}}}))},
-            //The producer: it takes ANY number of XY waves on ONE input and
-            //renders ONE attribution list per wave. It is a menu entry of its own
-            //rather than a mode of the reader above, because it does not read
-            //Formula: it MAKES them, from a sieve over isotopic and adduct
-            //masses. Folding it into the reader would have meant a node that is
-            //one thing or the other depending on which cable arrived.
-            "Attribution":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Attribution',type:'attribution'}}}))}
-        }
     }
 }
 

@@ -810,7 +810,7 @@ class DelimitedTextNode extends NodeWithAccordion{
         return pairs
     }
     updateLabel(fileName){
-        const label=fileName||"Simple XY file"
+        const label=fileName||"Delimited text"
         this.title=label
         this.events.label=label
         this.DOMelt.querySelector("#nodeTitle").textContent=label
@@ -1040,7 +1040,6 @@ class ThermoRawNode extends NodeWithAccordion{
             if(this.status==="resolved"){
                 this.accordion.setSizingMode("viewport",{height:360})
                 const spectra=this.parameters.source.spectra
-                const scanCount=spectra.length
                 const opts=this.parameters.source.options||{}
                 const waves=this.outputs[0]||[]
                 const totalPeaks=waves.reduce((sum,w)=>sum+(w.dims?w.dims[0]:0),0)
@@ -1050,35 +1049,28 @@ class ThermoRawNode extends NodeWithAccordion{
                 const msLevel = opts.msLevelFilter===0?"All":("MS"+opts.msLevelFilter)
                 const rtRange = (opts.rtMin||"auto") + " - " + (opts.rtMax||"auto") + " min"
                 
-                const summary=CE("div",{style:{margin:"10px",padding:"10px",border:"1px solid #444",borderRadius:"5px"}},[
-                    CE("h4",{style:{margin:"0 0 10px 0"}},["Loaded: "+this.parameters.source.fileName]),
-                    CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:"10px"}},[
-                        CE("div",{},[CE("strong",{},["Scans loaded:"]),CE("span",{style:{marginLeft:"5px"}},[loadedScans])]),
-                        CE("div",{},[CE("strong",{},["Total peaks:"]),CE("span",{style:{marginLeft:"5px"}},[String(totalPeaks)])]),
-                        CE("div",{},[CE("strong",{},["Data type:"]),CE("span",{style:{marginLeft:"5px"}},[opts.dataType||"auto"])]),
+                const summary=CE("div",{style:{padding:"10px",border:"1px solid #444",borderRadius:"5px"}},[
+                    CE("h4",{style:{margin:"0 0 10px 0",fontSize:"14px"}},[this.parameters.source.fileName]),
+                    CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:"8px",fontSize:"13px"}},[
+                        CE("div",{},[CE("strong",{},["Scans:"]),CE("span",{style:{marginLeft:"5px"}},[loadedScans])]),
+                        CE("div",{},[CE("strong",{},["Peaks:"]),CE("span",{style:{marginLeft:"5px"}},[String(totalPeaks)])]),
+                        CE("div",{},[CE("strong",{},["Type:"]),CE("span",{style:{marginLeft:"5px"}},[opts.dataType||"auto"])]),
                         CE("div",{},[CE("strong",{},["Scan range:"]),CE("span",{style:{marginLeft:"5px"}},[scanRange])]),
                         CE("div",{},[CE("strong",{},["MS level:"]),CE("span",{style:{marginLeft:"5px"}},[msLevel])]),
                         CE("div",{},[CE("strong",{},["RT range:"]),CE("span",{style:{marginLeft:"5px"}},[rtRange])]),
                     ])
                 ])
                 
-                const scanInfo=spectra.map((spec,idx)=>({
-                    scanNumber:spec.scanNumber,
-                    rt:spec.rt,
-                    msLevel:spec.msLevel,
-                    peakCount:spec.mz.length
-                }))
-                const content=CE("div",{style:{
+                const resolvedContent=CE("div",{style:{
                     display:"grid",
-                    "grid-template-rows":"auto minmax(0, 1fr) auto",
+                    "grid-template-rows":"minmax(0, 1fr) auto",
                     "min-height":"0",
                     height:"100%",
                     overflow:"hidden"
                 }},[])
-                this.accordion.DOMelt.content.appendChild(content)
-                content.appendChild(summary)
-                const table=new Table(scanInfo,["Scan #","RT (min)","MS Level","Peaks"],this.origin,content,{mutable:false})
-                content.appendChild(CE("button",{pilot:this,handleClick:e=>e.target.pilot.clear()},["Clear"]))
+                this.accordion.DOMelt.content.appendChild(resolvedContent)
+                resolvedContent.appendChild(summary)
+                resolvedContent.appendChild(CE("button",{pilot:this,handleClick:e=>e.target.pilot.clear()},["Clear"]))
                 return
             }
             
@@ -1110,13 +1102,11 @@ class ThermoRawNode extends NodeWithAccordion{
             
             if(!this.parameters.source.raw.length){
                 // No file yet: show file selection
+                this.accordion.setSizingMode("content")
                 this.accordion.DOMelt.content.appendChild(CE("div",{style:{
                     display:"grid",
-                    gap:"5px",
-                    minHeight:"0",
-                    height:"100%",
-                    overflow:"hidden",
-                    gridTemplateRows:"auto auto auto"
+                    gap:"8px",
+                    padding:"10px"
                 }},[
                     fileInfo,
                     dropzone,
@@ -1132,9 +1122,10 @@ class ThermoRawNode extends NodeWithAccordion{
             
             const meta=this.parameters.source.scanMetadata
             if(!meta){
+                this.accordion.setSizingMode("content")
                 const loading=CE("div",{style:previewStyle},["Scanning file metadata..."])
                 this.accordion.DOMelt.content.appendChild(CE("div",{style:{
-                    display:"grid",gap:"5px"
+                    display:"grid",gap:"8px",padding:"10px"
                 }},[fileInfo,loading]))
                 return
             }
@@ -1151,16 +1142,16 @@ class ThermoRawNode extends NodeWithAccordion{
             
             const dataTypeSelect=CE("select",{value:options.dataType,handleInput:e=>{
                 options.dataType=e.target.value
-            }},[
+            },style:{fontSize:"13px"}},[
                 CE("option",{value:"auto"},["Auto (centroid -> profile)"]),
                 CE("option",{value:"centroid"},["Centroid only"]),
                 CE("option",{value:"profile"},["Profile only (centroided)"])
             ])
             
-            const firstScanInput=CE("input",{type:"number",min:meta.firstScan,max:meta.lastScan,value:options.firstScan,style:{width:"80px"},handleInput:e=>{
+            const firstScanInput=CE("input",{type:"number",min:meta.firstScan,max:meta.lastScan,value:options.firstScan,style:{width:"80px",fontSize:"13px"},handleInput:e=>{
                 options.firstScan=Math.max(meta.firstScan,Math.min(meta.lastScan,parseInt(e.target.value)||meta.firstScan))
             }},[])
-            const lastScanInput=CE("input",{type:"number",min:meta.firstScan,max:meta.lastScan,value:options.lastScan||meta.lastScan,style:{width:"80px"},handleInput:e=>{
+            const lastScanInput=CE("input",{type:"number",min:meta.firstScan,max:meta.lastScan,value:options.lastScan||meta.lastScan,style:{width:"80px",fontSize:"13px"},handleInput:e=>{
                 options.lastScan=Math.max(meta.firstScan,Math.min(meta.lastScan,parseInt(e.target.value)||meta.lastScan))
             }},[])
             
@@ -1171,13 +1162,13 @@ class ThermoRawNode extends NodeWithAccordion{
             }
             const msLevelSelect=CE("select",{value:String(options.msLevelFilter),handleInput:e=>{
                 options.msLevelFilter=parseInt(e.target.value)
-            }},msLevelOptions)
+            },style:{fontSize:"13px"}},msLevelOptions)
             
-            const rtMinInput=CE("input",{type:"number",step:"0.01",min:meta.rtMin,max:meta.rtMax,value:options.rtMin||"",style:{width:"80px"},placeholder:`${meta.rtMin.toFixed(2)}`,handleInput:e=>{
+            const rtMinInput=CE("input",{type:"number",step:"0.01",min:meta.rtMin,max:meta.rtMax,value:options.rtMin||"",style:{width:"80px",fontSize:"13px"},placeholder:`${meta.rtMin.toFixed(2)}`,handleInput:e=>{
                 const v=parseFloat(e.target.value)
                 options.rtMin=isNaN(v)?0:Math.max(meta.rtMin,Math.min(meta.rtMax,v))
             }},[])
-            const rtMaxInput=CE("input",{type:"number",step:"0.01",min:meta.rtMin,max:meta.rtMax,value:options.rtMax||"",style:{width:"80px"},placeholder:`${meta.rtMax.toFixed(2)}`,handleInput:e=>{
+            const rtMaxInput=CE("input",{type:"number",step:"0.01",min:meta.rtMin,max:meta.rtMax,value:options.rtMax||"",style:{width:"80px",fontSize:"13px"},placeholder:`${meta.rtMax.toFixed(2)}`,handleInput:e=>{
                 const v=parseFloat(e.target.value)
                 options.rtMax=isNaN(v)?0:Math.max(meta.rtMin,Math.min(meta.rtMax,v))
             }},[])
@@ -1191,27 +1182,25 @@ class ThermoRawNode extends NodeWithAccordion{
                 e.target.pilot.renderAccordion()
             }},["Load spectra"])
             
-            const metaInfo=CE("div",{style:previewStyle},[
+            const metaInfo=CE("div",{style:{...previewStyle,fontSize:"12px",padding:"8px"}},[
                 `Scans: ${meta.firstScan}-${meta.lastScan} (${meta.scanCount} total) | `+
                 `RT: ${meta.rtMin.toFixed(2)}-${meta.rtMax.toFixed(2)} min | `+
                 `MS levels: ${msLevelsPresent.join(", ")} | `+
-                `Centroid scans: ${meta.centroidScanCount} | Profile scans: ${meta.profileScanCount}`
+                `Centroid: ${meta.centroidScanCount} | Profile: ${meta.profileScanCount}`
             ])
             
+            this.accordion.setSizingMode("content")
             this.accordion.DOMelt.content.appendChild(CE("div",{style:{
                 display:"grid",
-                gap:"5px",
-                minHeight:"0",
-                height:"100%",
-                overflow:"hidden",
-                gridTemplateRows:"auto auto auto auto auto auto auto auto auto"
+                gap:"8px",
+                padding:"10px"
             }},[
                 fileInfo,
                 metaInfo,
-                CE("label",{},["Data type",dataTypeSelect]),
-                CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px"}},["First scan",firstScanInput,"Last scan",lastScanInput]),
-                CE("label",{},["MS level filter",msLevelSelect]),
-                CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px"}},["RT min (min)",rtMinInput,"RT max (min)",rtMaxInput]),
+                CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["Data type",dataTypeSelect]),
+                CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["First scan",firstScanInput,"Last scan",lastScanInput]),
+                CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["MS level filter",msLevelSelect]),
+                CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["RT min (min)",rtMinInput,"RT max (min)",rtMaxInput]),
                 loadButton
             ]))
         }
@@ -13390,7 +13379,7 @@ class MainMenu extends Menu{
             importDelimitedText(e){
                 origin.loadDelimitedText(source=>{
                     dispatchEvent(new CustomEvent('createNode',{detail:{msg:{
-                        title:source.fileName||'Simple XY file',
+                        title:source.fileName||'Delimited text',
                         type:'delimitedText',
                         source
                     }}}))
@@ -17682,6 +17671,7 @@ class App{
             fileName:"",
             raw:new Uint8Array(0)
         }
+        let fileInfo=CE('div',{style:{margin:"5px",padding:"5px",border:"1px solid white",borderRadius:"5px"}},["No file loaded"])
         const options={
             dataType:"auto",
             firstScan:1,
@@ -17739,7 +17729,6 @@ class App{
             readFile(e.dataTransfer.files[0],dataVessel)
         })
         const loaderElement=CE('input',{type:"file",accept:".raw",handleChange:(e)=>{readSingleFile(e,dataVessel)}},["Select a .raw file"])
-        let fileInfo=CE('div',{style:{margin:"5px",padding:"5px",border:"1px solid white",borderRadius:"5px"}},["No file loaded"])
         
         const dataTypeSelect=CE("select",{value:options.dataType,handleInput:e=>{
             options.dataType=e.target.value
@@ -17764,26 +17753,22 @@ class App{
             CE("option",{value:"3"},["MS3 only"])
         ])
         
-        const validator=CE('button',{handleClick:(e)=>{validate()}},["Load"])
-        const command=CE('div',{width:"100%"},[
-            CE('div',{style:{"text-align":"right"}},[validator])
-        ])
+        const validator=CE('button',{pilot:this,handleClick:e=>{validate()}},["Load"])
         const loaderContainer=CE('div',{
             style:{
                 width:"100%",
-                height:"100%",
                 display:"grid",
-                "grid-template-rows":"auto auto auto auto auto auto auto"},
-                "justify-items": "stretch",
-                "align-items": "stretch"
+                gap:"8px",
+                padding:"10px"
+            }
         },[
             fileInfo,
             dropzone,
             loaderElement,
-            CE("label",{},["Data type",dataTypeSelect]),
-            CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px"}},["First scan",firstScanInput,"Last scan (0=all)",lastScanInput]),
-            CE("label",{},["MS level filter",msLevelSelect]),
-            command
+            CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["Data type",dataTypeSelect]),
+            CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["First scan",firstScanInput,"Last scan (0=all)",lastScanInput]),
+            CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["MS level filter",msLevelSelect]),
+            validator
         ])
         ThermoRawLoader.DOMelt.content.appendChild(loaderContainer)
     }
