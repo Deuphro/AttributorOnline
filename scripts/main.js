@@ -1,4 +1,4 @@
-import {App,restoreSession} from "./interface.js"
+import {App,restoreSession} from "./app/index.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import * as util from "./util.js"
 import {clearSession,readSession} from "./sessionStore.js"

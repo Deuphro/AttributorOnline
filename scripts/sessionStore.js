@@ -102,6 +102,9 @@ function encode(value){
     if(type==="string"||type==="boolean"){
         return value
     }
+    if(value instanceof Uint8Array){
+        return Array.from(value)
+    }
     if(Array.isArray(value)){
         return value.map(encode)
     }
@@ -170,7 +173,9 @@ function skeletonNode(node){
             labels:Array.isArray(parameters.source.labels)?parameters.source.labels:["x","y"],
             lineSeparator:parameters.source.lineSeparator,
             columnSeparator:parameters.source.columnSeparator,
-            raw:parameters.source.raw??""
+            raw:parameters.source.raw instanceof Uint8Array
+                ?Array.from(parameters.source.raw)
+                :parameters.source.raw??""
         }
     }
     if(entry.source&&entry.state&&typeof entry.state==="object"&&"source" in entry.state){
@@ -383,6 +388,12 @@ export function importOptions(document,hooks={}){
             }
             const source=isObject(data.source)?data.source:null
             if(source){
+                const raw=source.raw??""
+                const rawBytes=Array.isArray(raw)
+                    ?Uint8Array.from(raw)
+                    :isObject(raw)
+                        ?Uint8Array.from(Object.values(raw))
+                        :raw
                 node.parameters.source={
                     lineSeparator:source.lineSeparator??"\\r\\n|\\r|\\n",
                     columnSeparator:source.columnSeparator??"\\t|,|\\s",
@@ -390,7 +401,7 @@ export function importOptions(document,hooks={}){
                     labels:Array.isArray(source.labels)?source.labels:["x","y"],
                     //the pairs start empty ON PURPOSE: they are the parsed form
                     //of raw, and parseRaw() refills them below
-                    raw:source.raw??"",
+                    raw:rawBytes,
                     pairs:[]
                 }
             }

@@ -1,43 +1,43 @@
-# Refactoring Progress - interface.js → Modular Structure
+# Refactor Progress: `interface.js` to Modules
 
-## ✅ Completed
-- **scripts/utils/index.js** - Created with all utilities, constants, `buildNode`, `nodeRestoreData`, `createNodeForHistory`, `NODE_CONSTRUCTORS`, `SELF_SHAPED_NODES`, `emptySlots`, `windowFor`
+## Integrated
 
-## 📍 Resume Points (line numbers in original interface.js)
+- Core graph classes and flows live under `scripts/core/` and `scripts/flow/`.
+- Node classes live under `scripts/nodes/`, including `AttributionNode`, its
+  `AttributionForestMethods`, `FormulaCollectionNode`, and its pure display/sort
+  helpers.
+- UI classes live under `scripts/ui/`; accordion helpers are exported by
+  `Accordion.js`.
+- `App`, session restoration, spinners, and node-type registration live under
+  `scripts/app/`.
+- `scripts/main.js` starts through `scripts/app/index.js`. The app no longer
+  imports `interface.js`; `util.js` no longer imports it for side effects.
+- `NODE_CONSTRUCTORS` and `SELF_SHAPED_NODES` are populated by
+  `registerNodeTypes()` before the app restores or creates nodes.
 
-| File to Create | Start Line | End Line | Status |
-|----------------|------------|----------|--------|
-| `scripts/nodes/TrimmerNode.js` | 1571 | 2784 | ⏳ Next |
-| `scripts/nodes/FKMDNode.js` | 2806 | 3146 | ⏳ |
-| `scripts/nodes/AttributionNode.js` | 3202 | 7109 | ⏳ |
-| `scripts/nodes/PeakPickingNode.js` | 7110 | 8179 | ⏳ |
-| `scripts/nodes/ChatNode.js` | 8180 | 8526 | ⏳ |
-| `scripts/nodes/NodeWithAccordionGraph.js` | 8527 | 8599 | ⏳ |
-| `scripts/nodes/NodeWithRightAccordionGraph.js` | 8600 | 8685 | ⏳ |
-| `scripts/nodes/VirtualRowList.js` | 8686 | 9056 | ⏳ |
-| `scripts/nodes/FormulaCollectionNode.js` | 9057 | 11552 | ⏳ |
-| `scripts/nodes/SimpleXYPlotNode.js` | 11553 | 13886 | ⏳ |
-| `scripts/ui/Plot2D.js` | 13887 | 14989 | ⏳ |
-| `scripts/ui/Plot2DWebGL.js` | 14990 | 15869 | ⏳ |
-| `scripts/ui/accordionUtils.js` | (from ui/index.js exports) | | ⏳ |
-| `scripts/app/App.js` | 16990 | 18059 | ⏳ |
-| `scripts/app/restoreSession.js` | 18066 | 18092 | ⏳ |
+## Verified
 
-## 🔧 Integration Steps (after all files created)
-1. Update `scripts/index.js` to export from new modules
-2. Update `scripts/nodes/index.js` to include all node classes
-3. Update `scripts/ui/index.js` to include Plot2D, Plot2DWebGL, accordionUtils
-4. Update `scripts/app/index.js` to include App, restoreSession
-5. Update `main.js` to import from new structure
-6. Test, then delete `interface.js`
+- All 18 JavaScript test suites pass.
+- Browser smoke test: all nine menu node types instantiate; a new session
+  disposes the old app and leaves exactly one new app.
+- Browser round-trip: nine node types survive skeleton save and reload as
+  specialized nodes.
+- Thermo RAW bytes round-trip through skeleton JSON as byte arrays and are
+  restored as `Uint8Array`; old skeletons with numeric object keys are accepted.
+- A restored empty Thermo RAW node no longer fails when its derived `spectra`
+  field is absent from the skeleton.
+- The extracted Thermo RAW node imports `workerPool.js` from the scripts root;
+  `Plot2D` imports the runtime `XYTrace` class; forest mixin statics and
+  instance-only drawing state are retained by `AttributionNode`.
+- Browser smoke test: dynamic worker import, XY trace rendering, and forest
+  curve drawing all run without console errors.
+- `forestNode.test.mjs` guards the three extracted-module contracts above.
+- The browser reports no module-load or node-creation errors in these checks.
 
-## 💡 Development Strategy During Pause
-- **Continue developing in `interface.js`** for now (it's still the active code)
-- When ready to resume refactoring: re-read `interface.js` from the resume lines above
-- The `utils/index.js` is already committed and can be used immediately
-- New features should ideally be added to the new modular files once they're created
+## Remaining
 
-## 📝 Notes
-- `TrimmerNode` imports: `TRIM_METHODS`, `TRIM_LOW_COLOR`, `TRIM_HIGH_COLOR`, `CURSOR_COLORS`, `TRIM_CURSOR_STROKE`, `TRIM_CURSOR_FIELD_FONT`, `formatCursorValue`, `scaleToggle`, `binsOfHistogram`, `wavesFromInput`, `computePool`, `Wave`, `Plot2DWebGL`, `NodeWithAccordion`, `CE`, `stylize`
-- `FKMDNode` imports: `Formula`, `computePool`, `Wave`, `NodeWithAccordion`, `CE`, `stylize`
-- `AttributionNode` imports: `SortedPoints`, `buildPlan`, `attributeSpectrum`, `forestStandards`, `forestComponents`, `growForest`, `suggestWeightCut`, `forestGraph`, `forestRoot`, `layoutForests`, `DEFAULT_LINK_TOLERANCE`, `Formula`, `FormulaCollection`, `Wave`, `NodeWithAccordion`, `CE`, `stylize`, `scaleToggle`, `segmentToggle`
+- Several tests still extract implementations from `interface.js`, so it must
+  remain until those tests are moved to the modules or replaced with module-level
+  tests.
+- After the tests stop depending on it, remove `interface.js` and run the full
+  suite and browser smoke test once more.

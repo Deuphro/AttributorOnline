@@ -16,6 +16,10 @@ import assert from "node:assert/strict"
 import {readFileSync} from "node:fs"
 
 const INTERFACE=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+const MODULAR_ATTRIBUTION=readFileSync(new URL("./nodes/AttributionNode.js",import.meta.url),"utf8")
+const FOREST_METHODS=readFileSync(new URL("./nodes/AttributionForestMethods.js",import.meta.url),"utf8")
+const THERMO_RAW=readFileSync(new URL("./nodes/ThermoRawNode.js",import.meta.url),"utf8")
+const PLOT_2D=readFileSync(new URL("./ui/Plot2D.js",import.meta.url),"utf8")
 const WORKER=readFileSync(new URL("./kernelWorker.js",import.meta.url),"utf8")
 const POOL=readFileSync(new URL("./workerPool.js",import.meta.url),"utf8")
 const SERVER=readFileSync(new URL("../index.js",import.meta.url),"utf8")
@@ -591,4 +595,20 @@ test("the reference list refuses adducts, and says that it does",()=>{
     const standards=slice(FOREST,"export function forestStandards(","/* LA RÉFÉRENCE LA PLUS PROCHE","forestStandards")
     assert.match(standards,/kind==="combining"/)
     assert.match(standards,/adducts are not used as references/)
+})
+
+test("the extracted node modules keep their dependencies and mixin state",()=>{
+    assert.match(THERMO_RAW,/import\("\.\.\/workerPool\.js"\)/,
+        "ThermoRawNode must resolve workerPool from the scripts directory")
+    assert.doesNotMatch(THERMO_RAW,/import\("\.\/workerPool\.js"\)/,
+        "a relative import from nodes/workerPool.js points at a nonexistent file")
+    assert.match(PLOT_2D,/import \{XYTrace\} from "\.\.\/formats\.js"/,
+        "Plot2D.setTraces uses XYTrace and must import its runtime class")
+    assert.match(MODULAR_ATTRIBUTION,/this\.forestColors=\{/,
+        "the forest renderer needs its instance palette on AttributionNode")
+    assert.match(MODULAR_ATTRIBUTION,/this\.forestPlotLeft=0\.10/)
+    assert.match(MODULAR_ATTRIBUTION,/this\.forestPlotRight=0\.01/)
+    assert.match(MODULAR_ATTRIBUTION,/Object\.getOwnPropertyNames\(AttributionForestMethods\)/,
+        "static forest constants must be transferred along with prototype methods")
+    assert.match(FOREST_METHODS,/static FOREST_OPACITY_STEPS=8/)
 })

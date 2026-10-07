@@ -181,6 +181,29 @@ console.log("the skeleton is a list, not a copy of whatever the node holds")
         const savedState=buildSkeleton(makeApp([node])).flows[0].nodes[0].state
         eq(Object.keys(savedState).length,0)
     })
+    test("RAW bytes round-trip as Uint8Array while text sources stay text",()=>{
+        const bytes=new Uint8Array([1,161,70,0,105])
+        const rawNode=makeNode({
+            type:"ThermoRawNode",
+            source:{fileName:"sample.raw",labels:["m/z","intensity"],raw:bytes},
+            state:{source:{fileName:"sample.raw",raw:bytes},status:"floating"}
+        })
+        const rawDocument=parseSkeleton(exportSkeleton(makeApp([rawNode])))
+        const savedRaw=rawDocument.flows[0].nodes[0].source.raw
+        ok(Array.isArray(savedRaw),"JSON stores raw bytes as an array")
+        eq(savedRaw.join(","),"1,161,70,0,105")
+        const options=importOptions(rawDocument,{
+            createApp:()=>({}),
+            buildNode:()=>({parameters:{},restoreState(){}})
+        })
+        const restored=options.createNode({
+            data:rawDocument.flows[0].nodes[0],
+            app:{},flow:{},channel:{register(){}}
+        })
+        ok(restored.parameters.source.raw instanceof Uint8Array,
+            "the RAW node gets bytes back, not an object with numeric keys")
+        eq([...restored.parameters.source.raw].join(","),"1,161,70,0,105")
+    })
 }
 
 console.log("links are written by the channel's own key, never by its name")

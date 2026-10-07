@@ -1,6 +1,4 @@
-﻿import "./interface.js"
-
-//a function to select html elements
+﻿//a function to select html elements
 const $=(e)=>{ return document.querySelector(e); }
 
 //a function to create a HTML element
