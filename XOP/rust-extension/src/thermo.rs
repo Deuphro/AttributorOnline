@@ -49,7 +49,7 @@ fn centroid_profile(profile: &Profile, calib: &Calibration) -> Vec<Peak> {
 
 #[derive(Debug)]
 struct ParseOptions {
-    data_type: String,      // "centroid", "profile", "auto"
+    data_type: String,      // "centroid", "profile", "auto", "profile_raw"
     first_scan: u32,
     last_scan: u32,         // 0 = all
     ms_level_filter: u8,    // 0 = all
@@ -229,8 +229,8 @@ pub fn parse_thermo_raw(data: &[u8], options: JsValue) -> Result<JsValue, JsValu
             continue;
         }
 
-        // Try centroid peaks first (unless profile only)
-        let mut peaks: Vec<Peak> = if opts.data_type != "profile" {
+        // Try centroid peaks first (unless profile only or profile_raw)
+        let mut peaks: Vec<Peak> = if opts.data_type != "profile" && opts.data_type != "profile_raw" {
             raw_file.centroid_peaks(scan_number)
         } else {
             Vec::new()
@@ -249,9 +249,33 @@ pub fn parse_thermo_raw(data: &[u8], options: JsValue) -> Result<JsValue, JsValu
                 if let Some(event_offset) = raw_file.scan_event_byte_offset(scan_number) {
                     if let Some(calib) = raw_file.calibration_at_event(event_offset) {
                         console::log_1(&format!("Scan {}: calibration found", scan_number).into());
-                        peaks = centroid_profile(&profile, &calib);
-                        console::log_1(&format!("Scan {}: centroided {} peaks from profile", 
-                            scan_number, peaks.len()).into());
+                        
+                        // For profile_raw, return all profile points (not just local maxima)
+                        if opts.data_type == "profile_raw" {
+                            console::log_1(&format!("Scan {}: returning raw profile data", scan_number).into());
+                            for chunk in &profile.chunks {
+                                let first_bin = chunk.first_bin as usize;
+                                let signal = &chunk.signal;
+                                for (i, &intensity) in signal.iter().enumerate() {
+                                    if intensity <= 0.0 {
+                                        continue;
+                                    }
+                                    let bin = first_bin + i;
+                                    let freq = profile.first_value + bin as f64 * profile.step;
+                                    let mz = calib.mz(freq);
+                                    if mz.is_finite() && mz > 0.0 {
+                                        peaks.push(Peak { mz, intensity });
+                                    }
+                                }
+                            }
+                            console::log_1(&format!("Scan {}: extracted {} raw profile points", 
+                                scan_number, peaks.len()).into());
+                        } else {
+                            // Standard centroiding for "profile" and "auto"
+                            peaks = centroid_profile(&profile, &calib);
+                            console::log_1(&format!("Scan {}: centroided {} peaks from profile", 
+                                scan_number, peaks.len()).into());
+                        }
                     } else {
                         console::log_1(&format!("Scan {}: no calibration at event offset {}", scan_number, event_offset).into());
                     }

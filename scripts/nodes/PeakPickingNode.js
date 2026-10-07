@@ -1,9 +1,10 @@
 ﻿import {NodeWithAccordion} from "../core/index.js"
 import {Plot2DWebGL} from "../ui/Plot2DWebGL.js"
-import {Wave} from "../formats.js"
+import {Wave,XYTrace} from "../formats.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {CONVENTIONAL_Z,clampClassifierSlope,formatSlope,keepAllSlopeFromFlat,clipSegmentToRect,publishedPeakY,massThroughMask,scaleToggle,wavesFromInput} from "../utils/index.js"
+import {PAN_DBLCLICK_GUARD} from "../ui/Plot2D.js"
 
 export class PeakPickingNode extends NodeWithAccordion{
 

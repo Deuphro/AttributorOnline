@@ -5,19 +5,19 @@ import {Command} from "../core/index.js"
 
 //mouse zoom: the domain expansion per wheel notch is exp(deltaY Ã— this);
 //0.002 â‰ˆ Â±20% for a classic 100px notch, smooth for trackpad deltas
-const WHEEL_ZOOM_SENSITIVITY=0.002
+export const WHEEL_ZOOM_SENSITIVITY=0.002
 //quiet period after the last wheel event before the gesture is committed
 //to the history as a single undoable command
-const ZOOM_GESTURE_DELAY=300
+export const ZOOM_GESTURE_DELAY=300
 //left-drag must travel further than this (px) before it becomes a pan, so
 //plain clicks and double-clicks never move the view
-const PAN_DEAD_ZONE=4
+export const PAN_DEAD_ZONE=4
 //after an activated pan, the dblclick reset is ignored for this long (ms):
 //the click completing a drag must not trigger it by accident
-const PAN_DBLCLICK_GUARD=350
+export const PAN_DBLCLICK_GUARD=350
 //an axis may be dragged outside the graph zone on purpose: drawing it past
 //the fit bounds is how you read a value the data does not reach
-const AXIS_POSITION_LIMIT=3
+export const AXIS_POSITION_LIMIT=3
 
 export class Plot2D{
     //every plot gets a unique SVG id: references such as url(#gradient) are

@@ -2,6 +2,7 @@
 import {CE,stylize} from "../util.js"
 import {Plot2D} from "./Plot2D.js"
 import {GLTraceLayer,shapeId,parseCssColor,THREE_CDN} from "../plot2d-gl.js"
+import {PAN_DBLCLICK_GUARD} from "./Plot2D.js"
 
 const GL_RENDER_DEFAULTS={
     enabled:true,

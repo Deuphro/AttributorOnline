@@ -201,7 +201,8 @@ export class ThermoRawNode extends NodeWithAccordion{
         },style:{fontSize:"13px"}},[
             CE("option",{value:"auto"},["Auto (centroid -> profile)"]),
             CE("option",{value:"centroid"},["Centroid only"]),
-            CE("option",{value:"profile"},["Profile only (centroided)"])
+            CE("option",{value:"profile"},["Profile only (centroided)"]),
+            CE("option",{value:"profile_raw"},["Profile raw (all points)"])
         ])
         
         const firstScanInput=CE("input",{type:"number",min:meta.firstScan,max:meta.lastScan,value:options.firstScan,style:{width:"80px",fontSize:"13px"},handleInput:e=>{
