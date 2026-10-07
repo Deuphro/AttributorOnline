@@ -96,7 +96,7 @@ export class ThermoRawNode extends NodeWithAccordion{
         }
         this.accordion.DOMelt.content.replaceChildren()
         if(this.status==="resolved"){
-            this.accordion.setSizingMode("viewport",{height:360})
+            this.accordion.setSizingMode("content")
             const spectra=this.parameters.source.spectra
             const opts=this.parameters.source.options||{}
             const waves=this.outputs[0]||[]
@@ -121,10 +121,7 @@ export class ThermoRawNode extends NodeWithAccordion{
             
             const resolvedContent=CE("div",{style:{
                 display:"grid",
-                "grid-template-rows":"minmax(0, 1fr) auto",
-                "min-height":"0",
-                height:"100%",
-                overflow:"hidden"
+                gap:"8px"
             }},[])
             this.accordion.DOMelt.content.appendChild(resolvedContent)
             resolvedContent.appendChild(summary)

@@ -759,6 +759,33 @@ export class App{
                 fileInfo.textContent="No file loaded"
             }
         }
+        const updateOptionsFromMetadata=()=>{
+            if(dataVessel.scanMetadata){
+                const meta=dataVessel.scanMetadata
+                options.firstScan=meta.firstScan
+                options.lastScan=meta.lastScan
+                options.rtMin=meta.rtMin
+                options.rtMax=meta.rtMax
+                firstScanInput.min=meta.firstScan
+                firstScanInput.max=meta.lastScan
+                firstScanInput.value=meta.firstScan
+                lastScanInput.min=meta.firstScan
+                lastScanInput.max=meta.lastScan
+                lastScanInput.value=meta.lastScan
+                rtMinInput.min=meta.rtMin
+                rtMinInput.max=meta.rtMax
+                rtMinInput.placeholder=meta.rtMin.toFixed(2)
+                rtMinInput.value=""
+                rtMaxInput.min=meta.rtMin
+                rtMaxInput.max=meta.rtMax
+                rtMaxInput.placeholder=meta.rtMax.toFixed(2)
+                rtMaxInput.value=""
+                msLevelOptions.length=1
+                for(const ml of meta.msLevelsPresent||[1]){
+                    msLevelOptions.push(CE("option",{value:String(ml)},[`MS${ml} only`]))
+                }
+            }
+        }
         const quickScanMetadata=(data)=>{
             if(!data.raw.length) return
             import("../workerPool.js").then(({computePool})=>{
@@ -769,6 +796,9 @@ export class App{
                     if(result.scanMetadata){
                         data.scanMetadata=result.scanMetadata
                         updatePreview(data)
+                        updateOptionsFromMetadata()
+                        const meta=result.scanMetadata
+                        metaInfo.textContent=`Scans: ${meta.firstScan}-${meta.lastScan} (${meta.scanCount} total) | RT: ${meta.rtMin.toFixed(2)}-${meta.rtMax.toFixed(2)} min | MS levels: ${(meta.msLevelsPresent||[1]).join(", ")} | Centroid: ${meta.centroidScanCount} | Profile: ${meta.profileScanCount}`
                     }
                 }).catch(err=>{
                     console.error("Quick scan metadata failed:",err)
@@ -795,7 +825,8 @@ export class App{
         }},[
             CE("option",{value:"auto"},["Auto (centroid -> profile)"]),
             CE("option",{value:"centroid"},["Centroid only"]),
-            CE("option",{value:"profile"},["Profile only (centroided)"])
+            CE("option",{value:"profile"},["Profile only (centroided)"]),
+            CE("option",{value:"profile_raw"},["Profile raw (all points)"])
         ])
         
         const firstScanInput=CE("input",{type:"number",min:1,value:options.firstScan,style:{width:"80px"},handleInput:e=>{
@@ -804,14 +835,11 @@ export class App{
         const lastScanInput=CE("input",{type:"number",min:0,value:options.lastScan,style:{width:"80px"},handleInput:e=>{
             options.lastScan=Math.max(0,parseInt(e.target.value)||0)
         }},[])
+        
+        const msLevelOptions=[CE("option",{value:"0"},["All MS levels"])]
         const msLevelSelect=CE("select",{value:String(options.msLevelFilter),handleInput:e=>{
             options.msLevelFilter=parseInt(e.target.value)
-        }},[
-            CE("option",{value:"0"},["All MS levels"]),
-            CE("option",{value:"1"},["MS1 only"]),
-            CE("option",{value:"2"},["MS2 only"]),
-            CE("option",{value:"3"},["MS3 only"])
-        ])
+        }},msLevelOptions)
         
         const rtMinInput=CE("input",{type:"number",min:0,step:0.01,value:options.rtMin,style:{width:"80px"},handleInput:e=>{
             options.rtMin=Math.max(0,parseFloat(e.target.value)||0)
@@ -820,7 +848,9 @@ export class App{
             options.rtMax=Math.max(0,parseFloat(e.target.value)||0)
         }},[])
         
-        const validator=CE('button',{pilot:this,handleClick:e=>{validate()}},["Load"])
+        const metaInfo=CE("div",{style:{fontSize:"12px",padding:"8px",border:"1px solid #444",borderRadius:"5px",marginTop:"5px"}},[""])
+        
+        const validator=CE('button',{pilot:this,handleClick:e=>{validate()}},["Load spectra"])
         const loaderContainer=CE('div',{
             style:{
                 width:"100%",
@@ -832,8 +862,9 @@ export class App{
             fileInfo,
             dropzone,
             loaderElement,
+            metaInfo,
             CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["Data type",dataTypeSelect]),
-            CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["First scan",firstScanInput,"Last scan (0=all)",lastScanInput]),
+            CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["First scan",firstScanInput,"Last scan",lastScanInput]),
             CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["MS level filter",msLevelSelect]),
             CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["RT min (min)",rtMinInput,"RT max (min)",rtMaxInput]),
             validator
