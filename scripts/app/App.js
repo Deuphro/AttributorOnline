@@ -249,15 +249,15 @@ export class App{
     foldLeft(v){
         if(v){
             this.parameters.leftContent.folded=true;
-            this.mid.style["grid-template-columns"]=`0px 5px 1fr 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
+            this.mid.style["grid-template-columns"]=`0px 5px minmax(0,1fr) 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
         }else{
             this.parameters.leftContent.folded=false;
-            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width}px 5px 1fr 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
+            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width}px 5px minmax(0,1fr) 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
         }
     }
     resizeWidthLeft(v){
         this.parameters.leftContent.width=v;
-        this.mid.style["grid-template-columns"]=`${v}px 5px 1fr 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
+        this.mid.style["grid-template-columns"]=`${v}px 5px minmax(0,1fr) 5px ${this.parameters.rightContent.width*(!this.parameters.rightContent.folded)}px`
     }
     resizerHookLeft(e){
         e.preventDefault();
@@ -277,15 +277,15 @@ export class App{
     foldRight(v){
         if(v){
             this.parameters.rightContent.folded=true;
-            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px 1fr 5px 0px`
+            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px minmax(0,1fr) 5px 0px`
         }else{
             this.parameters.rightContent.folded=false;
-            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px 1fr 5px ${this.parameters.rightContent.width}px`
+            this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px minmax(0,1fr) 5px ${this.parameters.rightContent.width}px`
         }
     }
     resizeWidthRight(v){
         this.parameters.rightContent.width=v;
-        this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px 1fr 5px ${v}px`
+        this.mid.style["grid-template-columns"]=`${this.parameters.leftContent.width*(!this.parameters.leftContent.folded)}px 5px minmax(0,1fr) 5px ${v}px`
     }
     resizerHookRight(e){
         e.preventDefault();

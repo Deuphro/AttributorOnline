@@ -391,8 +391,10 @@ export class AttributionForestMethods{
         stylize(content,{
             display:"grid",
             "grid-template-rows":"minmax(0,1fr) auto auto",
+            "grid-template-columns":"minmax(0,1fr)",
             height:"100%",
             minHeight:"0",
+            minWidth:"0",
             padding:"4px",
             gap:"4px",
             overflow:"hidden"
@@ -407,7 +409,14 @@ export class AttributionForestMethods{
         stylize(this.forestPlotBox,{
             /* PAS DE HAUTEUR EN px: la fenêtre a la sienne et se redimensionne.
                Un cadre de 260px figé laisserait une bande morte en dessous, puis
-               une seconde bande dès qu'on élargit la fenêtre. */
+               une seconde bande dès qu'on élargit la fenêtre.
+               width: 100% permet au grid item de remplir la cellule au lieu de
+               se caler sur son contenu (ce qui crée une dépendance circulaire
+               avec le Plot2D qui fait width: 100%).
+               minWidth: 0 permet au grid item de rétrécir en dessous de sa
+               taille de contenu (sinon min-content empêche le shrink). */
+            width:"100%",
+            minWidth:"0",
             minHeight:"160px",
             background:"rgba(255,255,255,0.04)",
             border:"1px solid rgba(255,255,255,0.15)",borderRadius:"3px"

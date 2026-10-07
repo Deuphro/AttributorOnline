@@ -732,6 +732,9 @@ export class Plot2D{
         }
     }
     drawGraph(){
+        if(this.container.clientWidth===0||this.container.clientHeight===0){
+            return
+        }
         this.ensureAxes()
         this.updateMargins()
         let range=[]
