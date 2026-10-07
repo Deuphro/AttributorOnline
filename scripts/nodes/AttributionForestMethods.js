@@ -116,7 +116,7 @@ forestOverviewLayout({animate=false}={}){
         /* Les réglages FR font partie de la clé: changer `FOREST_LAYOUT_DEFAULTS`
            sans invalider redessinerait l'ancien layout figé. */
         const tune=this.forestTune??FOREST_LAYOUT_DEFAULTS
-        const tuneKey=[tune.iterations,tune.ideal,tune.repulsion,tune.restBase,tune.restSpan,tune.gravity,tune.tempStart,tune.tempEnd].join(",")
+        const tuneKey=[tune.iterations,tune.ideal,tune.repulsion,tune.restBase,tune.restSpan,tune.gravity,tune.tempStart,tune.tempEnd,tune.fac].join(",")
         const cacheKey={batch,width,height,ranks,animate,tune:tuneKey}
         const cached=this.forestLayoutOf
         if(cached&&cached.key.batch===cacheKey.batch
@@ -152,25 +152,26 @@ forestOverviewLayout({animate=false}={}){
     }
 
     /* AVANCE L'ANIMATION D'UNE FRAME et met à jour le plot.
-       Retourne true si l'animation est terminée. */
+       BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
+       `advanceLayout` peut marquer `done` (convergence), on l'ignore: on
+       continue d'avancer, le momentum fait osciller autour de l'équilibre. */
     advanceForestAnimation(){
         const cached=this.forestLayoutOf
-        if(!cached||!cached.layout?.animating) return true
+        if(!cached||!cached.layout?.animatedStates) return true
         const layout=cached.layout
-        let allDone=true
-        /* Vise ~90 frames quelle que soit la taille: 3000 itérations à 2/frame
-           feraient 25 s d'anim — à 34/frame on retombe à ~1.5 s. */
-        const total=layout.totalIterations||layout.animatedStates[0]?.totalIterations||180
-        const stepsPerFrame=Math.max(1,Math.ceil(total/90))
+        layout.animating=true
+        /* 2 pas par frame: 1 pas à 60fps ondule à peine — le temps qu'on le
+           voie il faut 10 s. 2 pas = vivant sans téléporter. Au-delà, le
+           cubique dépasse le repos et ça pompe. */
+        const stepsPerFrame=2
         const finished=[]
         for(let i=0;i<layout.animatedStates.length;i++){
             const state=layout.animatedStates[i]
-            const done=advanceLayout(state,stepsPerFrame)
-            /* `advanceLayout` ne marque `done` qu'au tick SUIVANT le dernier pas:
-               un état qui vient de faire sa 180e itération n'est pas encore
-               marqué — le traiter comme fini ici, sinon une frame vide. */
-            const exhausted=state.done||state.iteration>=state.totalIterations
-            if(!exhausted) allDone=false
+            /* Relance si le plafond est atteint: `iteration` repart, `velo`
+               garde son élan — pas de saut, juste une oscillation continue. */
+            if(state.iteration>=state.totalIterations) state.iteration=0
+            state.done=false
+            advanceLayout(state,stepsPerFrame)
             finished.push(finalizeAnimatedLayout(state))
         }
         /* `placed` RESTE du même type: `applyGridLayout` ne lit que des entrées
@@ -178,17 +179,11 @@ forestOverviewLayout({animate=false}={}){
         const placed=finished
         const gridded=applyGridLayout(placed,{width:layout.width,height:layout.height})
         layout.groups=gridded.groups
-        if(allDone){
-            /* FIN: fige le drapeau à false et jette les états — le cache garde
-               les positions finales, `renderForestPlot` ne recréera rien. */
-            layout.animating=false
-            delete layout.animatedStates
-        }
         /* DESSINE SANS RECRÉER: `renderForestPlot` invaliderait `forestLayoutOf`
            et repartirait du cercle — ici on peint le layout qu'on vient
            d'avancer. */
         this.drawForestLayout(layout)
-        return allDone
+        return false
     }
 
     /* LE DESSIN, ET IL NE FAIT QUE LIRE DES POSITIONS.
@@ -258,35 +253,38 @@ forestOverviewLayout({animate=false}={}){
         const traces=[]
 
         /* UNE TRACE DE SEGMENTS, et elle tient tous les liens qu'on lui donne
-           dans UN SEUL chemin SVG. C'est ce qui permet à un réseau de cent mille
-           pics de rester un objet DOM unique au lieu de cent mille. */
-        const segmentTrace=(id,title,colour,opacity,pairs,size)=>{
-            if(!pairs.length) return
+           dans UN SEUL chemin SVG. `xs/ys` sont déjà des tableaux plats —
+           pas de `Float64Array.from(pairs)` qui alloue 2× par trace et par
+           frame. */
+        const segmentTrace=(id,title,colour,opacity,xs,ys,size)=>{
+            if(!xs.length) return
             traces.push(new XYTrace({
                 id,title,mode:"segments",layer:"svg",
                 options:{mode:"segments",layer:"svg",color:colour,opacity,
                     line:{size}},
-                /* PAS DE `points` EN PLUS: `XYTrace` ne lit que `{id,title,wave,
-                   options}`, et ses `points` viennent du wave. */
-                wave:Wave.fromCoordinates(
-                    Float64Array.from(pairs,pair=>pair[0]),Float64Array.from(pairs,pair=>pair[1]),{},["x","y"])
+                wave:Wave.fromCoordinates(Float64Array.from(xs),Float64Array.from(ys),{},["x","y"])
             }))
         }
 
+        /* UNE SEULE PASSE sur les liens: 8 tranches = 8 paires de tableaux
+           remplis en direct — pas 8 balayages complets du graphe par frame. */
+        const buckets=Array.from({length:this.constructor.FOREST_OPACITY_STEPS},()=>({xs:[],ys:[]}))
+        for(const {graph,rank} of groups){
+            for(const link of graph.links??[]){
+                const ratio=tolerance>0?Number(link.weight||0)/tolerance:0
+                let step=Math.floor(ratio*this.constructor.FOREST_OPACITY_STEPS)
+                if(step<0) step=0
+                if(step>=this.constructor.FOREST_OPACITY_STEPS) step=this.constructor.FOREST_OPACITY_STEPS-1
+                const from=at(rank,link.u)
+                const to=at(rank,link.v)
+                if(!from||!to) continue
+                buckets[step].xs.push(from.x,to.x)
+                buckets[step].ys.push(from.y,to.y)
+            }
+        }
         for(let step=0;step<this.constructor.FOREST_OPACITY_STEPS;step++){
             const low=step/this.constructor.FOREST_OPACITY_STEPS
             const high=(step+1)/this.constructor.FOREST_OPACITY_STEPS
-            const pairs=[]
-            for(const {graph,rank} of groups){
-                for(const link of graph.links??[]){
-                    const ratio=tolerance>0?Number(link.weight||0)/tolerance:0
-                    if(!(ratio>=low&&ratio<high)) continue
-                    const from=at(rank,link.u)
-                    const to=at(rank,link.v)
-                    if(!from||!to) continue
-                    pairs.push([from.x,from.y],[to.x,to.y])
-                }
-            }
             /* L'OPACITÉ VIENT DE LA TRANCHE ET NON DU LIEN: deux liens d'une même
                tranche partagent la même valeur, donc l'écart entre eux serait du
                bruit de segmentation — et ce bruit se voit, parce que deux liens
@@ -294,75 +292,71 @@ forestOverviewLayout({animate=false}={}){
             segmentTrace(
                 `${this.title}:forest:error:${step}`,
                 `link error ${(low*tolerance).toFixed(2)}–${(high*tolerance).toFixed(2)} Da`,
-                "#dfe6ee",0.12+0.88*(low+high)/2,pairs,1)
+                "#dfe6ee",0.12+0.88*(low+high)/2,buckets[step].xs,buckets[step].ys,1)
         }
 
-        /* LES SOMMETS: blancs pour non-sélectionnés, colorés pour sélectionnés.
-           Pour les arbres sélectionnés, on ajoute les formules en infobulle et
-           un glow sur la racine. */
-        const pointsSelected=[]
-        const pointsUnselected=[]
+        /* LES SOMMETS: tableaux plats xs/ys — pas de paires + `from` par trace.
+           `attrByIndex` évite le `rows.find` par sommet et par frame: O(n²)
+           en plein rAF, c'est ça qui ramait sur les gros arbres. */
+        const selX=[],selY=[],unselX=[],unselY=[]
         const rootGlows=[]  // {x,y,rank} pour les racines sélectionnées
         const vertexLabels=[]  // {x,y,text,rank} pour étiquettes de formule
+        const attr=this.forestAttributions?.result
+        const attrByIndex=attr?new Map(attr.rows.map(r=>[r.index,r])):null
         for(const {graph,rank} of groups){
             const isTreeSelected=this.forestSelected.has(rank)
             for(const vertex of graph.vertices??[]){
                 const point=at(rank,vertex.index)
                 if(!point) continue
                 if(isTreeSelected){
-                    pointsSelected.push([point.x,point.y])
+                    selX.push(point.x); selY.push(point.y)
                     /* Racine = glow */
                     if(vertex.isRoot){
                         rootGlows.push({x:point.x,y:point.y,rank})
                     }
                     /* Étiquettes de formule pour arbres sélectionnés (si peu de sommets) */
-                    if(graph.vertices.length<=40){
-                        const attr=this.forestAttributions?.result
-                        if(attr){
-                            const row=attr.rows.find(r=>r.index===vertex.index)
-                            if(row){
-                                vertexLabels.push({
-                                    x:point.x,y:point.y,
-                                    text:`${row.notation} (${row.errorPpm?.toFixed(1)??"?"} ppm)`,
-                                    rank
-                                })
-                            }
+                    if(graph.vertices.length<=40&&attrByIndex){
+                        const row=attrByIndex.get(vertex.index)
+                        if(row){
+                            vertexLabels.push({
+                                x:point.x,y:point.y,
+                                text:`${row.notation} (${row.errorPpm?.toFixed(1)??"?"} ppm)`,
+                                rank
+                            })
                         }
                     }
                 }else{
-                    pointsUnselected.push([point.x,point.y])
+                    unselX.push(point.x); unselY.push(point.y)
                 }
             }
         }
-        if(pointsUnselected.length){
+        if(unselX.length){
             traces.push(new XYTrace({
                 id:`${this.title}:forest:peaks:unselected`,
                 title:"measured peaks (unselected)",
                 mode:"points",layer:"svg",
                 options:{mode:"points",layer:"svg",color:"#dfe6ee",line:{size:1},
                     marker:{shape:"circle",size:3}},
-                wave:Wave.fromCoordinates(
-                    Float64Array.from(pointsUnselected,pair=>pair[0]),Float64Array.from(pointsUnselected,pair=>pair[1]),{},["x","y"])
+                wave:Wave.fromCoordinates(Float64Array.from(unselX),Float64Array.from(unselY),{},["x","y"])
             }))
         }
-        if(pointsSelected.length){
+        if(selX.length){
             traces.push(new XYTrace({
                 id:`${this.title}:forest:peaks:selected`,
                 title:"measured peaks (selected)",
                 mode:"points",layer:"svg",
-                options:{mode:"points",layer:"svg",color:"#aef22e",line:{size:2},
+                options:{mode:"points",layer:"svg",color:"hsl(0, 0%, 100%)",line:{size:2},
                     marker:{shape:"circle",size:5}},
-                wave:Wave.fromCoordinates(
-                    Float64Array.from(pointsSelected,pair=>pair[0]),Float64Array.from(pointsSelected,pair=>pair[1]),{},["x","y"])
+                wave:Wave.fromCoordinates(Float64Array.from(selX),Float64Array.from(selY),{},["x","y"])
             }))
         }
-        /* GLOW SUR LES RACINES SÉLECTIONNÉES: cercles radiaux plus grands */
+        /* GLOW SUR LES RACINES SÉLECTIONNÉES: tableaux plats, pas de paires. */
         if(rootGlows.length){
-            const glowPairs=[]
+            const gx=[],gy=[]
             for(const glow of rootGlows){
                 const r=12
-                glowPairs.push([glow.x-r,glow.y],[glow.x+r,glow.y])
-                glowPairs.push([glow.x,glow.y-r],[glow.x,glow.y+r])
+                gx.push(glow.x-r,glow.x+r,glow.x,glow.x)
+                gy.push(glow.y,glow.y,glow.y-r,glow.y+r)
             }
             traces.push(new XYTrace({
                 id:`${this.title}:forest:rootglow`,
@@ -370,8 +364,7 @@ forestOverviewLayout({animate=false}={}){
                 mode:"segments",layer:"svg",
                 options:{mode:"segments",layer:"svg",color:"#aef22e",opacity:0.6,
                     line:{size:2}},
-                wave:Wave.fromCoordinates(
-                    Float64Array.from(glowPairs,pair=>pair[0]),Float64Array.from(glowPairs,pair=>pair[1]),{},["x","y"])
+                wave:Wave.fromCoordinates(Float64Array.from(gx),Float64Array.from(gy),{},["x","y"])
             }))
         }
         /* ÉTIQUETTES DE FORMULES sur les sommets (arbres sélectionnés, ≤40 sommets) */
@@ -390,13 +383,18 @@ forestOverviewLayout({animate=false}={}){
            n'était dessiné et les bornes restaient nulles, sans une seule erreur:
            un cadre muet. C'est le défaut le plus coûteux, il ne se signale pas. */
         plot.traces=traces
-        /* Hook pour dessiner les étiquettes de formule après le rendu */
-        const origDraw=plot.drawGraph.bind(plot)
-        plot.drawGraph=()=>{
-            origDraw()
-            if(this.forestVertexLabels?.length){
-                this.drawForestVertexLabels(plot)
+        /* Hook étiquettes posé UNE fois: avant, chaque frame enveloppait le
+           `drawGraph` précédent — après 60 frames, 60 wrappers empilés par
+           appel, d'où la lenteur qui empirait avec le temps. */
+        if(!plot.forestLabelsHooked){
+            const origDraw=plot.drawGraph.bind(plot)
+            plot.drawGraph=()=>{
+                origDraw()
+                if(this.forestVertexLabels?.length){
+                    this.drawForestVertexLabels(plot)
+                }
             }
+            plot.forestLabelsHooked=true
         }
         plot.drawGraph?.()
     }
