@@ -818,6 +818,95 @@ function layoutGroup(graph,{iterations,ideal}){
     return positions
 }
 
+/* CRÉE UN ÉTAT DE LAYOUT ANIMÉ — pour pilotage par requestAnimationFrame.
+   Retourne un objet {positions, step, done, totalIterations, ideal, worst, byIndex, cooling}
+   qu'on fait avancer avec `advanceLayout(state, steps=1)`. */
+export function createAnimatedLayout(graph,{iterations=180,ideal=26}={}){
+    const count=graph.vertices.length
+    const positions=new Float64Array(count*2)
+    if(!count) return {positions,done:true,totalIterations:0}
+    for(let i=0;i<count;i++){
+        const angle=2*Math.PI*i/count
+        positions[i*2]=ideal*Math.cos(angle)
+        positions[i*2+1]=ideal*Math.sin(angle)
+    }
+    if(count===1) return {positions,done:true,totalIterations:0}
+    const worst=graph.links.reduce((n,link)=>Math.max(n,link.weight||0),0)||1
+    const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
+    const cooling=Math.pow(0.02,1/Math.max(1,iterations-1))
+    return {
+        positions,
+        iteration:0,
+        totalIterations:iterations,
+        ideal,
+        worst,
+        byIndex,
+        cooling,
+        count,
+        graph,
+        done:false
+    }
+}
+
+/* AVANCE LE LAYOUT D'UN NOMBRE D'ÉTAPES (par défaut 1).
+   Retourne true si le layout est terminé. */
+export function advanceLayout(state,steps=1){
+    if(state.done) return true
+    const {positions,iteration,totalIterations,ideal,worst,byIndex,cooling,count,graph}=state
+    for(let s=0;s<steps;s++){
+        const round=state.iteration++
+        if(round>=totalIterations){
+            state.done=true
+            return true
+        }
+        repulse(positions,count,1,ideal*2,ideal*2)
+        for(const link of graph.links){
+            const u=byIndex.get(link.u)
+            const v=byIndex.get(link.v)
+            if(u===undefined||v===undefined) continue
+            const slack=Math.min(1,Math.max(0.02,(link.weight||0)/worst))
+            const rest=ideal*(0.2+slack)
+            const dx=positions[v*2]-positions[u*2]
+            const dy=positions[v*2+1]-positions[u*2+1]
+            const distance=Math.max(1e-6,Math.hypot(dx,dy))
+            const pull=(distance-rest)/distance*0.5
+            positions[u*2]+=dx*pull
+            positions[u*2+1]+=dy*pull
+            positions[v*2]-=dx*pull
+            positions[v*2+1]-=dy*pull
+        }
+        for(let i=0;i<count;i++){
+            positions[i*2]-=positions[i*2]*0.02
+            positions[i*2+1]-=positions[i*2+1]*0.02
+        }
+        if(round<totalIterations-1){
+            for(let i=0;i<positions.length;i++) positions[i]*=cooling
+        }
+    }
+    return state.done
+}
+
+/* TRANSFORME UN ÉTAT ANIMÉ EN RÉSULTAT FINAL compatible avec layoutForests. */
+export function finalizeAnimatedLayout(state){
+    const {positions,ideal,count,graph}=state
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity
+    for(let i=0;i<count;i++){
+        minX=Math.min(minX,positions[i*2])
+        maxX=Math.max(maxX,positions[i*2])
+        minY=Math.min(minY,positions[i*2+1])
+        maxY=Math.max(maxY,positions[i*2+1])
+    }
+    if(!Number.isFinite(minX)){ minX=0; maxX=0; minY=0; maxY=0 }
+    return {
+        graph,
+        positions,
+        minX,
+        minY,
+        w:Math.max(1e-6,maxX-minX),
+        h:Math.max(1e-6,maxY-minY)
+    }
+}
+
 
 /* LA MISE EN PAGE DES GROUPES, et c'est une GRILLE À CASES ET NON UNE VAGUE.
 
@@ -903,6 +992,55 @@ export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,column
                visible, et savoir où cliquer dessus. Elle est calculée ICI et non
                relue au dessin, parce qu'un dessin qui recalcule son échelle est
                un dessin qui n'en a qu'une. */
+            box:{
+                x:Math.min(...xs),y:Math.min(...ys),
+                width:Math.max(...xs)-Math.min(...xs),
+                height:Math.max(...ys)-Math.min(...ys)
+            }
+        }
+    })
+    return {width,height,groups,columns:cols,rows}
+}
+
+/* APPLIQUE LA MISE EN PAGE GRILLE AUX ENTRÉES PLACÉES.
+   Prend les entrées de `finalizeAnimatedLayout` (qui ont graph, positions, minX, minY, w, h)
+   et applique la même logique de grille que `layoutForests`:
+   - calcule l'échelle pour que le plus grand groupe remplisse sa case
+   - positionne chaque groupe dans sa cellule avec offsetX/offsetY
+   - retourne les groups avec `points` en coordonnées écran. */
+export function applyGridLayout(placed,{width=800,height=400,gap=8,margin=6,columns=0}={}){
+    const list=placed.filter(e=>e.graph.vertices.length>0)
+    if(!list.length) return {width,height,groups:[],columns:0,rows:0}
+    const span=width-2*margin
+    const spanHeight=height-2*margin
+    const fit=Math.max(1,Math.floor(span/90))
+    const cols=Math.max(1,Math.min(fit,columns>0?columns:Math.ceil(Math.sqrt(list.length))))
+    const rows=Math.ceil(list.length/cols)
+    const cellWidth=(span-(cols-1)*gap)/cols
+    const cellHeight=(spanHeight-(rows-1)*gap)/rows
+    const widest=placed.reduce((n,entry)=>Math.max(n,entry.w),0)||1
+    const tallest=placed.reduce((n,entry)=>Math.max(n,entry.h),0)||1
+    const scale=Math.min(cellWidth/widest,cellHeight/tallest)
+    const groups=placed.map((entry,index)=>{
+        const column=index%cols
+        const row=Math.floor(index/cols)
+        const cellX=margin+column*(cellWidth+gap)
+        const cellY=margin+row*(cellHeight+gap)
+        const drawWidth=entry.w*scale
+        const drawHeight=entry.h*scale
+        const offsetX=cellX+(cellWidth-drawWidth)/2
+        const offsetY=cellY+(cellHeight-drawHeight)/2
+        const points=entry.graph.vertices.map((vertex,i)=>({
+            index:vertex.index,
+            x:offsetX+(entry.positions[i*2]-entry.minX)*scale,
+            y:offsetY+(entry.positions[i*2+1]-entry.minY)*scale
+        }))
+        const xs=points.map(point=>point.x)
+        const ys=points.map(point=>point.y)
+        return {
+            rank:entry.graph.rank,
+            size:entry.graph.size,
+            points,
             box:{
                 x:Math.min(...xs),y:Math.min(...ys),
                 width:Math.max(...xs)-Math.min(...xs),

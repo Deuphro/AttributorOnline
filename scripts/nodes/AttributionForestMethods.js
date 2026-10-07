@@ -6,7 +6,7 @@ import {Wave,XYTrace} from "../formats.js"
 import {Formula,FormulaCollection} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,layoutForests,DEFAULT_LINK_TOLERANCE} from "../forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,DEFAULT_LINK_TOLERANCE} from "../forest.js"
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 
@@ -90,13 +90,14 @@ export class AttributionForestMethods{
 
 /* LA MISE EN PLACE, CALCULÉE UNE FOIS PAR RÉSEAU.
 
-       Elle vient de `forest.js` et ne dépend que du graphe: elle n'est donc PAS
-       dans le rendu. Un moteur de force recalculé à chaque image donnerait deux
-       réseaux différents pour un même « Grow network », et la comparaison d'un
-       run à l'autre — le seul usage de ce graphique — deviendrait impossible.
+   Elle vient de `forest.js` et ne dépend que du graphe: elle n'est donc PAS
+   dans le rendu. Un moteur de force recalculé à chaque image donnerait deux
+   réseaux différents pour un même « Grow network », et la comparaison d'un
+   run à l'autre — le seul usage de ce graphique — deviendrait impossible.
 
-       AFFICHE SEULEMENT LES ARBRES SÉLECTIONNÉS, côte à côte en force-directed. */
-    forestOverviewLayout(){
+   AFFICHE SEULEMENT LES ARBRES SÉLECTIONNÉS, côte à côte en force-directed.
+   Supporte deux modes: statique (layoutForests complet) ou animé (requestAnimationFrame). */
+forestOverviewLayout({animate=false}={}){
         const box=this.forestPlotBox
         if(!box) return null
         const batch=this.forestGraphs?.[0]
@@ -106,16 +107,76 @@ export class AttributionForestMethods{
         /* FILTRER LES GRAPHES SÉLECTIONNÉS. */
         const selectedGraphs=batch.graphs.filter(g=>this.forestSelected.has(g.rank))
         if(!selectedGraphs.length) return null
-        /* LA MISE EN PAGE EST MÉMOÏSÉE, clé = graphes sélectionnés (même objets, même ordre) + taille boîte. */
+        /* CLÉ DE CACHE: graphes sélectionnés + taille boîte + mode animé. */
+        const cacheKey={graphs:selectedGraphs,width,height,animate}
         const cached=this.forestLayoutOf
-        if(cached&&cached.width===width&&cached.height===height
-            &&cached.graphs.length===selectedGraphs.length
-            &&cached.graphs.every((g,i)=>g===selectedGraphs[i])){
+        if(cached&&cached.key.graphs===cacheKey.graphs
+            &&cached.key.width===cacheKey.width
+            &&cached.key.height===cacheKey.height
+            &&cached.key.animate===cacheKey.animate){
             return cached.layout
         }
+        if(animate){
+            /* MODE ANIMÉ: on crée un état par graphe, pas un layout final.
+               On applique IMMÉDIATEMENT la grille aux positions initiales (cercle)
+               pour que le premier rendu ne soit pas vide. */
+            const animatedStates=selectedGraphs.map(graph=>createAnimatedLayout(graph,{iterations:180,ideal:26}))
+            /* Finalise chaque état initial et applique la grille pour le premier rendu. */
+            const placed=animatedStates.map(finalizeAnimatedLayout)
+            const gridded=applyGridLayout(placed,{width,height})
+            const layout={
+                width,height,
+                groups:gridded.groups,
+                animatedStates,
+                animating:true,
+                totalIterations:180
+            }
+            this.forestLayoutOf={key:cacheKey,layout}
+            return layout
+        }
+        /* MODE STATIQUE (par défaut): layoutForests complet. */
         const layout=layoutForests(selectedGraphs,{width,height})
-        this.forestLayoutOf={graphs:selectedGraphs,width,height,layout}
+        this.forestLayoutOf={key:cacheKey,layout}
         return layout
+    }
+
+    /* AVANCE L'ANIMATION D'UNE FRAME et met à jour le plot.
+       Retourne true si l'animation est terminée. */
+    advanceForestAnimation(){
+        const cached=this.forestLayoutOf
+        if(!cached||!cached.layout?.animating) return true
+        const layout=cached.layout
+        let allDone=true
+        const stepsPerFrame=2  // 2 itérations par frame = ~90 frames pour 180 itérations
+        for(let i=0;i<layout.animatedStates.length;i++){
+            const state=layout.animatedStates[i]
+            if(!state.done){
+                allDone=false
+                advanceLayout(state,stepsPerFrame)
+                /* Met à jour les positions dans le layout pour le rendu immédiat. */
+                const finalized=finalizeAnimatedLayout(state)
+                layout.groups[i]=finalized
+            }
+        }
+        if(allDone){
+            layout.animating=false
+            /* Convertit en layout statique pour le cache. */
+            layout.groups=layout.animatedStates.map(finalizeAnimatedLayout)
+            delete layout.animatedStates
+            delete layout.animating
+        }else{
+            /* Applique la mise en page grille aux positions finalisées pour le rendu. */
+            const box=this.forestPlotBox
+            if(box){
+                const width=Math.max(240,Math.round(box.clientWidth||600))
+                const height=Math.max(160,Math.round(box.clientHeight||this.forestPlotHeight||260))
+                const gridded=applyGridLayout(layout.groups,{width,height})
+                layout.groups=gridded.groups
+            }
+        }
+        /* Force le redessin. */
+        this.renderForestPlot()
+        return allDone
     }
 
     /* LE DESSIN, ET IL NE FAIT QUE LIRE DES POSITIONS.
@@ -139,7 +200,9 @@ export class AttributionForestMethods{
     renderForestPlot(){
         const plot=this.forestPlot
         if(!plot) return
-        const layout=this.forestOverviewLayout()
+        /* Force le mode animé et invalide le cache statique précédent. */
+        this.forestLayoutOf=null
+        const layout=this.forestOverviewLayout({animate:true})
         if(!layout){
             plot.traces=[]
             plot.drawGraph?.()
@@ -543,10 +606,49 @@ export class AttributionForestMethods{
        récapitulatif qui annonce cent cibles pendant que le graphique en montre
        trente est le défaut le plus coûteux de tous: il ne se remarque qu'en
        comparant les deux. */
+    /* DÉMARRE LA BOUCLE D'ANIMATION SI NÉCESSAIRE. */
+startForestAnimation(){
+        if(this.forestAnimationFrame!==null) return
+        const tick=()=>{
+            this.forestAnimationFrame=null
+            const done=this.advanceForestAnimation()
+            if(!done){
+                this.forestAnimationFrame=requestAnimationFrame(tick)
+            }
+        }
+        this.forestAnimationFrame=requestAnimationFrame(tick)
+    }
+
+    /* ARRÊTE LA BOUCLE D'ANIMATION. */
+    stopForestAnimation(){
+        if(this.forestAnimationFrame!==null){
+            cancelAnimationFrame(this.forestAnimationFrame)
+            this.forestAnimationFrame=null
+        }
+    }
+
     renderForestOverview(){
         if(!this.forestPlot) return
         this.renderForestRecap()
         this.renderForestPlot()
+        /* Force animation check on UPDATED layout (renderForestPlot creates new animated layout). */
+        const cached=this.forestLayoutOf
+        if(cached?.layout?.animating){
+            this.startForestAnimation()
+        }else{
+            /* Fallback: si on a des graphes sélectionnés mais pas d'animation, forcer le mode animé. */
+            if(this.forestSelected.size>0 && this.forestPlotBox){
+                this.renderForestPlot()  // recrée le layout animé
+                const cached2=this.forestLayoutOf
+                if(cached2?.layout?.animating){
+                    this.startForestAnimation()
+                }else{
+                    this.stopForestAnimation()
+                }
+            }else{
+                this.stopForestAnimation()
+            }
+        }
     }
 
     buildForestPlan(){
