@@ -152,6 +152,7 @@ export class AttributionNode extends NodeWithAccordion{
         this.forestPlan=null
         this.forestGraphsOf=null
         this.forestLayoutOf=null
+        this.forestAnimationFrame=null
         this.forestPlotLeft=0.10
         this.forestPlotRight=0.01
         this.forestColors={

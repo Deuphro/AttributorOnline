@@ -107,10 +107,16 @@ forestOverviewLayout({animate=false}={}){
         /* FILTRER LES GRAPHES SÉLECTIONNÉS. */
         const selectedGraphs=batch.graphs.filter(g=>this.forestSelected.has(g.rank))
         if(!selectedGraphs.length) return null
-        /* CLÉ DE CACHE: graphes sélectionnés + taille boîte + mode animé. */
-        const cacheKey={graphs:selectedGraphs,width,height,animate}
+        /* CLÉ DE CACHE: batch + rangs sélectionnés + taille boîte + mode animé.
+           `filter` crée un tableau NEUF à chaque appel, donc comparer des
+           tableaux par `===` manque toujours — la clé retient le batch (stable
+           tant que « Grow network » n'a pas retournée) et la signature des
+           rangs, pas le tableau filtré. */
+        const ranks=selectedGraphs.map(g=>g.rank).join(",")
+        const cacheKey={batch,width,height,ranks,animate}
         const cached=this.forestLayoutOf
-        if(cached&&cached.key.graphs===cacheKey.graphs
+        if(cached&&cached.key.batch===cacheKey.batch
+            &&cached.key.ranks===cacheKey.ranks
             &&cached.key.width===cacheKey.width
             &&cached.key.height===cacheKey.height
             &&cached.key.animate===cacheKey.animate){
@@ -148,34 +154,32 @@ forestOverviewLayout({animate=false}={}){
         const layout=cached.layout
         let allDone=true
         const stepsPerFrame=2  // 2 itérations par frame = ~90 frames pour 180 itérations
+        const finished=[]
         for(let i=0;i<layout.animatedStates.length;i++){
             const state=layout.animatedStates[i]
-            if(!state.done){
-                allDone=false
-                advanceLayout(state,stepsPerFrame)
-                /* Met à jour les positions dans le layout pour le rendu immédiat. */
-                const finalized=finalizeAnimatedLayout(state)
-                layout.groups[i]=finalized
-            }
+            const done=advanceLayout(state,stepsPerFrame)
+            /* `advanceLayout` ne marque `done` qu'au tick SUIVANT le dernier pas:
+               un état qui vient de faire sa 180e itération n'est pas encore
+               marqué — le traiter comme fini ici, sinon une frame vide. */
+            const exhausted=state.done||state.iteration>=state.totalIterations
+            if(!exhausted) allDone=false
+            finished.push(finalizeAnimatedLayout(state))
         }
+        /* `placed` RESTE du même type: `applyGridLayout` ne lit que des entrées
+           `{graph,positions,minX,minY,w,h}` — jamais des groupes grillés. */
+        const placed=finished
+        const gridded=applyGridLayout(placed,{width:layout.width,height:layout.height})
+        layout.groups=gridded.groups
         if(allDone){
+            /* FIN: fige le drapeau à false et jette les états — le cache garde
+               les positions finales, `renderForestPlot` ne recréera rien. */
             layout.animating=false
-            /* Convertit en layout statique pour le cache. */
-            layout.groups=layout.animatedStates.map(finalizeAnimatedLayout)
             delete layout.animatedStates
-            delete layout.animating
-        }else{
-            /* Applique la mise en page grille aux positions finalisées pour le rendu. */
-            const box=this.forestPlotBox
-            if(box){
-                const width=Math.max(240,Math.round(box.clientWidth||600))
-                const height=Math.max(160,Math.round(box.clientHeight||this.forestPlotHeight||260))
-                const gridded=applyGridLayout(layout.groups,{width,height})
-                layout.groups=gridded.groups
-            }
         }
-        /* Force le redessin. */
-        this.renderForestPlot()
+        /* DESSINE SANS RECRÉER: `renderForestPlot` invaliderait `forestLayoutOf`
+           et repartirait du cercle — ici on peint le layout qu'on vient
+           d'avancer. */
+        this.drawForestLayout(layout)
         return allDone
     }
 
@@ -200,14 +204,30 @@ forestOverviewLayout({animate=false}={}){
     renderForestPlot(){
         const plot=this.forestPlot
         if(!plot) return
-        /* Force le mode animé et invalide le cache statique précédent. */
-        this.forestLayoutOf=null
+        /* RÉUTILISE LE CACHE: invalider ici repartirait du cercle à chaque
+           frame — `forestOverviewLayout` recrée seulement si batch, sélection
+           ou taille ont changé. */
         const layout=this.forestOverviewLayout({animate:true})
         if(!layout){
+            this.stopForestAnimation()
             plot.traces=[]
             plot.drawGraph?.()
             return
         }
+        this.drawForestLayout(layout)
+        /* DÉMARRE LA BOUCLE si le layout vient d'être créé en mode animé:
+           sans cet appel le cercle initial est dessiné une fois et ne bouge
+           jamais. */
+        if(layout.animating) this.startForestAnimation()
+    }
+
+    /* LE DESSIN PUR, SANS CACHE NI RECRÉATION.
+       `renderForestPlot` (ensure) et `advanceForestAnimation` (tick) peignent
+       le même layout: le tick ne doit jamais repasser par l'ensure, sinon il
+       jette les états animés et repart du cercle. */
+    drawForestLayout(layout){
+        const plot=this.forestPlot
+        if(!plot||!layout) return
         this.forestLayout=layout
         const batch=this.forestGraphs[0]
         /* LA POSITION DE CHAQUE SOMMET, DANS UN INDEX UNIQUE. Le noyau numérote
@@ -607,13 +627,19 @@ forestOverviewLayout({animate=false}={}){
        trente est le défaut le plus coûteux de tous: il ne se remarque qu'en
        comparant les deux. */
     /* DÉMARRE LA BOUCLE D'ANIMATION SI NÉCESSAIRE. */
-startForestAnimation(){
-        if(this.forestAnimationFrame!==null) return
+    startForestAnimation(){
+        /* `!= null` couvre `undefined`: sans init explicite le premier appel
+           voyait `undefined !== null` et sortait sans jamais boucler. */
+        if(this.forestAnimationFrame!=null) return
         const tick=()=>{
-            this.forestAnimationFrame=null
+            /* Le garde a déjà réservé la frame: ne pas remettre `null` ici,
+               sinon un `stop` entre deux frames n'annule plus rien et deux
+               `start` concurrents bouclent en double. */
             const done=this.advanceForestAnimation()
             if(!done){
                 this.forestAnimationFrame=requestAnimationFrame(tick)
+            }else{
+                this.forestAnimationFrame=null
             }
         }
         this.forestAnimationFrame=requestAnimationFrame(tick)
@@ -621,7 +647,7 @@ startForestAnimation(){
 
     /* ARRÊTE LA BOUCLE D'ANIMATION. */
     stopForestAnimation(){
-        if(this.forestAnimationFrame!==null){
+        if(this.forestAnimationFrame!=null){
             cancelAnimationFrame(this.forestAnimationFrame)
             this.forestAnimationFrame=null
         }

@@ -512,7 +512,7 @@ test("the reference list is rebuilt from the plan, never beside it",()=>{
    rendent bien la MÊME valeur plutôt que deux valeurs égales. */
 test("the force layout runs ONCE for one graph, not at every repaint",()=>{
     const source=slice(NODE,
-        "    forestOverviewLayout(){",
+        "    forestOverviewLayout({",
         "/* LE DESSIN, ET IL NE FAIT QUE LIRE",
         "forestOverviewLayout")
     let runs=0
