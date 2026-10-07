@@ -700,7 +700,8 @@ export class App{
         let ThermoRawLoader=new Dialog("Load Thermo .raw file",this,this.main)
         let dataVessel={
             fileName:"",
-            raw:new Uint8Array(0)
+            raw:new Uint8Array(0),
+            scanMetadata:null
         }
         let fileInfo=CE('div',{style:{margin:"5px",padding:"5px",border:"1px solid white",borderRadius:"5px"}},["No file loaded"])
         const options={
@@ -734,7 +735,9 @@ export class App{
             data.reader.onload = ()=>{
                 data.fileName=file.name
                 data.raw=new Uint8Array(data.reader.result)
+                data.scanMetadata=null
                 updatePreview(data)
+                quickScanMetadata(data)
             }
             data.reader.readAsArrayBuffer(file)
         }
@@ -742,9 +745,35 @@ export class App{
             readFile(e.target.files[0],data)
         }
         const updatePreview=(vessel)=>{
-            fileInfo.textContent=vessel.fileName
-                ?`File: ${vessel.fileName} (${(vessel.raw.length/1024/1024).toFixed(2)} MB)`
-                :"No file loaded"
+            if(vessel.fileName){
+                let previewText=`File: ${vessel.fileName} (${(vessel.raw.length/1024/1024).toFixed(2)} MB)`
+                if(vessel.scanMetadata){
+                    const scanCount=vessel.scanMetadata.scanCount||0
+                    const rtMin=vessel.scanMetadata.rtMin?.toFixed(2)||0
+                    const rtMax=vessel.scanMetadata.rtMax?.toFixed(2)||0
+                    const msLevels=vessel.scanMetadata.msLevels||[]
+                    previewText+=` | Scans: ${scanCount} | RT: ${rtMin}–${rtMax} min | MS levels: ${msLevels.join(", ")}`
+                }
+                fileInfo.textContent=previewText
+            }else{
+                fileInfo.textContent="No file loaded"
+            }
+        }
+        const quickScanMetadata=(data)=>{
+            if(!data.raw.length) return
+            import("../workerPool.js").then(({computePool})=>{
+                computePool.run("parseThermoRaw",{
+                    data:Array.from(data.raw),
+                    options:{dataType:"auto",firstScan:1,lastScan:0,msLevelFilter:0,rtMin:0,rtMax:0,metadataOnly:true}
+                }).then(result=>{
+                    if(result.scanMetadata){
+                        data.scanMetadata=result.scanMetadata
+                        updatePreview(data)
+                    }
+                }).catch(err=>{
+                    console.error("Quick scan metadata failed:",err)
+                })
+            })
         }
         const dropzone=CE('div',{className:"dropzone"},["Drop a Thermo .raw file here"])
         dropzone.addEventListener("dragover",(e)=>{
@@ -784,6 +813,13 @@ export class App{
             CE("option",{value:"3"},["MS3 only"])
         ])
         
+        const rtMinInput=CE("input",{type:"number",min:0,step:0.01,value:options.rtMin,style:{width:"80px"},handleInput:e=>{
+            options.rtMin=Math.max(0,parseFloat(e.target.value)||0)
+        }},[])
+        const rtMaxInput=CE("input",{type:"number",min:0,step:0.01,value:options.rtMax,style:{width:"80px"},handleInput:e=>{
+            options.rtMax=Math.max(0,parseFloat(e.target.value)||0)
+        }},[])
+        
         const validator=CE('button',{pilot:this,handleClick:e=>{validate()}},["Load"])
         const loaderContainer=CE('div',{
             style:{
@@ -799,6 +835,7 @@ export class App{
             CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["Data type",dataTypeSelect]),
             CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["First scan",firstScanInput,"Last scan (0=all)",lastScanInput]),
             CE("label",{style:{display:"grid",gap:"4px",fontSize:"13px"}},["MS level filter",msLevelSelect]),
+            CE("label",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px",fontSize:"13px"}},["RT min (min)",rtMinInput,"RT max (min)",rtMaxInput]),
             validator
         ])
         ThermoRawLoader.DOMelt.content.appendChild(loaderContainer)
