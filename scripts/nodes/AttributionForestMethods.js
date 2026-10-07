@@ -6,7 +6,7 @@ import {Wave,XYTrace} from "../formats.js"
 import {Formula,FormulaCollection} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,DEFAULT_LINK_TOLERANCE} from "../forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 
@@ -113,20 +113,25 @@ forestOverviewLayout({animate=false}={}){
            tant que « Grow network » n'a pas retournée) et la signature des
            rangs, pas le tableau filtré. */
         const ranks=selectedGraphs.map(g=>g.rank).join(",")
-        const cacheKey={batch,width,height,ranks,animate}
+        /* Les réglages FR font partie de la clé: changer `FOREST_LAYOUT_DEFAULTS`
+           sans invalider redessinerait l'ancien layout figé. */
+        const tune=this.forestTune??FOREST_LAYOUT_DEFAULTS
+        const tuneKey=[tune.iterations,tune.ideal,tune.repulsion,tune.restBase,tune.restSpan,tune.gravity,tune.tempStart,tune.tempEnd].join(",")
+        const cacheKey={batch,width,height,ranks,animate,tune:tuneKey}
         const cached=this.forestLayoutOf
         if(cached&&cached.key.batch===cacheKey.batch
             &&cached.key.ranks===cacheKey.ranks
             &&cached.key.width===cacheKey.width
             &&cached.key.height===cacheKey.height
-            &&cached.key.animate===cacheKey.animate){
+            &&cached.key.animate===cacheKey.animate
+            &&cached.key.tune===cacheKey.tune){
             return cached.layout
         }
         if(animate){
             /* MODE ANIMÉ: on crée un état par graphe, pas un layout final.
                On applique IMMÉDIATEMENT la grille aux positions initiales (cercle)
                pour que le premier rendu ne soit pas vide. */
-            const animatedStates=selectedGraphs.map(graph=>createAnimatedLayout(graph,{iterations:180,ideal:26}))
+            const animatedStates=selectedGraphs.map(graph=>createAnimatedLayout(graph,tune))
             /* Finalise chaque état initial et applique la grille pour le premier rendu. */
             const placed=animatedStates.map(finalizeAnimatedLayout)
             const gridded=applyGridLayout(placed,{width,height})
@@ -135,7 +140,7 @@ forestOverviewLayout({animate=false}={}){
                 groups:gridded.groups,
                 animatedStates,
                 animating:true,
-                totalIterations:180
+                totalIterations:tune.iterations
             }
             this.forestLayoutOf={key:cacheKey,layout}
             return layout
@@ -153,7 +158,10 @@ forestOverviewLayout({animate=false}={}){
         if(!cached||!cached.layout?.animating) return true
         const layout=cached.layout
         let allDone=true
-        const stepsPerFrame=2  // 2 itérations par frame = ~90 frames pour 180 itérations
+        /* Vise ~90 frames quelle que soit la taille: 3000 itérations à 2/frame
+           feraient 25 s d'anim — à 34/frame on retombe à ~1.5 s. */
+        const total=layout.totalIterations||layout.animatedStates[0]?.totalIterations||180
+        const stepsPerFrame=Math.max(1,Math.ceil(total/90))
         const finished=[]
         for(let i=0;i<layout.animatedStates.length;i++){
             const state=layout.animatedStates[i]

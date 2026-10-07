@@ -37,6 +37,8 @@
    valeur existe déjà dans l'oracle. */
 export const DEFAULT_LINK_TOLERANCE=0.5
 
+export const FOREST_LAYOUT_DEFAULTS={iterations:3000,ideal:26,repulsion:10,restBase:0.4,restSpan:0.1,gravity:0,tempStart:null,tempEnd:0.5}
+
 /* LES RÉFÉRENCES, et d'où elles viennent.
 
    C'est le PREMIER temps d'Igor: `formatStds` assemblait la liste des masses
@@ -701,7 +703,7 @@ export function forestRoot(graph,{window:share=0.1}={}){
    La grille rend le coût indépendant de la taille du groupe, au prix d'une
    approximation que personne ne voit — deux pics très éloignés se repoussent
    déjà très peu. */
-function repulse(positions,count,k,cutoff,cellSize){
+function repulse(positions,disp,count,k,cutoff,cellSize,repulsion=1){
     const grid=new Map()
     const cellOf=index=>
         `${Math.floor(positions[index*2]/cellSize)},${Math.floor(positions[index*2+1]/cellSize)}`
@@ -734,11 +736,17 @@ function repulse(positions,count,k,cutoff,cellSize){
                             distance=Math.hypot(px,py)
                         }
                         if(distance>cutoff) continue
-                        const push=k*cutoff*cutoff/(distance*distance)/distance
-                        positions[i*2]-=px*push
-                        positions[i*2+1]-=py*push
-                        positions[j*2]+=px*push
-                        positions[j*2+1]+=py*push
+                        /* FR PUR: fr=k²/d, accumulé dans `disp` — PAS appliqué
+                           brut aux positions, sinon un pas de 2700/d² explose
+                           dès que deux sommets se touchent. C'est la température
+                           qui plafonne le pas, en bas. */
+                        const push=repulsion*k*k/distance/distance
+                        const ux=px/distance
+                        const uy=py/distance
+                        disp[i*2]-=ux*push*distance
+                        disp[i*2+1]-=uy*push*distance
+                        disp[j*2]+=ux*push*distance
+                        disp[j*2+1]+=uy*push*distance
                     }
                 }
             }
@@ -747,22 +755,64 @@ function repulse(positions,count,k,cutoff,cellSize){
 }
 
 
+/* UN PAS DE FRUCHTERMAN–REINGOLD, et c'est le SEUL endroit où ça bouge.
+   Le schéma est celui de l'article: répulsion fr=k²/d sur toutes les paires
+   proches, attraction fa=d²/k le long des liens, puis chaque déplacement est
+   plafonné à `temp` — c'est ce plafond qui empêche l'explosion quand deux
+   sommets se touchent (fr→∞), et sa décroissance qui fige le résultat.
+   `rest` module la raideur par lien: un lien à faible erreur tire à pleine
+   force, un lien douteux retient à peine. */
+function frStep(positions,disp,graph,byIndex,{k,worst,temp,gravity,repulsion=1,restBase=0.4,restSpan=0.6}){
+    const count=positions.length/2
+    disp.fill(0)
+    /* RÉPULSION: fr=k²/d, portée 2k — au-delà ils ne se voient plus, sinon un
+       groupe de mille sommets s'étale sans fin. */
+    repulse(positions,disp,count,k,2*k,2*k,repulsion)
+    /* ATTRACTION le long des liens: fa=d²/k ramené vers `rest`. */
+    for(const link of graph.links){
+        const u=byIndex.get(link.u)
+        const v=byIndex.get(link.v)
+        if(u===undefined||v===undefined) continue
+        const slack=Math.min(1,Math.max(0.02,(link.weight||0)/worst))
+        const rest=k*(restBase+restSpan*slack)
+        const dx=positions[v*2]-positions[u*2]
+        const dy=positions[v*2+1]-positions[u*2+1]
+        const distance=Math.max(1e-6,Math.hypot(dx,dy))
+        const pull=(distance-rest)/distance*(distance*distance/k/distance)
+        disp[u*2]+=dx/distance*pull
+        disp[u*2+1]+=dy/distance*pull
+        disp[v*2]-=dx/distance*pull
+        disp[v*2+1]-=dy/distance*pull
+    }
+    /* GRAVITÉ DOUCE vers le centre: 0.02 écrasait les chaînes, 0.005 retient
+       les isolés sans aplatir le reste. */
+    for(let i=0;i<count;i++){
+        disp[i*2]-=positions[i*2]*gravity
+        disp[i*2+1]-=positions[i*2+1]*gravity
+    }
+    /* LE PLAFOND, et c'est lui la convergence: pas plus de `temp` par tour. */
+    for(let i=0;i<count;i++){
+        const dx=disp[i*2]
+        const dy=disp[i*2+1]
+        const length=Math.hypot(dx,dy)
+        if(length<1e-9) continue
+        const step=Math.min(length,temp)
+        positions[i*2]+=dx/length*step
+        positions[i*2+1]+=dy/length*step
+    }
+}
 /* LA MISE EN PLACE D'UN GROUPE, et c'est du FRUCHTERMAN–REINGOLD.
-
    Trois forces, et chacune répond à une question:
-     — la RÉPULSION empêche deux pics d'être superposés, et sa portée est
-       limitée: au-delà de deux longueurs idéales ils ne se repoussent plus,
-       sinon un groupe de mille sommets s'étale sur un plan sans fin;
-     — l'ATTRAACTION tire le long des liens, d'autant plus fort que l'erreur est
-       faible — c'est la physique du panneau: un lien à 0.05 Da est un lien
-       solide et doit serrer les deux pics, un lien à 0.48 Da est une
-       coïncidence et doit rester lâche;
-     — la GRAVITÉ ramène le tout au centre, sans quoi un groupe sans lien — un
-       pic isolé — dériverait à l'infini.
-
-   L'ERREUR PILOTE LA LONGUEUR DU LIEN, et c'est ce qui rend le graphique utile:
-   la forme d'un groupe devient lisible sans lire un seul nombre. */
-function layoutGroup(graph,{iterations,ideal}){
+     — la RÉPULSION fr=k²/d empêche deux pics d'être superposés, portée 2k:
+       au-delà ils ne se voient plus, sinon un groupe de mille sommets
+       s'étale sans fin;
+     — l'ATTRACTION fa=d²/k tire le long des liens, d'autant plus fort que
+       l'erreur est faible — un lien à 0.05 Da serre, un lien à 0.48 Da reste
+       lâche;
+     — la GRAVITÉ douce retient les isolés sans aplatir les chaînes.
+   L'ERREUR PILOTE LA LONGUEUR DU LIEN: la forme devient lisible sans lire un
+   seul nombre. */
+function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0.6,gravity=0.005,tempStart=null,tempEnd=0.5}){
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return positions
@@ -780,48 +830,24 @@ function layoutGroup(graph,{iterations,ideal}){
        précisément ce qui doit rester lisible. */
     const worst=graph.links.reduce((n,link)=>Math.max(n,link.weight||0),0)||1
     const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
-    const cooling=Math.pow(0.02,1/Math.max(1,iterations-1))
+    const disp=new Float64Array(count*2)
+    /* LA TEMPÉRATURE: `tempStart ?? k/2` au départ pour casser le cercle,
+       `tempEnd` à la fin pour figer sans jitter — décroissance géométrique,
+       comme l'article. */
+    tempStart=tempStart??ideal/2
+    const cooling=tempEnd>0?Math.pow(tempEnd/tempStart,1/Math.max(1,iterations-1)):1
+    let temp=tempStart
     for(let round=0;round<iterations;round++){
-        repulse(positions,count,1,ideal*2,ideal*2)
-        for(const link of graph.links){
-            const u=byIndex.get(link.u)
-            const v=byIndex.get(link.v)
-            if(u===undefined||v===undefined) continue
-            /* LE LIEN EST D'AUTANT PLUS COURT QUE L'ERREUR EST FAIBLE. On ne
-               rend pas la formule, on rend son ORDRE: un lien à 10 % de la plus
-               forte erreur tire à 10 % de la longueur minimale, un lien à 90 %
-               tire à 90 %. */
-            const slack=Math.min(1,Math.max(0.02,(link.weight||0)/worst))
-            const rest=ideal*(0.2+slack)
-            const dx=positions[v*2]-positions[u*2]
-            const dy=positions[v*2+1]-positions[u*2+1]
-            const distance=Math.max(1e-6,Math.hypot(dx,dy))
-            const pull=(distance-rest)/distance*0.5
-            positions[u*2]+=dx*pull
-            positions[u*2+1]+=dy*pull
-            positions[v*2]-=dx*pull
-            positions[v*2+1]-=dy*pull
-        }
-        for(let i=0;i<count;i++){
-            positions[i*2]-=positions[i*2]*0.02
-            positions[i*2+1]-=positions[i*2+1]*0.02
-        }
-        /* LE REFROIDISSEMENT, et il est la seule chose qui rende la suite
-           convergente: sans lui les sommets continuent d'osciller et le
-           résultat dépend du nombre d'itérations, donc du résumé accroché à la
-           fenêtre — deux tailles de fenêtre donneraient deux réseaux différents
-           pour le même spectre. */
-        if(round<iterations-1){
-            for(let i=0;i<positions.length;i++) positions[i]*=cooling
-        }
+        frStep(positions,disp,graph,byIndex,{k:ideal,worst,temp,gravity,repulsion,restBase,restSpan})
+        temp*=cooling
     }
     return positions
 }
 
 /* CRÉE UN ÉTAT DE LAYOUT ANIMÉ — pour pilotage par requestAnimationFrame.
-   Retourne un objet {positions, step, done, totalIterations, ideal, worst, byIndex, cooling}
+   Retourne un objet {positions, step, done, totalIterations, ideal, worst, byIndex, temp, cooling}
    qu'on fait avancer avec `advanceLayout(state, steps=1)`. */
-export function createAnimatedLayout(graph,{iterations=180,ideal=26}={}){
+export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd}={}){
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return {positions,done:true,totalIterations:0}
@@ -833,17 +859,25 @@ export function createAnimatedLayout(graph,{iterations=180,ideal=26}={}){
     if(count===1) return {positions,done:true,totalIterations:0}
     const worst=graph.links.reduce((n,link)=>Math.max(n,link.weight||0),0)||1
     const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
-    const cooling=Math.pow(0.02,1/Math.max(1,iterations-1))
+    /* MÊME REFROIDISSEMENT que `layoutGroup`: temp `tempStart ?? k/2` → `tempEnd`, géométrique. */
+    tempStart=tempStart??ideal/2
+    const cooling=tempEnd>0?Math.pow(tempEnd/tempStart,1/Math.max(1,iterations-1)):1
     return {
         positions,
+        disp:new Float64Array(count*2),
         iteration:0,
         totalIterations:iterations,
         ideal,
         worst,
         byIndex,
+        temp:tempStart,
         cooling,
         count,
         graph,
+        repulsion,
+        restBase,
+        restSpan,
+        gravity,
         done:false
     }
 }
@@ -852,36 +886,20 @@ export function createAnimatedLayout(graph,{iterations=180,ideal=26}={}){
    Retourne true si le layout est terminé. */
 export function advanceLayout(state,steps=1){
     if(state.done) return true
-    const {positions,iteration,totalIterations,ideal,worst,byIndex,cooling,count,graph}=state
+    const {positions,disp,totalIterations,ideal,worst,byIndex}=state
+    if(!state.graph) { state.done=true; return true }
+    const repulsion=state.repulsion??1
+    const restBase=state.restBase??0.4
+    const restSpan=state.restSpan??0.6
+    const gravity=state.gravity??0.005
     for(let s=0;s<steps;s++){
         const round=state.iteration++
         if(round>=totalIterations){
             state.done=true
             return true
         }
-        repulse(positions,count,1,ideal*2,ideal*2)
-        for(const link of graph.links){
-            const u=byIndex.get(link.u)
-            const v=byIndex.get(link.v)
-            if(u===undefined||v===undefined) continue
-            const slack=Math.min(1,Math.max(0.02,(link.weight||0)/worst))
-            const rest=ideal*(0.2+slack)
-            const dx=positions[v*2]-positions[u*2]
-            const dy=positions[v*2+1]-positions[u*2+1]
-            const distance=Math.max(1e-6,Math.hypot(dx,dy))
-            const pull=(distance-rest)/distance*0.5
-            positions[u*2]+=dx*pull
-            positions[u*2+1]+=dy*pull
-            positions[v*2]-=dx*pull
-            positions[v*2+1]-=dy*pull
-        }
-        for(let i=0;i<count;i++){
-            positions[i*2]-=positions[i*2]*0.02
-            positions[i*2+1]-=positions[i*2+1]*0.02
-        }
-        if(round<totalIterations-1){
-            for(let i=0;i<positions.length;i++) positions[i]*=cooling
-        }
+        frStep(positions,disp,state.graph,byIndex,{k:ideal,worst,temp:state.temp,gravity,repulsion,restBase,restSpan})
+        state.temp*=state.cooling
     }
     return state.done
 }
@@ -923,7 +941,7 @@ export function finalizeAnimatedLayout(state){
    redimensionne aucun de ceux qui précèdent. Une disposition dont la taille
    dépend du nombre de groupes ferait sautiller tout le graphique à chaque
    réseau. */
-export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=180,ideal=26}={}){
+export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd}={}){
     const list=(graphs??[]).filter(graph=>(graph?.vertices?.length??0)>0)
     if(!list.length) return {width,height,groups:[],columns:0,rows:0}
     const span=width-2*margin
@@ -941,7 +959,7 @@ export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,column
        groupe de deux pics une tache qui occupe toute sa case: on perdrait
        exactement l'information qu'on est venu chercher, savoir qu'il est petit. */
     const placed=list.map(graph=>{
-        const positions=layoutGroup(graph,{iterations,ideal})
+        const positions=layoutGroup(graph,{iterations,ideal,repulsion,restBase,restSpan,gravity,tempStart,tempEnd})
         let minX=Infinity
         let maxX=-Infinity
         let minY=Infinity
