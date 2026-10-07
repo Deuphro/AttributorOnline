@@ -591,7 +591,7 @@ class AttributionPlan{
        « ne garder que les plus abondants » se dit en relevant le ratio. La
        liste est TOUJOURS triée par abondance décroissante, donc les plus
        abondants sont les premiers dans tous les cas, quel que soit le seuil. */
-    readCombining(entries){
+readCombining(entries){
         entries.forEach((entry,index)=>{
             const label=`combining group ${index+1}`
             const root=this.asRoot(entry.group,label)
@@ -612,13 +612,13 @@ class AttributionPlan{
                c'est le NOMBRE DE BRIQUES qui décide du volume, et il est
                justement ce qu'on cherche à explorer. */
             /* L'ISOTOPE ÉCRIT EST UNE CONTRAINTE, ET NON UNE AMORCE.
-
+ 
                « 13C » ne demande pas « du carbone, isotopes ouverts »: il
                demande DU 13C. Or `isotopologues` part du germe le PLUS
                PROBABLE — à ratio 1 il ne rend donc que 12C, et le 13C écrit
                disparaissait. Mesuré avant correction: un groupe « 13C » en
                1..1 pesait 12.0000, indiscernable d'un « C ».
-
+ 
                On distingue donc deux éléments: ceux dont l'isotope a été
                ÉCRIT, et ceux dont il est resté par défaut. Les premiers sont
                verrouillés sur leur isotope — le `ratio` ouvre les seconds et
@@ -626,8 +626,12 @@ class AttributionPlan{
                respecte ce que l'utilisateur a tapé, et elle ne change rien
                pour un groupe sans isotope écrit (« C », « CH2 »). */
             const written=new Map()
+            let hasNegativeCount=false
             for(const [element,byA] of root.composition){
                 for(const [A,count] of byA){
+                    if(count<0){
+                        hasNegativeCount=true
+                    }
                     /* Un atome n'est « écrit » que si son isotope n'est pas
                        celui que la règle aurait choisi de toute façon: sans
                        cette comparaison, « C » serait pris pour un isotope
@@ -638,24 +642,45 @@ class AttributionPlan{
                     if(count>0&&A!==element.pickA(this.rule)) written.set(element,A)
                 }
             }
-            /* LE VERROU EST PAR ÉLÉMENT, ET LE SEUIL RESTE PAR ÉLÉMENT AUSSI.
-
-               C'est LA subtlety que le premier correctif avait manquée. Il
-               passait `ratio: 0` pour le groupe entier dès qu'un isotope était
-               écrit, ce qui verrouillait le carbone ET les hydrogènes: un
-               « 13C2H4 » à ratio 1 rendait ses cinq deutériums. C'était
-               exactement le défaut reproché au `ratio` global — un isotope
-               choisi ouvrait tous les isotopes de son groupe.
-
-               La correction est de ne toucher QUE l'élément écrit: son seuil
-               passe à 0 (on doit pouvoir atteindre le 13C, que le seuil
-               aurait autrement exclu), et le FILTRE le garde. Les autres
-               éléments gardent le seuil du groupe, donc « 13C2H4 » à ratio 1
-               rend une seule brique, et à 0.01 ouvre ses deutériums — comme
-               « CH2 ». On construit donc une Map, pas un nombre. */
-            const ratioFor=new Map()
-            for(const element of written.keys()) ratioFor.set(element,0)
-            for(const state of root.isotopologues({ratio,ratioFor,limit:Infinity})){
+            /* SI LA FORMULE CONTIENT DES COMPTES NÉGATIFS (ex: "13C-(12C)"),
+               on la traite comme une brique à MASSE FIXE: on n'essaie pas de
+               générer des isotopologues (ce qui ne marche pas avec des comptes
+               négatifs), on utilise la formule telle quelle avec sa masse
+               calculée. C'est ce qui permet d'utiliser des différences de masse
+               comme briques, comme dans F-KMD. */
+            if(hasNegativeCount){
+                const composition=Formula.parseComposition(root.key,this.table,this.rule)
+                this.combinables.push({
+                    groupIndex:groupKeyOf(true,index),
+                    groupKey:root.key,
+                    groupNotation:String(root),
+                    key:root.key,
+                    notation:String(root),
+                    atomicMass:atomicMassOf(composition),
+                    logProbability:0,
+                    groupMin:entry.min,
+                    groupMax:entry.max
+                })
+                produced=1
+            }else{
+                /* LE VERROU EST PAR ÉLÉMENT, ET LE SEUIL RESTE PAR ÉLÉMENT AUSSI.
+ 
+                   C'est LA subtlety que le premier correctif avait manquée. Il
+                   passait `ratio: 0` pour le groupe entier dès qu'un isotope était
+                   écrit, ce qui verrouillait le carbone ET les hydrogènes: un
+                   « 13C2H4 » à ratio 1 rendait ses cinq deutériums. C'était
+                   exactement le défaut reproché au `ratio` global — un isotope
+                   choisi ouvrait tous les isotopes de son groupe.
+ 
+                   La correction est de ne toucher QUE l'élément écrit: son seuil
+                   passe à 0 (on doit pouvoir atteindre le 13C, que le seuil
+                   aurait autrement exclu), et le FILTRE le garde. Les autres
+                   éléments gardent le seuil du groupe, donc « 13C2H4 » à ratio 1
+                   rend une brique, et à 0.01 ouvre ses deutériums — comme
+                   « CH2 ». On construit donc une Map, pas un nombre. */
+                const ratioFor=new Map()
+                for(const element of written.keys()) ratioFor.set(element,0)
+                for(const state of root.isotopologues({ratio,ratioFor,limit:Infinity})){
                 /* La clé n'abrège JAMAIS (règle de Formula.key): elle se relit
                    exactement, et c'est ce qui permet de reconstruire la
                    composition plus bas sans l'avoir stockée. */
@@ -688,6 +713,7 @@ class AttributionPlan{
                     groupMax:entry.max
                 })
                 produced++
+                }
             }
             if(!produced){
                 this.diagnostics.push(`${label}: "${root}" has no combinable mass`)
