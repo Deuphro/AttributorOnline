@@ -705,7 +705,21 @@ forestOverviewLayout({animate=false}={}){
             this.forestAttributions?.byGraph?.delete(graph)
 
             /* Relancer l'attribution pour les arbres sélectionnés. */
+            /* LE CLIC SÉLECTIONNE SON ARBRE, ET C'EST LE CORRECTIF: sans ça,
+               `publishForestCollections` ne publiait que les arbres
+               sélectionnés — un clic sur un sommet d'un arbre NON
+               sélectionné changeait bien `rootIndex`, invalidait le cache,
+               puis `publish` sortait tôt (`!forestSelected.size` ou rang
+               absent) sans jamais recalculer. Le cache restait vide, donc
+               `drawForestCellTitles` ne trouvait aucune ligne (`if(!rows)
+               continue`) et l'étiquette ne bougeait jamais. Sélectionner
+               l'arbre cliqué garantit que le crible tourne pour lui, et
+               `renderForestOverview` repeint ensuite anneaux + étiquettes
+               via `drawForestLayout` → `drawForestCellTitles`. La liste est
+               repeinte aussi, car elle affiche désormais la masse racine. */
+            this.forestSelected.add(group.rank)
             await this.publishForestCollections()
+            this.renderForestList()
             this.renderForestOverview()
         })
     }
