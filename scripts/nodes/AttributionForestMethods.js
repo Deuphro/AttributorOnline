@@ -253,14 +253,15 @@ forestOverviewLayout({animate=false}={}){
         const traces=[]
 
         /* UNE TRACE DE SEGMENTS, et elle tient tous les liens qu'on lui donne
-           dans UN SEUL chemin SVG. `xs/ys` sont déjà des tableaux plats —
+           dans UN SEUL buffer (calque GL: un LineSegments partagé, pas un
+           chemin par lien). `xs/ys` sont déjà des tableaux plats —
            pas de `Float64Array.from(pairs)` qui alloue 2× par trace et par
            frame. */
         const segmentTrace=(id,title,colour,opacity,xs,ys,size)=>{
             if(!xs.length) return
             traces.push(new XYTrace({
-                id,title,mode:"segments",layer:"svg",
-                options:{mode:"segments",layer:"svg",color:colour,opacity,
+                id,title,mode:"segments",layer:"gl",
+                options:{mode:"segments",layer:"gl",color:colour,opacity,
                     line:{size}},
                 wave:Wave.fromCoordinates(Float64Array.from(xs),Float64Array.from(ys),{},["x","y"])
             }))
@@ -334,8 +335,8 @@ forestOverviewLayout({animate=false}={}){
             traces.push(new XYTrace({
                 id:`${this.title}:forest:peaks:unselected`,
                 title:"measured peaks (unselected)",
-                mode:"points",layer:"svg",
-                options:{mode:"points",layer:"svg",color:"#dfe6ee",line:{size:1},
+                mode:"points",layer:"gl",
+                options:{mode:"points",layer:"gl",color:"#dfe6ee",line:{size:1},
                     marker:{shape:"circle",size:3}},
                 wave:Wave.fromCoordinates(Float64Array.from(unselX),Float64Array.from(unselY),{},["x","y"])
             }))
@@ -344,8 +345,8 @@ forestOverviewLayout({animate=false}={}){
             traces.push(new XYTrace({
                 id:`${this.title}:forest:peaks:selected`,
                 title:"measured peaks (selected)",
-                mode:"points",layer:"svg",
-                options:{mode:"points",layer:"svg",color:"hsl(0, 0%, 100%)",line:{size:2},
+                mode:"points",layer:"gl",
+                options:{mode:"points",layer:"gl",color:"#ffffff",line:{size:2},
                     marker:{shape:"circle",size:5}},
                 wave:Wave.fromCoordinates(Float64Array.from(selX),Float64Array.from(selY),{},["x","y"])
             }))
@@ -361,8 +362,8 @@ forestOverviewLayout({animate=false}={}){
             traces.push(new XYTrace({
                 id:`${this.title}:forest:rootglow`,
                 title:"selected roots",
-                mode:"segments",layer:"svg",
-                options:{mode:"segments",layer:"svg",color:"#aef22e",opacity:0.6,
+                mode:"segments",layer:"gl",
+                options:{mode:"segments",layer:"gl",color:"#aef22e",opacity:0.6,
                     line:{size:2}},
                 wave:Wave.fromCoordinates(Float64Array.from(gx),Float64Array.from(gy),{},["x","y"])
             }))
@@ -527,6 +528,13 @@ forestOverviewLayout({animate=false}={}){
            donc la boîte qu'il mesure est exactement celle qu'il dessinera. */
         this.forestPlot=new Plot2DWebGL([],
             `${this.title} network`,this.origin,this.forestPlotBox)
+        /* L'OPACITÉ GLOBALE DU CALQUE GL EST DE 0.7 — pensée pour un nuage de
+           pics où les couches s'accumulent. La forêt veut du plein opacité,
+           c'est ce que le SVG donnait. Les opacités PAR TRACE (les huit tranches
+           de lien, le glow des racines) voyagent dans la couleur du sommet
+           (voir buildTraceDescriptors) et ne sont donc pas touchées ici. */
+        this.forestPlot.glRenderOptions.opacity=1
+        this.forestPlot.glLayer?.setOpacity?.(1)
         this.forestPlot.parameters.axis.left.autoLabel=false
         this.forestPlot.parameters.axis.bottom.autoLabel=false
         this.forestPlot.parameters.axis.left.label=""
@@ -1866,7 +1874,6 @@ forestOverviewLayout({animate=false}={}){
                 this.forestSelected.add(component.rank)
             }
             this.renderForest()
-            this.renderForestOverview()
         })
         return row
     }

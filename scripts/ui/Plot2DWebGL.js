@@ -181,19 +181,32 @@ export class Plot2DWebGL extends Plot2D{
                     count=points.length
                 }
             }
+            /* Colour resolution is a cached dictionary lookup: no DOM, no
+               layout — and the cache array is SHARED between traces, so the
+               per-trace opacity has to be folded into a COPY: the GL materials
+               carry a single global opacity, hence the alpha travels with the
+               vertex colour (that is what stroke-opacity does for SVG traces). */
+            const baseColor=parseCssColor(options.color??"#ff0000")
+            const opacity=Number(options.opacity)
+            const color=Number.isFinite(opacity)&&opacity!==1
+                ?[baseColor[0],baseColor[1],baseColor[2],
+                    baseColor[3]*Math.min(1,Math.max(0,opacity))]
+                :baseColor
             descriptors.push({
                 buffer,
                 yBuffer,
                 pairs,
                 count,
-                //colour resolution is a cached dictionary lookup: no DOM, no layout
-                color:parseCssColor(options.color??"#ff0000"),
+                color,
                 //sprite diameter: one unit of the sprite is marker.size (half extent)
                 size:markerSize*2,
                 shape:shapeId(marker.shape??"circle"),
                 markers:(mode==="points"||mode==="lines-and-points")&&markerSize>0,
                 lines:(mode==="lines-between-points"||mode==="lines-and-points")&&lineSize>0,
                 sticks:mode==="sticks-to-zero"&&lineSize>0,
+                /* the forest links: disjoint pairs a,b,c,d → a–b and c–d,
+                   never b–c (same semantics as the SVG segmentPath) */
+                segments:mode==="segments"&&lineSize>0,
                 /* what the hover is allowed to answer about. NOT `markers`:
                    the default mode is "lines-between-points" (see Trace), and
                    a trace drawn as a line is made of points all the same —
@@ -346,6 +359,9 @@ export class Plot2DWebGL extends Plot2D{
             parts.push(
                 trace.id??"",
                 options.color??"",
+                //per-trace opacity is folded into the vertex colour, so a
+                //change of it must invalidate the buffers too
+                options.opacity??"",
                 options.mode??"",
                 options.layer??"gl",
                 marker.shape??"",

@@ -734,6 +734,12 @@ export class GLTraceLayer{
             const count=trace.count|0
             const withMarkers=trace.markers
             const withLines=trace.lines&&count>1
+            /* Mode "segments": DISJOINT pairs — a,b,c,d draw a–b and c–d,
+               never b–c, exactly like the SVG segmentPath. The partner is read
+               straight from the source at i-1, so the polyline state of the
+               lines mode can never leak in, and a dropped vertex drops its
+               whole pair instead of shifting every pair after it. */
+            const withSegments=trace.segments&&count>1
             //stickBase arrives already expressed in the uploaded (translated)
             //space, exactly like the vertices: see uploadTracesToGPU.
             const withSticks=trace.sticks&&Number.isFinite(config.stickBase)
@@ -789,6 +795,42 @@ export class GLTraceLayer{
                         lineColors[lineColorOffset+7]=a
                     }
                     segmentIndex++
+                }
+                if(withSegments&&(i&1)===1){
+                    //the partner of an odd vertex is the PREVIOUS source point
+                    let x0
+                    let y0
+                    if(buffer!==null&&yBuffer!==null&&yBuffer!==undefined){
+                        x0=buffer[i-1]
+                        y0=yBuffer[i-1]
+                    }else if(pairs){
+                        const partner=pairs[i-1]
+                        x0=partner?partner[0]:NaN
+                        y0=partner?partner[1]:NaN
+                    }
+                    const valid=Number.isFinite(x0)&&Number.isFinite(y0)
+                        &&(!logX||x0>0)&&(!logY||y0>0)
+                    if(valid){
+                        if(write){
+                            const lineOffset=segmentIndex*6
+                            linePositions[lineOffset]=(logX?Math.log10(x0):x0)-referenceX
+                            linePositions[lineOffset+1]=(logY?Math.log10(y0):y0)-referenceY
+                            linePositions[lineOffset+2]=0
+                            linePositions[lineOffset+3]=px
+                            linePositions[lineOffset+4]=py
+                            linePositions[lineOffset+5]=0
+                            const lineColorOffset=segmentIndex*8
+                            lineColors[lineColorOffset]=r
+                            lineColors[lineColorOffset+1]=g
+                            lineColors[lineColorOffset+2]=b
+                            lineColors[lineColorOffset+3]=a
+                            lineColors[lineColorOffset+4]=r
+                            lineColors[lineColorOffset+5]=g
+                            lineColors[lineColorOffset+6]=b
+                            lineColors[lineColorOffset+7]=a
+                        }
+                        segmentIndex++
+                    }
                 }
                 if(withSticks){
                     if(write){
