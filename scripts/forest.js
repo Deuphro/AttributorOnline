@@ -790,8 +790,9 @@ function repulse(positions,disp,count,k,cutoff,cellSize,repulsion=1){
    - RESSORT CUBIQUE `(d-rest)³/rest²` sur liens: mou près du repos, raide
      loin — déplie au lieu d'écraser.
    - MOMENTUM + ATAN par nœud + recentrage dur: le vivant sans l'explosion.
-   `repulsion` règle la FR, `restBase/restSpan` le repos, `fac` l'amplitude. */
-function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,restSpan=0,fac=null}){
+   `repulsion` règle la FR, `restBase/restSpan` le repos, `fac` l'amplitude.
+   `rootLocalIndex` (optional): index local du sommet racine à maintenir fixe à (0,0). */
+function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,restSpan=0,fac=null,rootLocalIndex=-1}){
     const count=positions.length/2
     /* GRILLE SPATIALE: portée 2k, comme avant — au-delà ils s'ignorent.
        Clés NUMÉRIQUES `cx*4096+cy`, pas des strings: `cellOf` + `split` +
@@ -902,6 +903,13 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
     for(let i=0;i<count;i++){ bx+=positions[i*2]; by+=positions[i*2+1] }
     bx/=Math.max(1,count); by/=Math.max(1,count)
     for(let i=0;i<count;i++){ positions[i*2]-=bx; positions[i*2+1]-=by }
+    // Ensure root stays at (0,0) - pin it after physics step
+    if(rootLocalIndex>=0&&rootLocalIndex<count){
+        positions[rootLocalIndex*2]=0
+        positions[rootLocalIndex*2+1]=0
+        velo[rootLocalIndex*2]=0
+        velo[rootLocalIndex*2+1]=0
+    }
     return maxSpeed
 }
 /* LA MISE EN PLACE D'UN GROUPE, et c'est du FRUCHTERMAN–REINGOLD.
@@ -923,9 +931,13 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return positions
+    /* Trouver l'index local de la racine. */
+    const rootLocalIndex=graph.vertices.findIndex(v=>v.index===graph.rootIndex)
     /* LE CERCLE INITIAL, rangé par masse — donc le plus léger en tête, et les
-       sommets déjà dans l'ordre où le réseau les a construits. */
+       sommets déjà dans l'ordre où le réseau les a construits.
+       La racine est placée au centre (0,0). */
     for(let i=0;i<count;i++){
+        if(i===rootLocalIndex) continue
         const angle=2*Math.PI*i/count
         positions[i*2]=ideal*Math.cos(angle)
         positions[i*2+1]=ideal*Math.sin(angle)
@@ -940,7 +952,7 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
     /* `vitesse=0` — ton `vitesse=0`: le momentum part de zéro et accumule. */
     const velo=new Float64Array(count*2)
     for(let round=0;round<iterations;round++){
-        const maxSpeed=frStep(positions,velo,graph,byIndex,{k:ideal,worst,repulsion,restBase,restSpan,fac})
+        const maxSpeed=frStep(positions,velo,graph,byIndex,{k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex})
         /* `while(wavemax(vitesse)>1e-7)` — ton critère d'arrêt. */
         if(maxSpeed<1e-7) break
     }
@@ -954,12 +966,15 @@ export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.it
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return {positions,done:true,totalIterations:0}
+    /* Trouver l'index local de la racine. */
+    const rootLocalIndex=graph.vertices.findIndex(v=>v.index===graph.rootIndex)
     for(let i=0;i<count;i++){
+        if(i===rootLocalIndex) continue
         const angle=2*Math.PI*i/count
         positions[i*2]=ideal*Math.cos(angle)
         positions[i*2+1]=ideal*Math.sin(angle)
     }
-    if(count===1) return {positions,done:true,totalIterations:0}
+    if(count===1) return {positions,done:true,totalIterations:0,rootLocalIndex}
     const worst=graph.links.reduce((n,link)=>Math.max(n,link.weight||0),0)||1
     const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
     return {
@@ -976,6 +991,7 @@ export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.it
         restBase,
         restSpan,
         fac,
+        rootLocalIndex,
         done:false
     }
 }
@@ -984,7 +1000,7 @@ export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.it
    Retourne true si `maxSpeed<1e-7` (ton `wavemax`) ou le plafond atteint. */
 export function advanceLayout(state,steps=1){
     if(state.done) return true
-    const {positions,velo,totalIterations,ideal,worst,byIndex}=state
+    const {positions,velo,totalIterations,ideal,worst,byIndex,rootLocalIndex}=state
     if(!state.graph) { state.done=true; return true }
     const repulsion=state.repulsion??1
     const restBase=state.restBase??0.4
@@ -996,7 +1012,7 @@ export function advanceLayout(state,steps=1){
             state.done=true
             return true
         }
-        const maxSpeed=frStep(positions,velo,state.graph,byIndex,{k:ideal,worst,repulsion,restBase,restSpan,fac})
+        const maxSpeed=frStep(positions,velo,state.graph,byIndex,{k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex})
         if(maxSpeed<1e-7){
             state.done=true
             return true
@@ -1096,21 +1112,19 @@ export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,column
         const drawHeight=entry.h*scale
         const offsetX=cellX+(cellWidth-drawWidth)/2
         const offsetY=cellY+(cellHeight-drawHeight)/2
-        const points=entry.graph.vertices.map((vertex,i)=>({
+const points=entry.graph.vertices.map((vertex,i)=>({
             index:vertex.index,
+            mass:vertex.mass,
+            intensity:vertex.intensity,
             x:offsetX+(entry.positions[i*2]-entry.minX)*scale,
             y:offsetY+(entry.positions[i*2+1]-entry.minY)*scale
         }))
         const xs=points.map(point=>point.x)
         const ys=points.map(point=>point.y)
         return {
-            rank:entry.graph.rank,
+rank:entry.graph.rank,
             size:entry.graph.size,
             points,
-            /* LA BOÎTE, et elle sert à deux choses: savoir si un sommet est
-               visible, et savoir où cliquer dessus. Elle est calculée ICI et non
-               relue au dessin, parce qu'un dessin qui recalcule son échelle est
-               un dessin qui n'en a qu'une. */
             box:{
                 x:Math.min(...xs),y:Math.min(...ys),
                 width:Math.max(...xs)-Math.min(...xs),
@@ -1151,6 +1165,8 @@ export function applyGridLayout(placed,{width=800,height=400,gap=8,margin=6,colu
         const offsetY=cellY+(cellHeight-drawHeight)/2
         const points=entry.graph.vertices.map((vertex,i)=>({
             index:vertex.index,
+            mass:vertex.mass,
+            intensity:vertex.intensity,
             x:offsetX+(entry.positions[i*2]-entry.minX)*scale,
             y:offsetY+(entry.positions[i*2+1]-entry.minY)*scale
         }))

@@ -419,14 +419,6 @@ forestOverviewLayout({animate=false}={}){
                         rootX.push(point.x); rootY.push(point.y)
                     }
                     const row=attrByIndex?attrByIndex.get(vertex.index):null
-                    /* Étiquettes de formule pour arbres sélectionnés (si peu de sommets) */
-                    if(graph.vertices.length<=40&&row){
-                        vertexLabels.push({
-                            x:point.x,y:point.y,
-                            text:`${row.notation} (${row.errorPpm?.toFixed(1)??"?"} ppm)`,
-                            rank
-                        })
-                    }
                     const err=row&&Number.isFinite(row.errorPpm)
                         ?Math.abs(row.errorPpm):null
                     if(err===null||!(errorScale>0)){
@@ -495,15 +487,6 @@ forestOverviewLayout({animate=false}={}){
                 wave:Wave.fromCoordinates(Float64Array.from(errorX[step]),Float64Array.from(errorY[step]),{},["x","y"])
             }))
         }
-        /* ÉTIQUETTES DE FORMULES sur les sommets (arbres sélectionnés, ≤40 sommets) */
-        if(vertexLabels.length){
-            /* On utilise une trace de type "text" via SVG direct dans le hook de dessin,
-               mais XYTrace ne supporte pas le texte. On ajoute les labels via un hook
-               post-dessin dans plot.drawGraph. */
-            this.forestVertexLabels=vertexLabels
-        }else{
-            this.forestVertexLabels=null
-        }
 
         /* `traces`, ET NON `data`: `resolveRenderTraces()` et `dataBounds()` lisent
            `this.traces` quand il y en a, et ne retombent sur `this.data` qu'en
@@ -515,40 +498,262 @@ forestOverviewLayout({animate=false}={}){
            Elle ne reconstruit du DOM qu'à SIGNATURE changée — les frames
            d'animation, qui se répètent, ne paient rien. */
         this.drawForestLegend([...natureBuckets.values()],colored>0?errorScale:null)
-        /* Hook étiquettes posé UNE fois: avant, chaque frame enveloppait le
-           `drawGraph` précédent — après 60 frames, 60 wrappers empilés par
-           appel, d'où la lenteur qui empirait avec le temps. */
-        if(!plot.forestLabelsHooked){
-            const origDraw=plot.drawGraph.bind(plot)
-            plot.drawGraph=()=>{
-                origDraw()
-                if(this.forestVertexLabels?.length){
-                    this.drawForestVertexLabels(plot)
-                }
-            }
-            plot.forestLabelsHooked=true
-        }
+        /* FORMULES DES RACINES PRÈS DE CHAQUE SOMMET RACINE. */
+        this.drawForestCellTitles(groups,layout,plot)
         plot.drawGraph?.()
+        /* CONFIGURER L'INTERACTION SOURIS (une seule fois). */
+        if(!this.forestInteractionHooked){
+            this.setupForestInteraction(plot)
+            this.forestInteractionHooked=true
+        }
     }
 
-    /* Dessine les étiquettes de formule sur les sommets (SVG direct). */
-    drawForestVertexLabels(plot){
+    /* CONFIGURE LES GESTIONNAIRES DE SOURIS POUR LE HOVER ET LE CLIC. */
+    setupForestInteraction(plot){
         const svg=plot.graphSVG
+        if(!svg) return
+        const svgNode=svg.node()
+        if(!svgNode) return
+
+        /* Conversion écran → données (data coordinates) via les échelles du plot. */
+        const screenToData=(clientX,clientY)=>{
+            const pt=plot.pointerInGraphzone(clientX,clientY)
+            if(!pt) return null
+            const {xScale,yScale}=plot.plotScales()
+            return {x:xScale.invert(pt.x), y:yScale.invert(pt.y)}
+        }
+
+        /* Trouver le sommet le plus proche. */
+        const findNearestVertex=(dataX,dataY,groups,layout)=>{
+            let best=null
+            let bestDist=Infinity
+            for(const group of layout.groups){
+                for(const point of group.points){
+                    const dx=point.x-dataX
+                    const dy=point.y-dataY
+                    const dist=dx*dx+dy*dy
+                    if(dist<bestDist){
+                        bestDist=dist
+                        best={point,group}
+                    }
+                }
+            }
+            /* Seuil de détection: ~8px en coordonnées écran. */
+            if(bestDist>64) return null
+            return best
+        }
+
+        /* Trouver le segment le plus proche. */
+        const findNearestSegment=(dataX,dataY,groups,batch,at)=>{
+            let best=null
+            let bestDist=Infinity
+            for(const {graph,rank} of groups){
+                for(const link of graph.links??[]){
+                    const from=at(rank,link.u)
+                    const to=at(rank,link.v)
+                    if(!from||!to) continue
+                    /* Distance point-segment. */
+                    const x1=from.x,y1=from.y
+                    const x2=to.x,y2=to.y
+                    const dx=x2-x1,dy=y2-y1
+                    const len2=dx*dx+dy*dy
+                    let t=0
+                    if(len2>0) t=Math.max(0,Math.min(1,((dataX-x1)*dx+(dataY-y1)*dy)/len2))
+                    const px=x1+t*dx
+                    const py=y1+t*dy
+                    const dist=(px-dataX)*(px-dataX)+(py-dataY)*(py-dataY)
+                    if(dist<bestDist){
+                        bestDist=dist
+                        best={link,from,to,graph,rank,t}
+                    }
+                }
+            }
+            /* Seuil de détection: ~6px. */
+            if(bestDist>36) return null
+            return best
+        }
+
+        /* Mettre à jour les panneaux d'info. */
+        const updateHover=(clientX,clientY)=>{
+            const data=screenToData(clientX,clientY)
+            if(!data){
+                this.forestVertexInfoHost.style.display="none"
+                this.forestSegmentInfoHost.style.display="none"
+                return
+            }
+
+            const batch=this.forestGraphs?.[0]
+            if(!batch) return
+            const allGroups=batch.graphs.map((graph,index)=>({graph,rank:graph.rank??index}))
+            const hasSelection=this.forestSelected.size>0
+            const groups=hasSelection
+                ?allGroups.filter(g=>this.forestSelected.has(g.rank))
+                :allGroups
+
+            const place=new Map()
+            for(const group of this.forestLayout?.groups??[]){
+                for(const point of group.points) place.set(`${group.rank}:${point.index}`,point)
+            }
+            const at=(rank,index)=>place.get(`${rank}:${index}`)
+
+            /* Sommet le plus proche. */
+            const vertexHit=findNearestVertex(data.x,data.y,groups,this.forestLayout)
+            if(vertexHit){
+                const {point,group}=vertexHit
+                const graph=batch.graphs.find(g=>g.rank===group.rank)
+                if(graph){
+                    const vertex=graph.vertices.find(v=>v.index===point.index)
+                    const rows=this.forestAttributions?.byGraph?.get(graph)?.rows??null
+                    const row=rows?rows.find(r=>r.index===point.index):null
+                    if(row&&row.formula){
+                        this.forestVertexInfoHost.style.display="flex"
+                        this.forestVertexInfoHost.replaceChildren()
+                        const lines=[
+                            `Vertex ${point.index}`,
+                            `Mass: ${point.mass.toFixed(4)} Da`,
+                            `Formula: ${row.notation??row.formula.toString()}`,
+                            `Error: ${row.errorPpm!==undefined?row.errorPpm.toFixed(1)+" ppm":"—"}`,
+                            `Intensity: ${vertex?.intensity??0}`
+                        ]
+                        for(const line of lines){
+                            const div=CE("div",{},[line])
+                            stylize(div,{lineHeight:"1.3"})
+                            this.forestVertexInfoHost.appendChild(div)
+                        }
+                    }else{
+                        this.forestVertexInfoHost.style.display="none"
+                    }
+                }
+            }else{
+                this.forestVertexInfoHost.style.display="none"
+            }
+
+            /* Segment le plus proche. */
+            const segmentHit=findNearestSegment(data.x,data.y,groups,batch,at)
+            if(segmentHit){
+                const {link,graph,rank}=segmentHit
+                const palette=this.constructor.FOREST_FORMULA_COLOURS
+                const colour=Number.isInteger(link.standard)
+                    ?palette[link.standard%palette.length]
+                    :palette[0]
+                this.forestSegmentInfoHost.style.display="flex"
+                this.forestSegmentInfoHost.replaceChildren()
+                const lines=[
+                    `Segment: ${link.label??`#${link.standard}`}`,
+                    `Nature: ${link.label??`standard ${link.standard}`}`,
+                    `Error: ${link.weight.toFixed(4)} Da`,
+                    `Vertices: ${link.u} ↔ ${link.v}`
+                ]
+                for(const line of lines){
+                    const div=CE("div",{},[line])
+                    stylize(div,{lineHeight:"1.3"})
+                    this.forestSegmentInfoHost.appendChild(div)
+                }
+                /* Swatch de couleur. */
+                const swatch=CE("div",{},[])
+                stylize(swatch,{width:"12px",height:"12px",borderRadius:"2px",
+                    background:colour,marginTop:"4px",
+                    boxShadow:"0 0 0 1px rgba(255,255,255,0.3)"})
+                this.forestSegmentInfoHost.appendChild(swatch)
+            }else{
+                this.forestSegmentInfoHost.style.display="none"
+            }
+        }
+
+        svgNode.addEventListener("mousemove",(e)=>updateHover(e.clientX,e.clientY))
+        svgNode.addEventListener("mouseleave",()=>{
+            this.forestVertexInfoHost.style.display="none"
+            this.forestSegmentInfoHost.style.display="none"
+        })
+
+        /* CLIC SUR UN SOMMET → DEVIENT LA NOUVELLE RACINE. */
+        svgNode.addEventListener("click",async (e)=>{
+            const data=screenToData(e.clientX,e.clientY)
+            if(!data) return
+            const batch=this.forestGraphs?.[0]
+            if(!batch) return
+            const allGroups=batch.graphs.map((graph,index)=>({graph,rank:graph.rank??index}))
+            const hasSelection=this.forestSelected.size>0
+            const groups=hasSelection
+                ?allGroups.filter(g=>this.forestSelected.has(g.rank))
+                :allGroups
+            const vertexHit=findNearestVertex(data.x,data.y,groups,this.forestLayout)
+            if(!vertexHit) return
+
+            const {point,group}=vertexHit
+            const graph=batch.graphs.find(g=>g.rank===group.rank)
+            if(!graph) return
+
+            /* Changer la racine dans le graphe. */
+            const oldRootIndex=graph.rootIndex
+            const newRootIndex=point.index
+            if(oldRootIndex===newRootIndex) return
+
+            graph.rootIndex=newRootIndex
+            for(const v of graph.vertices) v.isRoot=v.index===newRootIndex
+
+            /* Mettre à jour le composant correspondant dans forestComponents. */
+            for(const batchComp of this.forestComponents??[]){
+                const comp=batchComp.components?.find(c=>c.rank===group.rank)
+                if(comp){
+                    comp.root=newRootIndex
+                    comp.rootMass=point.mass
+                }
+            }
+
+            /* Invalider le cache d'attribution pour ce graphe. */
+            this.forestAttributions?.byGraph?.delete(graph)
+
+            /* Relancer l'attribution pour les arbres sélectionnés. */
+            await this.publishForestCollections()
+            this.renderForestOverview()
+        })
+    }
+
+    /* DESSINE LES FORMULES DES RACINES PRÈS DE CHAQUE SOMMET RACINE (SVG). */
+    drawForestCellTitles(groups,layout,plot){
+        const svg=plot?.graphSVG
         if(!svg) return
         const anchor=svg.select(".anchor")
         if(!anchor) return
-        let labelLayer=anchor.select(".forest-vertex-labels")
-        if(labelLayer.empty()) labelLayer=anchor.append("g").attr("class","forest-vertex-labels")
+        /* Clip labels to graphzone so they don't show outside when panning/zooming. */
+        let defs=svg.select("defs")
+        if(defs.empty()) defs=svg.append("defs")
+        let clip=defs.select("#forest-graphzone-clip")
+        if(clip.empty()){
+            clip=defs.append("clipPath").attr("id","forest-graphzone-clip")
+                .append("rect")
+        }
+        const gz=plot.graphzone
+        clip.attr("x",0).attr("y",0).attr("width",gz.width).attr("height",gz.height)
+        let labelLayer=anchor.select(".forest-root-labels")
+        if(labelLayer.empty()) labelLayer=anchor.append("g").attr("class","forest-root-labels").attr("clip-path","url(#forest-graphzone-clip)")
         labelLayer.selectAll("*").remove()
-        for(const label of this.forestVertexLabels){
+
+        for(const {graph,rank} of groups){
+            const rows=this.forestAttributions?.byGraph?.get(graph)?.rows??null
+            if(!rows) continue
+            const rootVertex=graph.vertices.find(v=>v.isRoot)
+            if(!rootVertex) continue
+            const rootRow=rows.find(r=>r.index===rootVertex.index)
+            if(!rootRow||!rootRow.formula) continue
+            const point=layout.groups.find(g=>g.rank===rank)?.points.find(p=>p.index===rootVertex.index)
+            if(!point) continue
+            const notation=prettyNotation(rootRow.formula)
+            const error=rootRow.errorPpm!==undefined?` (${rootRow.errorPpm.toFixed(1)} ppm)`:""
+            const text=`${notation}${error}`
             labelLayer.append("text")
-                .attr("x",label.x)
-                .attr("y",label.y-8)
+                .attr("x",point.x)
+                .attr("y",point.y-18)
                 .attr("text-anchor","middle")
-                .attr("font-size","9px")
+                .attr("font-size","12px")
+                .attr("font-weight","600")
                 .attr("fill","#aef22e")
+                .attr("stroke","rgba(0,0,0,0.8)")
+                .attr("stroke-width","3px")
+                .attr("paint-order","stroke fill")
                 .attr("pointer-events","none")
-                .text(label.text)
+                .text(text)
         }
     }
 
@@ -764,6 +969,28 @@ forestOverviewLayout({animate=false}={}){
             maxWidth:"60%"
         })
         this.forestPlotBox.appendChild(this.forestLegendHost)
+
+        /* PANNEAU INFO SOMMET (formule sous la souris). */
+        this.forestVertexInfoHost=CE("div",{},[])
+        stylize(this.forestVertexInfoHost,{
+            position:"absolute",bottom:"4px",left:"6px",zIndex:"1",
+            pointerEvents:"none",display:"none",flexDirection:"column",gap:"2px",
+            color:"inherit",textShadow:"0 1px 2px rgba(0,0,0,0.75)",
+            background:"rgba(0,0,0,0.6)",padding:"6px 8px",borderRadius:"3px",
+            fontSize:"0.7em",maxWidth:"200px",fontFamily:"monospace"
+        })
+        this.forestPlotBox.appendChild(this.forestVertexInfoHost)
+
+        /* PANNEAU INFO SEGMENT (nature, erreur sous la souris). */
+        this.forestSegmentInfoHost=CE("div",{},[])
+        stylize(this.forestSegmentInfoHost,{
+            position:"absolute",bottom:"4px",right:"6px",zIndex:"1",
+            pointerEvents:"none",display:"none",flexDirection:"column",gap:"2px",
+            color:"inherit",textShadow:"0 1px 2px rgba(0,0,0,0.75)",
+            background:"rgba(0,0,0,0.6)",padding:"6px 8px",borderRadius:"3px",
+            fontSize:"0.7em",maxWidth:"200px",fontFamily:"monospace"
+        })
+        this.forestPlotBox.appendChild(this.forestSegmentInfoHost)
 
         /* FORCER UN RESIZE APRÈS CRÉATION: le conteneur peut ne pas avoir sa taille
            finale au moment où le constructeur appelle drawGraph(). Un rAF assure
@@ -2147,10 +2374,36 @@ forestOverviewLayout({animate=false}={}){
             "click to toggle selection, Ctrl+click for additive"
         ].join("\n")
         row.addEventListener("click",(e)=>{
-            const mass=component.rootMass
+            const points=batch.points
+            let mass=component.rootMass
+            const graph=batch.graphs?.find(g=>g.rank===component.rank)
+            if(points?.x && graph){
+                const currentRootIndex=graph.rootIndex??component.root
+                const currentRootVertex=graph.vertices?.find(v=>v.index===currentRootIndex)
+                mass=currentRootVertex?.mass ?? points.x[currentRootIndex] ?? component.rootMass
+            }
             if(Number.isFinite(mass)){
                 if(this.probeInput) this.probeInput.value=String(mass)
                 this.probeMass(mass)
+            }
+            /* Also update the forest graph's root to match the clicked tree,
+               so the forest visualization propagates from the correct root. */
+            if(graph){
+                const clickedRootIndex=component.root
+                if(graph.rootIndex!==clickedRootIndex){
+                    graph.rootIndex=clickedRootIndex
+                    for(const v of graph.vertices) v.isRoot=v.index===clickedRootIndex
+                    /* Update forestComponents as well. */
+                    for(const batchComp of this.forestComponents??[]){
+                        const comp=batchComp.components?.find(c=>c.rank===component.rank)
+                        if(comp){
+                            comp.root=clickedRootIndex
+                            comp.rootMass=mass
+                        }
+                    }
+                    /* Invalidate cache for this graph. */
+                    this.forestAttributions?.byGraph?.delete(graph)
+                }
             }
             const additive=e.ctrlKey||e.metaKey
             if(!additive) this.forestSelected.clear()
