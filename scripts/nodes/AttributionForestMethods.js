@@ -834,7 +834,7 @@ forestOverviewLayout({animate=false}={}){
                 .attr("text-anchor","middle")
                 .attr("font-size","12px")
                 .attr("font-weight","600")
-                .attr("fill","#aef22e")
+                .attr("fill","#ffffff")
                 .attr("stroke","rgba(0,0,0,0.8)")
                 .attr("stroke-width","3px")
                 .attr("paint-order","stroke fill")
