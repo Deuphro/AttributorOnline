@@ -389,6 +389,23 @@ test("a group of ONE peak is its own root, whatever the window",()=>{
     assert.equal(root.mass,180.1028)
     assert.match(root.reason,/single peak/)
 })
+test("a group with no peak in the window falls back to the peak nearest the mean, never the lightest",()=>{
+    /* 3 pics très écartés : moyenne ≈ 206,67 et étendue ≈ 300 Da → la fenêtre
+       de 10 % de l'étendue (30 Da) ne contient AUCUN pic (100, 120 et 400 sont
+       à 106/86/193 Da de la moyenne). La racine doit être le sommet le plus
+       proche de la moyenne (120,0001), pas le plus léger (100,0001) qui était
+       l'ancien comportement du fallback. */
+    const masses=[100.0001,120.0001,400.0001]
+    const components=[{
+        rank:0,root:0,size:masses.length,weight:0,
+        links:masses.map((_,i)=>i?{u:i-1,v:i,weight:0.1,standard:0,label:"x"}:null).filter(Boolean)
+    }]
+    const graph=forestGraph(components,{masses})[0]
+    const root=forestRoot(graph)
+    assert.equal(root.candidates,0,`la fenêtre est vide, got ${root.candidates}`)
+    assert.equal(root.index,1,`la racine doit être l'indice du pic le plus proche de la moyenne (120,0001), pas le plus léger : got ${root.index}`)
+    assert.equal(root.mass,120.0001)
+})
 
 test("the layout is DETERMINISTIC, or two networks cannot be compared",()=>{
     const masses=Array.from({length:24},(_,i)=>100+i*14.01565)

@@ -659,7 +659,19 @@ export function forestRoot(graph,{window:share=0.1}={}){
        l'unique pic qu'il reste. */
     const width=span>0?span*share:Infinity
     const candidates=usable.filter(vertex=>Math.abs(vertex.mass-mean)<=width)
-    let best=candidates[0]??usable[0]
+    let best=candidates[0]??null
+    /* AUCUN PIC dans la fenêtre (±10 % de l'étendue autour de la moyenne) :
+       c'est la règle n°1 du cahier des charges — celui le plus proche de la
+       moyenne — et non le plus léger, qui n'est pas nécessairement le sommet
+       le plus représentatif du groupe. */
+    if(!best){
+        best=usable.reduce((a,b)=>{
+            const da=Math.abs(a.mass-mean),db=Math.abs(b.mass-mean)
+            if(da!==db) return da<db?a:b
+            if(a.defect!==b.defect) return b.defect>a.defect?b:a
+            return a.index<b.index?a:b
+        })
+    }
     for(const vertex of candidates){
         const better=vertex.defect>best.defect
             /* À DÉFAUT ÉGAL, LE PLUS CENTRÉ. Deux pics ne peuvent pas partager un
