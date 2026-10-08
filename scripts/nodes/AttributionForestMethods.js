@@ -154,10 +154,27 @@ forestOverviewLayout({animate=false}={}){
             return cached.layout
         }
         if(animate){
-            /* MODE ANIMÉ: on crée un état par graphe, pas un layout final.
-               On applique IMMÉDIATEMENT la grille aux positions initiales (cercle)
-               pour que le premier rendu ne soit pas vide. */
-            const animatedStates=selectedGraphs.map(graph=>createAnimatedLayout(graph,tune))
+            /* MODE ANIMÉ, SANS REDÉMARRAGE (option A): les états existants sont
+               réutilisés par rang — un arbre déjà stabilisé garde ses positions
+               et son momentum, seul un rang NOUVEAU repart du cercle. Un batch
+               ou un réglage FR neuf invalide tout: comparer des layouts issus
+               de deux calculs différents serait mentir. */
+            const previous=this.forestLayoutOf?.layout?.animatedStates
+            const previousByRank=new Map()
+            if(Array.isArray(previous)
+                &&this.forestLayoutOf?.key?.batch===batch
+                &&this.forestLayoutOf?.key?.tune===tuneKey){
+                for(const state of previous){
+                    if(state?.graph && Number.isInteger(state.graph.rank)) previousByRank.set(state.graph.rank,state)
+                }
+            }
+            /* On repart du layout courant pour que les arbres déjà affichés
+               gardent leurs positions le temps que le nouveau converge. */
+            const animatedStates=selectedGraphs.map(graph=>{
+                const kept=previousByRank.get(graph.rank)
+                if(kept) return kept
+                return createAnimatedLayout(graph,tune)
+            })
             /* Finalise chaque état initial et applique la grille pour le premier rendu. */
             const placed=animatedStates.map(finalizeAnimatedLayout)
             const gridded=applyGridLayout(placed,{width,height})
@@ -499,6 +516,7 @@ forestOverviewLayout({animate=false}={}){
            d'animation, qui se répètent, ne paient rien. */
         this.drawForestLegend([...natureBuckets.values()],colored>0?errorScale:null)
         /* FORMULES DES RACINES PRÈS DE CHAQUE SOMMET RACINE. */
+        this.hookForestLabelZoom(plot)
         this.drawForestCellTitles(groups,layout,plot)
         plot.drawGraph?.()
         /* CONFIGURER L'INTERACTION SOURIS (une seule fois). */
@@ -724,7 +742,51 @@ forestOverviewLayout({animate=false}={}){
         })
     }
 
-    /* DESSINE LES FORMULES DES RACINES PRÈS DE CHAQUE SOMMET RACINE (SVG). */
+    /* DESSINE LES FORMULES DES RACINES PRÈS DE CHAQUE SOMMET RACINE (SVG).
+       Les étiquettes portent leurs coordonnées DATA (datum) et sont projetées
+       en pixels via `plotScales()`, puis repositionnées à chaque zoom via
+       `hookForestLabelZoom` qui enveloppe `plot.drawGraph()`. */
+    repositionForestCellTitles(plot){
+        if(!plot?.graphSVG) return
+        let scales=null
+        try{ scales=plot.plotScales() }catch{ return }
+        if(!scales) return
+        const {xScale,yScale}=scales
+        const zone=plot.graphzone??{width:Infinity,height:Infinity}
+        /* Le clip suit la taille de zone (resize) même sans reconstruction. */
+        try{
+            plot.graphSVG.select("defs").select("#forest-graphzone-clip")
+                .attr("x",0).attr("y",0)
+                .attr("width",zone.width).attr("height",zone.height)
+        }catch{}
+        plot.graphSVG.select(".anchor").selectAll(".forest-root-labels text").each(function(d){
+            const el=this
+            if(!d||!Number.isFinite(d.x)||!Number.isFinite(d.y)) return
+            const px=xScale(d.x)
+            const py=yScale(d.y)
+            if(!Number.isFinite(px)||!Number.isFinite(py)||px<0||py<0||px>zone.width||py>zone.height){
+                el.style.display="none"
+                return
+            }
+            el.style.display=""
+            el.setAttribute("x",px)
+            el.setAttribute("y",py-18)
+        })
+    }
+    /* Le zoom/pan/resize repeint le graphe via `plot.drawGraph()` sans repasser
+       par `drawForestLayout`: sans crochet les étiquettes garderaient leurs
+       pixels d'origine. On enveloppe une seule fois pour les repositionner. */
+    hookForestLabelZoom(plot){
+        if(!plot||plot._forestLabelsHooked) return
+        const owner=this
+        const original=plot.drawGraph.bind(plot)
+        plot.drawGraph=function(...args){
+            const result=original(...args)
+            try{ owner.repositionForestCellTitles(plot) }catch{}
+            return result
+        }
+        plot._forestLabelsHooked=true
+    }
     drawForestCellTitles(groups,layout,plot){
         const svg=plot?.graphSVG
         if(!svg) return
@@ -756,9 +818,19 @@ forestOverviewLayout({animate=false}={}){
             const notation=prettyNotation(rootRow.formula)
             const error=rootRow.errorPpm!==undefined?` (${rootRow.errorPpm.toFixed(1)} ppm)`:""
             const text=`${notation}${error}`
+            /* PROJETÉ, PAS BRUT: `point` est en DATA, le calque en PIXELS.
+               Le datum garde le DATA pour `repositionForestCellTitles`. */
+            let px=point.x
+            let py=point.y-18
+            try{
+                const {xScale,yScale}=plot.plotScales()
+                px=xScale(point.x)
+                py=yScale(point.y)-18
+            }catch{}
             labelLayer.append("text")
-                .attr("x",point.x)
-                .attr("y",point.y-18)
+                .datum({x:point.x,y:point.y})
+                .attr("x",px)
+                .attr("y",py)
                 .attr("text-anchor","middle")
                 .attr("font-size","12px")
                 .attr("font-weight","600")
