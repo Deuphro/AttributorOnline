@@ -42,6 +42,9 @@ const defaultMenu={
             //peaks - and asking for it took three cables when they were separate
             //nodes. The kernels stay in their own files; only the node merged.
             "Peak picking":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Peak picking',type:'peakPicking'}}}))},
+            //Calibration: fits error surface from FormulaCollection errorPpm (m/z × intensity)
+            //Applies correction to XY spectra. Uses pre-computed errors from AttributionNode.
+            "Calibration":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Calibration',type:'calibration'}}}))},
         },
         "Display":{
             "Simple XY plot":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY plot',type:'simpleXYPlot'}}}))},

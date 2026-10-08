@@ -80,6 +80,68 @@ export function crible_heap(item_masses: Float64Array, item_charges: Float64Arra
 */
 export function parse_thermo_raw(data: Uint8Array, options: any): any;
 /**
+* Fits a polynomial calibration from reference points.
+*
+* `ref_x` are the measured m/z values (from the spectrum).
+* `ref_y` are the true m/z values (from the formula collection).
+* `mode` selects the polynomial degree: "linear" (a*x+b), "quadratic" (a*x^2+b*x+c), "cubic" (a*x^3+b*x^2+c*x+d).
+*
+* Returns coefficients in descending order for quadratic/cubic:
+* - linear: [a, b]           → y = a*x + b
+* - quadratic: [a, b, c]     → y = a*x^2 + b*x + c
+* - cubic: [a, b, c, d]      → y = a*x^3 + b*x^2 + c*x + d
+* @param {Float64Array} ref_x
+* @param {Float64Array} ref_y
+* @param {string} mode
+* @returns {CalibrationFitResult}
+*/
+export function calibration_fit(ref_x: Float64Array, ref_y: Float64Array, mode: string): CalibrationFitResult;
+/**
+* Applies calibration coefficients to an array of x values.
+*
+* `x` is the input array of measured m/z values.
+* `coeffs` are the calibration coefficients from `calibration_fit`.
+* `mode` must match the mode used for fitting.
+* @param {Float64Array} x
+* @param {Float64Array} coeffs
+* @param {string} mode
+* @returns {Float64Array}
+*/
+export function calibration_apply(x: Float64Array, coeffs: Float64Array, mode: string): Float64Array;
+/**
+* 2D calibration: fits error_ppm = f(measured_mz, intensity)
+*
+* `measured_mz` - measured m/z values from spectrum
+* `intensity` - intensity values at those m/z
+* `error_ppm` - error in ppm (measured - true) / true * 1e6
+* `mode` - "linear2d", "quadratic2d", "cubic2d"
+*
+* Returns coefficients for error_ppm surface:
+* - linear2d: [a, b, c]           → error = a*mz + b*intensity + c
+* - quadratic2d: [a, b, c, d, e, f] → error = a*mz² + b*int² + c*mz*int + d*mz + e*int + f
+* - cubic2d: 10 coeffs (full 3rd order)
+* @param {Float64Array} measured_mz
+* @param {Float64Array} intensity
+* @param {Float64Array} error_ppm
+* @param {string} mode
+* @returns {CalibrationFitResult}
+*/
+export function calibration_fit_2d(measured_mz: Float64Array, intensity: Float64Array, error_ppm: Float64Array, mode: string): CalibrationFitResult;
+/**
+* Applies 2D calibration: corrected_mz = measured_mz / (1 + error_ppm/1e6)
+*
+* `x` - measured m/z array
+* `y` - intensity array (same length as x)
+* `coeffs` - coefficients from calibration_fit_2d
+* `mode` - must match mode used for fitting
+* @param {Float64Array} x
+* @param {Float64Array} y
+* @param {Float64Array} coeffs
+* @param {string} mode
+* @returns {Float64Array}
+*/
+export function calibration_apply_2d(x: Float64Array, y: Float64Array, coeffs: Float64Array, mode: string): Float64Array;
+/**
 * L'arbre couvrant de poids minimal sur des points MESURÉS.
 *
 * `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
@@ -204,47 +266,6 @@ export function trim_histogram(core: Float64Array, stride: number, bins: number,
 */
 export function fkmd(core: Float64Array, mz: number): Float64Array;
 /**
-* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
-*
-* The MAD is a spread; the cut has to be somewhere. When the widths form one
-* population the two agree, but when a spectrum is MOSTLY radio - a dirty
-* sample, a failed acquisition - the MAD is inflated by the very peaks the
-* filter should catch, and 3σ then rejects nothing. A gap does not have that
-* failure mode: it measures where the bulk ends whatever lies beyond.
-*
-* The cut is read as the largest gap between consecutive sorted widths, in
-* robust sigma, and only when that gap is far larger than the typical spacing
-* between neighbours. Two earlier attempts are worth recording, because both
-* are plausible and both are wrong:
-*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
-*     wide peak in eight, and reports a z of about 1, which would reject the
-*     whole cluster;
-*   - a ratio to the median width is not scale-free - a comb of near-identical
-*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_index
-* @returns {number}
-*/
-export function anti_radio_guess_z(core: Float64Array, stride: number, points_index: Float64Array): number;
-/**
-*
-* `z` is the ONE knob, and it is a statistical convention rather than a fitted
-* setting: a peak is "radio" when its width sits z robust sigma above the
-* median width of the spectrum. Since the reference is measured on the data in
-* hand, the filter follows the instrument's actual resolution instead of a
-* hard-coded one, and the false-positive rate stays a property of the spread
-* rather than of how many peaks the spectrum happens to contain.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_x
-* @param {Float64Array} points_y
-* @param {Float64Array} points_index
-* @param {number} z
-* @returns {RadioDecision}
-*/
-export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
-/**
 * @param {number} a
 * @param {number} b
 * @returns {number}
@@ -289,6 +310,58 @@ export function zeros_matrix(n: number): Int32Array;
 * @returns {Float64Array}
 */
 export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
+/**
+* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
+*
+* The MAD is a spread; the cut has to be somewhere. When the widths form one
+* population the two agree, but when a spectrum is MOSTLY radio - a dirty
+* sample, a failed acquisition - the MAD is inflated by the very peaks the
+* filter should catch, and 3σ then rejects nothing. A gap does not have that
+* failure mode: it measures where the bulk ends whatever lies beyond.
+*
+* The cut is read as the largest gap between consecutive sorted widths, in
+* robust sigma, and only when that gap is far larger than the typical spacing
+* between neighbours. Two earlier attempts are worth recording, because both
+* are plausible and both are wrong:
+*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
+*     wide peak in eight, and reports a z of about 1, which would reject the
+*     whole cluster;
+*   - a ratio to the median width is not scale-free - a comb of near-identical
+*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_index
+* @returns {number}
+*/
+export function anti_radio_guess_z(core: Float64Array, stride: number, points_index: Float64Array): number;
+/**
+*
+* `z` is the ONE knob, and it is a statistical convention rather than a fitted
+* setting: a peak is "radio" when its width sits z robust sigma above the
+* median width of the spectrum. Since the reference is measured on the data in
+* hand, the filter follows the instrument's actual resolution instead of a
+* hard-coded one, and the false-positive rate stays a property of the spread
+* rather than of how many peaks the spectrum happens to contain.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} z
+* @returns {RadioDecision}
+*/
+export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
+/**
+*/
+export class CalibrationFitResult {
+  free(): void;
+/**
+*/
+  readonly coeffs: Float64Array;
+/**
+*/
+  readonly rmse: number;
+}
 /**
 * Ce que rend `forest_grow`.
 *
@@ -559,6 +632,13 @@ export interface InitOutput {
   readonly crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
   readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
   readonly parse_thermo_raw: (a: number, b: number, c: number, d: number) => void;
+  readonly __wbg_calibrationfitresult_free: (a: number) => void;
+  readonly calibrationfitresult_coeffs: (a: number, b: number) => void;
+  readonly calibrationfitresult_rmse: (a: number) => number;
+  readonly calibration_fit: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly calibration_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+  readonly calibration_fit_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+  readonly calibration_apply_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
   readonly __wbg_forest_free: (a: number) => void;
   readonly forest_edge_u: (a: number, b: number) => void;
   readonly forest_edge_v: (a: number, b: number) => void;
@@ -619,6 +699,14 @@ export interface InitOutput {
   readonly trimresult_high_bound: (a: number) => number;
   readonly trimresult_kept_count: (a: number) => number;
   readonly fkmd: (a: number, b: number, c: number, d: number) => void;
+  readonly compute: (a: number, b: number) => number;
+  readonly add: (a: number, b: number) => number;
+  readonly arrust: (a: number, b: number, c: number) => void;
+  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
+  readonly bench: (a: number) => number;
+  readonly sieve: (a: number) => void;
+  readonly zeros_matrix: (a: number, b: number) => void;
+  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly __wbg_radiodecision_free: (a: number) => void;
   readonly radiodecision_points_x: (a: number, b: number) => void;
   readonly radiodecision_points_y: (a: number, b: number) => void;
@@ -630,14 +718,6 @@ export interface InitOutput {
   readonly radiodecision_threshold_ppm: (a: number) => number;
   readonly anti_radio_guess_z: (a: number, b: number, c: number, d: number, e: number) => number;
   readonly anti_radio_filter: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
-  readonly compute: (a: number, b: number) => number;
-  readonly add: (a: number, b: number) => number;
-  readonly arrust: (a: number, b: number, c: number) => void;
-  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
-  readonly bench: (a: number) => number;
-  readonly sieve: (a: number) => void;
-  readonly zeros_matrix: (a: number, b: number) => void;
-  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;

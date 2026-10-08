@@ -387,6 +387,130 @@ export function parse_thermo_raw(data, options) {
 }
 
 /**
+* Fits a polynomial calibration from reference points.
+*
+* `ref_x` are the measured m/z values (from the spectrum).
+* `ref_y` are the true m/z values (from the formula collection).
+* `mode` selects the polynomial degree: "linear" (a*x+b), "quadratic" (a*x^2+b*x+c), "cubic" (a*x^3+b*x^2+c*x+d).
+*
+* Returns coefficients in descending order for quadratic/cubic:
+* - linear: [a, b]           → y = a*x + b
+* - quadratic: [a, b, c]     → y = a*x^2 + b*x + c
+* - cubic: [a, b, c, d]      → y = a*x^3 + b*x^2 + c*x + d
+* @param {Float64Array} ref_x
+* @param {Float64Array} ref_y
+* @param {string} mode
+* @returns {CalibrationFitResult}
+*/
+export function calibration_fit(ref_x, ref_y, mode) {
+    const ptr0 = passArrayF64ToWasm0(ref_x, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(ref_y, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.calibration_fit(ptr0, len0, ptr1, len1, ptr2, len2);
+    return CalibrationFitResult.__wrap(ret);
+}
+
+/**
+* Applies calibration coefficients to an array of x values.
+*
+* `x` is the input array of measured m/z values.
+* `coeffs` are the calibration coefficients from `calibration_fit`.
+* `mode` must match the mode used for fitting.
+* @param {Float64Array} x
+* @param {Float64Array} coeffs
+* @param {string} mode
+* @returns {Float64Array}
+*/
+export function calibration_apply(x, coeffs, mode) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(x, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coeffs, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.calibration_apply(retptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v4 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v4;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+* 2D calibration: fits error_ppm = f(measured_mz, intensity)
+*
+* `measured_mz` - measured m/z values from spectrum
+* `intensity` - intensity values at those m/z
+* `error_ppm` - error in ppm (measured - true) / true * 1e6
+* `mode` - "linear2d", "quadratic2d", "cubic2d"
+*
+* Returns coefficients for error_ppm surface:
+* - linear2d: [a, b, c]           → error = a*mz + b*intensity + c
+* - quadratic2d: [a, b, c, d, e, f] → error = a*mz² + b*int² + c*mz*int + d*mz + e*int + f
+* - cubic2d: 10 coeffs (full 3rd order)
+* @param {Float64Array} measured_mz
+* @param {Float64Array} intensity
+* @param {Float64Array} error_ppm
+* @param {string} mode
+* @returns {CalibrationFitResult}
+*/
+export function calibration_fit_2d(measured_mz, intensity, error_ppm, mode) {
+    const ptr0 = passArrayF64ToWasm0(measured_mz, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(intensity, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(error_ppm, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.calibration_fit_2d(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+    return CalibrationFitResult.__wrap(ret);
+}
+
+/**
+* Applies 2D calibration: corrected_mz = measured_mz / (1 + error_ppm/1e6)
+*
+* `x` - measured m/z array
+* `y` - intensity array (same length as x)
+* `coeffs` - coefficients from calibration_fit_2d
+* `mode` - must match mode used for fitting
+* @param {Float64Array} x
+* @param {Float64Array} y
+* @param {Float64Array} coeffs
+* @param {string} mode
+* @returns {Float64Array}
+*/
+export function calibration_apply_2d(x, y, coeffs, mode) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(x, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(y, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(coeffs, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        wasm.calibration_apply_2d(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v5 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v5;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
 * L'arbre couvrant de poids minimal sur des points MESURÉS.
 *
 * `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
@@ -584,67 +708,6 @@ export function fkmd(core, mz) {
 }
 
 /**
-* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
-*
-* The MAD is a spread; the cut has to be somewhere. When the widths form one
-* population the two agree, but when a spectrum is MOSTLY radio - a dirty
-* sample, a failed acquisition - the MAD is inflated by the very peaks the
-* filter should catch, and 3σ then rejects nothing. A gap does not have that
-* failure mode: it measures where the bulk ends whatever lies beyond.
-*
-* The cut is read as the largest gap between consecutive sorted widths, in
-* robust sigma, and only when that gap is far larger than the typical spacing
-* between neighbours. Two earlier attempts are worth recording, because both
-* are plausible and both are wrong:
-*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
-*     wide peak in eight, and reports a z of about 1, which would reject the
-*     whole cluster;
-*   - a ratio to the median width is not scale-free - a comb of near-identical
-*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_index
-* @returns {number}
-*/
-export function anti_radio_guess_z(core, stride, points_index) {
-    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.anti_radio_guess_z(ptr0, len0, stride, ptr1, len1);
-    return ret;
-}
-
-/**
-*
-* `z` is the ONE knob, and it is a statistical convention rather than a fitted
-* setting: a peak is "radio" when its width sits z robust sigma above the
-* median width of the spectrum. Since the reference is measured on the data in
-* hand, the filter follows the instrument's actual resolution instead of a
-* hard-coded one, and the false-positive rate stays a property of the spread
-* rather than of how many peaks the spectrum happens to contain.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_x
-* @param {Float64Array} points_y
-* @param {Float64Array} points_index
-* @param {number} z
-* @returns {RadioDecision}
-*/
-export function anti_radio_filter(core, stride, points_x, points_y, points_index, z) {
-    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(points_x, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(points_y, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ret = wasm.anti_radio_filter(ptr0, len0, stride, ptr1, len1, ptr2, len2, ptr3, len3, z);
-    return RadioDecision.__wrap(ret);
-}
-
-/**
 * @param {number} a
 * @param {number} b
 * @returns {number}
@@ -761,11 +824,123 @@ export function persistent_homology_0d(data, mode) {
     }
 }
 
+/**
+* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
+*
+* The MAD is a spread; the cut has to be somewhere. When the widths form one
+* population the two agree, but when a spectrum is MOSTLY radio - a dirty
+* sample, a failed acquisition - the MAD is inflated by the very peaks the
+* filter should catch, and 3σ then rejects nothing. A gap does not have that
+* failure mode: it measures where the bulk ends whatever lies beyond.
+*
+* The cut is read as the largest gap between consecutive sorted widths, in
+* robust sigma, and only when that gap is far larger than the typical spacing
+* between neighbours. Two earlier attempts are worth recording, because both
+* are plausible and both are wrong:
+*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
+*     wide peak in eight, and reports a z of about 1, which would reject the
+*     whole cluster;
+*   - a ratio to the median width is not scale-free - a comb of near-identical
+*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_index
+* @returns {number}
+*/
+export function anti_radio_guess_z(core, stride, points_index) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.anti_radio_guess_z(ptr0, len0, stride, ptr1, len1);
+    return ret;
+}
+
+/**
+*
+* `z` is the ONE knob, and it is a statistical convention rather than a fitted
+* setting: a peak is "radio" when its width sits z robust sigma above the
+* median width of the spectrum. Since the reference is measured on the data in
+* hand, the filter follows the instrument's actual resolution instead of a
+* hard-coded one, and the false-positive rate stays a property of the spread
+* rather than of how many peaks the spectrum happens to contain.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} z
+* @returns {RadioDecision}
+*/
+export function anti_radio_filter(core, stride, points_x, points_y, points_index, z) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(points_x, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(points_y, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.anti_radio_filter(ptr0, len0, stride, ptr1, len1, ptr2, len2, ptr3, len3, z);
+    return RadioDecision.__wrap(ret);
+}
+
 function handleError(f, args) {
     try {
         return f.apply(this, args);
     } catch (e) {
         wasm.__wbindgen_exn_store(addHeapObject(e));
+    }
+}
+
+const CalibrationFitResultFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_calibrationfitresult_free(ptr >>> 0));
+/**
+*/
+export class CalibrationFitResult {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(CalibrationFitResult.prototype);
+        obj.__wbg_ptr = ptr;
+        CalibrationFitResultFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        CalibrationFitResultFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_calibrationfitresult_free(ptr);
+    }
+    /**
+    * @returns {Float64Array}
+    */
+    get coeffs() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.calibrationfitresult_coeffs(retptr, this.__wbg_ptr);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_free(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+    * @returns {number}
+    */
+    get rmse() {
+        const ret = wasm.calibrationfitresult_rmse(this.__wbg_ptr);
+        return ret;
     }
 }
 

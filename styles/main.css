@@ -541,9 +541,57 @@ div{
    button, and that difference is what is paid for here. */
 .pp-row input:disabled,
 .trim-fields input:disabled,
-.pp-row button:disabled{
+.cal-row input:disabled,
+.pp-row button:disabled,
+.cal-row button:disabled{
     opacity:0.45;
     cursor:not-allowed;
+}
+
+/* ---- Calibration: same visual language as peak picking ---- */
+.cal-section{
+    min-width:0;
+}
+.cal-caption{
+    color:#9aafc1;
+    font-size:0.8em;
+    font-weight:600;
+    letter-spacing:0.04em;
+    text-transform:uppercase;
+    padding:2px 4px;
+    user-select:none;
+}
+.cal-row{
+    display:grid;
+    align-items:center;
+    gap:4px;
+    padding:2px 4px;
+    min-width:0;
+}
+.cal-row input[type=number],
+.cal-row select{
+    min-width:0;
+    max-width:8em;
+    width:100%;
+    box-sizing:border-box;
+    padding:2px;
+    -webkit-appearance:none;
+    appearance:none;
+}
+.cal-row input[type=number]::-webkit-outer-spin-button,
+.cal-row input[type=number]::-webkit-inner-spin-button{
+    -webkit-appearance:none;
+    margin:0;
+}
+.cal-row input[type=number]::-moz-outer-spin-button,
+.cal-row input[type=number]::-moz-inner-spin-button{
+    -moz-appearance:none;
+    display:none;
+}
+.cal-readout{
+    opacity:0.8;
+    white-space:nowrap;
+    justify-self:end;
 }
 
 input[type=range].dual{

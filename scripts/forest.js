@@ -537,6 +537,169 @@ export function massDefect(mass){
     return Number.isFinite(mass)?mass-Math.floor(mass):0
 }
 
+/* LA DIFFÉRENCE STOICHIOMÉTRIQUE ENTRE DEUX COMPOSITIONS, isotope par isotope.
+   Rend une composition SIGNÉE sur le même format `Map<Element, Map<A,count>>`
+   (comptes négatifs possibles): `diff = big − small`, donc propager depuis la
+   petite racine en AJOUTANT le diff donne la grande — et propager depuis la
+   grande en le RETIRANT donne la petite. C'est `propagateForest` qui décide du
+   sens via `u < v` en masse; ici on ne fait que la soustraction.
+   Les clés `Element` sont comparées par IDENTITÉ (mêmes objets du plan): deux
+   compositions issues du même plan partagent leurs objets, donc c'est exact. */
+export function forestCompositionDiff(big,small){
+    const diff=new Map()
+    const bump=(element,A,delta)=>{
+        if(!delta) return
+        if(!diff.has(element)) diff.set(element,new Map())
+        const slot=diff.get(element)
+        slot.set(A,(slot.get(A)??0)+delta)
+        if(slot.get(A)===0) slot.delete(A)
+        if(slot.size===0) diff.delete(element)
+    }
+    for(const [element,byA] of big??[]){
+        for(const [A,n] of byA) bump(element,A,n)
+    }
+    for(const [element,byA] of small??[]){
+        for(const [A,n] of byA) bump(element,A,-n)
+    }
+    return diff
+}
+
+/* LE DIFF EST-IL VIDE — deux racines de même formule, rien à relier. */
+export function forestDiffIsEmpty(diff){
+    if(!diff) return true
+    for(const [,byA] of diff){
+        for(const [,n] of byA){
+            if(n!==0) return false
+        }
+    }
+    return true
+}
+
+/* ÉCRIT UN DIFF SIGNÉ EN NOTATION DE GROUPE — `+H2` / `-CH2` / `+2H-1C`.
+   Sert à nommer la brique ajoutée au plan de liaison quand le diff ne
+   correspond à aucune brique existante. L'ordre est Hill (C, H, puis
+   alphabétique) comme `compositionToString`: la même différence s'écrit
+   toujours pareil. */
+export function forestDiffNotation(diff){
+    const terms=[]
+    const ordered=[...(diff?.keys()??[])].sort((a,b)=>{
+        const sa=String(a?.symbol??a?.name??a)
+        const sb=String(b?.symbol??b?.name??b)
+        if(sa==="C"&&sb!=="C") return -1
+        if(sb==="C"&&sa!=="C") return 1
+        if(sa==="H"&&sb!=="H") return -1
+        if(sb==="H"&&sa!=="H") return 1
+        return sa<sb?-1:sa>sb?1:0
+    })
+    for(const element of ordered){
+        const byA=diff.get(element)
+        const symbol=String(element?.symbol??element?.name??element)
+        for(const [A,n] of [...(byA?.entries()??[])].sort((x,y)=>x[0]-y[0])){
+            if(!n) continue
+            const sign=n>0?"+":"-"
+            const count=Math.abs(n)
+            const massTag=Number.isInteger(A)&&A>0?`${A}`:""
+            terms.push(`${sign}${massTag}${symbol}${count===1?"":count}`)
+        }
+    }
+    return terms.join("")||"±0"
+}
+
+/* RETROUVE UNE BRIQUE DU PLAN PAR SA COMPOSITION — comparaison isotope par
+   isotope, dans les deux sens (le diff peut être signé dans un sens et la
+   brique écrite dans l'autre: `+CH2` relie aussi bien que `−CH2`, c'est le
+   sens du lien `u < v` qui décide de l'addition ou du retrait). Rend l'index
+   dans `items`, ou -1. */
+export function forestFindBrick(items,diff){
+    const list=items??[]
+    if(!diff) return -1
+    const sameAs=(composition,times)=>{
+        const probe=new Map()
+        const bump=(element,A,delta)=>{
+            if(!delta) return
+            if(!probe.has(element)) probe.set(element,new Map())
+            const slot=probe.get(element)
+            slot.set(A,(slot.get(A)??0)+delta)
+            if(slot.get(A)===0) slot.delete(A)
+            if(slot.size===0) probe.delete(element)
+        }
+        for(const [element,byA] of composition??[]){
+            for(const [A,n] of byA) bump(element,A,n*times)
+        }
+        if(probe.size!==diff.size) return false
+        for(const [element,byA] of diff){
+            const other=probe.get(element)
+            if(!other||other.size!==byA.size) return false
+            for(const [A,n] of byA){
+                if((other.get(A)??0)!==n) return false
+            }
+        }
+        return true
+    }
+    for(let i=0;i<list.length;i++){
+        const composition=list[i]?.composition
+        if(!composition) continue
+        if(sameAs(composition,1)||sameAs(composition,-1)) return i
+    }
+    return -1
+}
+
+/* FUSIONNE DES GRAPHES EN UN SEUL, avec les liens inter-racines donnés.
+   `links` porte `{u, v, standard, label, weight}` — un lien est un lien, la
+   physique (`frStep`) n'a rien de nouveau à apprendre: le ressort du segment
+   ajouté tire les deux moitiés l'une vers l'autre tout seul. La racine du
+   graphe fusionné est celle du PLUS GRAND arbre (le premier de la liste, qui
+   doit arriver triée par taille décroissante). */
+export function forestMergeGraphs(graphs,links=[]){
+    const list=(graphs??[]).filter(Boolean)
+    if(!list.length) return null
+    if(list.length===1&&!links.length) return list[0]
+    const seen=new Map()
+    for(const graph of list){
+        for(const vertex of graph.vertices??[]){
+            if(seen.has(vertex.index)) continue
+            seen.set(vertex.index,{...vertex,isRoot:false})
+        }
+    }
+    const mergedLinks=[]
+    for(const graph of list){
+        for(const link of graph.links??[]){
+            if(!seen.has(link.u)||!seen.has(link.v)) continue
+            mergedLinks.push({u:link.u,v:link.v,weight:Number(link.weight)||0,
+                standard:link.standard,label:link.label??null})
+        }
+    }
+    for(const link of links??[]){
+        if(!seen.has(link.u)||!seen.has(link.v)) continue
+        mergedLinks.push({u:link.u,v:link.v,weight:Number(link.weight)||0,
+            standard:link.standard,label:link.label??null})
+    }
+    const vertices=[...seen.values()].sort((a,b)=>a.mass-b.mass)
+    const rootIndex=Number.isInteger(list[0]?.rootIndex)&&seen.has(list[0].rootIndex)
+        ?list[0].rootIndex
+        :vertices[0]?.index??null
+    for(const vertex of vertices) vertex.isRoot=vertex.index===rootIndex
+    return {
+        rank:list[0].rank,
+        size:vertices.length,
+        vertices,
+        links:mergedLinks,
+        rootIndex,
+        rootReason:`merged from ${list.map(g=>`#${g.rank}`).join(", ")}`,
+        rootCandidates:1,
+        meanMass:vertices.length
+            ?vertices.reduce((n,vertex)=>n+vertex.mass,0)/vertices.length
+            :0,
+        span:vertices.length?vertices[vertices.length-1].mass-vertices[0].mass:0,
+        weight:list.reduce((n,graph)=>n+(Number(graph.weight)||0),0)
+            +links.reduce((n,link)=>n+(Number(link.weight)||0),0),
+        totalIntensity:vertices.reduce((n,vertex)=>n+(Number(vertex.intensity)||0),0),
+        mergedFrom:list.map(graph=>graph.rank),
+        mergedLinks:(links??[]).map(link=>({u:link.u,v:link.v,
+            standard:link.standard,label:link.label??null}))
+    }
+}
+
 /* UN GRAPHE PAR COMPOSANT, et il est complet ou il n'existe pas.
 
    Un sommet de degré zéro — un pic seul, que rien ne relie — n'est dans aucune

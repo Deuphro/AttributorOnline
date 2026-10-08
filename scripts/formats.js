@@ -121,7 +121,7 @@ class Wave{
     //Float64Array. This is the only supported core layout for a 2D Wave.
     static fromCoordinates(x,y,metadata={},labels=["x","y"]){
         if(!(x instanceof Float64Array)||!(y instanceof Float64Array)||x.length!==y.length){
-            throw new TypeError("Wave.fromCoordinates expects equally-sized Float64Array x and y")
+            throw new TypeError(`Wave.fromCoordinates expects equally-sized Float64Array x and y (got x=${x?.constructor?.name??typeof x}[${x?.length??"?"}], y=${y?.constructor?.name??typeof y}[${y?.length??"?"}])`)
         }
         const wave=new Wave(x.length,2)
         const core=new Float64Array(x.length*2)

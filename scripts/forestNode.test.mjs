@@ -676,3 +676,25 @@ test("the extracted node modules keep their dependencies and mixin state",()=>{
         "static forest constants must be transferred along with prototype methods")
     assert.match(FOREST_METHODS,/static FOREST_COLOR_STEPS=8/)
 })
+
+test("the merge button fuses the drawn trees, biggest first",()=>{
+    /* Le bouton vit dans le panneau, la fusion dans deux méthodes pures du
+       mixin, et le graphe mergé se substitue à ses sources. Un bouton sans
+       méthode serait un décor, une méthode sans bouton du code mort. */
+    assert.match(FOREST_METHODS,/this\.forestMergeBtn=CE\("button"/,
+        "the selection row must carry a Merge button")
+    assert.match(FOREST_METHODS,/mergeSelectedForests\(\)/,
+        "clicking Merge must fuse the drawn trees")
+    assert.match(FOREST_METHODS,/forestMergedGraphs\(/,
+        "the fused graph must stand in for its sources")
+    assert.match(FOREST_METHODS,/forestCompositionDiff\(/,
+        "each bridge is the stoichiometric difference of two roots")
+    assert.match(FOREST_METHODS,/forestMergeGraphs\(/,
+        "fused graphs keep every vertex and link, plus the bridge")
+    assert.match(FOREST_METHODS,/forestMerges\?\.clear\(\)/,
+        "a fresh Grow network regenerates the raw state: merges do not survive it")
+    assert.match(FOREST,/export function forestCompositionDiff\(/,
+        "the root diff is pure: no DOM, no kernel, testable alone")
+    assert.match(FOREST,/export function forestMergeGraphs\(/,
+        "the fusion is pure: no DOM, no kernel, testable alone")
+})

@@ -2,6 +2,7 @@
 use wasm_bindgen::prelude::*;
 mod antiradio;
 mod attribution;
+mod calibration;
 mod fkmd;
 mod forest;
 mod persistence;
@@ -19,6 +20,7 @@ pub use attribution::{crible_heap, STRIDE};
 //no chemistry, no knowledge of what a formula is.
 pub use forest::{forest_grow, Forest, EDGE_STRIDE};
 pub use fkmd::fkmd;
+pub use calibration::{calibration_fit, calibration_apply, CalibrationFitResult};
 pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,
     PersistenceClassification,

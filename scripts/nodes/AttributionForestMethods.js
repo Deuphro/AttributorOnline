@@ -6,11 +6,118 @@ import {Wave,XYTrace} from "../formats.js"
 import {Formula,FormulaCollection} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 
 export class AttributionForestMethods{
+    /* LE MERGE, ET C'EST UNE OPÉRATION PUREMENT JS.
+       « Grow network » (le noyau) ne sait pas qu'on a fusionné: le graphe
+       mergé vit dans `forestMerges` (clé = rank du plus grand arbre) et se
+       substitue à ses sources dans `buildForestGraphs`, le layout, la
+       propagation et la liste. Recliquer « Grow network » régénère l'état
+       brut: rien du merge n'est persisté côté noyau, et c'est voulu. */
+    forestMergedGraphs(baseGraphs){
+        const merges=this.forestMerges
+        if(!(merges?.size)||!Array.isArray(baseGraphs)) return baseGraphs
+        const byRank=new Map(baseGraphs.map(g=>[g.rank,g]))
+        const consumed=new Set()
+        const out=[]
+        for(const graph of baseGraphs){
+            if(consumed.has(graph.rank)) continue
+            const merged=merges.get(graph.rank)
+            if(merged&&merged.mergedFrom?.every(rank=>byRank.has(rank))){
+                for(const rank of merged.mergedFrom) consumed.add(rank)
+                out.push(merged)
+            }else{
+                out.push(graph)
+            }
+        }
+        return out
+    }
+    /* FUSIONNE LES ARBRES DESSINÉS, DU PLUS GRAND AU PLUS PETIT.
+       Chaque maillon relie deux racines successives par leur différence
+       stoichiométrique. Si le diff ne correspond à aucune brique du plan de
+       liaison, la brique est AJOUTÉE (groupes forêt + plan rafraîchis), puis
+       la propagation déroule depuis la grande racine avec la mécanique
+       existante (`attributeTree` → `propagateForest`). Rend null si tout va
+       bien, sinon un message d'erreur pour le readout. */
+    async mergeSelectedForests(){
+        const batch=this.forestGraphs?.[0]
+        if(!batch?.graphs?.length) return "no network yet — press Grow network"
+        if(!this.loadedTable) await this.table()
+        if(!this.loadedTable) return "no periodic table yet"
+        const drawn=batch.graphs
+            .filter(g=>this.forestSelected.has(g.rank))
+            .sort((a,b)=>(b.size??b.vertices.length)-(a.size??a.vertices.length))
+        if(drawn.length<2) return "select at least two trees to merge"
+        const attributions=[]
+        for(const graph of drawn){
+            const attribution=await this.attributeTree(graph)
+            if(!attribution) return `tree #${graph.rank} has no attribution yet`
+            const rootRow=attribution.rows.find(row=>row.index===graph.rootIndex)
+            if(!rootRow?.formula) return `tree #${graph.rank} has no root formula yet`
+            attributions.push({graph,rootFormula:rootRow.formula})
+        }
+        const links=[]
+        for(let i=0;i<attributions.length-1;i++){
+            const big=attributions[i]
+            const small=attributions[i+1]
+            const diff=forestCompositionDiff(
+                big.rootFormula.composition,small.rootFormula.composition)
+            if(forestDiffIsEmpty(diff)){
+                links.push({u:small.graph.rootIndex,v:big.graph.rootIndex,
+                    weight:0,standard:-1,label:"="})
+                continue
+            }
+            const items=()=>((this.forestLinkPlan?.items??[])
+                .filter(item=>item.kind==="combining"))
+            let standard=forestFindBrick(items(),diff)
+            let label=null
+            if(standard<0){
+                const absolute=new Map()
+                for(const [element,byA] of diff){
+                    const slot=new Map()
+                    for(const [A,n] of byA){
+                        if(n) slot.set(A,Math.abs(n))
+                    }
+                    if(slot.size) absolute.set(element,slot)
+                }
+                const {Formula}=await import("../chemistry.js")
+                const notation=Formula.compositionToString(absolute,"mostProbable")
+                const current=this.readGroups(this.parameters.forestGroups,"combining")
+                this.parameters.forestGroups=[...current,{group:notation,min:0,max:1,ratio:1}]
+                this.refreshForestPlan()
+                standard=forestFindBrick(items(),diff)
+                if(standard<0) return `cannot link #${small.graph.rank} to #${big.graph.rank}: ${forestDiffNotation(diff)} matches nothing, even added`
+                label=items()[standard]?.notation??notation
+            }else{
+                label=items()[standard]?.notation??null
+            }
+            const bigRoot=big.graph.vertices.find(v=>v.index===big.graph.rootIndex)
+            const smallRoot=small.graph.vertices.find(v=>v.index===small.graph.rootIndex)
+            const refMass=(this.forestPlan?.masses??[])[standard]??0
+            const gap=Math.abs((bigRoot?.mass??0)-(smallRoot?.mass??0))
+            const weight=Number.isFinite(refMass)?Math.abs(gap-refMass):0
+            const u=small.graph.rootIndex
+            const v=big.graph.rootIndex
+            links.push({u:Math.min(u,v),v:Math.max(u,v),weight,standard,label})
+        }
+        const merged=forestMergeGraphs(drawn,links)
+        if(!merged) return "merge produced nothing"
+        if(!this.forestMerges) this.forestMerges=new Map()
+        this.forestMerges.set(merged.rank,merged)
+        this.forestSelected.clear()
+        this.forestSelected.add(merged.rank)
+        this.forestAttributions?.byGraph?.delete(merged)
+        for(const {graph} of attributions){
+            this.forestAttributions?.byGraph?.delete(graph)
+        }
+        this.forestLayoutOf=null
+        this.renderForest()
+        await this.publishForestCollections()
+        return null
+    }
     buildForestGraphs(){
         /* LE REBÂTIMENT EST MÉMOÏSÉ SUR LES COMPOSANTS, ET SUR EUUX SEULEMENT.
            `forestGraph` ne lit que `forestComponents`; le reconstruire à chaque
@@ -18,8 +125,13 @@ export class AttributionForestMethods{
            n'a bougé, ce qui invaliderait la mise en page en dessous sans raison.
            Les composants ne sont réécrits qu'au résultat d'un « Grow network »:
            leur identité est exactement la bonne clé. */
+        const merges = this.forestMerges
+        /* LE REBÂTIMENT EST MÉMOÏSÉ SUR LES COMPOSANTS; la casse est le merge :
+           la fusion se signe dans `forestMerges`, pas dans les composants, et
+           l'ancien cache prête la liste à sa ancienne incarnation. */
         const source=this.forestComponents??[]
-        if(this.forestGraphsOf===source&&Array.isArray(this.forestGraphs)) return this.forestGraphs
+        if(this.forestGraphsOf===source&&Array.isArray(this.forestGraphs)
+            &&(!merges||!merges.size)) return this.forestGraphs
         this.forestGraphsOf=source
         this.forestGraphs=[]
         for(const batch of source){
@@ -32,7 +144,7 @@ export class AttributionForestMethods{
             this.forestGraphs.push({
                 title:batch.title??"attribution",
                 points,
-                graphs:forestGraph(batch.components??[],{masses,intensities})
+                graphs:this.forestMergedGraphs(forestGraph(batch.components??[],{masses,intensities}))
             })
         }
         return this.forestGraphs
@@ -1507,8 +1619,11 @@ forestOverviewLayout({animate=false}={}){
         this.forests=forests
         this.forestComponents=components
         this.forestErrors=errors
-        /* NOUVEAU RÉSEAU = NOUVELLES RANGES: on efface la sélection. */
+        /* NOUVEAU RÉSEAU = NOUVELLES RANGES: on efface la sélection ET les merges.
+           Un merge est une opération JS par-dessus le réseau du noyau: un
+           nouveau « Grow network » régénère l'état brut. */
         this.forestSelected.clear()
+        this.forestMerges?.clear()
         this.renderForestButton(false)
         this.forestBusy=false
         this.renderForest()
@@ -2090,7 +2205,7 @@ forestOverviewLayout({animate=false}={}){
         const selectionRow=CE("div",{className:"an-row"},[])
         stylize(selectionRow,{
             display:"grid",
-            "grid-template-columns":"1fr 1fr auto auto",
+            "grid-template-columns":"1fr 1fr auto auto auto",
             gap:"6px",
             "align-items":"start"
         })
@@ -2107,6 +2222,26 @@ forestOverviewLayout({animate=false}={}){
         stylize(this.forestDeselectAllBtn,{fontSize:"0.8em",padding:"2px 8px",cursor:"pointer"})
         this.forestDeselectAllBtn.addEventListener("click",()=>this.deselectAllForestTrees())
         selectionRow.appendChild(this.forestDeselectAllBtn)
+        /* LE MERGE, ET IL NE S'ALLUME QU'À PLUSIEURS ARBRES.
+           Fusionne les arbres dessinés (les sélectionnés) en chaîne du plus
+           grand au plus petit, en reliant leurs racines par leur différence
+           stoichiométrique — brique ajoutée au plan si elle n'existe pas.
+           La grille repart avec les positions courantes: seul le segment
+           ajouté tire, les arbres existants ne repartent pas du cercle. */
+        this.forestMergeBtn=CE("button",{type:"button",title:"Merge the selected trees, biggest first: link their roots by stoichiometric difference"},[ "Merge"])
+        stylize(this.forestMergeBtn,{fontSize:"0.8em",padding:"2px 8px",cursor:"pointer"})
+        this.forestMergeBtn.addEventListener("click",async ()=>{
+            this.forestMergeBtn.disabled=true
+            this.forestMergeBtn.textContent="merging…"
+            try{
+                const error=await this.mergeSelectedForests()
+                if(error&&this.forestReadout) this.forestReadout.textContent=error
+            }finally{
+                this.forestMergeBtn.disabled=false
+                this.forestMergeBtn.textContent="Merge"
+            }
+        })
+        selectionRow.appendChild(this.forestMergeBtn)
         /* LA COURBE DES POIDS, et c'est ELLE qui rend le résultat lisible.
 
            Une liste de composants dit QUOI il reste, mais pas POURQUOI on a
@@ -2421,12 +2556,79 @@ forestOverviewLayout({animate=false}={}){
         }
         for(const batch of batches){
             if(!batch?.components?.length) continue
+            const batchIndex=(this.forestComponents??[]).indexOf(batch)
+            const graphsBatch=(this.forestGraphs??[])[batchIndex]
+            /* LIGNES FUSIONNÉES D'ABORD: un graphe mergé remplace ses sources.
+               Les rangs absorbés sont masqués — la liste montre UNE ligne
+               fusionnée (taille/poids cumulés, segments ajoutés en infobulle),
+               pas N lignes dont N−1 fantômes. */
+            const shownMerged=new Set()
+            for(const graph of graphsBatch?.graphs??[]){
+                if(!graph?.mergedFrom?.length) continue
+                if(graph.size<this.forestMinSize) continue
+                shownMerged.add(graph.rank)
+                list.appendChild(this.forestMergedRow(graph,batch))
+            }
             for(const component of batch.components){
                 if(component.size>=this.forestMinSize){
-                    list.appendChild(this.forestRow(component,batch))
+                    const absorbed=[...(this.forestMerges?.values()??[])]
+                        .some(merged=>merged.mergedFrom?.includes(component.rank)
+                            &&shownMerged.has(merged.rank))
+                    if(!absorbed) list.appendChild(this.forestRow(component,batch))
                 }
             }
         }
+    }
+
+    /* UNE LIGNE DE GRAPHE FUSIONNÉ: même contrat que `forestRow`, mais les
+       chiffres viennent du graphe mergé (sommets/liens concaténés) et
+       l'infobulle distingue les liens d'origine des segments ajoutés. */
+    forestMergedRow(graph,batch){
+        const isSelected=this.forestSelected.has(graph.rank)
+        const root=graph.vertices.find(v=>v.index===graph.rootIndex)
+        const row=CE("div",{className:"an-forest-row",pilot:this},[
+            componentLine({rank:graph.rank,size:graph.size,
+                rootMass:root?.mass??graph.meanMass,peakMass:root?.mass??graph.meanMass,
+                weight:graph.weight,links:graph.links})
+        ])
+        stylize(row,{
+            fontSize:"0.8em",lineHeight:"1.35",cursor:"pointer",
+            padding:"2px 4px",borderRadius:"3px",
+            background:isSelected?"rgba(172,255,47,0.18)":"rgba(255,178,46,0.08)",
+            border:isSelected?"2px solid #aef22e":"1px dashed rgba(255,178,46,0.55)",
+            boxShadow:isSelected?"0 0 8px rgba(172,255,47,0.4)":"none"
+        })
+        const points=batch.points
+        const mergedLabels=new Set((graph.mergedLinks??[]).map(link=>`${link.u}-${link.v}`))
+        row.title=[
+            `merged from ${graph.mergedFrom.map(rank=>`#${rank}`).join(", ")} · root ${(root?.mass??0).toFixed(5)}`,
+            `total error ${graph.weight.toFixed(3)} Da over ${graph.links.length} link(s)`,
+            ...graph.links.map(link=>{
+                const from=points?.x?.[link.u]
+                const to=points?.x?.[link.v]
+                const masses=[from,to].filter(v=>Number.isFinite(v))
+                    .map(v=>v.toFixed(4)).join(" ↔ ")
+                const tag=mergedLabels.has(`${link.u}-${link.v}`)?" [merge]":""
+                return `${link.label??`#${link.standard}`}: ${masses} (${link.weight.toFixed(3)} Da)${tag}`
+            }),
+            "",
+            "click to toggle selection, Ctrl+click for additive"
+        ].join("\n")
+        row.addEventListener("click",(e)=>{
+            if(Number.isFinite(root?.mass)){
+                if(this.probeInput) this.probeInput.value=String(root.mass)
+                this.probeMass(root.mass)
+            }
+            const additive=e.ctrlKey||e.metaKey
+            if(!additive) this.forestSelected.clear()
+            if(this.forestSelected.has(graph.rank)){
+                this.forestSelected.delete(graph.rank)
+            }else{
+                this.forestSelected.add(graph.rank)
+            }
+            this.renderForest()
+        })
+        return row
     }
 
     /* UNE LIGNE DE COMPOSANT, et son infobulle porte les PIÈCES.

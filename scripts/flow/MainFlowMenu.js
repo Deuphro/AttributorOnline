@@ -2,6 +2,7 @@ import {Menu} from "./Menu.js"
 import {Command,Node,NodeWithAccordion,Operation,nodeRestoreData} from "../core/index.js"
 import {
     AttributionNode,
+    CalibrationNode,
     ChatNode,
     DelimitedTextNode,
     FKMDNode,
@@ -193,6 +194,14 @@ export class MainFlowMenu extends Menu{
                                 title,
                                 [[]],
                                 [],
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
+                        case "calibration":
+                            node = new CalibrationNode(
+                                title,
                                 origin,
                                 origin.channel.get("mainFlow"),
                                 {x:180,y:10}

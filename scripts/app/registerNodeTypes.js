@@ -1,6 +1,7 @@
 import {Node,Operation,NodeWithAccordion} from "../core/index.js"
 import {
     AttributionNode,
+    CalibrationNode,
     ChatNode,
     DelimitedTextNode,
     FKMDNode,
@@ -31,7 +32,8 @@ export function registerNodeTypes(){
         FKMDNode,
         FormulaCollectionNode,
         AttributionNode,
-        ChatNode
+        ChatNode,
+        CalibrationNode
     })
     for(const NodeType of [
         DelimitedTextNode,
@@ -42,7 +44,8 @@ export function registerNodeTypes(){
         FKMDNode,
         ChatNode,
         FormulaCollectionNode,
-        AttributionNode
+        AttributionNode,
+        CalibrationNode
     ]){
         SELF_SHAPED_NODES.add(NodeType)
     }

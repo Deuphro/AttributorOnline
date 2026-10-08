@@ -2169,15 +2169,30 @@ export function propagateForest(graph,rootFormula,references,{table=null}={}){
     /* LA FILE, et elle porte le SENS du lien. Chaque sommet reçoit le lien par
        lequel on l'a atteint et le signe de ce lien, donc un cycle ne peut pas
        faire osciller une formule: le second passage trouve le sommet déjà
-       attribué et s'arrête. */
+       attribué et s'arrête.
+       LA TABLE D'ADJACENCE: l'ancien balayage re-parcourait TOUS les liens à
+       chaque sommet dépilé — O(V×E), ~10⁶ tours sur un arbre de 1000 sommets,
+       d'où le freeze au changement de racine. Ici chaque lien est visité au
+       plus deux fois (une par bout) — O(V+E). La file avance par index, pas
+       par `shift()` (O(n) à chaque pas). Même ordre de visite, même résultat:
+       les voisins d'un sommet sont lus dans l'ordre des liens, et chaque lien
+       n'est franchi qu'une fois (`reachedLinks`). */
+    const neighbours=new Map()
+    for(const link of graph.links??[]){
+        if(!neighbours.has(link.u)) neighbours.set(link.u,[])
+        if(!neighbours.has(link.v)) neighbours.set(link.v,[])
+        neighbours.get(link.u).push(link)
+        if(link.v!==link.u) neighbours.get(link.v).push(link)
+    }
     const queue=[startIndex]
+    let head=0
     const reachedLinks=new Set()
     const edges=[]
     let unattributed=0
-    while(queue.length){
-        const current=queue.shift()
+    while(head<queue.length){
+        const current=queue[head++]
         const here=assigned.get(current)
-        for(const link of graph.links??[]){
+        for(const link of neighbours.get(current)??[]){
             if(reachedLinks.has(link)) continue
             const isU=link.u===current
             if(!isU&&link.v!==current) continue

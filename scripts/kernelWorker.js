@@ -415,6 +415,64 @@ const kernels={
         }
         return result
     },
+    async calibrationFit({refX,refY,mode}){
+        try{
+            await ensureWasm()
+            if(typeof rust.calibration_fit!=="function"){
+                throw new Error("rust calibration_fit is missing (stale pkg build?)")
+            }
+            const result=rust.calibration_fit(Float64Array.from(refX),Float64Array.from(refY),mode)
+            return {coeffs:toFloat64(result.coeffs),rmse:result.rmse}
+        }catch(err){
+            console.warn("[kernelWorker] rust calibration_fit unavailable, JS fallback:",err)
+            return calibrationFitJS(refX,refY,mode)
+        }
+    },
+    async calibrationApply({x,coeffs,mode}){
+        try{
+            await ensureWasm()
+            if(typeof rust.calibration_apply!=="function"){
+                throw new Error("rust calibration_apply is missing (stale pkg build?)")
+            }
+            const result=rust.calibration_apply(Float64Array.from(x),Float64Array.from(coeffs),mode)
+            //calibration_apply returns a BARE Float64Array (.d.ts says so); an
+            //older pkg returned {x}. result.x ?? result accepts both — reading
+            //result.x alone yields undefined → a length-0 array → the downstream
+            //Wave.fromCoordinates "equally-sized" TypeError.
+            return {x:toFloat64(result?.x??result)}
+        }catch(err){
+            console.warn("[kernelWorker] rust calibration_apply unavailable, JS fallback:",err)
+            return calibrationApplyJS(x,coeffs,mode)
+        }
+    },
+    async calibrationFit2D({measuredMz,intensity,errorPpm,mode}){
+        try{
+            await ensureWasm()
+            if(typeof rust.calibration_fit_2d!=="function"){
+                throw new Error("rust calibration_fit_2d is missing (stale pkg build?)")
+            }
+            const result=rust.calibration_fit_2d(Float64Array.from(measuredMz),Float64Array.from(intensity),Float64Array.from(errorPpm),mode)
+            return {coeffs:toFloat64(result.coeffs),rmse:result.rmse}
+        }catch(err){
+            console.warn("[kernelWorker] rust calibration_fit_2d unavailable, JS fallback:",err)
+            return calibrationFit2DJS(measuredMz,intensity,errorPpm,mode)
+        }
+    },
+    async calibrationApply2D({x,y,coeffs,mode}){
+        try{
+            await ensureWasm()
+            if(typeof rust.calibration_apply_2d!=="function"){
+                throw new Error("rust calibration_apply_2d is missing (stale pkg build?)")
+            }
+            const result=rust.calibration_apply_2d(Float64Array.from(x),Float64Array.from(y),Float64Array.from(coeffs),mode)
+            //Same as calibration_apply: bare Float64Array from the current pkg,
+            //{x} from an older one — unwrap both shapes.
+            return {x:toFloat64(result?.x??result)}
+        }catch(err){
+            console.warn("[kernelWorker] rust calibration_apply_2d unavailable, JS fallback:",err)
+            return calibrationApply2DJS(x,y,coeffs,mode)
+        }
+    },
     async parseThermoRaw({data,options={}}){
         let result
         try{
@@ -866,6 +924,289 @@ function antiRadioFilterJS(core,stride,pointsX,pointsY,pointsIndex,z){
 }
 function clampJS(v){return Number.isFinite(v)?Math.min(1-1e-12,Math.max(1e-9,v)):1-1e-12}
 function keepAllSlopeJS(births,deaths){let r=0;for(let i=0;i<births.length;i++)if(births[i]>0)r=Math.max(r,deaths[i]/births[i]);return r}
+
+function calibrationFitJS(refX,refY,mode){
+    const n=refX.length
+    if(n<2) return {coeffs:new Float64Array([1,0]),rmse:0}
+    if(mode==="linear"){
+        let sumX=0,sumY=0,sumXY=0,sumXX=0
+        for(let i=0;i<n;i++){
+            sumX+=refX[i]
+            sumY+=refY[i]
+            sumXY+=refX[i]*refY[i]
+            sumXX+=refX[i]*refX[i]
+        }
+        const denom=n*sumXX-sumX*sumX
+        if(!Number.isFinite(denom) || denom===0) return {coeffs:new Float64Array([1,0]),rmse:0}
+        const a=(n*sumXY-sumX*sumY)/denom
+        const b=(sumY*sumXX-sumX*sumXY)/denom
+        let rmse=0
+        for(let i=0;i<n;i++){
+            const pred=a*refX[i]+b
+            rmse+=(pred-refY[i])**2
+        }
+        rmse=Math.sqrt(rmse/n)
+        return {coeffs:new Float64Array([a,b]),rmse}
+    }
+    if(mode==="quadratic"){
+        const XT=new Float64Array(n*3)
+        const Y=new Float64Array(n)
+        for(let i=0;i<n;i++){
+            XT[i*3]=refX[i]*refX[i]
+            XT[i*3+1]=refX[i]
+            XT[i*3+2]=1
+            Y[i]=refY[i]
+        }
+        const coeffs=solveNormalEqsJS(XT,Y,3)
+        let rmse=0
+        for(let i=0;i<n;i++){
+            const pred=coeffs[0]*refX[i]*refX[i]+coeffs[1]*refX[i]+coeffs[2]
+            rmse+=(pred-refY[i])**2
+        }
+        rmse=Math.sqrt(rmse/n)
+        return {coeffs,rmse}
+    }
+    if(mode==="cubic"){
+        const XT=new Float64Array(n*4)
+        const Y=new Float64Array(n)
+        for(let i=0;i<n;i++){
+            XT[i*4]=refX[i]*refX[i]*refX[i]
+            XT[i*4+1]=refX[i]*refX[i]
+            XT[i*4+2]=refX[i]
+            XT[i*4+3]=1
+            Y[i]=refY[i]
+        }
+        const coeffs=solveNormalEqsJS(XT,Y,4)
+        let rmse=0
+        for(let i=0;i<n;i++){
+            const pred=coeffs[0]*refX[i]*refX[i]*refX[i]+coeffs[1]*refX[i]*refX[i]+coeffs[2]*refX[i]+coeffs[3]
+            rmse+=(pred-refY[i])**2
+        }
+        rmse=Math.sqrt(rmse/n)
+        return {coeffs,rmse}
+    }
+    return {coeffs:new Float64Array([1,0]),rmse:0}
+}
+
+function solveNormalEqsJS(XT,Y,k){
+    const n=Y.length
+    const XTX=new Float64Array(k*k)
+    const XTY=new Float64Array(k)
+    for(let i=0;i<k;i++){
+        for(let j=0;j<k;j++){
+            let sum=0
+            for(let r=0;r<n;r++){
+                sum+=XT[r*k+i]*XT[r*k+j]
+            }
+            XTX[i*k+j]=sum
+        }
+        let sum=0
+        for(let r=0;r<n;r++){
+            sum+=XT[r*k+i]*Y[r]
+        }
+        XTY[i]=sum
+    }
+    return gaussianEliminationJS(XTX,XTY,k)
+}
+
+function gaussianEliminationJS(A,b,k){
+    const M=new Float64Array(k*(k+1))
+    for(let i=0;i<k;i++){
+        for(let j=0;j<k;j++) M[i*(k+1)+j]=A[i*k+j]
+        M[i*(k+1)+k]=b[i]
+    }
+    for(let col=0;col<k;col++){
+        let pivot=col
+        for(let row=col+1;row<k;row++){
+            if(Math.abs(M[row*(k+1)+col])>Math.abs(M[pivot*(k+1)+col])){
+                pivot=row
+            }
+        }
+        if(Math.abs(M[pivot*(k+1)+col])<1e-12) return new Float64Array(k).fill(0)
+        if(pivot!==col){
+            for(let j=col;j<=k;j++){
+                const tmp=M[col*(k+1)+j]
+                M[col*(k+1)+j]=M[pivot*(k+1)+j]
+                M[pivot*(k+1)+j]=tmp
+            }
+        }
+        const pivVal=M[col*(k+1)+col]
+        for(let j=col;j<=k;j++) M[col*(k+1)+j]/=pivVal
+        for(let row=0;row<k;row++){
+            if(row===col) continue
+            const factor=M[row*(k+1)+col]
+            if(factor===0) continue
+            for(let j=col;j<=k;j++){
+                M[row*(k+1)+j]-=factor*M[col*(k+1)+j]
+            }
+        }
+    }
+    const x=new Float64Array(k)
+    for(let i=0;i<k;i++) x[i]=M[i*(k+1)+k]
+    return x
+}
+
+function calibrationApplyJS(x,coeffs,mode){
+    if(!coeffs || !coeffs.length) return {x:Float64Array.from(x)}
+    const n=x.length
+    const result=new Float64Array(n)
+    for(let i=0;i<n;i++){
+        const xi=x[i]
+        if(mode==="linear"){
+            result[i]=coeffs[0]*xi+coeffs[1]
+        }else if(mode==="quadratic"){
+            result[i]=coeffs[0]*xi*xi+coeffs[1]*xi+coeffs[2]
+        }else if(mode==="cubic"){
+            result[i]=coeffs[0]*xi*xi*xi+coeffs[1]*xi*xi+coeffs[2]*xi+coeffs[3]
+        }else{
+            result[i]=xi
+        }
+    }
+    return {x:result}
+}
+
+function calibrationFit2DJS(measuredMz,intensity,errorPpm,mode){
+    const n=measuredMz.length
+    if(n<3) return {coeffs:new Float64Array([0,0,0]),rmse:0}
+
+    let k, design
+    if(mode==="linear2d"){
+        k=3
+        design=new Float64Array(n*k)
+        for(let i=0;i<n;i++){
+            design[i*k]=measuredMz[i]
+            design[i*k+1]=intensity[i]
+            design[i*k+2]=1
+        }
+    }else if(mode==="quadratic2d"){
+        k=6
+        design=new Float64Array(n*k)
+        for(let i=0;i<n;i++){
+            const x=measuredMz[i], y=intensity[i]
+            design[i*k]=x*x
+            design[i*k+1]=y*y
+            design[i*k+2]=x*y
+            design[i*k+3]=x
+            design[i*k+4]=y
+            design[i*k+5]=1
+        }
+    }else if(mode==="cubic2d"){
+        k=10
+        design=new Float64Array(n*k)
+        for(let i=0;i<n;i++){
+            const x=measuredMz[i], y=intensity[i]
+            design[i*k]=x*x*x
+            design[i*k+1]=x*x*y
+            design[i*k+2]=x*y*y
+            design[i*k+3]=y*y*y
+            design[i*k+4]=x*x
+            design[i*k+5]=x*y
+            design[i*k+6]=y*y
+            design[i*k+7]=x
+            design[i*k+8]=y
+            design[i*k+9]=1
+        }
+    }else{
+        return {coeffs:new Float64Array([0,0,0]),rmse:0}
+    }
+
+    const coeffs=solveNormalEqs2DJS(design,errorPpm,k)
+    let rmse=0
+    for(let i=0;i<n;i++){
+        const x=measuredMz[i], y=intensity[i]
+        let pred=0
+        if(mode==="linear2d"){
+            pred=coeffs[0]*x+coeffs[1]*y+coeffs[2]
+        }else if(mode==="quadratic2d"){
+            pred=coeffs[0]*x*x+coeffs[1]*y*y+coeffs[2]*x*y+coeffs[3]*x+coeffs[4]*y+coeffs[5]
+        }else if(mode==="cubic2d"){
+            pred=coeffs[0]*x*x*x+coeffs[1]*x*x*y+coeffs[2]*x*y*y+coeffs[3]*y*y*y
+                +coeffs[4]*x*x+coeffs[5]*x*y+coeffs[6]*y*y+coeffs[7]*x+coeffs[8]*y+coeffs[9]
+        }
+        rmse+=(pred-errorPpm[i])**2
+    }
+    rmse=Math.sqrt(rmse/n)
+    return {coeffs,rmse}
+}
+
+function calibrationApply2DJS(x,y,coeffs,mode){
+    if(!coeffs || !coeffs.length) return {x:Float64Array.from(x)}
+    const n=x.length
+    const result=new Float64Array(n)
+    for(let i=0;i<n;i++){
+        const xi=x[i], yi=y[i]
+        let errorPpm=0
+        if(mode==="linear2d"){
+            errorPpm=coeffs[0]*xi+coeffs[1]*yi+coeffs[2]
+        }else if(mode==="quadratic2d"){
+            errorPpm=coeffs[0]*xi*xi+coeffs[1]*yi*yi+coeffs[2]*xi*yi+coeffs[3]*xi+coeffs[4]*yi+coeffs[5]
+        }else if(mode==="cubic2d"){
+            errorPpm=coeffs[0]*xi*xi*xi+coeffs[1]*xi*xi*yi+coeffs[2]*xi*yi*yi+coeffs[3]*yi*yi*yi
+                +coeffs[4]*xi*xi+coeffs[5]*xi*yi+coeffs[6]*yi*yi+coeffs[7]*xi+coeffs[8]*yi+coeffs[9]
+        }
+        result[i]=xi/(1+errorPpm/1e6)
+    }
+    return {x:result}
+}
+
+function solveNormalEqs2DJS(design,target,k){
+    const n=target.length
+    const xtx=new Float64Array(k*k)
+    const xty=new Float64Array(k)
+    for(let i=0;i<k;i++){
+        for(let j=0;j<k;j++){
+            let sum=0
+            for(let r=0;r<n;r++){
+                sum+=design[r*k+i]*design[r*k+j]
+            }
+            xtx[i*k+j]=sum
+        }
+        let sum=0
+        for(let r=0;r<n;r++){
+            sum+=design[r*k+i]*target[r]
+        }
+        xty[i]=sum
+    }
+    return gaussianElimination2DJS(xtx,xty,k)
+}
+
+function gaussianElimination2DJS(a,b,k){
+    const m=new Float64Array(k*(k+1))
+    for(let i=0;i<k;i++){
+        for(let j=0;j<k;j++) m[i*(k+1)+j]=a[i*k+j]
+        m[i*(k+1)+k]=b[i]
+    }
+    for(let col=0;col<k;col++){
+        let pivot=col
+        for(let row=col+1;row<k;row++){
+            if(Math.abs(m[row*(k+1)+col])>Math.abs(m[pivot*(k+1)+col])){
+                pivot=row
+            }
+        }
+        if(Math.abs(m[pivot*(k+1)+col])<1e-12) return new Float64Array(k).fill(0)
+        if(pivot!==col){
+            for(let j=col;j<=k;j++){
+                const tmp=m[col*(k+1)+j]
+                m[col*(k+1)+j]=m[pivot*(k+1)+j]
+                m[pivot*(k+1)+j]=tmp
+            }
+        }
+        const pivVal=m[col*(k+1)+col]
+        for(let j=col;j<=k;j++) m[col*(k+1)+j]/=pivVal
+        for(let row=0;row<k;row++){
+            if(row===col) continue
+            const factor=m[row*(k+1)+col]
+            if(factor===0) continue
+            for(let j=col;j<=k;j++){
+                m[row*(k+1)+j]-=factor*m[col*(k+1)+j]
+            }
+        }
+    }
+    const x=new Float64Array(k)
+    for(let i=0;i<k;i++) x[i]=m[i*(k+1)+k]
+    return x
+}
+
 //JS fallback for Thermo .raw parsing - returns empty result since we can't parse .raw in pure JS
 function parseThermoRawJS(data){
     console.warn("Thermo .raw parsing requires WASM build with thermorawfile crate")
