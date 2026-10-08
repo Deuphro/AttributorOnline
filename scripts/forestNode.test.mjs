@@ -610,5 +610,5 @@ test("the extracted node modules keep their dependencies and mixin state",()=>{
     assert.match(MODULAR_ATTRIBUTION,/this\.forestPlotRight=0\.01/)
     assert.match(MODULAR_ATTRIBUTION,/Object\.getOwnPropertyNames\(AttributionForestMethods\)/,
         "static forest constants must be transferred along with prototype methods")
-    assert.match(FOREST_METHODS,/static FOREST_OPACITY_STEPS=8/)
+    assert.match(FOREST_METHODS,/static FOREST_COLOR_STEPS=8/)
 })

@@ -727,6 +727,15 @@ export class Plot2D{
             case "triangle-down": return `M0,${s}L${s},${-s}L${-s},${-s}Z`
             case "cross": return `M${-s},${-s}L${s},${s}M${s},${-s}L${-s},${s}`
             case "plus": return `M${-s},0H${s}M0,${-s}V${s}`
+            /* Un anneau, et le remplissage `nonzero` le perce tout seul: le
+               contour extérieur tourne dans un sens, l'intérieur dans
+               l'autre — exactement ce que fait le shader GL. */
+            case "ring": {
+                const inner=Math.max(1,Math.round(s*0.55))
+                return `M${-s},0A${s},${s} 0 1,0 ${s},0A${s},${s} 0 1,0 ${-s},0Z`
+                    +`M${-inner},0A${inner},${inner} 0 1,1 ${inner},0A${inner},${inner} 0 1,1 ${-inner},0Z`
+            }
+            case "glow":
             case "circle":
             default: return null
         }

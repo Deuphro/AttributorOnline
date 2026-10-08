@@ -39,7 +39,11 @@ export const MARKER_SHAPES={
     "triangle-up":3,
     "triangle-down":4,
     cross:5,
-    plus:6
+    plus:6,
+    //anneau (hollow circle): the forest vertex, filled by its own error
+    ring:7,
+    //halo (radial falloff): the forest root, where a cross used to be
+    glow:8
 }
 
 export function shapeId(shape){
@@ -205,6 +209,17 @@ float plusMask(vec2 c){
 
 void main(){
     vec2 c=gl_PointCoord*2.0-1.0;
+    //glow (shape 8): NOT a mask — a radial quadratic falloff. It returns
+    //before the feather below: a feathered edge would clip the halo into a
+    //hard disc, which is exactly what a cross did wrong
+    if(vShape>7.5){
+        float d=length(c);
+        if(d>=1.0) discard;
+        float a=1.0-d;
+        a*=a;
+        gl_FragColor=vec4(vColor.rgb,uOpacity*vColor.a*a);
+        return;
+    }
     float mask;
     if(vShape<0.5){
         mask=1.0-length(c);                                    //circle
@@ -218,8 +233,13 @@ void main(){
         mask=triangleMask(vec2(c.x,-c.y));                     //triangle-down
     }else if(vShape<5.5){
         mask=plusMask(vec2(c.x+c.y,c.y-c.x)*0.70710678);       //cross
-    }else{
+    }else if(vShape<6.5){
         mask=plusMask(c);                                      //plus
+    }else if(vShape<7.5){
+        float d=length(c);
+        mask=min(1.0-d,d-0.55);                                //ring (hollow)
+    }else{
+        mask=plusMask(c);                                      //unknown → plus
     }
     if(mask<0.0) discard;
     //one device pixel of feather, expressed in sprite space

@@ -52,14 +52,40 @@ export class AttributionForestMethods{
         if(!this.loadedTable) return null
         const plan=this.buildPlan()
         const linkPlan=this.forestLinkPlan
-        const cached=this.forestAttributions
         const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):10
         const bestMatches=Math.max(1,Math.trunc(Number(this.parameters.bestMatches))||3)
-        if(cached&&cached.graph===graph&&cached.plan===plan
-            &&cached.linkPlan===linkPlan&&cached.ppm===ppm
-            &&cached.bestMatches===bestMatches){
-            return cached.result
+        /* CLÉ DE CONTENU, PAS D'IDENTITÉ — ET UN CACHE PAR ARBRE.
+
+           `buildPlan()` RECONSTRUIT `this.plan` à chaque appel, donc la
+           comparaison d'identité précédente ne pouvait jamais être vraie: le
+           crible repartait de zéro à chaque visite, et un seul emplacement
+           ne servait qu'au dernier arbre visité. Ce sont les RÉGLAGES qui
+           décident du résultat — groupes, ratios, charges, plan de liaison,
+           fenêtre, profondeur, table — donc c'est eux qu'on compare, dans un
+           `Map` indexé par graphe: changer la sélection ne recalcule RIEN,
+           changer un groupe recalcule TOUT, une fois. */
+        const key={
+            combining:JSON.stringify(this.parameters.combining??null),
+            ionising:JSON.stringify(this.parameters.ionising??null),
+            ratio:Number(this.parameters.ratio),
+            chargeMin:Number(this.parameters.chargeMin),
+            chargeMax:Number(this.parameters.chargeMax),
+            linkPlan,ppm,bestMatches,table:this.loadedTable
         }
+        const cached=this.forestAttributions
+        const same=cached&&cached.key
+            &&cached.key.combining===key.combining
+            &&cached.key.ionising===key.ionising
+            &&cached.key.ratio===key.ratio
+            &&cached.key.chargeMin===key.chargeMin
+            &&cached.key.chargeMax===key.chargeMax
+            &&cached.key.linkPlan===key.linkPlan
+            &&cached.key.ppm===key.ppm
+            &&cached.key.bestMatches===key.bestMatches
+            &&cached.key.table===key.table
+        if(!same) this.forestAttributions={key,byGraph:new Map()}
+        const byGraph=this.forestAttributions.byGraph
+        if(byGraph.has(graph)) return byGraph.get(graph)
         const rootVertex=graph.vertices.find(vertex=>vertex.index===graph.rootIndex)
         if(!rootVertex||!Number.isFinite(rootVertex.mass)) return null
         let probed
@@ -83,7 +109,7 @@ export class AttributionForestMethods{
             table:this.loadedTable
         })
         if(!result) return null
-        this.forestAttributions={graph,plan,linkPlan,ppm,bestMatches,result}
+        byGraph.set(graph,result)
         return result
     }
 
@@ -188,13 +214,53 @@ forestOverviewLayout({animate=false}={}){
 
     /* LE DESSIN, ET IL NE FAIT QUE LIRE DES POSITIONS.
 
-       LES SEGMENTS SONT GROUPÉS PAR TRANCHE D'ERREUR — huit traces, pas une par
-       lien. Une trace par lien donnerait dix mille entrées de légende et dix
-       mille nœuds; huit traces donnent huit valeurs d'opacité, et c'est
-       exactement ce que l'œil sait comparer. Le regroupement est donc une
-       décision de LISSAGE visuel, pas de donnée: l'erreur exacte reste dans la
-       liste des liens et dans l'infobulle du pic. */
-    static FOREST_OPACITY_STEPS=8
+       LES SOMMETS SONT GROUPÉS PAR TRANCHE D'ERREUR — huit traces, pas un
+       anneau par sommet. Une trace par sommet donnerait dix mille entrées de
+       légende et dix mille nœuds; huit traces donnent huit teintes, et c'est
+       exactement ce que l'œil sait comparer. LEUR COULEUR EST L'ERREUR DE LA
+       FORMULE (`forestErrorColor`); les liens, eux, portent la NATURE de la
+       différence — un briques, une couleur — et leur propre légende. */
+    /* LES COULEURS DES SOMMETS, ET C'EST L'ERREUR QUI LES PEINT.
+
+       Huit tranches, pas un anneau par sommet isolé: teinte continue du bleu
+       ciel (erreur nulle) au rouge vif (erreur de fenêtre ou pire), par
+       interpolation HSL — le chemin RGB traverserait le gris, le HSL passe
+       par des brisées lisibles. L'échelle est UNIQUE: la fenêtre ppm, ou le
+       pire écart du lot à défaut de fenêtre, exactement la même que celle de
+       l'histogramme du récapitulatif. */
+    static FOREST_COLOR_STEPS=8
+
+    /* L'ARRONDI DES AFFICHAGES ppm: deux décimales, sans zéro mort. */
+    formatPPM(value){
+        const number=Number(value)
+        if(!Number.isFinite(number)) return "—"
+        return String(Math.round(number*100)/100)
+    }
+
+    /* UNE COULEUR, ET ELLE EST CONTINUE (t ∈ [0,1] → hex).
+
+       hue 213° (le bleu ciel `#78b4ff` de la palette) → 360° (rouge),
+       clarté 74% → 57%, saturation pleine: t=0 retombe sur la palette du
+       programme, t=1 sur le rouge d'alerte `.badge.req`. */
+    static forestErrorColor(t){
+        const clamped=Math.min(1,Math.max(0,Number(t)||0))
+        const hue=213+clamped*(360-213)
+        const lightness=74-clamped*(74-57)
+        const h=((hue%360)+360)%360
+        const chroma=1-Math.abs(lightness/50-1)
+        const x=chroma*(1-Math.abs((h/60)%2-1))
+        const m=lightness/100-chroma/2
+        let r=0,g=0,b=0
+        if(h<60){r=chroma;g=x}
+        else if(h<120){r=x;g=chroma}
+        else if(h<180){g=chroma;b=x}
+        else if(h<240){g=x;b=chroma}
+        else if(h<300){r=x;b=chroma}
+        else{r=chroma;b=x}
+        const hex=value=>Math.round(Math.min(1,Math.max(0,value))*255)
+            .toString(16).padStart(2,"0")
+        return `#${hex(r+m)}${hex(g+m)}${hex(b+m)}`
+    }
 
     /* LA PALETTE DES BRIQUES, et elle est celle du programme.
 
@@ -214,6 +280,8 @@ forestOverviewLayout({animate=false}={}){
         if(!layout){
             this.stopForestAnimation()
             plot.traces=[]
+            this.forestVertexLabels=null
+            this.drawForestLegend([],null)
             plot.drawGraph?.()
             return
         }
@@ -230,7 +298,10 @@ forestOverviewLayout({animate=false}={}){
        jette les états animés et repart du cercle. */
     drawForestLayout(layout){
         const plot=this.forestPlot
-        if(!plot||!layout) return
+        if(!plot||!layout){
+            this.drawForestLegend([],null)
+            return
+        }
         this.forestLayout=layout
         const batch=this.forestGraphs[0]
         /* LA POSITION DE CHAQUE SOMMET, DANS UN INDEX UNIQUE. Le noyau numérote
@@ -249,7 +320,6 @@ forestOverviewLayout({animate=false}={}){
         const groups=hasSelection
             ?allGroups.filter(g=>this.forestSelected.has(g.rank))
             :allGroups
-        const tolerance=Number(this.parameters.forestTolerance)
         const traces=[]
 
         /* UNE TRACE DE SEGMENTS, et elle tient tous les liens qu'on lui donne
@@ -267,64 +337,107 @@ forestOverviewLayout({animate=false}={}){
             }))
         }
 
-        /* UNE SEULE PASSE sur les liens: 8 tranches = 8 paires de tableaux
-           remplis en direct — pas 8 balayages complets du graphe par frame. */
-        const buckets=Array.from({length:this.constructor.FOREST_OPACITY_STEPS},()=>({xs:[],ys:[]}))
+        /* LA NATURE DU SEGMENT, ET PAS SON ERREUR.
+
+           Le poids d'un lien est déjà lu dans la liste des liens et dans la
+           courbe des poids; ici un segment dit PAR QUOI il relie deux formules
+           — `link.label`, la différence de briques — et sa couleur vient de la
+           palette des briques, indexée par `link.standard`: la même briques
+           porte la même couleur d'un arbre à l'autre. Une trace par nature,
+           opacité uniforme — la trancher par poids serait revenir au gris de
+           tout à l'heure. */
+        const palette=this.constructor.FOREST_FORMULA_COLOURS
+        const natureSlots=new Map()   // clé → rang d'apparition (repli)
+        const natureBuckets=new Map() // clé → {label,colour,xs,ys,count}
         for(const {graph,rank} of groups){
             for(const link of graph.links??[]){
-                const ratio=tolerance>0?Number(link.weight||0)/tolerance:0
-                let step=Math.floor(ratio*this.constructor.FOREST_OPACITY_STEPS)
-                if(step<0) step=0
-                if(step>=this.constructor.FOREST_OPACITY_STEPS) step=this.constructor.FOREST_OPACITY_STEPS-1
                 const from=at(rank,link.u)
                 const to=at(rank,link.v)
                 if(!from||!to) continue
-                buckets[step].xs.push(from.x,to.x)
-                buckets[step].ys.push(from.y,to.y)
+                const key=Number.isInteger(link.standard)
+                    ?`s${link.standard}`
+                    :`l${link.label??"?"}`
+                let bucket=natureBuckets.get(key)
+                if(!bucket){
+                    const slot=natureSlots.size
+                    natureSlots.set(key,slot)
+                    const colour=Number.isInteger(link.standard)
+                        ?palette[link.standard%palette.length]
+                        :palette[slot%palette.length]
+                    bucket={
+                        label:link.label??(Number.isInteger(link.standard)?`#${link.standard}`:"link"),
+                        colour,xs:[],ys:[],count:0
+                    }
+                    natureBuckets.set(key,bucket)
+                }
+                bucket.xs.push(from.x,to.x)
+                bucket.ys.push(from.y,to.y)
+                bucket.count++
             }
         }
-        for(let step=0;step<this.constructor.FOREST_OPACITY_STEPS;step++){
-            const low=step/this.constructor.FOREST_OPACITY_STEPS
-            const high=(step+1)/this.constructor.FOREST_OPACITY_STEPS
-            /* L'OPACITÉ VIENT DE LA TRANCHE ET NON DU LIEN: deux liens d'une même
-               tranche partagent la même valeur, donc l'écart entre eux serait du
-               bruit de segmentation — et ce bruit se voit, parce que deux liens
-               identiques seraient arrondis différemment. */
+        for(const [key,bucket] of natureBuckets){
             segmentTrace(
-                `${this.title}:forest:error:${step}`,
-                `link error ${(low*tolerance).toFixed(2)}–${(high*tolerance).toFixed(2)} Da`,
-                "#dfe6ee",0.12+0.88*(low+high)/2,buckets[step].xs,buckets[step].ys,1)
+                `${this.title}:forest:nature:${key}`,
+                `${bucket.label} ×${bucket.count}`,
+                bucket.colour,0.85,bucket.xs,bucket.ys,1)
         }
 
-        /* LES SOMMETS: tableaux plats xs/ys — pas de paires + `from` par trace.
-           `attrByIndex` évite le `rows.find` par sommet et par frame: O(n²)
-           en plein rAF, c'est ça qui ramait sur les gros arbres. */
-        const selX=[],selY=[],unselX=[],unselY=[]
-        const rootGlows=[]  // {x,y,rank} pour les racines sélectionnées
+        /* LES SOMMETS: DES ANNEAUX CREUX, COLORES PAR LEUR ERREUR.
+
+           Le disque blanc ne laissait aucune place à l'erreur; un anneau
+           (`ring`) laisse voir la nappe dessous, et sa teinte va du bleu ciel
+           au rouge — la MÊME échelle que l'histogramme du récapitulatif. Les
+           formules viennent de `attributeTree` (mémoïsées par graphe): sans
+           résultat, l'anneau reste gris, ce qui dit vrai — rien n'est encore
+           lu pour cet arbre. `forestRowIndex` indexe une fois par résultat:
+           une frame d'animation ne rebâtit pas de Map O(n). */
+        const ppmWindow=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):null
+        const STEPS=this.constructor.FOREST_COLOR_STEPS
+        let errorScale=ppmWindow
+        if(errorScale===null){
+            for(const {graph} of groups){
+                const worst=this.forestAttributions?.byGraph?.get(graph)?.worstAbsPpm
+                if(Number.isFinite(worst)&&worst>0) errorScale=Math.max(errorScale??0,worst)
+            }
+        }
+        const unselX=[],unselY=[]
+        const rootX=[],rootY=[]
+        const neutralX=[],neutralY=[]
+        const errorX=Array.from({length:STEPS},()=>[])
+        const errorY=Array.from({length:STEPS},()=>[])
         const vertexLabels=[]  // {x,y,text,rank} pour étiquettes de formule
-        const attr=this.forestAttributions?.result
-        const attrByIndex=attr?new Map(attr.rows.map(r=>[r.index,r])):null
+        let colored=0
         for(const {graph,rank} of groups){
             const isTreeSelected=this.forestSelected.has(rank)
+            const rows=this.forestAttributions?.byGraph?.get(graph)?.rows??null
+            const attrByIndex=rows?this.forestRowIndex(rows):null
             for(const vertex of graph.vertices??[]){
                 const point=at(rank,vertex.index)
                 if(!point) continue
                 if(isTreeSelected){
-                    selX.push(point.x); selY.push(point.y)
-                    /* Racine = glow */
                     if(vertex.isRoot){
-                        rootGlows.push({x:point.x,y:point.y,rank})
+                        rootX.push(point.x); rootY.push(point.y)
                     }
+                    const row=attrByIndex?attrByIndex.get(vertex.index):null
                     /* Étiquettes de formule pour arbres sélectionnés (si peu de sommets) */
-                    if(graph.vertices.length<=40&&attrByIndex){
-                        const row=attrByIndex.get(vertex.index)
-                        if(row){
-                            vertexLabels.push({
-                                x:point.x,y:point.y,
-                                text:`${row.notation} (${row.errorPpm?.toFixed(1)??"?"} ppm)`,
-                                rank
-                            })
-                        }
+                    if(graph.vertices.length<=40&&row){
+                        vertexLabels.push({
+                            x:point.x,y:point.y,
+                            text:`${row.notation} (${row.errorPpm?.toFixed(1)??"?"} ppm)`,
+                            rank
+                        })
+                    }
+                    const err=row&&Number.isFinite(row.errorPpm)
+                        ?Math.abs(row.errorPpm):null
+                    if(err===null||!(errorScale>0)){
+                        neutralX.push(point.x); neutralY.push(point.y)
+                    }else{
+                        let step=Math.floor(err/errorScale*STEPS)
+                        if(step<0) step=0
+                        if(step>=STEPS) step=STEPS-1
+                        errorX[step].push(point.x)
+                        errorY[step].push(point.y)
+                        colored++
                     }
                 }else{
                     unselX.push(point.x); unselY.push(point.y)
@@ -341,31 +454,45 @@ forestOverviewLayout({animate=false}={}){
                 wave:Wave.fromCoordinates(Float64Array.from(unselX),Float64Array.from(unselY),{},["x","y"])
             }))
         }
-        if(selX.length){
-            traces.push(new XYTrace({
-                id:`${this.title}:forest:peaks:selected`,
-                title:"measured peaks (selected)",
-                mode:"points",layer:"gl",
-                options:{mode:"points",layer:"gl",color:"#ffffff",line:{size:2},
-                    marker:{shape:"circle",size:5}},
-                wave:Wave.fromCoordinates(Float64Array.from(selX),Float64Array.from(selY),{},["x","y"])
-            }))
-        }
-        /* GLOW SUR LES RACINES SÉLECTIONNÉES: tableaux plats, pas de paires. */
-        if(rootGlows.length){
-            const gx=[],gy=[]
-            for(const glow of rootGlows){
-                const r=12
-                gx.push(glow.x-r,glow.x+r,glow.x,glow.x)
-                gy.push(glow.y,glow.y,glow.y-r,glow.y+r)
-            }
+        /* LE HALO DE RACINE, ET PAS UNE CROIX VERTE. La croix se lisait comme
+           un marqueur de données — la forme et la force d'un point de
+           mesure; le halo dit « ici » sans rien prétendre mesurer. Il est
+           peint AVANT les anneaux (même buffer de points, ordre d'upload)
+           pour rester derrière eux. */
+        if(rootX.length){
             traces.push(new XYTrace({
                 id:`${this.title}:forest:rootglow`,
                 title:"selected roots",
-                mode:"segments",layer:"gl",
-                options:{mode:"segments",layer:"gl",color:"#aef22e",opacity:0.6,
-                    line:{size:2}},
-                wave:Wave.fromCoordinates(Float64Array.from(gx),Float64Array.from(gy),{},["x","y"])
+                mode:"points",layer:"gl",
+                options:{mode:"points",layer:"gl",color:"#aef22e",opacity:0.5,
+                    line:{size:1},marker:{shape:"glow",size:13}},
+                wave:Wave.fromCoordinates(Float64Array.from(rootX),Float64Array.from(rootY),{},["x","y"])
+            }))
+        }
+        /* LES ANNEAUX: gris (rien de lu pour l'arbre) puis les huit teintes
+           d'erreur, de la plus petite à la plus grande. */
+        if(neutralX.length){
+            traces.push(new XYTrace({
+                id:`${this.title}:forest:vertex:neutral`,
+                title:"vertices (no reading yet)",
+                mode:"points",layer:"gl",
+                options:{mode:"points",layer:"gl",color:"#dfe6ee",opacity:0.5,
+                    line:{size:1},marker:{shape:"ring",size:5}},
+                wave:Wave.fromCoordinates(Float64Array.from(neutralX),Float64Array.from(neutralY),{},["x","y"])
+            }))
+        }
+        for(let step=0;step<STEPS;step++){
+            if(!errorX[step].length) continue
+            const low=step/STEPS
+            const high=(step+1)/STEPS
+            traces.push(new XYTrace({
+                id:`${this.title}:forest:error:${step}`,
+                title:`${this.formatPPM(low*errorScale)}–${this.formatPPM(high*errorScale)} ppm error`,
+                mode:"points",layer:"gl",
+                options:{mode:"points",layer:"gl",
+                    color:this.constructor.forestErrorColor((low+high)/2),
+                    opacity:1,line:{size:1},marker:{shape:"ring",size:5}},
+                wave:Wave.fromCoordinates(Float64Array.from(errorX[step]),Float64Array.from(errorY[step]),{},["x","y"])
             }))
         }
         /* ÉTIQUETTES DE FORMULES sur les sommets (arbres sélectionnés, ≤40 sommets) */
@@ -384,6 +511,10 @@ forestOverviewLayout({animate=false}={}){
            n'était dessiné et les bornes restaient nulles, sans une seule erreur:
            un cadre muet. C'est le défaut le plus coûteux, il ne se signale pas. */
         plot.traces=traces
+        /* LA LÉGENDE SUIT LA FRAME: natures de segment + échelle d'erreur.
+           Elle ne reconstruit du DOM qu'à SIGNATURE changée — les frames
+           d'animation, qui se répètent, ne paient rien. */
+        this.drawForestLegend([...natureBuckets.values()],colored>0?errorScale:null)
         /* Hook étiquettes posé UNE fois: avant, chaque frame enveloppait le
            `drawGraph` précédent — après 60 frames, 60 wrappers empilés par
            appel, d'où la lenteur qui empirait avec le temps. */
@@ -418,6 +549,73 @@ forestOverviewLayout({animate=false}={}){
                 .attr("fill","#aef22e")
                 .attr("pointer-events","none")
                 .text(label.text)
+        }
+    }
+
+    /* L'INDEX (index de sommet → row de formule), MÉMOÏSÉ SUR LE RÉSULTAT.
+
+       `propagateForest` est déjà mémoïsé par `attributeTree`; son index l'est
+       donc aussi, via le WeakMap ci-dessous. Rebâtir un O(n) à chaque frame
+       en plein rAF serait exactement le travail que la frame ne peut pas se
+       payer. */
+    forestRowIndex(rows){
+        this.forestRowIndexCache??=new WeakMap()
+        let index=this.forestRowIndexCache.get(rows)
+        if(!index){
+            index=new Map(rows.map(row=>[row.index,row]))
+            this.forestRowIndexCache.set(rows,index)
+        }
+        return index
+    }
+
+    /* LA LÉGENDE DU GRAPHE, POSÉE DANS SON COIN (host: `.an-forest-legend`
+       monté par `setupForestOverview`).
+
+       Deux blocs: les NATURES de segment — un swatch par briques, avec son
+       compte — et l'ÉCHELLE d'erreur des anneaux, le dégradé borné par le ppm
+       de la fenêtre. La signature (nature:couleur:compte + échelle) décide si
+       le DOM est retouché: à frame égale, rien ne bouge. */
+    drawForestLegend(natures,errorScale){
+        const host=this.forestLegendHost
+        if(!host) return
+        const ramp=Number.isFinite(errorScale)&&errorScale>0
+        const signature=natures.map(n=>`${n.label}:${n.colour}:${n.count}`).join("|")
+            +(ramp?`#ramp:${errorScale}`:"")
+        if(host.dataset.signature===signature) return
+        host.dataset.signature=signature
+        host.replaceChildren()
+        const empty=!natures.length&&!ramp
+        host.style.display=empty?"none":"flex"
+        if(empty) return
+        const row=()=>{
+            const line=CE("div",{},[])
+            stylize(line,{display:"flex",alignItems:"center",gap:"5px",
+                whiteSpace:"nowrap",fontSize:"0.7em",opacity:"0.92"})
+            return line
+        }
+        for(const nature of natures){
+            const line=row()
+            const swatch=CE("div",{},[])
+            stylize(swatch,{width:"9px",height:"9px",borderRadius:"2px",
+                flex:"0 0 auto",background:nature.colour,
+                boxShadow:"0 0 0 1px rgba(0,0,0,0.35)"})
+            line.appendChild(swatch)
+            line.appendChild(CE("span",{},[`${nature.label} ×${nature.count}`]))
+            host.appendChild(line)
+        }
+        if(ramp){
+            const line=row()
+            const bar=CE("div",{},[])
+            const stops=[0,0.5,1]
+                .map(t=>this.constructor.forestErrorColor(t)).join(", ")
+            stylize(bar,{width:"44px",height:"7px",borderRadius:"3px",
+                flex:"0 0 auto",background:`linear-gradient(90deg, ${stops})`,
+                boxShadow:"0 0 0 1px rgba(0,0,0,0.35)"})
+            line.appendChild(bar)
+            line.appendChild(CE("span",{},[
+                `error 0–${this.formatPPM(errorScale)} ppm`
+            ]))
+            host.appendChild(line)
         }
     }
 
@@ -480,7 +678,11 @@ forestOverviewLayout({animate=false}={}){
         this.forestPlot?.dispose?.()
         stylize(content,{
             display:"grid",
-            "grid-template-rows":"minmax(0,1fr) auto auto",
+            /* TROIS RANGÉES: le graphe, son titre, et LE RÉCAP À 15% — la
+               part d'un graphique qu'on lit d'un coup d'œil sans chasser les
+               chiffres. La rangée du milieu reste `auto`: un titre ne pèse
+               que sa propre hauteur. */
+            "grid-template-rows":"minmax(0,1fr) auto 15%",
             "grid-template-columns":"minmax(0,1fr)",
             height:"100%",
             minHeight:"0",
@@ -497,6 +699,9 @@ forestOverviewLayout({animate=false}={}){
         }
         this.forestPlotBox=CE("div",{className:"an-forest-plot"},[])
         stylize(this.forestPlotBox,{
+            /* L'ANCRAGE DE LA LÉGENDE (absolue): sans `relative` elle
+               flotterait sur la fenêtre entière. */
+            position:"relative",
             /* PAS DE HAUTEUR EN px: la fenêtre a la sienne et se redimensionne.
                Un cadre de 260px figé laisserait une bande morte en dessous, puis
                une seconde bande dès qu'on élargit la fenêtre.
@@ -521,7 +726,11 @@ forestOverviewLayout({animate=false}={}){
            la quantité au-dessus ferait chercher la forme dans un tableau. */
         caption("Attribution")
         this.forestRecapHost=CE("div",{className:"an-recap"},[])
-        stylize(this.forestRecapHost,{display:"grid",gap:"4px"})
+        /* 15% de la fenêtre (grid-template-rows): l'histogramme tient dans la
+           part; `overflow:auto` couvre un récap à quatre lots sur hauteur
+           réduite. `alignContent:start` empêche la grille d'étirer ses lignes. */
+        stylize(this.forestRecapHost,{display:"grid",gap:"4px",
+            alignContent:"start",minHeight:"0",overflow:"auto"})
         content.appendChild(this.forestRecapHost)
 
         /* LE PLOT, EN DERNIER: tout ce qui occupe de la place est déjà en place,
@@ -530,15 +739,31 @@ forestOverviewLayout({animate=false}={}){
             `${this.title} network`,this.origin,this.forestPlotBox)
         /* L'OPACITÉ GLOBALE DU CALQUE GL EST DE 0.7 — pensée pour un nuage de
            pics où les couches s'accumulent. La forêt veut du plein opacité,
-           c'est ce que le SVG donnait. Les opacités PAR TRACE (les huit tranches
-           de lien, le glow des racines) voyagent dans la couleur du sommet
-           (voir buildTraceDescriptors) et ne sont donc pas touchées ici. */
+           c'est ce que le SVG donnait. Les opacités PAR TRACE (les anneaux
+           gris, le halo des racines, l'opacité des segments) voyagent dans la
+           couleur du sommet (voir buildTraceDescriptors) et ne sont donc pas
+           touchées ici. */
         this.forestPlot.glRenderOptions.opacity=1
         this.forestPlot.glLayer?.setOpacity?.(1)
         this.forestPlot.parameters.axis.left.autoLabel=false
         this.forestPlot.parameters.axis.bottom.autoLabel=false
         this.forestPlot.parameters.axis.left.label=""
         this.forestPlot.parameters.axis.bottom.label=""
+        /* LE POINTAGE EST INACTIF SUR CE PLOT: le graphe est animé, donc un
+           point blanc suivrait la souris sans rien nommer de stable, et une
+           étiquette posée au clic demanderait un recalcul à chaque frame. Pan,
+           zoom et double-clic restent — ce sont des gestes, pas des états. */
+        this.forestPlot.pickEnabled=false
+        /* LA LÉGENDE, ANCRÉE DANS LA BOÎTE DU PLOT: absolue, donc elle ne
+           déplace rien — le plot a déjà mesuré sa boîte à la construction. */
+        this.forestLegendHost=CE("div",{},[])
+        stylize(this.forestLegendHost,{
+            position:"absolute",top:"4px",left:"6px",zIndex:"1",
+            pointerEvents:"none",display:"flex",flexDirection:"column",gap:"2px",
+            color:"inherit",textShadow:"0 1px 2px rgba(0,0,0,0.75)",
+            maxWidth:"60%"
+        })
+        this.forestPlotBox.appendChild(this.forestLegendHost)
 
         /* FORCER UN RESIZE APRÈS CRÉATION: le conteneur peut ne pas avoir sa taille
            finale au moment où le constructeur appelle drawGraph(). Un rAF assure
@@ -554,41 +779,79 @@ forestOverviewLayout({animate=false}={}){
 
 
 
-/* LES TROIS NOMBRES, ET ILS SONT LUS, JAMAIS RECOMPTÉS.
+/* LA DISTRIBUTION DES ERREURS, ET LES CHIFFRES SONT TOUJOURS LUS.
 
-       Ils existent déjà: `attribution.pointCount`, les entrées qui passent la
-       fenêtre, et le nombre d'entrées. Les REPRODUIRE serait l'échec le plus
-       facile à commettre — un compteur dupliqué diverge de celui qu'il duplique
-       au premier resolve, et les deux restent vrais séparément. */
+       Rien n'est recompté: `pointCount` est celui du noyau, les erreurs
+       viennent des entrées déjà publiées. Ce qui CHANGE est la lecture: au
+       lieu de « combien ont matché » — un chiffre ambigu, une formule
+       présente peut être fausse — on montre COMMENT les erreurs se
+       répartissent: pour chaque cible sa MEILLEURE attribution (|ppm|), puis
+       la médiane et les proportions sous la fenêtre, la demi-fenêtre et le
+       dixième de la fenêtre — les trois seuils que l'œil retient déjà en
+       lisant la liste. */
     forestRecap(batchIndex){
         const attribution=(this.attributions??[])[batchIndex]
         if(!attribution) return null
         const entries=attribution.entries??[]
+        const targets=attribution.pointCount??0
+        const window=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):null
+        /* LA MEILLEURE ERREUR PAR CIBLE: une cible peut porter plusieurs
+           formules (bestMatches), et c'est la meilleure qui dit ce que le
+           programme a su en faire. */
+        const best=new Map()
+        for(const entry of entries){
+            if(!Number.isFinite(entry.errorPpm)) continue
+            const index=entry.target?.index
+            if(index===undefined||index===null) continue
+            const absolute=Math.abs(entry.errorPpm)
+            const previous=best.get(index)
+            if(previous===undefined||absolute<previous) best.set(index,absolute)
+        }
+        const errors=[...best.values()].sort((a,b)=>a-b)
+        const attributed=errors.length
+        const median=attributed
+            ?(attributed%2
+                ?errors[(attributed-1)>>1]
+                :(errors[attributed/2-1]+errors[attributed/2])/2)
+            :null
+        /* L'AXE EST LA FENÊTRE elle-même: au-delà, le noyau a filtré et il n'y
+           a rien à montrer. Sans fenêtre, le pire écart du lot fait office
+           d'axe — la forme reste vraie, seul le repère manque. */
+        const domain=(window??(attributed?errors[attributed-1]:0))||1
+        const BINS=16
+        const counts=new Array(BINS).fill(0)
+        for(const error of errors){
+            let step=Math.floor(error/domain*BINS)
+            if(!Number.isFinite(step)||step<0) step=0
+            if(step>=BINS) step=BINS-1
+            counts[step]++
+        }
+        /* LES PARTS SONT SUR LES CIBLES, PAS SUR LES ATTRIBUÉES: une cible
+           sans formule compte dans le dénominateur, sinon le pourcentage
+           mentirait en faveur du programme. */
+        const share=(threshold)=>{
+            if(targets<=0) return null
+            let under=0
+            for(const error of errors) if(error<=threshold) under++
+            return under/targets
+        }
         return {
             title:(this.forestGraphs?.[batchIndex]?.title)??"attribution",
-            /* LES CIBLES: les positions de pic soumises, pas les lignes du
-               tableau de formules. */
-            targets:attribution.pointCount??0,
-            /* LES MATCHS, ET CE SONT CEUX QUI PASSENT LA FENÊTRE. Une formule
-               présente mais hors fenêtre est un CANDIDAT, pas une
-               correspondance, et la compter ferait monter un nombre qui n'a pas
-               de sens. */
-            matched:entries.filter(entry=>entry.inWindow).length,
-            /* LES CAS POSSIBLES: les formules qui ont survécu au crible et
-               qu'on peut donc vérifier. Le nombre de combinaisons ÉNUMÉRÉES
-               n'est pas mis ici — c'est du travail de machine, et `visited` le
-               dit déjà à qui le veut. */
-            possible:entries.length
+            targets,attributed,counts,domain,window,median,
+            under:window===null?null:share(window),
+            half:window===null?null:share(window/2),
+            tenth:window===null?null:share(window/10)
         }
     }
 
-/* LE RÉCAPITULATIF, ET CHAQUE NOMBRE A SA BARRE.
+/* LE RÉCAPITULATIF, ET IL EST UN HISTOGRAMME.
 
-       La barre est une PART, pas une valeur: elle est normée sur le plus grand
-       des trois du même lot, donc elle dit une proportion à l'intérieur d'une
-       série. C'est le seul moyen honnête quand trois grandeurs n'ont pas la même
-       unité — et trois grandeurs sans commune mesure, alignées en colonnes, se
-       lisent très bien. */
+       Une ligne par lot: le titre avec ses cibles et ses attribuées, la
+       distribution des MEILLEURES erreurs en seize tranches — teintées par la
+       MÊME échelle que les anneaux du graphe, repères à 1/10 et 1/2 de la
+       fenêtre — puis la phrase: médiane et les trois proportions. La forme
+       dit « où ça se casse », la phrase le dit en nombres; les deux se
+       relisent, et c'est le point. */
     renderForestRecap(){
         const host=this.forestRecapHost
         if(!host) return
@@ -602,32 +865,63 @@ forestOverviewLayout({animate=false}={}){
             return
         }
         for(const row of rows){
-            const cells=[["targets",row.targets],["matched",row.matched],["possible",row.possible]]
-            const top=Math.max(...cells.map(([,value])=>value))||1
             const line=CE("div",{className:"an-recap-line"},[])
-            stylize(line,{display:"grid",gap:"2px"})
-            line.appendChild(CE("div",{style:{fontSize:"0.72em",opacity:"0.65"}},[row.title]))
-            const grid=CE("div",{},[])
-            stylize(grid,{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:"6px"})
-            for(const [label,value] of cells){
-                const cell=CE("div",{},[])
-                stylize(cell,{display:"grid",gap:"1px",minWidth:"0"})
+            stylize(line,{display:"grid",gap:"2px",minHeight:"0"})
+            const head=CE("div",{},[
+                `${row.title} · ${row.targets} target(s) · ${row.attributed} attributed`])
+            stylize(head,{fontSize:"0.72em",opacity:"0.65",overflow:"hidden"})
+            line.appendChild(head)
+            const chart=CE("div",{},[])
+            stylize(chart,{position:"relative",height:"38px",minHeight:"0"})
+            const bars=CE("div",{},[])
+            stylize(bars,{display:"flex",alignItems:"flex-end",gap:"1px",height:"100%"})
+            const peak=Math.max(1,...row.counts)
+            row.counts.forEach((count,index)=>{
                 const bar=CE("div",{},[])
-                /* `minWidth` GARDE LE TICK: une valeur nulle donnerait une barre
-                   de largeur nulle, donc un nombre qui n'a pas l'air d'être
-                   mesuré. Zéro est une RÉPONSE, et elle doit se voir. */
+                /* ZÉRO COMPRIS ET IL SE VOIT: deux pour cent de hauteur, pas
+                   zéro — une barre absente dirait « rien ici », qui est faux:
+                   il y a zéro point, et ça se dit aussi. */
+                const height=count>0?Math.max(6,Math.round(100*count/peak)):2
                 stylize(bar,{
-                    height:"3px",minWidth:"1px",
-                    width:`${Math.round(100*value/top)}%`,
-                    background:"var(--accent)",opacity:"0.8"
+                    height:`${height}%`,
+                    background:count>0
+                        ?this.constructor.forestErrorColor((index+0.5)/row.counts.length)
+                        :"rgba(127,140,155,0.35)"
                 })
-                cell.appendChild(bar)
-                const text=CE("div",{},[`${value} ${label}`])
-                stylize(text,{fontSize:"0.72em",opacity:"0.9",overflow:"hidden"})
-                cell.appendChild(text)
-                grid.appendChild(cell)
+                if(count>0){
+                    const low=row.domain*index/row.counts.length
+                    const high=row.domain*(index+1)/row.counts.length
+                    bar.title=`${count} target(s): ${this.formatPPM(low)}–${this.formatPPM(high)} ppm`
+                }
+                bars.appendChild(bar)
+            })
+            chart.appendChild(bars)
+            if(row.window!==null){
+                /* LES REPÈRES DE LA PHRASE, POSÉS SUR LA FORME: 1/10 et 1/2 de
+                   la fenêtre. L'axe est la fenêtre — au-delà, rien à voir. */
+                for(const ratio of [0.1,0.5]){
+                    const tick=CE("div",{},[])
+                    stylize(tick,{position:"absolute",top:"0",bottom:"0",
+                        width:"1px",background:"rgba(255,255,255,0.55)",
+                        left:`${Math.round(100*ratio)}%`,pointerEvents:"none"})
+                    tick.title=`${this.formatPPM(row.window*ratio)} ppm`
+                    chart.appendChild(tick)
+                }
             }
-            line.appendChild(grid)
+            line.appendChild(chart)
+            const parts=[`median ${row.median===null
+                ?"—":`${this.formatPPM(row.median)} ppm`}`]
+            if(row.window!==null&&row.under!==null){
+                parts.push(
+                    `≤${this.formatPPM(row.window)} ppm ${Math.round(100*row.under)}%`,
+                    `≤${this.formatPPM(row.window/2)} ppm ${Math.round(100*row.half)}%`,
+                    `≤${this.formatPPM(row.window/10)} ppm ${Math.round(100*row.tenth)}%`)
+            }else{
+                parts.push("no ppm window")
+            }
+            const stats=CE("div",{},[parts.join(" · ")])
+            stylize(stats,{fontSize:"0.72em",opacity:"0.8",overflow:"hidden"})
+            line.appendChild(stats)
             host.appendChild(line)
         }
     }
@@ -1682,41 +1976,27 @@ forestOverviewLayout({animate=false}={}){
             this.outputs[1]=[]
             return
         }
-        const plan=this.buildPlan()
-        const linkPlan=this.forestLinkPlan
         const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):10
         const batch=this.forestGraphs?.[0]
         if(!batch?.graphs?.length) {
             this.outputs[1]=[]
             return
         }
-        const references=(linkPlan?.items??[])
-            .filter(item=>item.kind==="combining"&&item.atomicMass>0)
-            .map(item=>({composition:item.composition??null}))
         const collections=[]
+        /* UN SEUL CRIBLE, ET IL EST MÉMOÏSÉ PAR ARBRE: c'est celui de
+           `attributeTree` (sonde racine + propagation), dont le `Map` garde
+           chaque arbre tant que les réglages ne changent pas. La version
+           précédente en avait recopié une copie SYNCHRONE ici — deux cribles
+           par clic pour un seul résultat, et zéro cache pour aucun des deux,
+           puisque `buildPlan()` reconstruit son plan à chaque appel. */
+        let fresh=false
         for(const graph of batch.graphs){
             const rank=graph.rank
             if(!this.forestSelected.has(rank)) continue
-            if(!Number.isInteger(graph.rootIndex)) continue
-            const rootVertex=graph.vertices.find(v=>v.index===graph.rootIndex)
-            if(!rootVertex||!Number.isFinite(rootVertex.mass)) continue
-            let probed
-            try{
-                probed=attributeSpectrum(plan,windowFor(rootVertex.mass),{
-                    limit:Infinity,ppm,
-                    bestMatches:Math.max(1,Math.trunc(Number(this.parameters.bestMatches))||3)
-                })
-            }catch{
-                continue
-            }
-            const centre=(probed.entries??[])
-                .filter(entry=>entry.target?.index===1)
-                .sort((a,b)=>Math.abs(a.errorPpm)-Math.abs(b.errorPpm))
-            if(!centre.length) continue
-            const rootFormula=centre[0].formula
-            if(!rootFormula) continue
-            const result=propagateForest(graph,rootFormula,references,{table:this.loadedTable})
+            const known=this.forestAttributions?.byGraph?.has(graph)??false
+            const result=await this.attributeTree(graph)
             if(!result) continue
+            if(!known) fresh=true
             /* Construire la FormulaCollection avec les formules propagées. */
             const name=`${batch.title??"attribution"} tree #${rank}`
             const collection=new FormulaCollection({name,table:this.loadedTable,ppm})
@@ -1746,6 +2026,12 @@ forestOverviewLayout({animate=false}={}){
         }
         this.outputs[1]=collections
         this.resolveChildren()
+        /* LES FORMULES ARRIVENT APRÈS LE PREMIER COUP DE PINCEAU: `renderForest`
+           a peint avant que le crible n'ait tourné — anneaux gris, pas
+           d'étiquette, pas de couleur d'erreur. On repeint alors, UNE SEULE
+           FOIS: le cache rend `fresh` faux aux visites suivantes, donc une
+           sélection qui ne change rien ne paie pas ce second rendu. */
+        if(fresh) this.renderForestOverview()
     }
 
     /* LA PHRASE SOUS LA COURBE, et elle dit CE QUI EST GARDÉ.

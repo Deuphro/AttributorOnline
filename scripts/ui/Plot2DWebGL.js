@@ -59,6 +59,10 @@ export class Plot2DWebGL extends Plot2D{
            drawTraces() et syncPickOverlay() tournent sur une instance
            encore à moitié construite: d'où le test d'entrée de
            syncPickOverlay(). */
+        /* Le pointage peut être COUPÉ PAR PLOT (défaut: actif). Le graphe de
+           la forêt le coupe: son animation rend le survol et l'étiquetage au
+           clic incompatibles — voir setupForestOverview. */
+        this.pickEnabled=this.pickEnabled??true
         this.pickOverlay=this.pickOverlay??null
         this.pickAnchor=this.pickAnchor??null
         this.pickHoverGroup=this.pickHoverGroup??null
@@ -213,8 +217,11 @@ export class Plot2DWebGL extends Plot2D{
                    refusing to index them would leave the hover dead on every
                    ordinary plot. The polyline passes through every one of
                    them, so the nearest indexed point is on what is drawn. */
-                pickable:(mode==="points"||mode==="lines-and-points")&&markerSize>0
-                    ||(mode==="lines-between-points"||mode==="lines-and-points"||mode==="sticks-to-zero")&&lineSize>0
+                /* a plot with picking off never indexes its points: no CPU
+                   grid, hence no hover is even theoretically possible */
+                pickable:this.pickEnabled!==false
+                    &&((mode==="points"||mode==="lines-and-points")&&markerSize>0
+                    ||(mode==="lines-between-points"||mode==="lines-and-points"||mode==="sticks-to-zero")&&lineSize>0)
             })
         }
         return descriptors
@@ -598,6 +605,8 @@ export class Plot2DWebGL extends Plot2D{
     //does. Runs before the pick fields exist during super() — hence the guard
     syncPickOverlay(){
         if(!this.pickPins) return
+        //a plot with picking off shows neither pins nor hover: no overlay work
+        if(this.pickEnabled===false) return
         const {xScale,yScale}=this.plotScales()
         const zone=this.graphzone
         const overlay=this.ensurePickOverlay()
@@ -680,6 +689,11 @@ export class Plot2DWebGL extends Plot2D{
 
 
     handlePickMove(event){
+        //a plot with picking off does not even follow the cursor
+        if(this.pickEnabled===false){
+            this.hidePickHover()
+            return
+        }
         this.pickPointerInside=true
         //a pan owns the pointer: the content moves under the cursor, so any
         //hover would name a point the user did not point at
@@ -697,6 +711,12 @@ export class Plot2DWebGL extends Plot2D{
     }
 
     flushPickHover(){
+        //a pending hover from before picking was turned off must not show
+        if(this.pickEnabled===false){
+            this.pickHoverEvent=null
+            this.hidePickHover()
+            return
+        }
         const pending=this.pickHoverEvent
         this.pickHoverEvent=null
         const hover=this.pickHoverGroup
@@ -727,12 +747,14 @@ export class Plot2DWebGL extends Plot2D{
     }
 
     handlePickKey(event){
+        if(this.pickEnabled===false) return
         if(event.key!=="Escape"||!this.pickPins?.length) return
         if(!this.pickPointerInside) return
         this.clearPickPins()
     }
 
     handlePickClick(event){
+        if(this.pickEnabled===false) return
         if(event.button!==0) return
         if(this.panInProgress) return
         //the click that ends a pan, and the second click of a double click,
