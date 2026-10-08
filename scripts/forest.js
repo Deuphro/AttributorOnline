@@ -562,7 +562,15 @@ export function forestGraph(components,{masses=[],intensities=[]}={}){
                 intensity:Number(intensities?.[index])||0,
                 defect:massDefect(mass),
                 degree:0,
-                isRoot:index===component.root
+                /* `false` PROVISOIRE, et ce n'est pas un détail: la vraie racine
+                   est désignée une seule fois, en bas, par `forestRoot`. Poser
+                   ici `index===component.root` installerait une SECONDE autorité
+                   — la racine du noyau Rust — qui survivrait au moindre
+                   réordonnancement du code, et le même arbre se propagerait
+                   alors depuis deux pics différents selon le chemin pris. Le
+                   drapeau provisoire n'a aucune valeur: il est réécrit avant la
+                   sortie. */
+                isRoot:false
             })
         }
         /* LA RACINE D'ABORD: elle est le seul sommet que le noyau NOMME, et un

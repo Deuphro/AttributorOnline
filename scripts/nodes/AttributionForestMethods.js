@@ -2177,12 +2177,17 @@ forestOverviewLayout({animate=false}={}){
            vérité à maintenir. */
         this.drawForestCurve(this.forestDrawCut??this.forestCut??null)
         this.renderForestCurveLine()
+        /* LES GRAPHES AVANT LA LISTE, ET L'ORDRE EST LE CORRECTIF: `forestRow`
+           affiche la masse du sommet racine (`graph.rootIndex`), donc les
+           graphes doivent exister avant que la liste ne se peigne — sinon la
+           ligne retombe sur `component.rootMass` (la racine Rust) et ment à
+           nouveau, pour une seule frame puis pour de bon si rien ne repeint. */
+        this.buildForestGraphs()
         this.renderForestList()
         /* LE GRAPHE ET LE RÉCAPITULATIF, ICI ET NULLE PART AILLEURS. C'est
            cette méthode que `startForest` appelle sur chacune de ses
            branches — résultat, aucune référence, plan illisible — donc c'est
            le seul endroit où les deux sont repeints ensemble. */
-        this.buildForestGraphs()
         this.renderForestOverview()
         /* PUBLIER LES FORMULACOLLECTIONS DES ARBRES SÉLECTIONNÉS (output[1]). */
         this.publishForestCollections()
@@ -2349,8 +2354,19 @@ forestOverviewLayout({animate=false}={}){
        La sélection synchronise la liste et le graphe. */
     forestRow(component,batch){
         const isSelected=this.forestSelected.has(component.rank)
+        /* LA RACINE AFFICHÉE EST CELLE QUI PROPAGE, PAS CELLE DU NOYAU.
+           `component.rootMass` est la racine Rust (`forest.componentRoot`) ;
+           la sonde, les étiquettes du graphe et la Formula Collection partent
+           de `graph.rootIndex` (désignée par `forestRoot`). La ligne disait
+           l'une pendant que tout le reste disait l'autre. On affiche la masse
+           du sommet racine du graphe, avec repli sur le composant. */
+        const batchIndex=(this.forestComponents??[]).indexOf(batch)
+        const graphsBatch=(this.forestGraphs??[])[batchIndex]
+        const treeGraph=graphsBatch?.graphs?.find(g=>g.rank===component.rank)
+        const treeRoot=treeGraph?.vertices?.find(v=>v.index===treeGraph.rootIndex)
+        const displayRootMass=treeRoot?.mass??component.rootMass
         const row=CE("div",{className:"an-forest-row",pilot:this},[
-            componentLine(component)
+            componentLine({...component,rootMass:displayRootMass})
         ])
         stylize(row,{
             fontSize:"0.8em",lineHeight:"1.35",cursor:"pointer",
@@ -2361,7 +2377,7 @@ forestOverviewLayout({animate=false}={}){
         })
         const points=batch.points
         row.title=[
-            `root ${component.rootMass.toFixed(5)} · tallest ${component.peakMass.toFixed(5)}`,
+            `root ${displayRootMass.toFixed(5)} · tallest ${component.peakMass.toFixed(5)}`,
             `total error ${component.weight.toFixed(3)} Da over ${component.links.length} link(s)`,
             ...component.links.map(link=>{
                 const from=points?.x?.[link.u]
@@ -2374,37 +2390,52 @@ forestOverviewLayout({animate=false}={}){
             "click to toggle selection, Ctrl+click for additive"
         ].join("\n")
         row.addEventListener("click",(e)=>{
-            const points=batch.points
-            let mass=component.rootMass
-            const graph=batch.graphs?.find(g=>g.rank===component.rank)
-            if(points?.x && graph){
-                const currentRootIndex=graph.rootIndex??component.root
-                const currentRootVertex=graph.vertices?.find(v=>v.index===currentRootIndex)
-                mass=currentRootVertex?.mass ?? points.x[currentRootIndex] ?? component.rootMass
-            }
+            /* LE GRAPHE NE VIT PAS DANS CE LOT: `batch` est un lot de
+               `forestComponents` (title, points, components), et les graphes
+               vivent dans le lot PARALLÈLE de `forestGraphs` (title, points,
+               graphs) bâti par `buildForestGraphs`. L'ancien code cherchait
+               `batch.graphs` — indéfini ici — donc `graph` restait indéfini et
+               la masse retombait sur `component.rootMass`, la racine du noyau
+               Rust. La sonde lisait alors une racine pendant que `attributeTree`,
+               les étiquettes du graphe et la sortie en propageaient une autre
+               (`graph.rootIndex`, désignée par `forestRoot`): la sonde disait
+               juste, tout le reste disait autre chose. On rejoint le graphe par
+               l'index du lot, et la masse sondée est celle du sommet racine. */
+            const batchIndex=(this.forestComponents??[]).indexOf(batch)
+            const graphsBatch=(this.forestGraphs??[])[batchIndex]
+            const graph=graphsBatch?.graphs?.find(g=>g.rank===component.rank)
+            const rootVertex=graph?.vertices?.find(v=>v.index===graph.rootIndex)
+            const mass=rootVertex?.mass??component.rootMass
             if(Number.isFinite(mass)){
                 if(this.probeInput) this.probeInput.value=String(mass)
                 this.probeMass(mass)
             }
-            /* Also update the forest graph's root to match the clicked tree,
-               so the forest visualization propagates from the correct root. */
-            if(graph){
-                const clickedRootIndex=component.root
-                if(graph.rootIndex!==clickedRootIndex){
-                    graph.rootIndex=clickedRootIndex
-                    for(const v of graph.vertices) v.isRoot=v.index===clickedRootIndex
-                    /* Update forestComponents as well. */
-                    for(const batchComp of this.forestComponents??[]){
-                        const comp=batchComp.components?.find(c=>c.rank===component.rank)
-                        if(comp){
-                            comp.root=clickedRootIndex
-                            comp.rootMass=mass
-                        }
-                    }
-                    /* Invalidate cache for this graph. */
-                    this.forestAttributions?.byGraph?.delete(graph)
-                }
-            }
+            /* LA RACINE N'EST PAS TOUCHÉE ICI, ET C'EST LE CORRECTIF.
+
+               CE BLOC RACINAIT L'ARBRE SUR `component.root` — la racine que le
+               noyau Rust rend dans `forest.componentRoot`. Ce n'est PAS la même
+               valeur que `graph.rootIndex`, que `forestGraph` a choisie par
+               `forestRoot` (le défaut de masse le plus élevé parmi les pics près
+               de la moyenne). Deux autorités pour une seule décision.
+
+               La conséquence était invisible et silencieuse: le MÊME arbre se
+               propageait depuis un pic différent selon qu'on l'avait obtenu par
+               « Grow network » ou en cliquant sa ligne dans la liste. Les
+               formules changeaient, l'erreur ppm changeait, et rien ne le
+               signalait — un `graph.rootIndex` est un nombre, il est juste faux.
+
+               `forestRoot` est donc le SEUL endroit qui décide, et un clic sur
+               une ligne ne fait que SONDE et SÉLECTION. Celui qui veut une autre
+               racine la prend en cliquant un SOMMET du graphe, où le geste veut
+               explicitement dire « propage depuis ce pic » — et ce chemin-là
+               invalide bien le cache de cet arbre.
+
+               `comp.root` n'est plus réécrit non plus: il ne sert plus qu'à
+               l'infobulle de la ligne, où il reste la racine du noyau.
+
+               ET LE NOM DE LA SONDE N'EST PAS ÉCRIT EN CLAIR ICI, exprès: un
+               commentaire qui cite l'appel fait matcher le commentaire au lieu
+               du code, et le test de contrat vérifierait une phrase. */
             const additive=e.ctrlKey||e.metaKey
             if(!additive) this.forestSelected.clear()
             if(this.forestSelected.has(component.rank)){

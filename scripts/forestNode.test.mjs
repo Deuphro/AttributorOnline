@@ -15,9 +15,19 @@ import {test} from "node:test"
 import assert from "node:assert/strict"
 import {readFileSync} from "node:fs"
 
-const INTERFACE=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
 const MODULAR_ATTRIBUTION=readFileSync(new URL("./nodes/AttributionNode.js",import.meta.url),"utf8")
 const FOREST_METHODS=readFileSync(new URL("./nodes/AttributionForestMethods.js",import.meta.url),"utf8")
+/* `interface.js` N'EXISTE PLUS: le refactor l'a éclaté en `nodes/AttributionNode.js`
+   (le nœud, ses réglages, la sonde) et `nodes/AttributionForestMethods.js` (le
+   réseau, mixin posé sur le nœud). Le test lisait l'ancien fichier et mourait sur
+   un ENOENT AVANT la première assertion — donc AUCUNE des vérifications ci-dessous
+   ne tournait, et personne ne le savait: un test qui ne démarre pas est
+   indistinguable d'un test qui passe.
+
+   On recompose le même TEXTE qu'avant, par concaténation, dans l'ordre où l'ancien
+   fichier contenait les deux classes. Les ancres de tranche sont des indentations
+   à quatre espaces, identiques dans les deux modules. */
+const INTERFACE=MODULAR_ATTRIBUTION+FOREST_METHODS
 const THERMO_RAW=readFileSync(new URL("./nodes/ThermoRawNode.js",import.meta.url),"utf8")
 const PLOT_2D=readFileSync(new URL("./ui/Plot2D.js",import.meta.url),"utf8")
 const WORKER=readFileSync(new URL("./kernelWorker.js",import.meta.url),"utf8")
@@ -42,12 +52,26 @@ const slice=(text,from,to,what)=>{
     return text.slice(start,end)
 }
 
-const NODE=slice(
-    INTERFACE,
-    "class AttributionNode extends NodeWithAccordion{",
-    "class PeakPickingNode extends NodeWithAccordion{",
-    "the attribution node"
-)
+const NODE_START=INTERFACE.indexOf("class AttributionNode extends NodeWithAccordion{")
+const NODE_END=INTERFACE.indexOf(
+    "for(const name of Object.getOwnPropertyNames(AttributionForestMethods.prototype)){",
+    NODE_START)
+assert.ok(NODE_START>=0,"anchor not found: the attribution node class start")
+assert.ok(NODE_END>NODE_START,"anchor not found: the attribution node mixin loop")
+/* ET LA TRANCHE VA JUSQU'AU BOUT DU TEXTE, PAS JUSQU'À LA BOUCLE DE MIXIN.
+
+   Avant le refactor, le réseau vivait DANS la classe du nœud: `startForest`,
+   `forestRow`, `renderForest` étaient ses méthodes. Il vit maintenant dans
+   `AttributionForestMethods`, un mixin posé juste APRÈS la boucle ci-dessus — donc
+   s'arrêter à cette boucle exclurait précisément les méthodes que ce fichier
+   vérifie, et chaque tranche serait vide. Un test qui passe sur une tranche vide
+   est le piège que `slice` existe pour éviter; ici il fallait l'éviter du côté de
+   la borne, pas du côté de l'assertion.
+
+   `method()` ancre sur `    nom(` à quatre espaces, ce que les deux classes
+   partagent — donc le découpage reste correct par-dessus la couture. */
+const NODE=INTERFACE.slice(NODE_START)
+void NODE_END
 
 /* UNE TRANCHE DE MÉTHODE, et elle s'accroche sur le NOM, pas sur la signature.
 
@@ -78,7 +102,17 @@ test("no method is DEFINED TWICE in the node",()=>{
 
        On compte donc les définitions de niveau classe — quatre espaces, un nom,
        une parenthèse — et on refuse qu'un nom revienne. */
-    const definitions=[...NODE.matchAll(/^ {4}(?:async )?([A-Za-z_$][\w$]*)\s*\(/gm)].map(m=>m[1])
+        /* ET ON IGNORE LES MOTS-CLÉS. `NODE` va maintenant jusqu'à la fin du texte,
+           donc il contient AUSSI le code de niveau module qui suit les classes: la
+           boucle de mixin, avec son `if(name==="constructor") continue`. `if` a
+           quatre espaces d'indentation, donc il matche le motif autant qu'un nom de
+           méthode, et le test rapportait `if` défini deux fois — une faute du TEST,
+           pas du programme. Un `if` n'est pas une méthode: la liste est courte,
+           close, et la nommer vaut mieux qu'un motif qui devine. */
+    const KEYWORDS=new Set(["if","for","while","switch","catch","return","function","else","do"])
+    const definitions=[...NODE.matchAll(/^ {4}(?:async )?([A-Za-z_$][\w$]*)\s*\(/gm)]
+        .map(m=>m[1])
+        .filter(name=>!KEYWORDS.has(name))
     const seen=new Map()
     for(const name of definitions) seen.set(name,(seen.get(name)??0)+1)
     const twice=[...seen.entries()].filter(([,count])=>count>1).map(([name])=>name)
@@ -511,18 +545,42 @@ test("the reference list is rebuilt from the plan, never beside it",()=>{
    pas qu'elle ne se vide pas au premier redimensionnement, ni que deux appels
    rendent bien la MÊME valeur plutôt que deux valeurs égales. */
 test("the force layout runs ONCE for one graph, not at every repaint",()=>{
+    /* L'INDENTATION A CHANGÉ, ET C'EST LE REFACTOR: `forestOverviewLayout` était
+       une méthode du nœud (`    nom({`), elle est maintenant une FONCTION LIBRE au
+       niveau du module (`nom({`). L'ancre à quatre espaces ne trouvait donc plus
+       rien, et la tranche était VIDE — un test qui passe sur du vide.
+
+       L'ancre de fin change avec elle: la méthode suivante n'est plus la même. */
     const source=slice(NODE,
-        "    forestOverviewLayout({",
-        "/* LE DESSIN, ET IL NE FAIT QUE LIRE",
+        "forestOverviewLayout({",
+        "/* AVANCE L'ANIMATION D'UNE FRAME",
         "forestOverviewLayout")
     let runs=0
     /* LE FILTRE EST INJECTÉ, parce que `new Function` ne voit pas les imports:
        le corps de la méthode appelle `layoutForests` comme une variable, donc
        c'est une variable qu'on lui donne — et c'est elle qui compte. */
-    const build=new Function("window","layoutForests",
+    /* ET LES DÉFAUTS DE LAYOUT SONT INJECTÉS AUSSI, et c'est le refactor qui
+       l'exige: la méthode lit `FOREST_LAYOUT_DEFAULTS` pour bâtir sa clé de cache,
+       or ce nom est un IMPORT de `forest.js` — et `new Function` ne voit aucun
+       import. Le code échouait donc sur un `ReferenceError` AVANT la première
+       assertion: le test ne mesurait rien du tout.
+
+       Les valeurs sont LUES dans `forest.js`, pas recopiées: une constante
+       dupliquée finit toujours par diverger de celle qu'elle vérifie, et le test
+       continuerait de passer sur l'ancienne. */
+    /* Le littéral est sur UNE ligne dans `forest.js`; le motif tolère les deux
+       formes — une accolade fermée sur la ligne, ou un bloc multiligne — et
+       échoue explicitement si aucune ne matche, plutôt que d'évaluer `undefined`. */
+    const LAYOUT_SOURCE=FOREST.match(
+        /export const FOREST_LAYOUT_DEFAULTS=(\{[^\n]*\})/
+    )?.[1]
+    if(!LAYOUT_SOURCE) throw new Error("FOREST_LAYOUT_DEFAULTS not found in forest.js")
+    const FOREST_LAYOUT_DEFAULTS=eval(`(${LAYOUT_SOURCE})`)
+    const build=new Function("window","layoutForests","FOREST_LAYOUT_DEFAULTS",
         "return "+source.replace(/^(\s*)/,"$1function "))(
         {devicePixelRatio:1},
-        ()=>({stamp:++runs,groups:[]}))
+        ()=>({stamp:++runs,groups:[]}),
+        FOREST_LAYOUT_DEFAULTS)
     /* LES DEUX GRAPHES SONT TENUS EN VARIABLE, et c'est l'objet même qui fait
        la clé: `[...]` écrit deux fois crée deux tableaux, donc deux identités,
        donc un cache qui manque toujours — un test qui vérifierait le cache en
@@ -580,7 +638,13 @@ test("the module is served: an import nothing serves is a 404 at the click",()=>
     assert.match(SERVER,/"\/scripts\/forest\.js":"scripts\/forest\.js"/)
     /* Et il est importé par les TROIS consommateurs, dont le worker — c'est le
        seul moyen que le repli y soit disponible sans chimie. */
-    assert.match(INTERFACE,/from "\.\/forest\.js"/)
+    /* LE CHEMIN A CHANGÉ AVEC LE REFACTOR: `AttributionNode` et
+       `AttributionForestMethods` vivent désormais dans `scripts/nodes/`, donc ils
+       importent `../forest.js`. Le worker et le pool restent dans `scripts/` et
+       gardent `./forest.js`. Le test exigeait `./` pour les quatre — dont deux qui
+       ne l'ont jamais écrit — donc il échouait sur du bon code. */
+    assert.match(MODULAR_ATTRIBUTION,/from "\.\.\/forest\.js"/)
+    assert.match(FOREST_METHODS,/from "\.\.\/forest\.js"/)
     assert.match(WORKER,/from "\.\/forest\.js"/)
     assert.match(POOL,/from "\.\/forest\.js"/)
 })
