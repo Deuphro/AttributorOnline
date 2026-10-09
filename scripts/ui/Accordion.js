@@ -1,4 +1,5 @@
 import {CE,stylize} from "../util.js"
+import {Dialog} from "./Dialog.js"
 
 let draggedAccordion=null
 let reorderMark=null
@@ -72,10 +73,10 @@ export class Accordion{
                 }
             }
         };
-        this.DOMelt={
+this.DOMelt={
             folder:CE('div',{className:"accordion handler folder",pilot:this,handleClick:(e)=>e.target.pilot.toggle()},[]),
             handler:CE('div',{className:"accordion handler",pilot:this,handleDblClick:(e)=>e.target.pilot.toggle()},[
-                CE('div',{className:"accordion handler menu grip",pilot:this,draggable:true,tabIndex:0,title:"Glisser pour dÃ©placer ce panneau (flÃ¨ches haut/bas au clavier)",handleKeyDown:(e)=>this.handleReorderKey(e)},[]),
+                CE('div',{className:"accordion handler menu grip",pilot:this,draggable:true,tabIndex:0,title:"Glisser pour déplacer ce panneau (flèches haut/bas au clavier) — Double-clic pour détacher",handleDblClick:(e)=>{e.stopPropagation();e.target.pilot.popOut()},handleKeyDown:(e)=>this.handleReorderKey(e)},[]),
                 CE('div',{className:"accordion handler label",pilot:this,handleDblClick:(e)=>e.target.pilot.toggle()},[title]),
             ]),
             content:CE('div',{className:"accordion content"},[]),
@@ -238,6 +239,58 @@ export class Accordion{
         }else{
             this.fold();
         }
+    }
+    popOut(){
+        if(this.dialog){
+            this.dialog.focus()
+            return
+        }
+        const panel=this.DOMelt.container.parentElement
+        const wasFolded=this.parameters.folded
+        if(wasFolded){
+            this.unfold()
+        }
+        this.dialog=new Dialog(this.title,this.origin,this.origin.main)
+        this.dialog.DOMelt.window.style.top="100px"
+        this.dialog.DOMelt.window.style.left="100px"
+        this.dialog.DOMelt.window.style.width="600px"
+        this.dialog.DOMelt.window.style.height="400px"
+        const dismisser=this.dialog.DOMelt.dismisser
+        dismisser.handleClick=(e)=>{
+            e.target.pilot.suicide()
+            this.dockBack(panel)
+        }
+        this.dialog.DOMelt.label.handleDblClick=(e)=>{
+            e.preventDefault()
+            e.stopPropagation()
+            this.dockBack(panel)
+        }
+        this.dialog.DOMelt.label.title="Double-clic pour rattacher au panneau"
+        this.dialog.DOMelt.content.appendChild(this.DOMelt.content)
+        this.DOMelt.container.remove()
+        this.destination=this.dialog.DOMelt.content
+        this.parameters.container.style.display="grid"
+        this.parameters.container.style.width="100%"
+        this.parameters.container.style.height="100%"
+        this.parameters.handler.style.display="none"
+        this.setSizingMode("viewport",{height:parseInt(this.dialog.DOMelt.content.style.height)||400})
+        this.origin.saveSessionSoon?.()
+    }
+    dockBack(panel){
+        if(!this.dialog){
+            return
+        }
+        this.dialog.DOMelt.content.removeChild(this.DOMelt.content)
+        this.dialog.suicide()
+        this.dialog=null
+        this.parameters.handler.style.display="grid"
+        this.DOMelt.container=CE('div',{className:"accordion container"},[this.DOMelt.handler,this.DOMelt.content]);
+        this.DOMelt.container.accordion=this
+        stylize(this.DOMelt.container,this.parameters.container.style);
+        panel.appendChild(this.DOMelt.container)
+        this.destination=panel
+        this.setSizingMode("content")
+        this.origin.saveSessionSoon?.()
     }
     suicide(){
         if(reorderMark===this.DOMelt.container){

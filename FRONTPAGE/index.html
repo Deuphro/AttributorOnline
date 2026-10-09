@@ -236,12 +236,28 @@
             <h3>↩️ Risk-free experimentation</h3>
             <p>Undo and redo every action through a complete history, tune parameters and compare the results of your scenarios.</p>
         </div>
+        <div class="card">
+            <h3>🎯 Exhaustive attribution</h3>
+            <p>A mixed-radix sieve enumerates every combination of your groups inside a ppm window — no sampling, no heuristic — and keeps the best distinct readings per peak, ranked by log-probability.</p>
+        </div>
+        <div class="card">
+            <h3>🌲 Measurement network</h3>
+            <p>Link peaks whose gaps match reference masses, take the minimum spanning forest, cut it on the weight curve, merge trees by their stoichiometric difference and propagate formulas from any root you click.</p>
+        </div>
+        <div class="card">
+            <h3>🎛️ Mass calibration</h3>
+            <p>Fit an error surface (m/z × intensity) from the attribution's own ppm errors and apply the correction to every linked spectrum, with residuals and the fitted surface on screen.</p>
+        </div>
+        <div class="card">
+            <h3>💬 Room chat</h3>
+            <p>A chat node joins a WebSocket room — by default the page's own host — for discussing a session with whoever else is looking at it.</p>
+        </div>
     </div>
 
     <h2>A pipeline approach</h2>
     <p class="pipeline">
-        <code>Raw file (.raw)</code> → <code>msConvert</code> → <code>XY text</code> →
-        Attributor node pipeline → <code>Attribution (Rust/WASM)</code> → <code>Plots &amp; export</code>
+        <code>Raw file (.raw)</code> → <code>msConvert</code> or <code>native import</code> → <code>XY</code> →
+        Attributor node pipeline → <code>Attribution (Rust/WASM)</code> → <code>Calibration</code> → <code>Plots &amp; export</code>
     </p>
 
     <h2>Ecosystem</h2>
@@ -303,6 +319,114 @@ index(i, 1)          // Y of point i</pre>
         </ul>
 
         <h3>Node reference</h3>
+
+        <h4>Node catalogue</h4>
+        <p>
+            The flow menu creates nodes by category. The table lists every entry with the shape of its
+            anchors; each node is documented in the subsections that follow.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:130px">Menu</th>
+                <th>Entry</th>
+                <th>Reads</th>
+                <th>Writes</th>
+            </tr>
+            <tr><td>Data</td><td><strong>Delimited text</strong></td><td>— (file dropped on the node)</td><td>1 wave</td></tr>
+            <tr><td>Data</td><td><strong>Thermo .raw file</strong></td><td>— (file dropped on the node)</td><td>one wave per scan</td></tr>
+            <tr><td>Operation</td><td><strong>Trimmer</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — trimmed wave per input</td></tr>
+            <tr><td>Operation</td><td><strong>Peak picking</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — peak list per input</td></tr>
+            <tr><td>Operation</td><td><strong>Calibration</strong></td><td>2 — collections, then spectra</td><td>1 — corrected wave per input</td></tr>
+            <tr><td>Display</td><td><strong>Simple XY plot</strong></td><td>1 anchor — waves to draw</td><td>— (display only)</td></tr>
+            <tr><td>Display</td><td><strong>F-KMD</strong></td><td>1 anchor — XY waves</td><td>1 — defect wave per input</td></tr>
+            <tr><td>Chemistry</td><td><strong>Formula collections</strong></td><td>1 — FormulaCollections</td><td>1 — the current collection</td></tr>
+            <tr><td>Chemistry</td><td><strong>Attribution</strong></td><td>1 anchor — XY waves</td><td>2 — attributions, network trees</td></tr>
+            <tr><td>Tools</td><td><strong>Chat</strong></td><td>— (WebSocket)</td><td>—</td></tr>
+        </table>
+        <p>
+            The <em>Flow</em> menu holds commands rather than nodes: <em>Resolve</em>,
+            <em>Arrange nodes</em>, <em>Select all</em> / <em>Clear selection</em>, and
+            <em>Save selection as pattern…</em> / <em>Paste pattern…</em>, which store the selected
+            nodes — their type, settings and wiring, never their data — under a name, for reuse in this
+            session or another one.
+        </p>
+
+        <h4>Delimited text <span class="badge">import</span></h4>
+        <p>
+            The text importer: drop or select a file, choose the line and column separators, read the
+            two previews (the raw text, then the first parsed pairs), press <em>Load</em>. Every line
+            that yields two finite numbers becomes one point of a single 2D wave; the node is titled
+            after the file and its column labels default to <code>x</code>/<code>y</code>.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr><td>Inputs</td><td><strong>none</strong> — a source node.</td></tr>
+            <tr>
+                <td>Outputs</td>
+                <td><strong>1 output</strong> — one 2D wave <code>[X…, Y…]</code>, titled after the file.</td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>lineSeparator</code> — auto/guess, CRLF, CR or LF (a regular expression).<br>
+                    <code>columnSeparator</code> — auto/guess, tab, comma or whitespace.<br>
+                    <code>fileName</code>, <code>raw</code> (the file text), <code>pairs</code>, <code>labels</code>.
+                </td>
+            </tr>
+            <tr>
+                <td>Session behaviour</td>
+                <td>
+                    The raw text, the separators, the file name and the labels travel with the session;
+                    the pairs are re-parsed from the text on import, so a restored node rebuilds exactly
+                    the wave the text describes. No text → the node comes back <strong>floating</strong>.
+                </td>
+            </tr>
+        </table>
+
+        <h4>Thermo .raw file <span class="badge">native</span> <span class="badge">no .NET</span></h4>
+        <p>
+            The native Thermo importer: the file is parsed in the browser by the
+            <code>thermorawfile</code> Rust crate compiled to WebAssembly — no msConvert, no .NET, no
+            DLL. A <em>metadata-only</em> pass runs the moment the file is dropped, so every filter is
+            bounded by what the file actually holds: scan range, retention-time window, MS levels
+            present, centroid/profile counts.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr><td>Inputs</td><td><strong>none</strong> — a source node.</td></tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — <em>one wave per loaded scan</em>, in scan order, each
+                    carrying <code>scanNumber</code>, <code>rt</code> and <code>msLevel</code> in its
+                    metadata. A scan with no peaks is dropped rather than published empty.
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>dataType</code> — <code>auto</code> (centroid → profile), <code>centroid</code>,
+                    <code>profile</code> (centroided) or <code>profile_raw</code> (all points).<br>
+                    <code>firstScan</code> / <code>lastScan</code> — scan range.<br>
+                    <code>msLevelFilter</code> — 0 = all levels, or one level (MS1, MS2…).<br>
+                    <code>rtMin</code> / <code>rtMax</code> — retention-time window, in minutes.
+                </td>
+            </tr>
+            <tr>
+                <td>Session behaviour</td>
+                <td>
+                    The file bytes round-trip through the session JSON as byte arrays and the parsed
+                    spectra are rebuilt on reload; an empty node restores without its derived spectra
+                    field rather than failing.
+                </td>
+            </tr>
+        </table>
 
         <h4>Peak picking <span class="badge">H0</span> <span class="badge">width filter</span></h4>
         <p>
@@ -1186,11 +1310,15 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             <tr>
                 <td>Outputs</td>
                 <td>
-                    <strong>1 output</strong> — <em>one FormulaCollection per input wave</em>, in input order.
+                    <strong>2 outputs</strong>.<br>
+                    <strong>Output 0</strong> — <em>one FormulaCollection per input wave</em>, in input order.
                     Each collection contains the attributed formulas with their matched peaks, errors in ppm,
-                    log-probabilities, and the recipes (which groups were combined how many times).
+                    log-probabilities, and the recipes (which groups were combined how many times).<br>
+                    <strong>Output 1</strong> — <em>one FormulaCollection per selected network tree</em>,
+                    built by the propagation described under <em>Measurement network</em>: the formulas the
+                    tree's links justify, with the tree's own peaks attached.<br>
                     <span class="badge">several links</span>
-                    the output may feed any number of consumers (e.g. a FormulaCollectionNode for browsing,
+                    each output may feed any number of consumers (e.g. a FormulaCollectionNode for browsing,
                     a plot for visualisation).
                 </td>
             </tr>
@@ -1317,10 +1445,13 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
         <h4>Session behaviour</h4>
         <p>
             The two group tables (combining, ionising), global ratio, charge min/max, bestMatches, ppm,
-            and the stale flag are serialised. The periodic table is NOT serialised (it is loaded from
-            the origin at runtime). The computed attributions are NOT serialised — they are rebuilt from
-            the plan and the input waves on the next resolve, so a restored session always reflects the
-            current data.
+            and the stale flag are serialised. The network's intentions travel too — the link list, the
+            link window, the degree cap, the charge, the tree selection and the minimum tree size — but
+            never the trees themselves: they are derived from the settings and the input waves, and a
+            session carrying them would show a forest that nothing in the session could reproduce. The
+            periodic table is NOT serialised (it is loaded from the origin at runtime). The computed
+            attributions are NOT serialised either — they are rebuilt from the plan and the input waves
+            on the next resolve, so a restored session always reflects the current data.
         </p>
 
         <h4>Data flow</h4>
@@ -1335,7 +1466,9 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
         → stateToFormula(plan, row) → Formula + recipe
         → publishableRows → attribution list
     → FormulaCollection per wave (addAll + setPoints + match)
-    → output: FormulaCollection[]</pre>
+    → output[0]: FormulaCollection[]             (one per input wave)
+    → selected tree → attributeTree + propagateForest
+    → output[1]: FormulaCollection[]             (one per selected tree)</pre>
         <p>
             The kernel receives only flat <code>Float64Array</code> buffers (masses, caps, itemMasses,
             itemCharges, logProbs). The plan's <code>dependence</code> (if any) is a single object
@@ -1496,7 +1629,241 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                     falls further along, where the step is real.
                 </td>
             </tr>
+            <tr>
+                <td>Selection</td>
+                <td>
+                    A row click toggles its tree; <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+click keeps the others.
+                    <em>Select all</em> / <em>Deselect all</em> act on what the list shows, and
+                    <em>Min tree size</em> hides trees smaller than that many vertices — a filter on the
+                    list, never on the forest. The selection drives the overview (only selected trees are
+                    drawn), the <em>Merge</em> button and <strong>output 1</strong>. Both the selection
+                    and the filter are serialised with the session.
+                </td>
+            </tr>
+            <tr>
+                <td>Merge</td>
+                <td>
+                    <em>Merge</em> fuses the selected trees — at least two — into one, biggest first:
+                    consecutive roots are chained by their <strong>stoichiometric difference</strong>
+                    (big minus small, isotope by isotope), and when that difference matches no brick of
+                    the link list, the brick is <strong>added</strong> to it. The merged graph keeps
+                    every vertex and link plus the bridge, replaces its sources in the list, the layout,
+                    the propagation and the published collections, and carries its provenance
+                    (<code>merged from #3, #7</code>). The merge is a pure-JS overlay: pressing
+                    <em>Grow network</em> regenerates the raw forest and the merge is gone, which is
+                    what makes it safe to experiment with.
+                </td>
+            </tr>
+            <tr>
+                <td>Roots &amp; propagation</td>
+                <td>
+                    Clicking a vertex in the overview makes it the <strong>root of its tree</strong> and
+                    selects that tree: the cached attribution for the graph is dropped and the formulas
+                    are propagated again from the new root, then output 1 republishes. Each tree's
+                    attribution is memoised per settings — changing the selection recomputes nothing,
+                    changing a group recomputes each tree once.
+                </td>
+            </tr>
+            <tr>
+                <td>Overview &amp; labels</td>
+                <td>
+                    The overview draws the selected trees side by side in a force-directed layout,
+                    computed once per batch so two runs of the same network look identical; an animated
+                    pass lets already-stable trees keep their positions while a new one settles.
+                    Vertices are coloured by their formula error in <strong>eight steps</strong> — sky
+                    blue <span class="badge">#78b4ff</span> for a perfect match to
+                    <span class="badge req">red</span> at the window edge — links by brick, from the
+                    programme's own palette; the root carries its formula as a label, and hovering reads
+                    out a vertex (mass, formula, error, intensity) or a segment (brick, error in Da).
+                </td>
+            </tr>
+            <tr>
+                <td>Output 1</td>
+                <td>
+                    One <strong>FormulaCollection per selected tree</strong>, named
+                    <code>«batch» tree #rank</code>, built through the plan's own table (shared, never
+                    duplicated) with the tree's vertices as points, so the ppm errors are recomputed the
+                    same way the sieve computed them. Deselect everything and output 1 goes empty —
+                    selection <em>is</em> the publication filter.
+                </td>
+            </tr>
         </table>
+
+        <h4>Calibration <span class="badge">error surface</span> <span class="badge">least squares</span></h4>
+        <p>
+            Where the attribution says <em>how far off</em> each matched peak is, the calibration node
+            says <em>why</em> — and fixes it. Input 0 carries <strong>FormulaCollections</strong> (their
+            entries hold a measured peak, its formula and the <code>errorPpm</code> between them), input 1
+            carries the <strong>XY spectra</strong> to correct, and the single output publishes each
+            spectrum with a rewritten mass axis. The intensities are never touched: only X moves.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>2 inputs</strong>.<br>
+                    <strong>Input 0</strong> — one or more FormulaCollections (from the Attribution
+                    node); the first one provides the reference points.<br>
+                    <strong>Input 1</strong> — one or more XY spectra to calibrate.<br>
+                    <span class="badge">several links</span>
+                    with several spectra, they are paired with the collections <em>round-robin</em>
+                    (spectrum <em>i</em> with collection <em>i mod n</em>) and each is corrected on its
+                    own; a spectrum that fails is logged and the others still publish.
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — <em>one calibrated wave per input wave</em>: X corrected,
+                    Y copied unchanged, non-interleaved <code>[X…, Y…]</code>. The metadata records the
+                    mode, the fitted coefficients, the RMSE and the source title.
+                </td>
+            </tr>
+            <tr>
+                <td>Input layout</td>
+                <td>
+                    2D only on input 1: <code>[x0, x1, ..., y0, y1, ...]</code>, where <em>x</em> is the
+                    mass axis to correct and <em>y</em> the intensity the 2D modes read.
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>calibrationMode</code> — <code>linear2d</code> (default:
+                    <code>a·x + b·y + c</code>), <code>quadratic2d</code> (6 coefficients),
+                    <code>cubic2d</code> (full 3rd order, 10 coefficients), or the legacy 1D
+                    <code>linear</code>, <code>quadratic</code>, <code>cubic</code>.<br>
+                    <code>useCollectionErrors</code> (default on) — read the <code>errorPpm</code> the
+                    attribution already stored; off, the references are recomputed by nearest
+                    neighbour.<br>
+                    <code>showRaw</code>, <code>showCorrected</code>, <code>showResiduals</code>,
+                    <code>showErrorSurface</code> — what the graph draws.
+                </td>
+            </tr>
+        </table>
+        <h4>Reference points</h4>
+        <p>
+            A reference point is one attribution result: the <strong>true</strong> m/z of the formula,
+            the <strong>measured</strong> m/z of its peak, that peak's intensity, and the
+            <code>errorPpm</code> between them. Two ways to obtain them:
+        </p>
+        <ul>
+            <li>
+                <strong>From the collection</strong> (<code>useCollectionErrors</code> on): every entry
+                carrying a formula, a matched target and a finite error is taken as stored. This is the
+                honest path — the error is the one the sieve measured, not one recomputed here.
+            </li>
+            <li>
+                <strong>Recomputed</strong> (checkbox off, or the <em>Recompute refs</em> button): for
+                each formula, the <em>closest</em> spectrum point within 0.5 Da becomes the reference and
+                the error is recomputed as
+                <code>(measured − true) / true × 10<sup>6</sup></code>. Use it when the collection's
+                targets are stale — after the spectrum upstream changed.
+            </li>
+        </ul>
+        <p>
+            Fewer than <strong>3 usable reference points</strong> and the node refuses to fit: a plane
+            through two points is not a calibration, and three is the least that can be checked. The
+            message says so instead of drawing a confident line through nothing.
+        </p>
+
+        <h4>The fit, and what it does</h4>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li>
+                <strong>Least squares in Rust.</strong> The design matrix is built from the mode's powers
+                of mass and intensity, the normal equations are solved by Gaussian elimination, and the
+                kernel returns the coefficients with the RMSE of the fit. A singular system falls back to
+                the identity <code>[1, 0]</code> rather than to noise.
+            </li>
+            <li>
+                <strong>1D modes fit positions</strong>: <code>measured → true</code> directly, and the
+                corrected axis is the polynomial evaluated at each point.
+            </li>
+            <li>
+                <strong>2D modes fit the error surface</strong>: the polynomial predicts
+                <code>errorPpm</code> from (m/z, intensity), and the correction is applied as
+                <code>x′ = x / (1 + errorPpm/10<sup>6</sup>)</code> — the error is a <em>relative</em>
+                offset, so one surface applies across the whole range.
+            </li>
+            <li>
+                <strong>Apply in the worker.</strong> The corrected X comes back from
+                <code>calibrationApply(2D)</code> and is re-paired with the untouched Y; a result shorter
+                or longer than the input is truncated to the common length, so an odd wave size can never
+                produce a misaligned core.
+            </li>
+        </ol>
+        <h4>Interactive behaviour</h4>
+        <ul>
+            <li>
+                The graph overlays four things, each with its own toggle: the <strong>raw</strong>
+                spectrum (grey), the <strong>corrected</strong> one (green), the
+                <strong>residuals</strong> — one red dashed stick per reference, from measured to
+                corrected — and, for 2D modes, the <strong>error surface</strong> as a 30 × 20 heat grid
+                over the reference extent.
+            </li>
+            <li>
+                The readout shows the fitted <strong>coefficients</strong>, the <strong>RMSE in
+                ppm</strong> and the <strong>number of reference points</strong> — the three numbers that
+                decide whether the fit can be trusted.
+            </li>
+            <li>
+                Multiplexed, the mode selector and <em>Recompute refs</em> go <strong>grey</strong> (one
+                batch, one treatment), and the readout becomes <code>N entrées · X pts totaux</code>.
+            </li>
+            <li>
+                Changing the mode or pressing <em>Recompute refs</em> refits immediately and re-resolves
+                the children.
+            </li>
+        </ul>
+
+        <h4>Error conditions</h4>
+        <ul>
+            <li>
+                <span class="badge req">error</span>
+                a link targets an input the node does not have — only inputs 0 and 1 are read.
+            </li>
+            <li>
+                <span class="badge req">error</span>
+                fewer than 3 usable reference points, or the fit itself fails: nothing is published
+                rather than a wrongly-scaled spectrum.
+            </li>
+            <li>
+                <span class="badge warn">floating</span>
+                no FormulaCollection and/or no spectrum connected yet.
+            </li>
+            <li>
+                <span class="badge warn">kernel error</span>
+                one spectrum of a batch failed — the others still publish; the node turns red only when
+                <em>nothing</em> came out.
+            </li>
+            <li>
+                <span class="badge warn">fallback</span>
+                WebAssembly or workers unavailable: the same fit and apply run in JavaScript on the
+                calling thread.
+            </li>
+        </ul>
+
+        <h4>Session behaviour</h4>
+        <p>
+            The mode, the fitted coefficients, the reference-source toggle and the four display flags
+            are serialised with the session, so a reload comes back with the same fit on screen; the
+            spectra are re-corrected from those coefficients on the next resolve, never assumed.
+        </p>
+
+        <h4>Data flow</h4>
+        <pre>FormulaCollection[] (input 0)      XY waves (input 1)
+   → extractReferencePoints(collection, x, y)
+   → trueMz[], measuredMz[], intensity[], errorPpm[]
+   → kernel: calibrationFit2D(measuredMz, intensity, errorPpm, mode)   [2D]
+   → kernel: calibrationFit(measuredMz, trueMz, mode)                  [1D]
+   → coeffs[], rmse
+   → kernel: calibrationApply2D(x, y, coeffs, mode)   → x′
+   → output wave [X′…, Y…]   (per input wave, Y untouched)</pre>
 
         <h4>FormulaCollection <span class="badge">named set</span> <span class="badge">ppm matching</span> <span class="badge">molecule folding</span></h4>
         <p>
@@ -1694,6 +2061,117 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
     → VirtualRowList renders visible window
     → Graph renders currentCollection.toPairs() (mode-dependent transform)
     → output[0] = currentCollection (for downstream)</pre>
+
+        <h4>Simple XY plot <span class="badge">display</span> <span class="badge">no output</span></h4>
+        <p>
+            The terminal display node: every wave reaching its single input becomes a trace on a WebGL
+            frame that fills the central dialog, and an inspector in the right panel drives the drawing.
+            It writes nothing — it is the end of a branch.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>1 input</strong> — any number of links, and any number of waves per link.
+                    Each wave becomes one trace, coloured from a six-colour palette in link order.
+                </td>
+            </tr>
+            <tr><td>Outputs</td><td><strong>none</strong> — a display sink.</td></tr>
+            <tr>
+                <td>Inspector</td>
+                <td>
+                    <strong>Traces</strong> — colour picker, name with its point count, hide/show, and
+                    drag to reorder the drawing stack. Selecting a trace opens its editor:
+                    <code>mode</code> (lines between points, lines + points, points only, sticks to
+                    zero), <code>layer</code> (Canvas/WebGL for massive clouds, SVG for interactive
+                    traces), marker shape and size, line size.<br>
+                    <strong>Axes</strong> — per axis: show/hide, label, and a range as a dual slider
+                    backed by two numeric fields, with an automatic-bounds button. Mirrored axes follow
+                    their source and carry a label only.
+                </td>
+            </tr>
+            <tr>
+                <td>Scale</td>
+                <td>
+                    Linear or logarithmic on both axes; a log view containing non-positive values falls
+                    back to linear automatically rather than drawing an empty frame.
+                </td>
+            </tr>
+            <tr>
+                <td>Session behaviour</td>
+                <td>
+                    Axes and per-trace options (colour, mode, layer, marker, order) are serialised and
+                    re-applied on the next resolve, matched by trace id first and by title second, so a
+                    rename does not reset your colours.
+                </td>
+            </tr>
+        </table>
+        <p>
+            Status: <strong>floating</strong> while nothing is linked,
+            <strong>resolved</strong> with at least one trace, <strong>error</strong> when a resolve
+            produced none.
+        </p>
+        <h4>Chat <span class="badge">tools</span> <span class="badge warn">WebSocket</span></h4>
+        <p>
+            A chat room for discussing a session with whoever else is looking at it. The node carries no
+            flow anchors: it opens a draggable, foldable dialog — a <code>Dialog</code>, not an
+            accordion, because a chat that collapses when the panel scrolls away would be unusable —
+            with a connection bar, a log, and a one-line input.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr><td>Inputs / Outputs</td><td><strong>none</strong> — it talks to a server, not to the flow.</td></tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>url</code> — the WebSocket endpoint; empty means the page's own host, with
+                    <code>wss</code> on <code>https</code> and <code>ws</code> on <code>http</code>
+                    (a secure page may not open an insecure socket).<br>
+                    <code>nick</code> — the name you post under.<br>
+                    <code>room</code> — the room to join; empty shows the server's room list with its
+                    user counts, one click to join.
+                </td>
+            </tr>
+            <tr>
+                <td>Behaviour</td>
+                <td>
+                    <em>Join</em> performs a full reconnect — URL or nick may have changed, and the old
+                    socket points at the wrong place. Reconnection is exponential and
+                    <strong>capped at 10 attempts</strong>: a server that is down must not leave a retry
+                    loop running in a background tab for the rest of the session. <kbd>Enter</kbd> sends
+                    (max 500 characters) and never inserts a newline; the input is cleared
+                    <strong>only on a successful send</strong>, so a message typed on a dead socket is
+                    not thrown away. Log lines are inserted as <em>text</em>, never markup — a chat room
+                    is untrusted input.
+                </td>
+            </tr>
+            <tr>
+                <td>Status</td>
+                <td>
+                    <strong>resolved</strong> while connected, <strong>floating</strong> otherwise — the
+                    node's own colour follows the socket even when the dialog is hidden behind
+                    something else.
+                </td>
+            </tr>
+            <tr>
+                <td>Session behaviour</td>
+                <td>
+                    Only <code>url</code>, <code>nick</code> and <code>room</code> are serialised; the
+                    socket, the log and the retry counter belong to the visit. The chat is <strong>not
+                    reopened on reload</strong>: a page that starts talking to a server on its own is a
+                    page that cannot be opened quietly. The fields come back filled in, and you press
+                    <em>Join</em> — which is also the only moment a nick is really yours. Deleting the
+                    node closes the socket and clears any pending retry.
+                </td>
+            </tr>
+        </table>
 
     </div>
 
