@@ -19,8 +19,8 @@ export class CalibrationNode extends NodeWithAccordion{
         this.parameters.calibrationMode="linear2d"
         this.parameters.calibrationCoeffs=null
         this.parameters.useCollectionErrors=true
-        this.parameters.showRaw=true
-        this.parameters.showCorrected=true
+        this.parameters.showRefPoints=true
+        this.parameters.showFitCurve=true
         this.parameters.showResiduals=false
         this.parameters.showErrorSurface=false
         this.lastInputWaves={formulas:null,xy:null}
@@ -94,12 +94,12 @@ export class CalibrationNode extends NodeWithAccordion{
             style:{width:"100%",padding:"2px",fontSize:"0.85em"}
         },[])
         for(const [key,label] of [
-            ["linear2d","Linear 2D: a*x + b*y + c"],
-            ["quadratic2d","Quadratic 2D: a*x² + b*y² + c*x*y + d*x + e*y + f"],
+            ["linear2d","Linear 2D: a·m + b·w + c  (m=m/z, w=intensity)"],
+            ["quadratic2d","Quadratic 2D: a·m² + b·w² + c·m·w + d·m + e·w + f"],
             ["cubic2d","Cubic 2D: full 3rd order (10 coeffs)"],
-            ["linear","Linear 1D (legacy): a*x + b"],
-            ["quadratic","Quadratic 1D (legacy): a*x² + b*x + c"],
-            ["cubic","Cubic 1D (legacy): a*x³ + b*x² + c*x + d"]
+            ["linear","Linear 1D (legacy): a·x + b"],
+            ["quadratic","Quadratic 1D (legacy): a·x² + b·x + c"],
+            ["cubic","Cubic 1D (legacy): a·x³ + b·x² + c·x + d"]
         ]){
             this.modeSelect.append(new Option(label,key))
         }
@@ -127,7 +127,7 @@ export class CalibrationNode extends NodeWithAccordion{
             className:"cal-row",
             style:{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto auto",fontSize:"0.85em",gap:"4px"}
         },[])
-        this.coeffLabel=CE("span",{className:"cal-readout",title:"Fitted calibration coefficients"},["—"])
+        this.coeffLabel=CE("span",{className:"cal-readout",title:"Fitted calibration coefficients (m=m/z, w=intensity)"},["—"])
         this.rmseLabel=CE("span",{className:"cal-readout",title:"Root mean square error of fit (ppm)"},[""])
         this.pointsLabel=CE("span",{className:"cal-readout",title:"Number of reference points used"},[""])
         infoRow.append(this.coeffLabel,this.rmseLabel,this.pointsLabel)
@@ -138,11 +138,11 @@ export class CalibrationNode extends NodeWithAccordion{
         const displayRow=CE("div",{
             style:{display:"flex",gap:"8px",flexWrap:"wrap",fontSize:"0.85em"}
         },[])
-        this.showRawCheckbox=this.makeCheckbox("showRaw","Raw",this.parameters.showRaw)
-        this.showCorrectedCheckbox=this.makeCheckbox("showCorrected","Corrected",this.parameters.showCorrected)
-        this.showResidualsCheckbox=this.makeCheckbox("showResiduals","Residuals",this.parameters.showResiduals)
-        this.showErrorSurfaceCheckbox=this.makeCheckbox("showErrorSurface","Error surface",this.parameters.showErrorSurface)
-        displayRow.append(this.showRawCheckbox.wrap,this.showCorrectedCheckbox.wrap,this.showResidualsCheckbox.wrap,this.showErrorSurfaceCheckbox.wrap)
+        this.showRefPointsCheckbox=this.makeCheckbox("showRefPoints","Reference points",true)
+        this.showFitCurveCheckbox=this.makeCheckbox("showFitCurve","Fitted curve",true)
+        this.showResidualsCheckbox=this.makeCheckbox("showResiduals","Residuals",false)
+        this.showErrorSurfaceCheckbox=this.makeCheckbox("showErrorSurface","Error surface (2D)",false)
+        displayRow.append(this.showRefPointsCheckbox.wrap,this.showFitCurveCheckbox.wrap,this.showResidualsCheckbox.wrap,this.showErrorSurfaceCheckbox.wrap)
         displaySection.append(displayRow)
 
         const graphContainer=CE("div",{
@@ -155,7 +155,7 @@ export class CalibrationNode extends NodeWithAccordion{
         this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer)
         this.graph.parameters.axis.bottom.label="m/z"
         this.graph.parameters.axis.bottom.autoLabel=false
-        this.graph.parameters.axis.left.label="Intensity"
+        this.graph.parameters.axis.left.label="Error (ppm)"
         this.graph.parameters.axis.left.autoLabel=false
         this.graph.parameters.axis.left.scale="linear"
         this.graph.parameters.axis.bottom.scale="linear"
@@ -165,7 +165,7 @@ export class CalibrationNode extends NodeWithAccordion{
             origDrawGraph()
             this.drawCalibrationOverlay()
         }
-
+        this.updateCalibrationPlot()
         this.graph.drawGraph()
     }
 
@@ -433,10 +433,91 @@ export class CalibrationNode extends NodeWithAccordion{
         if(this.recomputeBtn) this.recomputeBtn.disabled=on
     }
 
+    buildCalibrationTraces(){
+        if(!this.calibrationResult) return []
+        const c=this.calibrationResult
+        const refPoints=c.refPoints
+        if(!refPoints || !refPoints.length) return []
+
+        const traces=[]
+
+        if(this.parameters.showRefPoints){
+            const refX=refPoints.map(p=>p.measuredMz)
+            const refY=refPoints.map(p=>p.errorPpm)
+            const refWave=Wave.fromCoordinates(new Float64Array(refX),new Float64Array(refY),{title:"Reference points"},["m/z","Error (ppm)"])
+            traces.push(new XYTrace({
+                id:"ref-points",
+                title:"Reference points",
+                wave:refWave,
+                options:{color:"rgba(255,255,255,0.25)",mode:"points",marker:{shape:"circle",size:5},line:{size:0}}
+            }))
+        }
+
+        if(this.parameters.showFitCurve && c.coeffs && c.coeffs.length){
+            const mzMin=Math.min(...refPoints.map(p=>p.measuredMz))
+            const mzMax=Math.max(...refPoints.map(p=>p.measuredMz))
+            const n=200
+            const fitX=new Float64Array(n)
+            const fitY=new Float64Array(n)
+            for(let i=0;i<n;i++){
+                const mz=mzMin+(mzMax-mzMin)*i/(n-1)
+                fitX[i]=mz
+                let intensity=1
+                if(c.is2D && refPoints.length>0){
+                    intensity=refPoints[0].intensity
+                }
+                let errorPpm=0
+                if(c.is2D){
+                    errorPpm=this.evalErrorSurface(mz,intensity)
+                }else{
+                    const corrected=this.applyCoeffsToArray([mz],c.coeffs,c.mode)[0]
+                    errorPpm=(mz-corrected)/corrected*1e6
+                }
+                fitY[i]=errorPpm
+            }
+            const fitWave=Wave.fromCoordinates(fitX,fitY,{title:"Fitted curve"},["m/z","Error (ppm)"])
+            traces.push(new XYTrace({
+                id:"fit-curve",
+                title:"Fitted curve",
+                wave:fitWave,
+                options:{color:"#2ecc71",mode:"lines-between-points",line:{size:2}}
+            }))
+        }
+
+        if(this.parameters.showResiduals && refPoints.length){
+            const resX=refPoints.map(p=>p.measuredMz)
+            const resY=refPoints.map(p=>{
+                let corrected
+                if(c.is2D){
+                    corrected=this.applyCoeffs2DToArrays([p.measuredMz],[p.intensity],c.coeffs,c.mode)[0]
+                }else{
+                    corrected=this.applyCoeffsToArray([p.measuredMz],c.coeffs,c.mode)[0]
+                }
+                return (corrected-p.trueMz)/p.trueMz*1e6
+            })
+            const resWave=Wave.fromCoordinates(new Float64Array(resX),new Float64Array(resY),{title:"Residuals"},["m/z","Residual (ppm)"])
+            traces.push(new XYTrace({
+                id:"residuals",
+                title:"Residuals",
+                wave:resWave,
+                options:{color:"#f39c12",mode:"points",marker:{shape:"cross",size:6},line:{size:0}}
+            }))
+        }
+
+        return traces
+    }
+
+    updateCalibrationPlot(){
+        const traces=this.buildCalibrationTraces()
+        if(traces.length){
+            this.graph.setTraces(traces)
+        }
+    }
+
     updateUI(){
         if(this.calibrationResult){
             const c=this.calibrationResult
-            this.coeffLabel.textContent=c.coeffs?c.coeffs.map(v=>v.toPrecision(4)).join(", "):""
+            this.coeffLabel.textContent=this.formatCoefficients(c)
             this.rmseLabel.textContent=c.rmse?`RMSE: ${c.rmse.toPrecision(4)} ppm`:""
             this.pointsLabel.textContent=c.refPoints?`${c.refPoints.length} pts`:""
         }else{
@@ -452,8 +533,41 @@ export class CalibrationNode extends NodeWithAccordion{
         if(this.useCollectionErrorsCheckbox){
             this.useCollectionErrorsCheckbox.input.checked=this.parameters.useCollectionErrors
         }
+        if(this.showRefPointsCheckbox){
+            this.showRefPointsCheckbox.input.checked=this.parameters.showRefPoints
+        }
+        if(this.showFitCurveCheckbox){
+            this.showFitCurveCheckbox.input.checked=this.parameters.showFitCurve
+        }
+        if(this.showResidualsCheckbox){
+            this.showResidualsCheckbox.input.checked=this.parameters.showResiduals
+        }
+        if(this.showErrorSurfaceCheckbox){
+            this.showErrorSurfaceCheckbox.input.checked=this.parameters.showErrorSurface
+        }
 
+        this.updateCalibrationPlot()
         this.graph?.drawGraph()
+    }
+
+    formatCoefficients(calibration){
+        if(!calibration.coeffs || !calibration.coeffs.length) return "—"
+        const c=calibration.coeffs
+        const mode=calibration.mode
+        if(mode==="linear2d"){
+            return `m: ${c[0].toPrecision(4)}, w: ${c[1].toPrecision(4)}, d: ${c[2].toPrecision(4)}`
+        }else if(mode==="quadratic2d"){
+            return `m²: ${c[0].toPrecision(4)}, w²: ${c[1].toPrecision(4)}, m·w: ${c[2].toPrecision(4)}, m: ${c[3].toPrecision(4)}, w: ${c[4].toPrecision(4)}, d: ${c[5].toPrecision(4)}`
+        }else if(mode==="cubic2d"){
+            return `m³: ${c[0].toPrecision(4)}, m²w: ${c[1].toPrecision(4)}, mw²: ${c[2].toPrecision(4)}, w³: ${c[3].toPrecision(4)}, m²: ${c[4].toPrecision(4)}, mw: ${c[5].toPrecision(4)}, w²: ${c[6].toPrecision(4)}, m: ${c[7].toPrecision(4)}, w: ${c[8].toPrecision(4)}, d: ${c[9].toPrecision(4)}`
+        }else if(mode==="linear"){
+            return `a: ${c[0].toPrecision(4)}, b: ${c[1].toPrecision(4)}`
+        }else if(mode==="quadratic"){
+            return `a: ${c[0].toPrecision(4)}, b: ${c[1].toPrecision(4)}, c: ${c[2].toPrecision(4)}`
+        }else if(mode==="cubic"){
+            return `a: ${c[0].toPrecision(4)}, b: ${c[1].toPrecision(4)}, c: ${c[2].toPrecision(4)}, d: ${c[3].toPrecision(4)}`
+        }
+        return c.map(v=>v.toPrecision(4)).join(", ")
     }
 
     drawCalibrationOverlay(){
@@ -653,8 +767,8 @@ export class CalibrationNode extends NodeWithAccordion{
             calibrationMode:this.parameters.calibrationMode,
             calibrationCoeffs:this.parameters.calibrationCoeffs,
             useCollectionErrors:this.parameters.useCollectionErrors,
-            showRaw:this.parameters.showRaw,
-            showCorrected:this.parameters.showCorrected,
+            showRefPoints:this.parameters.showRefPoints,
+            showFitCurve:this.parameters.showFitCurve,
             showResiduals:this.parameters.showResiduals,
             showErrorSurface:this.parameters.showErrorSurface,
             status:this.status
@@ -666,14 +780,14 @@ export class CalibrationNode extends NodeWithAccordion{
         if(state.calibrationMode) this.parameters.calibrationMode=state.calibrationMode
         if(state.calibrationCoeffs) this.parameters.calibrationCoeffs=state.calibrationCoeffs
         if(state.useCollectionErrors!==undefined) this.parameters.useCollectionErrors=state.useCollectionErrors
-        if(state.showRaw!==undefined) this.parameters.showRaw=state.showRaw
-        if(state.showCorrected!==undefined) this.parameters.showCorrected=state.showCorrected
+        if(state.showRefPoints!==undefined) this.parameters.showRefPoints=state.showRefPoints
+        if(state.showFitCurve!==undefined) this.parameters.showFitCurve=state.showFitCurve
         if(state.showResiduals!==undefined) this.parameters.showResiduals=state.showResiduals
         if(state.showErrorSurface!==undefined) this.parameters.showErrorSurface=state.showErrorSurface
         if(this.modeSelect) this.modeSelect.value=this.parameters.calibrationMode
         if(this.useCollectionErrorsCheckbox) this.useCollectionErrorsCheckbox.input.checked=this.parameters.useCollectionErrors
-        if(this.showRawCheckbox) this.showRawCheckbox.input.checked=this.parameters.showRaw
-        if(this.showCorrectedCheckbox) this.showCorrectedCheckbox.input.checked=this.parameters.showCorrected
+        if(this.showRefPointsCheckbox) this.showRefPointsCheckbox.input.checked=this.parameters.showRefPoints
+        if(this.showFitCurveCheckbox) this.showFitCurveCheckbox.input.checked=this.parameters.showFitCurve
         if(this.showResidualsCheckbox) this.showResidualsCheckbox.input.checked=this.parameters.showResiduals
         if(this.showErrorSurfaceCheckbox) this.showErrorSurfaceCheckbox.input.checked=this.parameters.showErrorSurface
     }
