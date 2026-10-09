@@ -6,6 +6,17 @@ const { exec , spawn } = require('child_process');
 const path=require('path')
 const fs=require("fs")
 
+// Chat WebSocket server (optional - enabled via ENABLE_CHAT=true)
+let attachChatServer = null;
+if (process.env.ENABLE_CHAT === 'true') {
+  try {
+    attachChatServer = require('./chat-server.js').attachChatServer;
+    console.log('[Chat] WebSocket chat server enabled');
+  } catch (e) {
+    console.warn('[Chat] Failed to load chat server:', e.message);
+  }
+}
+
 // Configuration du serveur HTTP
 const hostname = '0.0.0.0';
 const port = 8080;
@@ -278,6 +289,12 @@ const toolsServer = http.createServer((req, res) => {
 toolsServer.listen(toolsPort, hostname, () => {
     console.log(`Tools server started at http://${hostname}:${toolsPort}/`);
 });
+
+// Attach chat WebSocket server if enabled
+if (attachChatServer) {
+    attachChatServer(server);
+    console.log('[Chat] WebSocket server attached to main HTTP server');
+}
 
 // Démarre le serveur
 server.listen(port, hostname, () => {

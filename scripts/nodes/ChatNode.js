@@ -46,12 +46,16 @@ export class ChatNode extends Node{
            closed with the same gestures as the rest. It is NOT an Accordion —
            a chat that collapsed when the panel scrolled past would be
            unusable, and the side panels are where the field toggles live. */
-        this.dialog=new Dialog(label,this.origin,this.origin.midCentralContent)
+        this.dialog=new Dialog(label,this.origin,this.origin.botContent[0])
+        /* Chat window must not be closable via the dismiss button —
+           the only way to leave is deleting the ChatNode itself,
+           which properly tears down the WebSocket and timers. */
+        this.dialog.DOMelt.dismisser.remove()
         stylize(this.dialog.DOMelt.window,{
-            top:"8%",
-            left:"8%",
-            width:"84%",
-            height:"70%"
+            top:"0%",
+            right:"0%",
+            width:"25%",
+            height:"100%"
         })
         channel.register(`${registrationName}:chat`,this.dialog,`${label} chat`)
         this.render()
