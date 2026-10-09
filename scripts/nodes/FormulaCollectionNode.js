@@ -1268,6 +1268,32 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         channel.register(`${registrationName}:detail`,this.accordionRight,`${label} (detail)`)
         this.setupLeftPanel()
         this.setupRightPanel()
+        /* Wrap graph.drawGraph so van Krevelen centroids redraw on every zoom/pan. */
+        const origDrawGraph=this.graph.drawGraph.bind(this.graph)
+        this.graph.drawGraph=()=>{
+            origDrawGraph()
+            this.drawVkCentroids()
+        }
+        this.drawVkCentroids=function(){
+            if(!(this.parameters.graphMode==="vankrevelen" && this.centroids?.length && this.graph.graphSVG)) return
+            const xScale=this.graph.plotScales().xScale
+            const yScale=this.graph.plotScales().yScale
+            const anchor=this.graph.graphSVG.select(".anchor")
+            const centroidGroup=anchor.selectAll("g.vk-centroid")
+                .data(this.centroids,d=>d.collection.name)
+            const enter=centroidGroup.enter()
+                .append("g")
+                .attr("class","vk-centroid")
+            enter.merge(centroidGroup)
+                .attr("transform",d=>`translate(${xScale(d.meanX)},${yScale(d.meanY)})`)
+                .each(function(d){
+                    const g=d3.select(this)
+                    g.selectAll("*").remove()
+                    g.append("circle").attr("r",10).attr("fill","none").attr("stroke",d.color).attr("stroke-width",3).attr("opacity",0.5)
+                    g.append("circle").attr("r",4).attr("fill",d.color).attr("stroke","white").attr("stroke-width",1.5)
+                })
+            centroidGroup.exit().remove()
+        }.bind(this)
     }
     renderAll(){
         this.renderCollections()
@@ -1807,6 +1833,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         const traces=[]
         let eligible=0
         let drawn=0
+        this.centroids=[] // {collection, meanX, meanY, color}
 
         if(isVankrevelen){
             /* VAN KREVELEN: one point per FORMULA (not per measured target).
@@ -1814,6 +1841,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             const xFormula=this.parameters.vkXFormula??"O/C"
             const yFormula=this.parameters.vkYFormula??"H/C"
             const table=this.loadedTable
+            this.centroids=[] // reset for this render
             if(!table){
                 console.warn("[FormulaCollectionNode] no periodic table for van Krevelen")
             }else{
@@ -1835,6 +1863,8 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                         }
                     }
                     if(xs.length===0) continue
+                    const meanX=xs.reduce((a,b)=>a+b,0)/xs.length
+                    const meanY=ys.reduce((a,b)=>a+b,0)/ys.length
                     const x=new Float64Array(xs)
                     const y=new Float64Array(ys)
                     traces.push(new XYTrace({
@@ -1855,6 +1885,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                     }))
                     drawn+=xs.length
                     eligible+=xs.length
+                    this.centroids.push({collection,meanX,meanY,color:traceColor(this.collections.indexOf(collection))})
                 }
             }
         }else{
