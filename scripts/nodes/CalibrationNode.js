@@ -4,6 +4,7 @@ import {Wave,XYTrace} from "../formats.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
+import * as THREE from "https://unpkg.com/three@0.160.1/build/three.module.js"
 
 export class CalibrationNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -16,19 +17,17 @@ export class CalibrationNode extends NodeWithAccordion{
             position
         )
         this.status="floating"
-        this.parameters.calibrationMode="linear2d"
+        this.parameters.calibrationMode="cubic"
         this.parameters.calibrationCoeffs=null
         this.parameters.useCollectionErrors=true
-        this.parameters.showRefPoints=true
-        this.parameters.showFitCurve=true
-        this.parameters.showResiduals=false
-        this.parameters.showErrorSurface=false
+        this.parameters.show3DSurface=false
         this.lastInputWaves={formulas:null,xy:null}
         this.calibrationResult=null
         this.resolveRun=0
         this.multiplexCount=0
         this.skippedInputs=0
         this.multiplexTotals=null
+        this._surfaceMesh=null
 
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input 0: FormulaCollection(s) — reference formulas with errorPpm from attribution</title>'
@@ -53,7 +52,115 @@ export class CalibrationNode extends NodeWithAccordion{
                     for(const value of linkOutputs instanceof Array?linkOutputs:[linkOutputs]){
                         if(value && value.constructor?.name==="FormulaCollection"){
                             collections.push(value)
-                        }
+}
+
+class SimpleOrbitControls{
+    constructor(camera,domElement){
+        this.camera=camera
+        this.domElement=domElement
+        this.target=new THREE.Vector3(0,0,0)
+        this.enableDamping=false
+        this.dampingFactor=0.05
+        this.rotateSpeed=1.0
+        this.zoomSpeed=1.0
+        this.panSpeed=1.0
+        this.minDistance=0.1
+        this.maxDistance=Infinity
+        this._state=0
+        this._spherical=new THREE.Spherical()
+        this._sphericalDelta=new THREE.Spherical()
+        this._scale=1
+        this._panOffset=new THREE.Vector3()
+        this._rotateStart=new THREE.Vector2()
+        this._rotateEnd=new THREE.Vector2()
+        this._zoomStart=new THREE.Vector2()
+        this._zoomEnd=new THREE.Vector2()
+        this._panStart=new THREE.Vector2()
+        this._panEnd=new THREE.Vector2()
+
+        this.domElement.addEventListener('pointerdown',this._onPointerDown.bind(this))
+        this.domElement.addEventListener('pointermove',this._onPointerMove.bind(this))
+        this.domElement.addEventListener('pointerup',this._onPointerUp.bind(this))
+        this.domElement.addEventListener('wheel',this._onWheel.bind(this))
+        this.domElement.addEventListener('contextmenu',e=>e.preventDefault())
+    }
+
+    update(){
+        if(this.enableDamping){
+            this._spherical.theta+=this._sphericalDelta.theta*this.dampingFactor
+            this._spherical.phi+=this._sphericalDelta.phi*this.dampingFactor
+            this._sphericalDelta.theta*=1-this.dampingFactor
+            this._sphericalDelta.phi*=1-this.dampingFactor
+            this._scale+= (this._scale-1)*this.dampingFactor
+            this._panOffset.multiplyScalar(1-this.dampingFactor)
+        }else{
+            this._sphericalDelta.set(0,0,0)
+            this._scale=1
+            this._panOffset.set(0,0,0)
+        }
+        const offset=new THREE.Vector3().subVectors(this.camera.position,this.target)
+        offset.applyQuaternion(this._getRotationQuaternion())
+        offset.multiplyScalar(this._scale)
+        offset.add(this._panOffset)
+        this.camera.position.copy(this.target).add(offset)
+        this.camera.lookAt(this.target)
+    }
+
+    _getRotationQuaternion(){
+        const quat=new THREE.Quaternion().setFromEuler(new THREE.Euler(0,0,0,'YXZ'))
+        const q=new THREE.Quaternion()
+        q.setFromAxisAngle(new THREE.Vector3(0,1,0),this._spherical.theta)
+        quat.multiply(q)
+        q.setFromAxisAngle(new THREE.Vector3(1,0,0),this._spherical.phi)
+        quat.multiply(q)
+        return quat
+    }
+
+    _onPointerDown(event){
+        if(event.button===0){
+            this._state=1
+            this._rotateStart.set(event.clientX,event.clientY)
+        }else if(event.button===2){
+            this._state=2
+            this._panStart.set(event.clientX,event.clientY)
+        }
+        this.domElement.setPointerCapture(event.pointerId)
+    }
+
+    _onPointerMove(event){
+        if(this._state===1){
+            this._rotateEnd.set(event.clientX,event.clientY)
+            const delta=new THREE.Vector2().subVectors(this._rotateEnd,this._rotateStart).multiplyScalar(this.rotateSpeed*0.005)
+            this._sphericalDelta.theta-=delta.x
+            this._sphericalDelta.phi-=delta.y
+            this._rotateStart.copy(this._rotateEnd)
+        }else if(this._state===2){
+            this._panEnd.set(event.clientX,event.clientY)
+            const delta=new THREE.Vector2().subVectors(this._panEnd,this._panStart).multiplyScalar(this.panSpeed*0.002)
+            this._panOffset.x-=delta.x
+            this._panOffset.y+=delta.y
+            this._panStart.copy(this._panEnd)
+        }
+    }
+
+    _onPointerUp(event){
+        this._state=0
+        this.domElement.releasePointerCapture(event.pointerId)
+    }
+
+    _onWheel(event){
+        event.preventDefault()
+        const scale=event.deltaY>0?1.1:0.9
+        this._scale*=scale
+    }
+
+    dispose(){
+        this.domElement.removeEventListener('pointerdown',this._onPointerDown)
+        this.domElement.removeEventListener('pointermove',this._onPointerMove)
+        this.domElement.removeEventListener('pointerup',this._onPointerUp)
+        this.domElement.removeEventListener('wheel',this._onWheel)
+    }
+}
                     }
                 }
             }
@@ -106,6 +213,9 @@ export class CalibrationNode extends NodeWithAccordion{
         this.modeSelect.value=this.parameters.calibrationMode
         this.modeSelect.addEventListener("change",()=>{
             this.parameters.calibrationMode=this.modeSelect.value
+            const is2D=this.parameters.calibrationMode.endsWith("2d")
+            if(this.show3DSurfaceCheckbox) this.show3DSurfaceCheckbox.wrap.style.display=is2D?"flex":"none"
+            if(!is2D) this.parameters.show3DSurface=false
             this.startResolve()
         })
         modeSection.append(this.modeSelect)
@@ -138,11 +248,9 @@ export class CalibrationNode extends NodeWithAccordion{
         const displayRow=CE("div",{
             style:{display:"flex",gap:"8px",flexWrap:"wrap",fontSize:"0.85em"}
         },[])
-        this.showRefPointsCheckbox=this.makeCheckbox("showRefPoints","Reference points",true)
-        this.showFitCurveCheckbox=this.makeCheckbox("showFitCurve","Fitted curve",true)
-        this.showResidualsCheckbox=this.makeCheckbox("showResiduals","Residuals",false)
-        this.showErrorSurfaceCheckbox=this.makeCheckbox("showErrorSurface","Error surface (2D)",false)
-        displayRow.append(this.showRefPointsCheckbox.wrap,this.showFitCurveCheckbox.wrap,this.showResidualsCheckbox.wrap,this.showErrorSurfaceCheckbox.wrap)
+        this.show3DSurfaceCheckbox=this.makeCheckbox("show3DSurface","3D Surface",false)
+        this.show3DSurfaceCheckbox.wrap.style.display="none"
+        displayRow.append(this.show3DSurfaceCheckbox.wrap)
         displaySection.append(displayRow)
 
         const graphContainer=CE("div",{
@@ -441,19 +549,17 @@ export class CalibrationNode extends NodeWithAccordion{
 
         const traces=[]
 
-        if(this.parameters.showRefPoints){
-            const refX=refPoints.map(p=>p.measuredMz)
-            const refY=refPoints.map(p=>p.errorPpm)
-            const refWave=Wave.fromCoordinates(new Float64Array(refX),new Float64Array(refY),{title:"Reference points"},["m/z","Error (ppm)"])
-            traces.push(new XYTrace({
-                id:"ref-points",
-                title:"Reference points",
-                wave:refWave,
-                options:{color:"rgba(255,255,255,0.25)",mode:"points",marker:{shape:"circle",size:5},line:{size:0}}
-            }))
-        }
+        const refX=refPoints.map(p=>p.measuredMz)
+        const refY=refPoints.map(p=>p.errorPpm)
+        const refWave=Wave.fromCoordinates(new Float64Array(refX),new Float64Array(refY),{title:"Reference points"},["m/z","Error (ppm)"])
+        traces.push(new XYTrace({
+            id:"ref-points",
+            title:"Reference points",
+            wave:refWave,
+            options:{color:"rgba(255,255,255,0.25)",mode:"points",marker:{shape:"circle",size:5},line:{size:0}}
+        }))
 
-        if(this.parameters.showFitCurve && c.coeffs && c.coeffs.length){
+        if(c.coeffs && c.coeffs.length){
             const mzMin=Math.min(...refPoints.map(p=>p.measuredMz))
             const mzMax=Math.max(...refPoints.map(p=>p.measuredMz))
             const n=200
@@ -484,25 +590,23 @@ export class CalibrationNode extends NodeWithAccordion{
             }))
         }
 
-        if(this.parameters.showResiduals && refPoints.length){
-            const resX=refPoints.map(p=>p.measuredMz)
-            const resY=refPoints.map(p=>{
-                let corrected
-                if(c.is2D){
-                    corrected=this.applyCoeffs2DToArrays([p.measuredMz],[p.intensity],c.coeffs,c.mode)[0]
-                }else{
-                    corrected=this.applyCoeffsToArray([p.measuredMz],c.coeffs,c.mode)[0]
-                }
-                return (corrected-p.trueMz)/p.trueMz*1e6
-            })
-            const resWave=Wave.fromCoordinates(new Float64Array(resX),new Float64Array(resY),{title:"Residuals"},["m/z","Residual (ppm)"])
-            traces.push(new XYTrace({
-                id:"residuals",
-                title:"Residuals",
-                wave:resWave,
-                options:{color:"#f39c12",mode:"points",marker:{shape:"cross",size:6},line:{size:0}}
-            }))
-        }
+        const resX=refPoints.map(p=>p.measuredMz)
+        const resY=refPoints.map(p=>{
+            let corrected
+            if(c.is2D){
+                corrected=this.applyCoeffs2DToArrays([p.measuredMz],[p.intensity],c.coeffs,c.mode)[0]
+            }else{
+                corrected=this.applyCoeffsToArray([p.measuredMz],c.coeffs,c.mode)[0]
+            }
+            return (corrected-p.trueMz)/p.trueMz*1e6
+        })
+        const resWave=Wave.fromCoordinates(new Float64Array(resX),new Float64Array(resY),{title:"Residuals"},["m/z","Residual (ppm)"])
+        traces.push(new XYTrace({
+            id:"residuals",
+            title:"Residuals",
+            wave:resWave,
+            options:{color:"#f39c12",mode:"points",marker:{shape:"cross",size:6},line:{size:0}}
+        }))
 
         return traces
     }
@@ -511,6 +615,153 @@ export class CalibrationNode extends NodeWithAccordion{
         const traces=this.buildCalibrationTraces()
         if(traces.length){
             this.graph.setTraces(traces)
+        }
+    }
+
+    update3DSurface(){
+        if(!this.parameters.show3DSurface || !this.calibrationResult || !this.calibrationResult.is2D){
+            this.clear3DSurface()
+            return
+        }
+        if(!this.graph.glLayer){
+            return
+        }
+        const c=this.calibrationResult
+        const refPoints=c.refPoints
+        if(!refPoints || !refPoints.length){
+            this.clear3DSurface()
+            return
+        }
+
+        const mzMin=Math.min(...refPoints.map(p=>p.measuredMz))
+        const mzMax=Math.max(...refPoints.map(p=>p.measuredMz))
+        const intMin=Math.min(...refPoints.map(p=>p.intensity))
+        const intMax=Math.max(...refPoints.map(p=>p.intensity))
+
+        const nx=50, ny=40
+        const positions=new Float32Array(nx*ny*3)
+        const colors=new Float32Array(nx*ny*3)
+        const indices=[]
+        let idx=0
+
+        for(let ix=0;ix<nx;ix++){
+            const mz=mzMin+(mzMax-mzMin)*ix/(nx-1)
+            for(let iy=0;iy<ny;iy++){
+                const intensity=intMin+(intMax-intMin)*iy/(ny-1)
+                const error=this.evalErrorSurface(mz,intensity)
+                const x=((mz-mzMin)/(mzMax-mzMin))*2-1
+                const y=((intensity-intMin)/(intMax-intMin))*2-1
+                const z=(error/20)*0.5
+                positions[idx*3]=x
+                positions[idx*3+1]=y
+                positions[idx*3+2]=z
+                const t=Math.min(1,Math.max(0,(error+20)/40))
+                const color=this.errorColor(t)
+                colors[idx*3]=color[0]
+                colors[idx*3+1]=color[1]
+                colors[idx*3+2]=color[2]
+                idx++
+            }
+        }
+
+        for(let ix=0;ix<nx-1;ix++){
+            for(let iy=0;iy<ny-1;iy++){
+                const a=ix*ny+iy
+                const b=ix*ny+iy+1
+                const c2=(ix+1)*ny+iy
+                const d=(ix+1)*ny+iy+1
+                indices.push(a,b,c2, b,c2,d)
+            }
+        }
+
+        const geometry=new THREE.BufferGeometry()
+        geometry.setAttribute('position',new THREE.BufferAttribute(positions,3))
+        geometry.setAttribute('color',new THREE.BufferAttribute(colors,3))
+        geometry.setIndex(indices)
+        geometry.computeVertexNormals()
+
+        const material=new THREE.MeshPhongMaterial({
+            vertexColors:true,
+            side:THREE.DoubleSide,
+            transparent:true,
+            opacity:0.8,
+            shininess:30
+        })
+
+        if(this._surfaceMesh){
+            this.graph.glLayer.scene.remove(this._surfaceMesh)
+            this._surfaceMesh.geometry.dispose()
+            this._surfaceMesh.material.dispose()
+        }
+
+        this._surfaceMesh=new THREE.Mesh(geometry,material)
+        this.graph.glLayer.scene.add(this._surfaceMesh)
+
+        this.add3DAxes(mzMin,mzMax,intMin,intMax)
+        this.setup3DCamera()
+    }
+
+    setup3DCamera(){
+        if(!this.graph.glLayer) return
+        const layer=this.graph.glLayer
+        layer.canvas.style.pointerEvents="auto"
+        if(!this._perspectiveCamera){
+            this._perspectiveCamera=new THREE.PerspectiveCamera(45,layer.canvas.width/layer.canvas.height,0.1,100)
+            this._perspectiveCamera.position.set(2.5,2.5,2.5)
+            this._perspectiveCamera.lookAt(0,0,0)
+            this._perspectiveCamera.updateProjectionMatrix()
+        }else{
+            this._perspectiveCamera.aspect=layer.canvas.width/layer.canvas.height
+            this._perspectiveCamera.updateProjectionMatrix()
+        }
+        this._originalCamera=layer.camera
+        layer.camera=this._perspectiveCamera
+        if(!this._orbitControls){
+            this._orbitControls=new SimpleOrbitControls(this._perspectiveCamera,layer.canvas)
+            this._orbitControls.enableDamping=true
+            this._orbitControls.dampingFactor=0.05
+            this._orbitControls.target.set(0,0,0)
+        }
+        this._animate3D()
+    }
+
+    _animate3D(){
+        if(!this.parameters.show3DSurface || !this.graph.glLayer){
+            this.restore2DCamera()
+            return
+        }
+        if(this._orbitControls) this._orbitControls.update()
+        this.graph.glLayer.renderer.render(this.graph.glLayer.scene,this.graph.glLayer.camera)
+        this._animationFrame=requestAnimationFrame(()=>this._animate3D())
+    }
+
+    restore2DCamera(){
+        if(this._animationFrame){
+            cancelAnimationFrame(this._animationFrame)
+            this._animationFrame=null
+        }
+        if(this._orbitControls){
+            this._orbitControls.dispose()
+            this._orbitControls=null
+        }
+        if(this._originalCamera && this.graph.glLayer){
+            this.graph.glLayer.camera=this._originalCamera
+            this.graph.glLayer.canvas.style.pointerEvents="none"
+            this._originalCamera=null
+        }
+    }
+
+    clear3DSurface(){
+        this.restore2DCamera()
+        if(this._surfaceMesh){
+            this.graph.glLayer?.scene.remove(this._surfaceMesh)
+            this._surfaceMesh.geometry.dispose()
+            this._surfaceMesh.material.dispose()
+            this._surfaceMesh=null
+        }
+        if(this._axisGroup){
+            this.graph.glLayer?.scene.remove(this._axisGroup)
+            this._axisGroup=null
         }
     }
 
@@ -533,20 +784,14 @@ export class CalibrationNode extends NodeWithAccordion{
         if(this.useCollectionErrorsCheckbox){
             this.useCollectionErrorsCheckbox.input.checked=this.parameters.useCollectionErrors
         }
-        if(this.showRefPointsCheckbox){
-            this.showRefPointsCheckbox.input.checked=this.parameters.showRefPoints
-        }
-        if(this.showFitCurveCheckbox){
-            this.showFitCurveCheckbox.input.checked=this.parameters.showFitCurve
-        }
-        if(this.showResidualsCheckbox){
-            this.showResidualsCheckbox.input.checked=this.parameters.showResiduals
-        }
-        if(this.showErrorSurfaceCheckbox){
-            this.showErrorSurfaceCheckbox.input.checked=this.parameters.showErrorSurface
+        if(this.show3DSurfaceCheckbox){
+            this.show3DSurfaceCheckbox.input.checked=this.parameters.show3DSurface
+            const is2D=this.parameters.calibrationMode.endsWith("2d")
+            this.show3DSurfaceCheckbox.wrap.style.display=is2D?"flex":"none"
         }
 
         this.updateCalibrationPlot()
+        this.update3DSurface()
         this.graph?.drawGraph()
     }
 
@@ -621,7 +866,7 @@ export class CalibrationNode extends NodeWithAccordion{
                 .attr("d",this.pathFromArrays(correctedX,y,xScale,yScale))
         }
 
-        if(this.calibrationResult && this.parameters.showResiduals && this.calibrationResult.refPoints.length){
+        if(this.calibrationResult && this.calibrationResult.refPoints.length){
             const residuals=this.calibrationResult.refPoints.map(p=>{
                 let corrected
                 if(this.calibrationResult.is2D){
@@ -644,7 +889,7 @@ export class CalibrationNode extends NodeWithAccordion{
                 .attr("stroke-dasharray","4,2")
         }
 
-        if(this.calibrationResult && this.parameters.showErrorSurface && this.calibrationResult.is2D){
+        if(this.calibrationResult && this.calibrationResult.is2D){
             this.drawErrorSurface(calLayer,xScale,yScale)
         }
     }
@@ -767,10 +1012,7 @@ export class CalibrationNode extends NodeWithAccordion{
             calibrationMode:this.parameters.calibrationMode,
             calibrationCoeffs:this.parameters.calibrationCoeffs,
             useCollectionErrors:this.parameters.useCollectionErrors,
-            showRefPoints:this.parameters.showRefPoints,
-            showFitCurve:this.parameters.showFitCurve,
-            showResiduals:this.parameters.showResiduals,
-            showErrorSurface:this.parameters.showErrorSurface,
+            show3DSurface:this.parameters.show3DSurface,
             status:this.status
         }
     }
@@ -780,15 +1022,9 @@ export class CalibrationNode extends NodeWithAccordion{
         if(state.calibrationMode) this.parameters.calibrationMode=state.calibrationMode
         if(state.calibrationCoeffs) this.parameters.calibrationCoeffs=state.calibrationCoeffs
         if(state.useCollectionErrors!==undefined) this.parameters.useCollectionErrors=state.useCollectionErrors
-        if(state.showRefPoints!==undefined) this.parameters.showRefPoints=state.showRefPoints
-        if(state.showFitCurve!==undefined) this.parameters.showFitCurve=state.showFitCurve
-        if(state.showResiduals!==undefined) this.parameters.showResiduals=state.showResiduals
-        if(state.showErrorSurface!==undefined) this.parameters.showErrorSurface=state.showErrorSurface
+        if(state.show3DSurface!==undefined) this.parameters.show3DSurface=state.show3DSurface
         if(this.modeSelect) this.modeSelect.value=this.parameters.calibrationMode
         if(this.useCollectionErrorsCheckbox) this.useCollectionErrorsCheckbox.input.checked=this.parameters.useCollectionErrors
-        if(this.showRefPointsCheckbox) this.showRefPointsCheckbox.input.checked=this.parameters.showRefPoints
-        if(this.showFitCurveCheckbox) this.showFitCurveCheckbox.input.checked=this.parameters.showFitCurve
-        if(this.showResidualsCheckbox) this.showResidualsCheckbox.input.checked=this.parameters.showResiduals
-        if(this.showErrorSurfaceCheckbox) this.showErrorSurfaceCheckbox.input.checked=this.parameters.showErrorSurface
+        if(this.show3DSurfaceCheckbox) this.show3DSurfaceCheckbox.input.checked=this.parameters.show3DSurface
     }
 }
