@@ -251,6 +251,61 @@ export function trim_apply(core: Float64Array, stride: number, low_bound: number
 */
 export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
 /**
+* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
+*
+* The MAD is a spread; the cut has to be somewhere. When the widths form one
+* population the two agree, but when a spectrum is MOSTLY radio - a dirty
+* sample, a failed acquisition - the MAD is inflated by the very peaks the
+* filter should catch, and 3σ then rejects nothing. A gap does not have that
+* failure mode: it measures where the bulk ends whatever lies beyond.
+*
+* The cut is read as the largest gap between consecutive sorted widths, in
+* robust sigma, and only when that gap is far larger than the typical spacing
+* between neighbours. Two earlier attempts are worth recording, because both
+* are plausible and both are wrong:
+*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
+*     wide peak in eight, and reports a z of about 1, which would reject the
+*     whole cluster;
+*   - a ratio to the median width is not scale-free - a comb of near-identical
+*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_index
+* @returns {number}
+*/
+export function anti_radio_guess_z(core: Float64Array, stride: number, points_index: Float64Array): number;
+/**
+*
+* `z` is the ONE knob, and it is a statistical convention rather than a fitted
+* setting: a peak is "radio" when its width sits z robust sigma above the
+* median width of the spectrum. Since the reference is measured on the data in
+* hand, the filter follows the instrument's actual resolution instead of a
+* hard-coded one, and the false-positive rate stays a property of the spread
+* rather than of how many peaks the spectrum happens to contain.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} z
+* @returns {RadioDecision}
+*/
+export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
+/**
+* @param {Uint32Array} compositions
+* @param {number} n_compositions
+* @param {number} k
+* @returns {Float64Array}
+*/
+export function barycentric_project(compositions: Uint32Array, n_compositions: number, k: number): Float64Array;
+/**
+* @param {Float64Array} compositions
+* @param {number} n_compositions
+* @param {number} k
+* @returns {Float64Array}
+*/
+export function barycentric_project_f64(compositions: Float64Array, n_compositions: number, k: number): Float64Array;
+/**
 * Applies the F-KMD transform to a canonical core.
 *
 * Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
@@ -310,47 +365,6 @@ export function zeros_matrix(n: number): Int32Array;
 * @returns {Float64Array}
 */
 export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
-/**
-* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
-*
-* The MAD is a spread; the cut has to be somewhere. When the widths form one
-* population the two agree, but when a spectrum is MOSTLY radio - a dirty
-* sample, a failed acquisition - the MAD is inflated by the very peaks the
-* filter should catch, and 3σ then rejects nothing. A gap does not have that
-* failure mode: it measures where the bulk ends whatever lies beyond.
-*
-* The cut is read as the largest gap between consecutive sorted widths, in
-* robust sigma, and only when that gap is far larger than the typical spacing
-* between neighbours. Two earlier attempts are worth recording, because both
-* are plausible and both are wrong:
-*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
-*     wide peak in eight, and reports a z of about 1, which would reject the
-*     whole cluster;
-*   - a ratio to the median width is not scale-free - a comb of near-identical
-*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_index
-* @returns {number}
-*/
-export function anti_radio_guess_z(core: Float64Array, stride: number, points_index: Float64Array): number;
-/**
-*
-* `z` is the ONE knob, and it is a statistical convention rather than a fitted
-* setting: a peak is "radio" when its width sits z robust sigma above the
-* median width of the spectrum. Since the reference is measured on the data in
-* hand, the filter follows the instrument's actual resolution instead of a
-* hard-coded one, and the false-positive rate stays a property of the spread
-* rather than of how many peaks the spectrum happens to contain.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_x
-* @param {Float64Array} points_y
-* @param {Float64Array} points_index
-* @param {number} z
-* @returns {RadioDecision}
-*/
-export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
 /**
 */
 export class CalibrationFitResult {
@@ -698,15 +712,6 @@ export interface InitOutput {
   readonly trimresult_low_bound: (a: number) => number;
   readonly trimresult_high_bound: (a: number) => number;
   readonly trimresult_kept_count: (a: number) => number;
-  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
-  readonly compute: (a: number, b: number) => number;
-  readonly add: (a: number, b: number) => number;
-  readonly arrust: (a: number, b: number, c: number) => void;
-  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
-  readonly bench: (a: number) => number;
-  readonly sieve: (a: number) => void;
-  readonly zeros_matrix: (a: number, b: number) => void;
-  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly __wbg_radiodecision_free: (a: number) => void;
   readonly radiodecision_points_x: (a: number, b: number) => void;
   readonly radiodecision_points_y: (a: number, b: number) => void;
@@ -718,6 +723,17 @@ export interface InitOutput {
   readonly radiodecision_threshold_ppm: (a: number) => number;
   readonly anti_radio_guess_z: (a: number, b: number, c: number, d: number, e: number) => number;
   readonly anti_radio_filter: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
+  readonly barycentric_project: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly barycentric_project_f64: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
+  readonly compute: (a: number, b: number) => number;
+  readonly add: (a: number, b: number) => number;
+  readonly arrust: (a: number, b: number, c: number) => void;
+  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
+  readonly bench: (a: number) => number;
+  readonly sieve: (a: number) => void;
+  readonly zeros_matrix: (a: number, b: number) => void;
+  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;

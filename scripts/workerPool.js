@@ -243,6 +243,9 @@ function runKernelLocally(kernel,payload){
     if(kernel==="calibrationApply"){
         return runCalibrationApplyLocal(payload)
     }
+    if(kernel==="barycentric"){
+        return runBarycentricLocal(payload)
+    }
     if(kernel==="calibrationFit2D"){
         return runCalibrationFit2DLocal(payload)
     }
@@ -630,6 +633,38 @@ function runCalibrationApplyLocal({x,coeffs,mode}){
         }
     }
     return {x:result}
+}
+
+//Same semantics as barycentric.rs barycentric_project_f64 — see kernelWorker.js.
+function runBarycentricLocal({compositions,n,k}){
+    const flat=Array.from(compositions??[])
+    if(!Number.isInteger(n)||!Number.isInteger(k)||n<=0||k<3||flat.length!==n*k){
+        return {points:new Float64Array(0)}
+    }
+    const out=new Float64Array((n+k)*2)
+    const twoPi=2*Math.PI
+    for(let c=0;c<n;c++){
+        let sum=0
+        for(let i=0;i<k;i++) sum+=flat[c*k+i]
+        if(sum===0){
+            out[c*2]=0;out[c*2+1]=0
+            continue
+        }
+        let rx=0,ry=0
+        for(let i=0;i<k;i++){
+            const xi=flat[c*k+i]/sum
+            const theta=twoPi*i/k+Math.PI/2
+            rx+=xi*Math.cos(theta)
+            ry+=xi*Math.sin(theta)
+        }
+        out[c*2]=rx;out[c*2+1]=ry
+    }
+    for(let i=0;i<k;i++){
+        const theta=twoPi*i/k+Math.PI/2
+        out[n*2+i*2]=Math.cos(theta)
+        out[n*2+i*2+1]=Math.sin(theta)
+    }
+    return {points:out}
 }
 
 function runCalibrationFit2DLocal({measuredMz,intensity,errorPpm,mode}){

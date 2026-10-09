@@ -230,6 +230,19 @@ const kernels={
             return {core:fkmdJS(core,params?.mz??0)}
         }
     },
+    async barycentric({compositions,n,k}){
+        try{
+            await ensureWasm()
+            if(typeof rust.barycentric_project_f64!=="function"){
+                throw new Error("rust barycentric_project_f64 is missing (stale pkg build?)")
+            }
+            const flat=Float64Array.from(compositions??[])
+            return {points:toFloat64(rust.barycentric_project_f64(flat,n,k))}
+        }catch(err){
+            console.warn("[kernelWorker] rust barycentric unavailable, JS fallback:",err)
+            return {points:barycentricJS(compositions,n,k)}
+        }
+    },
     /* The attribution sieve: exhaustive combinations of masses, in RISING MASS
        ORDER, without duplicates.
 
@@ -621,6 +634,40 @@ function fkmdJS(core,mz){
 }
 function toFloat64(value){
     return value instanceof Float64Array?value:new Float64Array(value)
+}
+
+//Same semantics as barycentric.rs barycentric_project_f64: poles at
+//theta = 2*PI*i/k + PI/2 on the unit circle, (0,0) for an empty row,
+//empty output unless n>0, k>=3 and flat.length===n*k (poles appended).
+function barycentricJS(compositions,n,k){
+    const flat=Array.from(compositions??[])
+    if(!Number.isInteger(n)||!Number.isInteger(k)||n<=0||k<3||flat.length!==n*k){
+        return new Float64Array(0)
+    }
+    const out=new Float64Array((n+k)*2)
+    const twoPi=2*Math.PI
+    for(let c=0;c<n;c++){
+        let sum=0
+        for(let i=0;i<k;i++) sum+=flat[c*k+i]
+        if(sum===0){
+            out[c*2]=0;out[c*2+1]=0
+            continue
+        }
+        let rx=0,ry=0
+        for(let i=0;i<k;i++){
+            const xi=flat[c*k+i]/sum
+            const theta=twoPi*i/k+Math.PI/2
+            rx+=xi*Math.cos(theta)
+            ry+=xi*Math.sin(theta)
+        }
+        out[c*2]=rx;out[c*2+1]=ry
+    }
+    for(let i=0;i<k;i++){
+        const theta=twoPi*i/k+Math.PI/2
+        out[n*2+i*2]=Math.cos(theta)
+        out[n*2+i*2+1]=Math.sin(theta)
+    }
+    return out
 }
 
 //Same semantics as trim.rs trim_guess, so a stale or failed wasm build still

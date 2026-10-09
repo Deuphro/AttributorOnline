@@ -2,6 +2,7 @@
 use wasm_bindgen::prelude::*;
 mod antiradio;
 mod attribution;
+mod barycentric;
 mod calibration;
 mod fkmd;
 mod forest;
@@ -27,6 +28,7 @@ pub use persistence::{
 };
 pub use thermo::parse_thermo_raw;
 pub use trim::{trim_apply, trim_guess, trim_histogram, TrimHistogram, TrimResult};
+pub use barycentric::{barycentric_project, barycentric_project_f64};
 
 #[wasm_bindgen]
 pub fn compute(a: i32, b: i32) -> i32 {

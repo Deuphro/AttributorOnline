@@ -1268,19 +1268,24 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         channel.register(`${registrationName}:detail`,this.accordionRight,`${label} (detail)`)
         this.setupLeftPanel()
         this.setupRightPanel()
-        /* Wrap graph.drawGraph so van Krevelen centroids redraw on every zoom/pan. */
+        /* Wrap graph.drawGraph so van Krevelen centroids and barycentric poles redraw on every zoom/pan. */
         const origDrawGraph=this.graph.drawGraph.bind(this.graph)
         this.graph.drawGraph=()=>{
             origDrawGraph()
             this.drawVkCentroids()
+            this.drawBarycentricPoles()
         }
         this.drawVkCentroids=function(){
-            if(!(this.parameters.graphMode==="vankrevelen" && this.centroids?.length && this.graph.graphSVG)) return
-            const xScale=this.graph.plotScales().xScale
-            const yScale=this.graph.plotScales().yScale
-            const anchor=this.graph.graphSVG.select(".anchor")
+            const svg=this.graph.graphSVG
+            if(!svg) return
+            let xScale,yScale
+            try{ ({xScale,yScale}=this.graph.plotScales()) }catch{ return }
+            if(!xScale||!yScale) return
+            const anchor=svg.select(".anchor")
+            if(anchor.empty()) return
+            const visible=this.parameters.graphMode==="vankrevelen"?this.centroids??[]:[]
             const centroidGroup=anchor.selectAll("g.vk-centroid")
-                .data(this.centroids,d=>d.collection.name)
+                .data(visible,d=>d.collection.name)
             const enter=centroidGroup.enter()
                 .append("g")
                 .attr("class","vk-centroid")
@@ -1293,6 +1298,40 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                     g.append("circle").attr("r",4).attr("fill",d.color).attr("stroke","white").attr("stroke-width",1.5)
                 })
             centroidGroup.exit().remove()
+        }.bind(this)
+        this.drawBarycentricPoles=function(){
+            const svg=this.graph.graphSVG
+            if(!svg) return
+            let xScale,yScale
+            try{ ({xScale,yScale}=this.graph.plotScales()) }catch{ return }
+            if(!xScale||!yScale) return
+            const anchor=svg.select(".anchor")
+            if(anchor.empty()) return
+            const visible=this.parameters.graphMode==="barycentric"?this.barycentricPoles??[]:[]
+            const poleGroup=anchor.selectAll("g.barycentric-pole")
+                .data(visible,d=>`${d.collection.name}:${d.element}`)
+            const enter=poleGroup.enter()
+                .append("g")
+                .attr("class","barycentric-pole")
+            anchor.selectAll("circle.barycentric-unit").remove()
+            const poleColors=this.collections
+            enter.merge(poleGroup)
+                .attr("transform",d=>`translate(${xScale(d.x)},${yScale(d.y)})`)
+                .each(function(d){
+                    const g=d3.select(this)
+                    const color=d.collection?traceColor(poleColors.indexOf(d.collection)):"#666"
+                    g.selectAll("*").remove()
+                    g.append("circle").attr("r",14).attr("fill","none").attr("stroke","#fff").attr("stroke-width",2).attr("opacity",0.9)
+                    g.append("text")
+                        .attr("text-anchor","middle")
+                        .attr("dominant-baseline","central")
+                        .attr("dy","0.05em")
+                        .attr("font-size","16px")
+                        .attr("font-weight","bold")
+                        .attr("fill","#fff")
+                        .text(d=>d?.element?.symbol??String(d?.element??""))
+                })
+            poleGroup.exit().remove()
         }.bind(this)
     }
     renderAll(){
@@ -1834,8 +1873,162 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         let eligible=0
         let drawn=0
         this.centroids=[] // {collection, meanX, meanY, color}
+        this.barycentricPoles=[] // {element, x, y} for pole labels
 
-        if(isVankrevelen){
+        const isBarycentric=mode==="barycentric"
+
+        if(isBarycentric){
+            /* BARYCENTRIC: one point per FORMULA, projected onto unit circle poles.
+               Uses Rust kernel if available, falls back to JS. */
+            const table=this.loadedTable
+            if(!table){
+                console.warn("[FormulaCollectionNode] no periodic table for barycentric")
+            }else{
+                /* Build global element order across all visible collections. */
+                const elementOrder=new Map()
+                let elementIndex=0
+                for(const collection of this.collections){
+                    if(!this.collectionState(collection.name).inGraphs) continue
+                    for(const entry of collection.entries){
+                        const formula=entry.formula
+                        if(!formula) continue
+                        for(const [el] of formula.counts){
+                            if(!elementOrder.has(el)){
+                                elementOrder.set(el,elementIndex++)
+                            }
+                        }
+                    }
+                }
+                const k=elementOrder.size
+                if(k<3){
+                    console.warn("[FormulaCollectionNode] barycentric needs at least 3 elements, got",k)
+                }else{
+                    const elementsByIndex=new Array(k)
+                    for(const [el,idx] of elementOrder){
+                        elementsByIndex[idx]=el
+                    }
+
+                    for(const collection of this.collections){
+                        if(!this.collectionState(collection.name).inGraphs) continue
+                        const compositions=[]
+                        const validEntries=[]
+                        for(const entry of collection.entries){
+                            const formula=entry.formula
+                            if(!formula) continue
+                            const counts=formula.counts
+                            const row=new Array(k).fill(0)
+                            let hasAny=false
+                            for(const [el,n] of counts){
+                                const idx=elementOrder.get(el)
+                                if(idx!==undefined){
+                                    row[idx]=n
+                                    hasAny=true
+                                }
+                            }
+                            if(hasAny){
+                                compositions.push(row)
+                                validEntries.push(entry)
+                            }
+                        }
+                        if(compositions.length===0) continue
+
+                        const flat=new Float64Array(compositions.length*k)
+                        for(let i=0;i<compositions.length;i++){
+                            flat.set(compositions[i],i*k)
+                        }
+
+                        let answer=null
+                        try{
+                            answer=await computePool.run("barycentric",{
+                                compositions:Array.from(flat),
+                                n:compositions.length,
+                                k
+                            })
+                        }catch(err){
+                            console.warn("[FormulaCollectionNode] barycentric kernel failed, JS fallback:",err)
+                        }
+                        let result=answer?.points??null
+                        if(!result){
+                            result=FormulaCollectionNode.barycentricProjectJS(flat,compositions.length,k)
+                        }
+
+                        if(!result||result.length!==(compositions.length+k)*2) continue
+
+                        const xs=[]
+                        const ys=[]
+                        for(let i=0;i<compositions.length;i++){
+                            xs.push(result[i*2])
+                            ys.push(result[i*2+1])
+                        }
+
+                        const poleStart=compositions.length*2
+                        const poles=[]
+                        for(let i=0;i<k;i++){
+                            const rawEl=elementsByIndex[i]
+                            poles.push({
+                                element:rawEl?.symbol??String(rawEl),
+                                x:result[poleStart+i*2],
+                                y:result[poleStart+i*2+1]
+                            })
+                        }
+                        this.barycentricPoles.push(...poles.map(p=>({collection,x:p.x,y:p.y,element:p.element})))
+
+                        const x=new Float64Array(xs)
+                        const y=new Float64Array(ys)
+                        traces.push(new XYTrace({
+                            id:`${collection.name}:barycentric`,
+                            title:`${collection.name} — barycentric (${xs.length})`,
+                            wave:Wave.fromCoordinates(
+                                x,
+                                y,
+                                {collection:collection.name, quantity:"barycentric"},
+                                ["Rx","Ry"]
+                            ),
+                            options:{
+                                color:traceColor(this.collections.indexOf(collection)),
+                                mode:"points",
+                                marker:{shape:"circle",size:4},
+                                layer:"gl"
+                            }
+                        }))
+                        drawn+=xs.length
+                        eligible+=xs.length
+                    }
+                    /* POLES AS A TRACE: the overlay labels are SVG, invisible to
+                       dataBounds/autoDomain — without this the wheel zoom-out and
+                       the dblclick reset frame only the measured points and the
+                       poles sit outside the view. One hidden point per pole per
+                       visible collection widens the fit bounds to the unit circle. */
+                    const poleXs=[]
+                    const poleYs=[]
+                    for(const pole of this.barycentricPoles){
+                        if(Number.isFinite(pole.x)&&Number.isFinite(pole.y)){
+                            poleXs.push(pole.x)
+                            poleYs.push(pole.y)
+                        }
+                    }
+                    if(poleXs.length){
+                        traces.push(new XYTrace({
+                            id:"barycentric:poles",
+                            title:`barycentric poles (${poleXs.length})`,
+                            wave:Wave.fromCoordinates(
+                                new Float64Array(poleXs),
+                                new Float64Array(poleYs),
+                                {collection:"barycentric", quantity:"barycentric-poles"},
+                                ["Rx","Ry"]
+                            ),
+                            options:{
+                                color:"#666",
+                                mode:"points",
+                                marker:{shape:"circle",size:0},
+                                layer:"gl",
+                                hidden:true
+                            }
+                        }))
+                    }
+                }
+            }
+        }else if(isVankrevelen){
             /* VAN KREVELEN: one point per FORMULA (not per measured target).
                Evaluate user formulas in JS using each formula's element counts. */
             const xFormula=this.parameters.vkXFormula??"O/C"
@@ -1936,7 +2129,18 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             }
         }
         this.graph.setTraces(traces)
-        if(isVankrevelen){
+        if(isBarycentric){
+            this.graph.parameters.axis.left.scale="linear"
+            this.graph.parameters.axis.bottom.scale="linear"
+            this.graph.parameters.axis.bottom.label="Rx"
+            this.graph.parameters.axis.bottom.autoLabel=false
+            this.graph.parameters.axis.left.label="Ry"
+            this.graph.parameters.axis.left.autoLabel=false
+            this.graph.parameters.axis.bottom.domain=[-1.1,1.1]
+            this.graph.parameters.axis.left.domain=[-1.1,1.1]
+            this.graph.parameters.axis.bottom.autoDomain=false
+            this.graph.parameters.axis.left.autoDomain=false
+        }else if(isVankrevelen){
             this.graph.parameters.axis.left.scale="linear"
             this.graph.parameters.axis.bottom.label="O/C"
             this.graph.parameters.axis.bottom.autoLabel=false
@@ -1960,6 +2164,9 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             }
             if(isVankrevelen){
                 this.graphReadout.title="Points drawn / formulas with carbon — formulas without carbon are not shown"
+                if(this.vkReadout) this.vkReadout.title=this.graphReadout.title
+            }else if(isBarycentric){
+                this.graphReadout.title="Points drawn / formulas with ≥3 elements — formulas with fewer elements are not shown"
                 if(this.vkReadout) this.vkReadout.title=this.graphReadout.title
             }else{
                 this.graphReadout.title=byError
@@ -2057,6 +2264,48 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         }
         const ast=parseExpr()
         return (counts,tbl)=>ast(counts,tbl)
+    }
+
+    /* --- Barycentric projection (JS fallback) ----------------------------------- */
+    /* Projects compositions onto unit circle poles.
+       Input: flat Float64Array [n0, n1, ..., nk-1, n0, n1, ...] for n_compositions
+       Output: flat array [Rx0, Ry0, Rx1, Ry1, ..., px0, py0, px1, py1, ...]
+       Poles are at theta_i = 2π*i/k + π/2 on unit circle. */
+    static barycentricProjectJS(flat,n_compositions,k){
+        if(n_compositions===0||k<3||flat.length!==n_compositions*k){
+            return new Float64Array(0)
+        }
+        const twoPi=2*Math.PI
+        const halfPi=Math.PI/2
+        const result=new Float64Array((n_compositions+k)*2)
+
+        for(let comp=0;comp<n_compositions;comp++){
+            const offset=comp*k
+            let sum=0
+            for(let i=0;i<k;i++) sum+=flat[offset+i]
+            if(sum===0){
+                result[comp*2]=0
+                result[comp*2+1]=0
+                continue
+            }
+            let rx=0, ry=0
+            for(let i=0;i<k;i++){
+                const xi=flat[offset+i]/sum
+                const theta=twoPi*i/k+halfPi
+                rx+=xi*Math.cos(theta)
+                ry+=xi*Math.sin(theta)
+            }
+            result[comp*2]=rx
+            result[comp*2+1]=ry
+        }
+
+        const poleStart=n_compositions*2
+        for(let i=0;i<k;i++){
+            const theta=twoPi*i/k+halfPi
+            result[poleStart+i*2]=Math.cos(theta)
+            result[poleStart+i*2+1]=Math.sin(theta)
+        }
+        return result
     }
 
     /* What this node publishes: the ticked collections, and nothing else.
@@ -2554,7 +2803,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         /* UN MODE INCONNU RETOMBE SUR LE DÉFAUT, comme la vue et l'ordre: un
            fichier écrit par un autre build ne doit pas pouvoir vider le
            graphique en demandant une troisième lecture qui n'existe pas. */
-        this.parameters.graphMode=["error","intensity","vankrevelen"].includes(state.graphMode)
+        this.parameters.graphMode=["error","intensity","vankrevelen","barycentric"].includes(state.graphMode)
             ?state.graphMode
             :FormulaCollectionNode.GRAPH_MODE_DEFAULT
         this.parameters.current=typeof state.current==="string"?state.current:null
@@ -2620,7 +2869,8 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.graphOptions.replaceChildren()
         const mode=this.parameters.graphMode
         const isVankrevelen=mode==="vankrevelen"
-        const byError=!isVankrevelen&&mode!=="intensity"
+        const isBarycentric=mode==="barycentric"
+        const byError=!isVankrevelen&&!isBarycentric&&mode!=="intensity"
         /* CE QUE LE GRAPHE MONTRE, et c'est le PREMIER contrôle de la section:
            les deux autres (échelle, budget) ne se lisent qu'en sachant ce qu'il
            y a sur l'axe. */
@@ -2630,9 +2880,10 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             states:[
                 {value:"error",label:"Error"},
                 {value:"intensity",label:"Intensity"},
-                {value:"vankrevelen",label:"van Krevelen"}
+                {value:"vankrevelen",label:"van Krevelen"},
+                {value:"barycentric",label:"Barycentric"}
             ],
-            title:"What one point of the central graph says: error in ppm, signal intensity, or van Krevelen ratios (O/C vs H/C)"
+            title:"What one point of the central graph says: error in ppm, signal intensity, van Krevelen ratios (O/C vs H/C), or barycentric projection of elemental compositions"
         })
         /* VAN KREVELEN CONTROLS: custom X and Y axis formulas.
            User writes expressions using element symbols, e.g., "O/C", "1+C+N/2-H/2". */
@@ -2693,12 +2944,14 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
            sans rien dire — l'utilisateur verrait un graphe vide alors que tout
            va bien, ce qui est la pire des deux erreurs possibles. */
         this.logRow=CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},[])
-        if(!byError && !isVankrevelen){
+        if(!byError && !isVankrevelen && !isBarycentric){
             this.logRow.append(this.logToggle)
         }else{
             this.logRow.append(CE("span",{style:{opacity:"0.6",fontSize:"0.9em"}},["Lin"]))
             this.logRow.title=isVankrevelen
                 ?"Logarithmic scale not available for van Krevelen ratios (can be zero or negative)"
+                :isBarycentric
+                ?"Logarithmic scale not available for barycentric projection (Rx/Ry in [-1,1])"
                 :"A logarithmic axis would delete every point whose error is zero or negative, without saying so — so it is not offered here"
         }
         this.graphReadout=CE("span",{
@@ -2707,7 +2960,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         },[""])
         const row=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em"}},[])
         row.append(this.logRow,this.graphReadout)
-        if(isVankrevelen){
+        if(isVankrevelen || isBarycentric){
             row.style.display="none"
         }
         /* LE MODE EN PREMIER, sur sa propre ligne: il dit ce qu'on regarde, et
