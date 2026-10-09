@@ -1810,83 +1810,51 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
 
         if(isVankrevelen){
             /* VAN KREVELEN: one point per FORMULA (not per measured target).
-               We build a flat [C,H,O] array for all formulas in all ticked
-               collections, send it to the kernel, and split the result back
-               per collection. */
-            const allCore=[]
-            const collectionSlices=[] // {collection, startIdx, endIdx}
-            let globalIdx=0
-            for(const collection of this.collections){
-                if(!this.collectionState(collection.name).inGraphs) continue
-                const startIdx=globalIdx
-                let count=0
-                for(const entry of collection.entries){
-                    const formula=entry.formula
-                    if(!formula) continue
-                    //Get C, H, O counts from the formula's composition
-                    const c=formula.counts.get(formula.table?.bySymbol?.get("C"))??0
-                    const h=formula.counts.get(formula.table?.bySymbol?.get("H"))??0
-                    const o=formula.counts.get(formula.table?.bySymbol?.get("O"))??0
-                    allCore.push(c,h,o)
-                    count++
-                }
-                if(count>0){
-                    collectionSlices.push({collection,startIdx,endIdx:globalIdx+count})
-                    globalIdx+=count
-                }
-            }
-            if(allCore.length>0){
-                //Send to kernel (async) with formula params (kernel still uses scale/offset for now)
-                const params={
-                    scale_x:1.0,
-                    scale_y:1.0,
-                    offset_x:0.0,
-                    offset_y:0.0,
-                    xFormula:this.parameters.vkXFormula,
-                    yFormula:this.parameters.vkYFormula
-                }
-                try{
-                    const result=await computePool.run("vankrevelen",{
-                        core:new Float64Array(allCore),
-                        params
-                    })
-                    const core=result?.core
-                    if(core instanceof Float64Array && core.length>0){
-                        const n=core.length/2
-                        const xs=core.subarray(0,n)
-                        const ys=core.subarray(n)
-                        //Split back per collection and create traces
-                        for(const slice of collectionSlices){
-                            const count=slice.endIdx-slice.startIdx
-                            if(count===0) continue
-                            const x=new Float64Array(count)
-                            const y=new Float64Array(count)
-                            for(let i=0;i<count;i++){
-                                x[i]=xs[slice.startIdx+i]
-                                y[i]=ys[slice.startIdx+i]
-                            }
-                            traces.push(new XYTrace({
-                                id:`${slice.collection.name}:vankrevelen`,
-                                title:`${slice.collection.name} — van Krevelen (${count})`,
-                                wave:Wave.fromCoordinates(
-                                    x,
-                                    y,
-                                    {collection:slice.collection.name, quantity:"vankrevelen"},
-                                    ["O/C","H/C"]
-                                ),
-                                options:{
-                                    color:traceColor(this.collections.indexOf(slice.collection)),
-                                    mode:"points",
-                                    marker:{shape:"circle",size:3},
-                                    layer:"gl"
-                                }
-                            }))
-                            drawn+=count
-                            eligible+=count
+               Evaluate user formulas in JS using each formula's element counts. */
+            const xFormula=this.parameters.vkXFormula??"O/C"
+            const yFormula=this.parameters.vkYFormula??"H/C"
+            const table=this.loadedTable
+            if(!table){
+                console.warn("[FormulaCollectionNode] no periodic table for van Krevelen")
+            }else{
+                const evalX=FormulaCollectionNode.compileVkFormula(xFormula,table)
+                const evalY=FormulaCollectionNode.compileVkFormula(yFormula,table)
+                for(const collection of this.collections){
+                    if(!this.collectionState(collection.name).inGraphs) continue
+                    const xs=[]
+                    const ys=[]
+                    for(const entry of collection.entries){
+                        const formula=entry.formula
+                        if(!formula) continue
+                        const counts=formula.counts
+                        const xv=evalX(counts,table)
+                        const yv=evalY(counts,table)
+                        if(Number.isFinite(xv)&&Number.isFinite(yv)){
+                            xs.push(xv)
+                            ys.push(yv)
                         }
                     }
-                }catch(err){
-                    console.warn("[FormulaCollectionNode] vankrevelen kernel failed:",err)
+                    if(xs.length===0) continue
+                    const x=new Float64Array(xs)
+                    const y=new Float64Array(ys)
+                    traces.push(new XYTrace({
+                        id:`${collection.name}:vankrevelen`,
+                        title:`${collection.name} — van Krevelen (${xs.length})`,
+                        wave:Wave.fromCoordinates(
+                            x,
+                            y,
+                            {collection:collection.name, quantity:"vankrevelen"},
+                            ["O/C","H/C"]
+                        ),
+                        options:{
+                            color:traceColor(this.collections.indexOf(collection)),
+                            mode:"points",
+                            marker:{shape:"circle",size:3},
+                            layer:"gl"
+                        }
+                    }))
+                    drawn+=xs.length
+                    eligible+=xs.length
                 }
             }
         }else{
@@ -1969,6 +1937,95 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 if(this.vkReadout) this.vkReadout.title=this.graphReadout.title
             }
         }
+    }
+
+    /* --- Van Krevelen expression evaluator ------------------------------------ */
+    /* Compile a user formula like "O/C" or "1+C+N/2-H/2" into an evaluator.
+       Variables are element symbols (C, H, O, N, S, P, etc.). Returns a function
+       that takes a formula's `counts` Map<Element,number> and the periodic table. */
+    static compileVkFormula(expr,table){
+        if(!expr||!expr.trim()) return ()=>NaN
+        const s=expr.trim()
+        let i=0
+        /* Recursive descent parser with precedence:
+           expr   = term (('+'|'-') term)*
+           term   = factor (('*'|'/') factor)*
+           factor = number | variable | '(' expr ')' | ('+'|'-') factor
+           variable = element symbol (1-2 letters, first uppercase) */
+        const peek=()=>i<s.length?s[i]:''
+        const consume=()=>s[i++]
+        const parseNumber=()=>{
+            const start=i
+            while(i<s.length&&/[\d.]/.test(s[i])) i++
+            const n=parseFloat(s.slice(start,i))
+            return Number.isFinite(n)?n:NaN
+        }
+        const parseVariable=()=>{
+            if(i>=s.length) return null
+            if(!/[A-Z]/.test(s[i])) return null
+            let sym=s[i++]
+            if(i<s.length&&/[a-z]/.test(s[i])) sym+=s[i++]
+            return sym
+        }
+        const parseFactor=()=>{
+            while(peek()===' ') i++
+            const ch=peek()
+            if(ch==='+'||ch==='-'){
+                const op=consume()
+                const val=parseFactor()
+                return op==='-'?()=>-val():val
+            }
+            if(ch==='('){
+                consume()
+                const node=parseExpr()
+                if(peek()===')') consume()
+                return node
+            }
+            if(/\d/.test(ch)){
+                const n=parseNumber()
+                return ()=>n
+            }
+            const sym=parseVariable()
+            if(sym){
+                return (counts,tbl)=>{
+                    const el=tbl?.bySymbol?.get(sym)
+                    return el?counts.get(el)??0:0
+                }
+            }
+            return ()=>NaN
+        }
+        const parseTerm=()=>{
+            let node=parseFactor()
+            while(true){
+                while(peek()===' ') i++
+                const ch=peek()
+                if(ch!=='*'&&ch!=='/') break
+                const op=consume()
+                const right=parseFactor()
+                const left=node
+                node=op==='*'
+                    ?(counts,tbl)=>left(counts,tbl)*right(counts,tbl)
+                    :(counts,tbl)=>right(counts,tbl)!==0?left(counts,tbl)/right(counts,tbl):NaN
+            }
+            return node
+        }
+        const parseExpr=()=>{
+            let node=parseTerm()
+            while(true){
+                while(peek()===' ') i++
+                const ch=peek()
+                if(ch!=='+'&&ch!=='-') break
+                const op=consume()
+                const right=parseTerm()
+                const left=node
+                node=op==='+'
+                    ?(counts,tbl)=>left(counts,tbl)+right(counts,tbl)
+                    :(counts,tbl)=>left(counts,tbl)-right(counts,tbl)
+            }
+            return node
+        }
+        const ast=parseExpr()
+        return (counts,tbl)=>ast(counts,tbl)
     }
 
     /* What this node publishes: the ticked collections, and nothing else.

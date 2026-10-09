@@ -8,7 +8,6 @@ mod forest;
 mod persistence;
 mod thermo;
 mod trim;
-mod vankrevelen;
 pub use antiradio::{anti_radio_filter, anti_radio_guess_z, RadioDecision};
 //the attribution sieve: exhaustive combinations of masses, in rising mass
 //order, without duplicates. crible_heap only — the matching against the
@@ -21,7 +20,6 @@ pub use attribution::{crible_heap, STRIDE};
 //no chemistry, no knowledge of what a formula is.
 pub use forest::{forest_grow, Forest, EDGE_STRIDE};
 pub use fkmd::fkmd;
-pub use vankrevelen::{vankrevelen_compute, vankrevelen_compute_scaled};
 pub use calibration::{calibration_fit, calibration_apply, CalibrationFitResult};
 pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,

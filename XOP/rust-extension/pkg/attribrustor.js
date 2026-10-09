@@ -678,67 +678,6 @@ export function trim_histogram(core, stride, bins, scale) {
 }
 
 /**
-* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
-*
-* The MAD is a spread; the cut has to be somewhere. When the widths form one
-* population the two agree, but when a spectrum is MOSTLY radio - a dirty
-* sample, a failed acquisition - the MAD is inflated by the very peaks the
-* filter should catch, and 3σ then rejects nothing. A gap does not have that
-* failure mode: it measures where the bulk ends whatever lies beyond.
-*
-* The cut is read as the largest gap between consecutive sorted widths, in
-* robust sigma, and only when that gap is far larger than the typical spacing
-* between neighbours. Two earlier attempts are worth recording, because both
-* are plausible and both are wrong:
-*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
-*     wide peak in eight, and reports a z of about 1, which would reject the
-*     whole cluster;
-*   - a ratio to the median width is not scale-free - a comb of near-identical
-*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_index
-* @returns {number}
-*/
-export function anti_radio_guess_z(core, stride, points_index) {
-    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.anti_radio_guess_z(ptr0, len0, stride, ptr1, len1);
-    return ret;
-}
-
-/**
-*
-* `z` is the ONE knob, and it is a statistical convention rather than a fitted
-* setting: a peak is "radio" when its width sits z robust sigma above the
-* median width of the spectrum. Since the reference is measured on the data in
-* hand, the filter follows the instrument's actual resolution instead of a
-* hard-coded one, and the false-positive rate stays a property of the spread
-* rather than of how many peaks the spectrum happens to contain.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_x
-* @param {Float64Array} points_y
-* @param {Float64Array} points_index
-* @param {number} z
-* @returns {RadioDecision}
-*/
-export function anti_radio_filter(core, stride, points_x, points_y, points_index, z) {
-    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(points_x, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(points_y, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ret = wasm.anti_radio_filter(ptr0, len0, stride, ptr1, len1, ptr2, len2, ptr3, len3, z);
-    return RadioDecision.__wrap(ret);
-}
-
-/**
 * Applies the F-KMD transform to a canonical core.
 *
 * Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
@@ -763,62 +702,6 @@ export function fkmd(core, mz) {
         var v2 = getArrayF64FromWasm0(r0, r1).slice();
         wasm.__wbindgen_free(r0, r1 * 8, 8);
         return v2;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
-* Computes van Krevelen coordinates from formula element counts.
-*
-* `core` is a flat array: [C0, H0, O0, C1, H1, O1, ...] — 3 values per formula.
-* Returns flat [x0..xN, y0..yN] where x = O/C, y = H/C.
-* Formulas with C == 0 are omitted from the output.
-* @param {Float64Array} core
-* @returns {Float64Array}
-*/
-export function vankrevelen_compute(core) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.vankrevelen_compute(retptr, ptr0, len0);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        var v2 = getArrayF64FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_free(r0, r1 * 8, 8);
-        return v2;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
-* Computes van Krevelen coordinates with optional normalization/scaling.
-*
-* `core` is a flat array: [C0, H0, O0, C1, H1, O1, ...] — 3 values per formula.
-* `params` can contain:
-*   - scale_x: multiplier for O/C axis (default 1.0)
-*   - scale_y: multiplier for H/C axis (default 1.0)
-*   - offset_x: additive offset for O/C axis (default 0.0)
-*   - offset_y: additive offset for H/C axis (default 0.0)
-* @param {Float64Array} core
-* @param {Float64Array} params
-* @returns {Float64Array}
-*/
-export function vankrevelen_compute_scaled(core, params) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(params, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        wasm.vankrevelen_compute_scaled(retptr, ptr0, len0, ptr1, len1);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        var v3 = getArrayF64FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_free(r0, r1 * 8, 8);
-        return v3;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
@@ -939,6 +822,67 @@ export function persistent_homology_0d(data, mode) {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
+}
+
+/**
+* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
+*
+* The MAD is a spread; the cut has to be somewhere. When the widths form one
+* population the two agree, but when a spectrum is MOSTLY radio - a dirty
+* sample, a failed acquisition - the MAD is inflated by the very peaks the
+* filter should catch, and 3σ then rejects nothing. A gap does not have that
+* failure mode: it measures where the bulk ends whatever lies beyond.
+*
+* The cut is read as the largest gap between consecutive sorted widths, in
+* robust sigma, and only when that gap is far larger than the typical spacing
+* between neighbours. Two earlier attempts are worth recording, because both
+* are plausible and both are wrong:
+*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
+*     wide peak in eight, and reports a z of about 1, which would reject the
+*     whole cluster;
+*   - a ratio to the median width is not scale-free - a comb of near-identical
+*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_index
+* @returns {number}
+*/
+export function anti_radio_guess_z(core, stride, points_index) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.anti_radio_guess_z(ptr0, len0, stride, ptr1, len1);
+    return ret;
+}
+
+/**
+*
+* `z` is the ONE knob, and it is a statistical convention rather than a fitted
+* setting: a peak is "radio" when its width sits z robust sigma above the
+* median width of the spectrum. Since the reference is measured on the data in
+* hand, the filter follows the instrument's actual resolution instead of a
+* hard-coded one, and the false-positive rate stays a property of the spread
+* rather than of how many peaks the spectrum happens to contain.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} z
+* @returns {RadioDecision}
+*/
+export function anti_radio_filter(core, stride, points_x, points_y, points_index, z) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(points_x, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(points_y, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArrayF64ToWasm0(points_index, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.anti_radio_filter(ptr0, len0, stride, ptr1, len1, ptr2, len2, ptr3, len3, z);
+    return RadioDecision.__wrap(ret);
 }
 
 function handleError(f, args) {
