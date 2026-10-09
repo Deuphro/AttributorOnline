@@ -66,49 +66,47 @@ function getMimeType(filePath) {
 }
 
 function serveStaticFileLimited(req, res) {
-    const filePathMap = {
-        '/TOOLS/index.html':'TOOLS/index.html',
-        '/': 'index.html',
-        '/styles/main.css': 'styles/main.css',
-        '/scripts/main.js': 'scripts/main.js',
-        "/scripts/interface.js":"scripts/interface.js",
-        "/scripts/util.js":"scripts/util.js",
-        "/scripts/workerPool.js":"scripts/workerPool.js",
-        "/scripts/kernelWorker.js":"scripts/kernelWorker.js",
-        '/XOP/rust-extension/pkg/attribrustor.js':'XOP/rust-extension/pkg/attribrustor.js',
-        '/XOP/rust-extension/pkg/attribrustor_bg.wasm':'XOP/rust-extension/pkg/attribrustor_bg.wasm',
-        "/resources/config.js":"resources/config.js",
-        "/scripts/formats.js":"scripts/formats.js",
-        "/scripts/chemistry.js":"scripts/chemistry.js",
-        "/scripts/valence.js":"scripts/valence.js",
-        "/scripts/attribution.js":"scripts/attribution.js",
-        //the measurement network: the reference list and the JS oracle of the
-        //Rust forest kernel. Served like the others because the module graph
-        //is explicit — an import nothing serves is a 404 the worker only
-        //discovers when the user presses the button.
-        "/scripts/forest.js":"scripts/forest.js",
-        //where the flow arranges its nodes and wires the new ones by itself
-        "/scripts/layout.js":"scripts/layout.js",
-        "/resources/pattern.svg":"resources/pattern.svg",
-        "/scripts/sessions.js":"scripts/sessions.js",
-        "/scripts/plot2d-gl.js":"scripts/plot2d-gl.js",
-        "/scripts/plot2d-hit.js":"scripts/plot2d-hit.js",
-        "/scripts/sessionStore.js":"scripts/sessionStore.js"
+    //Strip query string and decode: an import like /scripts/app/index.js?v=2
+    //must map to the file, not miss the allowlist and hang.
+    let urlPath = req.url.split('?')[0];
+    try {
+        urlPath = decodeURIComponent(urlPath);
+    } catch {
+        //keep raw on bad encoding, the read below will 404
     }
-    const filePath = filePathMap[req.url]
-    console.log("This file is served by serveStaticFileLimited: ",req.url)
-    if(filePath){
-        fs.readFile(path.join(__dirname, filePath), (err, data) => {
-            if (err) {
-                res.writeHead(404, { 'Content-Type': 'text/plain' });
-                res.end('File not found');
-            } else {
-                const mimeType = getMimeType(filePath);
-                res.writeHead(200, { 'Content-Type': mimeType });
-                res.end(data);
-            }
-        });
+    if (urlPath === '/') {
+        urlPath = '/index.html';
     }
+    //Generic roots instead of a per-file map: every refactor that adds a
+    //module (scripts/app/, scripts/core/, scripts/flow/, ...) was a 404 or
+    //a hang waiting to happen. Only these public roots are servable — no
+    //.git, no node_modules, no uploads (served by serveUploadsFile), no src/.
+    const publicRoots = ['/scripts/', '/styles/', '/resources/', '/data/', '/XOP/rust-extension/pkg/'];
+    const exactFiles = new Set(['/index.html', '/TOOLS/index.html']);
+    const allowed = exactFiles.has(urlPath) || publicRoots.some(root => urlPath.startsWith(root));
+    console.log("This file is served by serveStaticFileLimited: ", req.url)
+    if (!allowed) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('File not found');
+        return;
+    }
+    const relativePath = urlPath.replace(/^\/+/, '');
+    const filePath = path.normalize(path.join(__dirname, relativePath));
+    if (!filePath.startsWith(__dirname)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
+    }
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('File not found');
+        } else {
+            const mimeType = getMimeType(filePath);
+            res.writeHead(200, { 'Content-Type': mimeType });
+            res.end(data);
+        }
+    });
 }
 
 function serveUploadsFile(req, res) {
