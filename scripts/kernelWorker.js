@@ -230,6 +230,34 @@ const kernels={
             return {core:fkmdJS(core,params?.mz??0)}
         }
     },
+    /* van Krevelen: H/C vs O/C scatter plot from formula compositions.
+       
+       The Rust kernel is src/vankrevelen.rs. It computes O/C and H/C ratios
+       from formula element counts. Input is flat [C0,H0,O0, C1,H1,O1, ...],
+       output is flat [x0..xN, y0..yN] where x=O/C, y=H/C.
+       
+       Two adjustment fields (scale_x, scale_y, offset_x, offset_y) allow
+       zooming/panning the diagram without re-computing ratios.
+       
+       The JS fallback computes the same thing, so a stale or failed wasm build
+       still resolves the flow. */
+    async vankrevelen({core,params}){
+        try{
+            await ensureWasm()
+            if(typeof rust.vankrevelen_compute_scaled!=="function"){
+                throw new Error("rust vankrevelen_compute_scaled is missing (stale pkg build?)")
+            }
+            const scale_x=params?.scale_x??1.0
+            const scale_y=params?.scale_y??1.0
+            const offset_x=params?.offset_x??0.0
+            const offset_y=params?.offset_y??0.0
+            const rustParams=new Float64Array([scale_x,scale_y,offset_x,offset_y])
+            return {core:toFloat64(rust.vankrevelen_compute_scaled(core,rustParams))}
+        }catch(err){
+            console.warn("[kernelWorker] rust vankrevelen unavailable, JS fallback:",err)
+            return {core:vankrevelenJS(core,params?.scale_x??1.0,params?.scale_y??1.0,params?.offset_x??0.0,params?.offset_y??0.0)}
+        }
+    },
     /* The attribution sieve: exhaustive combinations of masses, in RISING MASS
        ORDER, without duplicates.
 
@@ -617,6 +645,28 @@ function fkmdJS(core,mz){
         out[i]=scaled                 //X' = x * round(mz)/m/z
         out[n+i]=scaled-Math.round(scaled)  //Y' = x' - round(x'), per index
     }
+    return out
+}
+//Same semantics as vankrevelen.rs: compute O/C and H/C from flat [C,H,O] triples.
+//Formulas with C==0 are omitted. Optional scale/offset parameters.
+function vankrevelenJS(core,scale_x=1.0,scale_y=1.0,offset_x=0.0,offset_y=0.0){
+    if(!core||core.length<3) return new Float64Array(0)
+    const n_formulas=Math.floor(core.length/3)
+    const xs=[]
+    const ys=[]
+    for(let i=0;i<n_formulas;i++){
+        const c=core[i*3]
+        const h=core[i*3+1]
+        const o=core[i*3+2]
+        if(c>0){
+            xs.push(o/c*scale_x+offset_x)
+            ys.push(h/c*scale_y+offset_y)
+        }
+    }
+    const n=xs.length
+    const out=new Float64Array(n*2)
+    out.set(xs,0)
+    out.set(ys,n)
     return out
 }
 function toFloat64(value){

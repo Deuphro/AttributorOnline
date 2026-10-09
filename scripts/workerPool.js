@@ -100,6 +100,31 @@ function runKernelLocally(kernel,payload){
         }
         return {core:result}
     }
+    if(kernel==="vankrevelen"){
+        const {core,params}=payload
+        const scale_x=params?.scale_x??1.0
+        const scale_y=params?.scale_y??1.0
+        const offset_x=params?.offset_x??0.0
+        const offset_y=params?.offset_y??0.0
+        if(!core||core.length<3) return {core:new Float64Array(0)}
+        const n_formulas=Math.floor(core.length/3)
+        const xs=[]
+        const ys=[]
+        for(let i=0;i<n_formulas;i++){
+            const c=core[i*3]
+            const h=core[i*3+1]
+            const o=core[i*3+2]
+            if(c>0){
+                xs.push(o/c*scale_x+offset_x)
+                ys.push(h/c*scale_y+offset_y)
+            }
+        }
+        const n=xs.length
+        const result=new Float64Array(n*2)
+        result.set(xs,0)
+        result.set(ys,n)
+        return {core:result}
+    }
     if(kernel==="addScalar"){
         const {core,params}=payload
         const scalar=params?.scalar??1

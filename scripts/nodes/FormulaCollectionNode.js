@@ -2,6 +2,7 @@
 import {Accordion} from "../ui/Accordion.js"
 import {Wave,XYTrace} from "../formats.js"
 import {Formula,Stoichiometry,FormulaCollection} from "../chemistry.js"
+import {computePool} from "../workerPool.js"
 import {CE,stylize,DC} from "../util.js"
 import {VirtualRowList} from "./VirtualRowList.js"
 import {segmentToggle,scaleToggle} from "../utils/index.js"
@@ -45,12 +46,7 @@ import {formatCount,formatMz,formatValue,prettyNotation,traceColor,isDeleteKey,F
                            the formula that took it.
    ------------------------------------------------------------------------- */
 export class FormulaCollectionNode extends NodeWithAccordionGraph{
-    //how many sticks the central graph will take before it says "capped"
-    static GRAPH_POINT_BUDGET=200000
-    /* CE QUE LE GRAPHE MONTRE PAR DÉFAUT, et le DEFAULT vit ici pour la même
-       raison que GRAPH_POINT_BUDGET: il est utilisé par le constructeur, par
-       `refreshGraph` et par `restoreState`, et trois copies d'une chaîne
-       seraient trois endroits à se tromper. */
+    /* CE QUE LE GRAPHE MONTRE PAR DÉFAUT. */
     static GRAPH_MODE_DEFAULT="error"
     //one line of the list. Fixed, and the reason the windowing is cheap. It
     //MUST equal the height of .fc-row in main.css: the offsets the list
@@ -1174,7 +1170,12 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         //the tolerance that pairs a formula with the points measured on it
         this.parameters.ppmWindow=5
         this.parameters.logY=false
-        this.parameters.graphBudget=FormulaCollectionNode.GRAPH_POINT_BUDGET
+        /* VAN KREVELEN PARAMETERS: scale and offset for O/C and H/C axes.
+           These allow zooming and panning the diagram without re-computing ratios. */
+        /* Van Krevelen custom axis formulas: user writes expressions like "O/C" or "1+C+N/2-H/2".
+           Defaults give the classic van Krevelen O/C vs H/C. */
+        this.parameters.vkXFormula="O/C"
+        this.parameters.vkYFormula="H/C"
         /* CE QUE LE GRAPHE MONTRE, et l'erreur est le DÉFAUT.
 
            Une collection n'est pas une liste de hauteurs: c'est une liste de
@@ -1756,149 +1757,217 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         return element
     }
 
-    /* --- the central graph: one trace per collection the user ticked ----- */
+/* --- the central graph: one trace per collection the user ticked ----- */
     /* What is drawn is the COLLECTION, not the formula list: one trace per
        ticked collection. WHAT a point SAYS is the choice — `graphMode`, whose
        default is the error against the measured mass.
 
-       LES DEUX QUESTIONS, et aucune ne répond à la place de l'autre:
+        TROIS QUESTIONS, et aucune ne répond à la place de l'autre:
 
-         error     x = the mass actually MEASURED (target.mz), y = the error in
-                   ppm the matching computed against the formula. C'est la vue
-                   par défaut, parce que c'est elle qui répond à « cette
-                   collection est-elle juste ? » — et la réponse se lit à l'œil:
-                   un nuage resserré autour de zéro, ou deux groupes nettement
-                   décalés, se voient sans qu'on lise une seule valeur.
+          error       x = the mass actually MEASURED (target.mz), y = the error in
+                      ppm the matching computed against the formula. C'est la vue
+                      par défaut, parce que c'est elle qui répond à « cette
+                      collection est-elle juste ? » — et la réponse se lit à l'œil:
+                      un nuage resserré autour de zéro, ou deux groupes nettement
+                      décalés, se voient sans qu'on lise une seule valeur.
 
-         intensity x = the same measured mass, y = the signal. C'est le
-                   spectre, et c'est ce qu'il faut quand la question est
-                   « y a-t-il du signal ? ».
+          intensity   x = the same measured mass, y = the signal. C'est le
+                      spectre, et c'est ce qu'il faut quand la question est
+                      « y a-t-il du signal ? ».
 
-       Les deux tiennent dans la même fonction parce qu'elles ne changent qu'une
-       colonne et un libellé: deux moteurs de rendu pour un nuage et un spectre
-       seraient deux objets DOM et deux panneaux à synchroniser. Le mode est dans
-       les PARAMÈTRES, donc dans la session — un graphe qui changerait de sens
-       au chargement serait un graphe qu'on ne peut pas comparer d'un jour à
-       l'autre.
+          vankrevelen x = O/C ratio (oxygen/carbon), y = H/C ratio (hydrogen/carbon).
+                      C'est le diagramme de van Krevelen, utilisé pour classer
+                      la matière organique. Les points sont les formules elles-mêmes,
+                      pas des pics mesurés. Deux champs de réglage (scale/offset)
+                      permettent de zoomer/déplacer le diagramme.
 
-       Le BUDGET, lui, est le même dans les deux modes et reste ce qu'il était:
-       un arrêt dur, dit tout haut. Cent collections de cinquante mille formules,
-       c'est cinq millions de points, et un tampon WebGL de cette taille n'est pas
-       un graphe lent, c'est un onglet mort. Ce qui a été écarté est COMPTÉ dans
-       le readout plutôt que de saigner en silence dans l'image. */
-    /* LE POINT N'EST PAS LE MÊME DANS LES DEUX CAS, et l'écart le dit.
+        Le mode est dans les PARAMÈTRES, donc dans la session — un graphe qui
+        changerait de sens au chargement serait un graphe qu'on ne peut pas
+        comparer d'un jour à l'autre.
 
-       En INTENSITÉ, un point sans signal n'est pas une mesure: il dessine un
-       zéro qui n'est rien. On exige donc les deux nombres finis, comme avant.
+        Le BUDGET est le même dans les trois modes: un arrêt dur, dit tout haut.
+        Cent collections de cinquante mille formules, c'est cinq millions de
+        points, et un tampon WebGL de cette taille n'est pas un graphe lent,
+        c'est un onglet mort. Ce qui a été écarté est COMPTÉ dans le readout
+        plutôt que de saigner en silence dans l'image. */
+    /* LE POINT N'EST PAS LE MÊME DANS LES TROIS CAS, et l'écart le dit.
 
-       En ERREUR, c'est l'inverse: une formule appariée à un point même loin
-       porte un ppm calculé, et ce ppm EST l'information — c'est exactement la
-       ligne que l'utilisateur doit voir. Seul un point dont l'erreur n'existe
-       pas (aucune cible du tout) est écarté. */
-    refreshGraph(){
+        En ERREUR/INTENSITÉ, un point = un PIC MESURÉ apparié à une formule.
+        En VAN KREVELEN, un point = une FORMULE (sa composition élémentaire).
+        Les formules sans carbone sont exclues (division par zéro). */
+    async refreshGraph(){
         if(!this.graph) return
         /* LE MODE EST LU ICI ET PAS DÉJÀ NORMALISÉ ailleurs, parce que c'est le
            seul endroit qui sait ce qu'un point EST: `restoreState` ne fait que
            vérifier que le nom existe, et une valeur inconnue retombe sur le
            défaut au lieu d'effacer le graphe. */
-        const byError=(this.parameters.graphMode??FormulaCollectionNode.GRAPH_MODE_DEFAULT)!=="intensity"
+        const mode=this.parameters.graphMode??FormulaCollectionNode.GRAPH_MODE_DEFAULT
+        const isVankrevelen=mode==="vankrevelen"
+        const byError=!isVankrevelen&&mode!=="intensity"
         const traces=[]
         let eligible=0
         let drawn=0
-        for(const collection of this.collections){
-            if(!this.collectionState(collection.name).inGraphs) continue
-            const points=[]
-            for(const entry of collection.entries){
-                for(const target of entry.targets){
-                    if(!Number.isFinite(target.mz)) continue
-                    if(byError){
-                        /* L'erreur prime sur TOUT, et pas seulement sur son
-                           caractère fini: une formule dont la cible n'a pas
-                           d'erreur n'a pas de point, sinon on lui en
-                           inventerait un. */
-                        if(!Number.isFinite(target.errorPpm)) continue
-                        points.push([target.mz,target.errorPpm])
-                    }else{
-                        if(!Number.isFinite(target.intensity)) continue
-                        points.push([target.mz,target.intensity])
+
+        if(isVankrevelen){
+            /* VAN KREVELEN: one point per FORMULA (not per measured target).
+               We build a flat [C,H,O] array for all formulas in all ticked
+               collections, send it to the kernel, and split the result back
+               per collection. */
+            const allCore=[]
+            const collectionSlices=[] // {collection, startIdx, endIdx}
+            let globalIdx=0
+            for(const collection of this.collections){
+                if(!this.collectionState(collection.name).inGraphs) continue
+                const startIdx=globalIdx
+                let count=0
+                for(const entry of collection.entries){
+                    const formula=entry.formula
+                    if(!formula) continue
+                    //Get C, H, O counts from the formula's composition
+                    const c=formula.counts.get(formula.table?.bySymbol?.get("C"))??0
+                    const h=formula.counts.get(formula.table?.bySymbol?.get("H"))??0
+                    const o=formula.counts.get(formula.table?.bySymbol?.get("O"))??0
+                    allCore.push(c,h,o)
+                    count++
+                }
+                if(count>0){
+                    collectionSlices.push({collection,startIdx,endIdx:globalIdx+count})
+                    globalIdx+=count
+                }
+            }
+            if(allCore.length>0){
+                //Send to kernel (async) with formula params (kernel still uses scale/offset for now)
+                const params={
+                    scale_x:1.0,
+                    scale_y:1.0,
+                    offset_x:0.0,
+                    offset_y:0.0,
+                    xFormula:this.parameters.vkXFormula,
+                    yFormula:this.parameters.vkYFormula
+                }
+                try{
+                    const result=await computePool.run("vankrevelen",{
+                        core:new Float64Array(allCore),
+                        params
+                    })
+                    const core=result?.core
+                    if(core instanceof Float64Array && core.length>0){
+                        const n=core.length/2
+                        const xs=core.subarray(0,n)
+                        const ys=core.subarray(n)
+                        //Split back per collection and create traces
+                        for(const slice of collectionSlices){
+                            const count=slice.endIdx-slice.startIdx
+                            if(count===0) continue
+                            const x=new Float64Array(count)
+                            const y=new Float64Array(count)
+                            for(let i=0;i<count;i++){
+                                x[i]=xs[slice.startIdx+i]
+                                y[i]=ys[slice.startIdx+i]
+                            }
+                            traces.push(new XYTrace({
+                                id:`${slice.collection.name}:vankrevelen`,
+                                title:`${slice.collection.name} — van Krevelen (${count})`,
+                                wave:Wave.fromCoordinates(
+                                    x,
+                                    y,
+                                    {collection:slice.collection.name, quantity:"vankrevelen"},
+                                    ["O/C","H/C"]
+                                ),
+                                options:{
+                                    color:traceColor(this.collections.indexOf(slice.collection)),
+                                    mode:"points",
+                                    marker:{shape:"circle",size:3},
+                                    layer:"gl"
+                                }
+                            }))
+                            drawn+=count
+                            eligible+=count
+                        }
+                    }
+                }catch(err){
+                    console.warn("[FormulaCollectionNode] vankrevelen kernel failed:",err)
+                }
+            }
+        }else{
+            /* ERROR or INTENSITY: one point per MEASURED TARGET. */
+            for(const collection of this.collections){
+                if(!this.collectionState(collection.name).inGraphs) continue
+                const points=[]
+                for(const entry of collection.entries){
+                    for(const target of entry.targets){
+                        if(!Number.isFinite(target.mz)) continue
+                        if(byError){
+                            if(!Number.isFinite(target.errorPpm)) continue
+                            points.push([target.mz,target.errorPpm])
+                        }else{
+                            if(!Number.isFinite(target.intensity)) continue
+                            points.push([target.mz,target.intensity])
+                        }
                     }
                 }
-            }
-            if(!points.length) continue
-            eligible+=points.length
-            /* TRIÉ PAR m/z DANS LES DEUX CAS, pour la même raison: un nuage lu
-               de gauche à droite ne doit pas sauter d'une masse à l'autre, et
-               un spectre encore moins. */
-            points.sort((a,b)=>a[0]-b[0])
-            const x=new Float64Array(points.length)
-            const y=new Float64Array(points.length)
-            for(let i=0;i<points.length;i++){
-                x[i]=points[i][0]
-                y[i]=points[i][1]
-            }
-            traces.push(new XYTrace({
-                /* L'ID porte le mode, sinon un graphe rechargé après un
-                   changement de mode pourrait réappliquer à la nouvelle trace
-                   les options sauvées pour l'ancienne — même couleur, mais
-                   aussi même géométrie, et la géométrie est justement ce qui a
-                   changé. */
-                id:`${collection.name}:${byError?"error":"sticks"}`,
-                title:byError
-                    ?`${collection.name} — error (${points.length})`
-                    :`${collection.name} (${points.length})`,
-                wave:Wave.fromCoordinates(
-                    x,
-                    y,
-                    {collection:collection.name, quantity:byError?"errorPpm":"intensity"},
-                    ["m/z",byError?"error (ppm)":"intensity"]
-                ),
-                options:{
-                    color:traceColor(this.collections.indexOf(collection)),
-                    /* DES MARQUEURS, et non des bâtons, en mode erreur. Un
-                       « stick to zero » tire un trait de chaque point jusqu'à
-                       l'axe, donc chaque ppm trace une ligne depuis zéro: le
-                       graphique ne montre plus un nuage mais une forêt de
-                       traits, et deux points voisins deviennent indiscernables.
-                       L'écart se LIT dans la position verticale du point. */
-                    mode:byError?"points":"sticks-to-zero",
-                    marker:{shape:"circle",size:3},
-                    layer:"gl"
+                if(!points.length) continue
+                eligible+=points.length
+                points.sort((a,b)=>a[0]-b[0])
+                const x=new Float64Array(points.length)
+                const y=new Float64Array(points.length)
+                for(let i=0;i<points.length;i++){
+                    x[i]=points[i][0]
+                    y[i]=points[i][1]
                 }
-            }))
-            drawn+=points.length
+                traces.push(new XYTrace({
+                    id:`${collection.name}:${byError?"error":"sticks"}`,
+                    title:byError
+                        ?`${collection.name} — error (${points.length})`
+                        :`${collection.name} (${points.length})`,
+                    wave:Wave.fromCoordinates(
+                        x,
+                        y,
+                        {collection:collection.name, quantity:byError?"errorPpm":"intensity"},
+                        ["m/z",byError?"error (ppm)":"intensity"]
+                    ),
+                    options:{
+                        color:traceColor(this.collections.indexOf(collection)),
+                        mode:byError?"points":"sticks-to-zero",
+                        marker:{shape:"circle",size:3},
+                        layer:"gl"
+                    }
+                }))
+                drawn+=points.length
+            }
         }
-        const capped=drawn>this.parameters.graphBudget
         this.graph.setTraces(traces)
-        /* LE LOG N'EXISTE QU'EN INTENSITÉ, et sa raison est arithmétique: une
-           erreur en ppm est négative ou nulle pour la moitié des points, et le
-           traceur ÉCARTE silencieusement tout ce qui n'est pas strictement
-           positif. Un point à -3 ppm ne disparaîtrait pas — il ne serait jamais
-           dessiné, et le graphique dirait « tout va bien » sur une collection
-           mal calibrée. Le paramètre n'est donc pas effacé, seulement ignoré:
-           revenir en intensité le retrouve. */
-        this.graph.parameters.axis.left.scale=(!byError&&this.parameters.logY)?"log":"linear"
-        /* The axes say what they measure, and they are written ONCE here rather
-           than left to syncAxisLabels: that helper copies the labels of the
-           FIRST trace, and a graph whose axes change meaning when a collection
-           is ticked on or off is a graph nobody reads twice. */
-        this.graph.parameters.axis.bottom.label="Measured m/z"
-        this.graph.parameters.axis.bottom.autoLabel=false
-        this.graph.parameters.axis.left.label=byError?"Error (ppm)":"Intensity"
-        this.graph.parameters.axis.left.autoLabel=false
+        if(isVankrevelen){
+            this.graph.parameters.axis.left.scale="linear"
+            this.graph.parameters.axis.bottom.label="O/C"
+            this.graph.parameters.axis.bottom.autoLabel=false
+            this.graph.parameters.axis.left.label="H/C"
+            this.graph.parameters.axis.left.autoLabel=false
+        }else{
+            this.graph.parameters.axis.left.scale=(!byError&&this.parameters.logY)?"log":"linear"
+            this.graph.parameters.axis.bottom.label="Measured m/z"
+            this.graph.parameters.axis.bottom.autoLabel=false
+            this.graph.parameters.axis.left.label=byError?"Error (ppm)":"Intensity"
+            this.graph.parameters.axis.left.autoLabel=false
+        }
         this.graph.drawGraph()
         if(this.graphReadout){
-            this.graphReadout.textContent=capped
-                ?`${formatCount(drawn)} / ${formatCount(eligible)} (capped)`
-                :`${formatCount(drawn)} / ${formatCount(eligible)}`
-            this.graphReadout.style.color=capped?"#ffb347":""
-            /* LE TITRE DIT CE QUI EST COMPTÉ, parce que les deux modes ne
-               comptent pas la même chose: un point sans signal compte en
-               intensité et pas en erreur. Sans cette phrase, un « 120 / 340 »
-               serait lu comme « 220 points perdus » alors que ce sont des
-               formules sans cible. */
-            this.graphReadout.title=byError
-                ?"Points drawn / points eligible — a measured point counted here only when it carries an error"
-                :"Points drawn / points eligible — a measured point counted here only when it carries an intensity"
+            const txt=`${formatCount(drawn)} / ${formatCount(eligible)}`
+            this.graphReadout.textContent=txt
+            this.graphReadout.style.color=""
+            if(this.vkReadout){
+                this.vkReadout.textContent=txt
+                this.vkReadout.style.color=""
+            }
+            if(isVankrevelen){
+                this.graphReadout.title="Points drawn / formulas with carbon — formulas without carbon are not shown"
+                if(this.vkReadout) this.vkReadout.title=this.graphReadout.title
+            }else{
+                this.graphReadout.title=byError
+                    ?"Points drawn / points eligible — a measured point counted here only when it carries an error"
+                    :"Points drawn / points eligible — a measured point counted here only when it carries an intensity"
+                if(this.vkReadout) this.vkReadout.title=this.graphReadout.title
+            }
         }
     }
 
@@ -2359,7 +2428,6 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             sort:this.parameters.sort,
             ppmWindow:this.parameters.ppmWindow,
             logY:this.parameters.logY,
-            graphBudget:this.parameters.graphBudget,
             /* LE MODE DU GRAPHE EST UN CHOIX COMME LES AUTRES: il ne se déduit
                d'aucun resolve, donc sans lui un fichier de session rouvrirait
                le nœud sur une autre lecture que celle qu'on a quittée. */
@@ -2370,7 +2438,10 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             //the collections the user made here, as the text they typed. They
             //are the only collections this state carries, and carrying them as
             //texts is what keeps a session from growing a periodic table
-            localCollections:DC(this.parameters.localCollections)
+            localCollections:DC(this.parameters.localCollections),
+            //van Krevelen custom axis formulas
+            vkXFormula:this.parameters.vkXFormula,
+            vkYFormula:this.parameters.vkYFormula
         }
     }
     restoreState(state){
@@ -2392,13 +2463,10 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             this.parameters.ppmWindow=state.ppmWindow
         }
         this.parameters.logY=!!state.logY
-        if(Number.isFinite(state.graphBudget)&&state.graphBudget>0){
-            this.parameters.graphBudget=state.graphBudget
-        }
         /* UN MODE INCONNU RETOMBE SUR LE DÉFAUT, comme la vue et l'ordre: un
            fichier écrit par un autre build ne doit pas pouvoir vider le
            graphique en demandant une troisième lecture qui n'existe pas. */
-        this.parameters.graphMode=["error","intensity"].includes(state.graphMode)
+        this.parameters.graphMode=["error","intensity","vankrevelen"].includes(state.graphMode)
             ?state.graphMode
             :FormulaCollectionNode.GRAPH_MODE_DEFAULT
         this.parameters.current=typeof state.current==="string"?state.current:null
@@ -2415,6 +2483,9 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 .filter(local=>local&&typeof local.name==="string")
                 .map(local=>({name:local.name,keys:Array.isArray(local.keys)?local.keys.filter(k=>typeof k==="string"):[]}))
             :[]
+        /* Van Krevelen parameters. */
+        if(typeof state.vkXFormula==="string") this.parameters.vkXFormula=state.vkXFormula
+        if(typeof state.vkYFormula==="string") this.parameters.vkYFormula=state.vkYFormula
         /* The widgets only exist once the node has been REGISTERED, and a
            restore happens after — but a headless restore must not throw on a
            node that never opened a panel, so every repaint is guarded. */
@@ -2451,17 +2522,17 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         if(this.parameters.graphMode===mode) return
         this.parameters.graphMode=mode
         this.origin?.saveSessionSoon?.()
-        /* LE PANNEAU SE REFAIT, parce que le Lin/Log n'a de sens qu'en
-           intensité: le laisser visible en mode erreur donnerait un contrôle
-           qui agit sur le graphique sans effet visible, et un utilisateur
-           clique sur un contrôle qui ne fait rien. */
+        /* LE PANNEAU SE REFAIT, parce que les contrôles dépendent du mode:
+           Lin/Log seulement en intensité, scale/offset seulement en van Krevelen. */
         this.renderGraphOptions()
         this.refreshGraph()
     }
     renderGraphOptions(){
         if(!this.graphOptions) return
         this.graphOptions.replaceChildren()
-        const byError=this.parameters.graphMode!=="intensity"
+        const mode=this.parameters.graphMode
+        const isVankrevelen=mode==="vankrevelen"
+        const byError=!isVankrevelen&&mode!=="intensity"
         /* CE QUE LE GRAPHE MONTRE, et c'est le PREMIER contrôle de la section:
            les deux autres (échelle, budget) ne se lisent qu'en sachant ce qu'il
            y a sur l'axe. */
@@ -2470,10 +2541,53 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             set:(value)=>this.setGraphMode(value),
             states:[
                 {value:"error",label:"Error"},
-                {value:"intensity",label:"Intensity"}
+                {value:"intensity",label:"Intensity"},
+                {value:"vankrevelen",label:"van Krevelen"}
             ],
-            title:"What one point of the central graph says: the error in ppm against the measured mass, or the intensity of the signal"
+            title:"What one point of the central graph says: error in ppm, signal intensity, or van Krevelen ratios (O/C vs H/C)"
         })
+        /* VAN KREVELEN CONTROLS: custom X and Y axis formulas.
+           User writes expressions using element symbols, e.g., "O/C", "1+C+N/2-H/2". */
+        this.vkXFormula=CE("input",{
+            type:"text",
+            value:this.parameters.vkXFormula,
+            title:"X-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: O/C or 1+C+N/2-H/2",
+            style:{width:"200px",minWidth:"0",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
+        },[])
+        this.vkXFormula.addEventListener("change",()=>{
+            this.parameters.vkXFormula=this.vkXFormula.value
+            this.origin?.saveSessionSoon?.()
+            this.refreshGraph()
+        })
+        this.vkYFormula=CE("input",{
+            type:"text",
+            value:this.parameters.vkYFormula,
+            title:"Y-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: H/C or 1+C+N/2-H/2",
+            style:{width:"200px",minWidth:"0",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
+        },[])
+        this.vkYFormula.addEventListener("change",()=>{
+            this.parameters.vkYFormula=this.vkYFormula.value
+            this.origin?.saveSessionSoon?.()
+            this.refreshGraph()
+        })
+        this.vkReadout=CE("span",{
+            className:"pp-readout",
+            title:"Points drawn / points eligible"
+        },[""])
+        /* Van Krevelen controls use the SAME 3-column grid as error/intensity:
+           left = X/Y formula inputs, center = empty (flex), right = readout. */
+        this.vkLeft=CE("div",{style:{display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}},[])
+        this.vkLeft.append(
+            CE("span",{className:"pp-caption",style:{margin:"0"}},["X:"]),this.vkXFormula,
+            CE("span",{className:"pp-caption",style:{margin:"0",marginLeft:"16px"}},["Y:"]),this.vkYFormula
+        )
+        this.vkRight=CE("div",{style:{display:"flex",alignItems:"center",gap:"8px"}},[])
+        this.vkRight.append(this.vkReadout)
+        this.vkRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em",gap:"4px",alignItems:"center"}},[])
+        this.vkRow.append(this.vkLeft,CE("div",{},[]),this.vkRight)
+        if(!isVankrevelen){
+            this.vkRow.style.display="none"
+        }
         this.logToggle=scaleToggle({
             get:()=>this.parameters.logY,
             set:(on)=>{
@@ -2491,43 +2605,33 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
            sans rien dire — l'utilisateur verrait un graphe vide alors que tout
            va bien, ce qui est la pire des deux erreurs possibles. */
         this.logRow=CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},[])
-        if(!byError){
+        if(!byError && !isVankrevelen){
             this.logRow.append(this.logToggle)
         }else{
-            /* On ne laisse pas un vide muet là où un contrôle faisait la
-               loi: on dit POURQUOI il n'y en a pas, en un mot. */
             this.logRow.append(CE("span",{style:{opacity:"0.6",fontSize:"0.9em"}},["Lin"]))
-            this.logRow.title="A logarithmic axis would delete every point whose error is zero or negative, without saying so — so it is not offered here"
+            this.logRow.title=isVankrevelen
+                ?"Logarithmic scale not available for van Krevelen ratios (can be zero or negative)"
+                :"A logarithmic axis would delete every point whose error is zero or negative, without saying so — so it is not offered here"
         }
-        const budget=CE("input",{
-            type:"number",min:"1000",step:"10000",size:7,
-            value:String(this.parameters.graphBudget),
-            title:"How many points the central graph may draw at once, over every collection",
-            style:{width:"100%",minWidth:"0",padding:"2px"}
-        },[])
-        budget.addEventListener("change",()=>{
-            const parsed=Number(budget.value)
-            this.parameters.graphBudget=Number.isFinite(parsed)&&parsed>=1000
-                ?Math.trunc(parsed)
-                :FormulaCollectionNode.GRAPH_POINT_BUDGET
-            budget.value=String(this.parameters.graphBudget)
-            this.refreshGraph()
-        })
         this.graphReadout=CE("span",{
             className:"pp-readout",
-            title:"Points drawn / points eligible, and how many the budget left out"
+            title:"Points drawn / points eligible"
         },[""])
-        const budgetLabel=CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",minWidth:"0"}},["Budget",budget])
         const row=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em"}},[])
-        /* La PREMIÈRE cellule est l'échelle, et elle n'est présente qu'en mode
-           intensité: `logRow` y laisse un mot grisé qui explique pourquoi, ce
-           qui vaut mieux qu'un trou dans une ligne de trois cases. */
-        row.append(this.logRow,budgetLabel,this.graphReadout)
+        row.append(this.logRow,this.graphReadout)
+        if(isVankrevelen){
+            row.style.display="none"
+        }
         /* LE MODE EN PREMIER, sur sa propre ligne: il dit ce qu'on regarde, et
            les deux lignes du dessous sont les réglages de CETTE lecture. */
         const modeRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr)",fontSize:"0.95em"}},[])
         modeRow.append(CE("span",{className:"pp-caption",style:{margin:"0"}},["Show"]),this.graphModeToggle)
-        this.graphOptions.append(CE("div",{className:"pp-caption"},["Graphs"]),modeRow,row)
+        this.graphOptions.append(
+            CE("div",{className:"pp-caption"},["Graphs"]),
+            modeRow,
+            row,
+            this.vkRow
+        )
     }
     suicide(options={}){
         /* The scroll list holds a ResizeObserver and a pool of rows: without
