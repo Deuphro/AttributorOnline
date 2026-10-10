@@ -32,6 +32,14 @@ function broadcastRoomList(wss) {
   }
 }
 
+function normalizeRoomId(raw) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "")
+    .slice(0, 30);
+}
+
 function createRoom(id) {
   const room = {
     name: id,
@@ -51,7 +59,7 @@ function deleteRoom(id) {
   rooms.delete(id);
 }
 
-function leaveRoom(socket) {
+function leaveRoom(socket, wss) {
   const roomId = socket.roomId;
   if (!roomId) return;
 
@@ -72,22 +80,30 @@ function leaveRoom(socket) {
   socket.user = null;
 
   if (room.users.size === 0) {
+    // Keep an empty room alive for ROOM_EMPTY_TTL so a brief disconnect
+    // or a create-then-join round-trip does not say "ce salon n'existe plus".
     if (room._emptyTimer) {
       clearTimeout(room._emptyTimer);
-      room._emptyTimer = null;
     }
-    deleteRoom(roomId);
+    room._emptyTimer = setTimeout(() => {
+      const currentRoom = rooms.get(roomId);
+      if (currentRoom && currentRoom.users.size === 0) {
+        deleteRoom(roomId);
+        if (wss) broadcastRoomList(wss);
+      }
+    }, ROOM_EMPTY_TTL);
+    if (wss) broadcastRoomList(wss);
     return;
   }
 
-  room._emptyTimer = setTimeout(() => {
-    const currentRoom = rooms.get(roomId);
-    if (currentRoom && currentRoom.users.size === 0) {
-      deleteRoom(roomId);
-    }
-  }, ROOM_EMPTY_TTL);
+  // Room is alive again: cancel a pending expiry.
+  if (room._emptyTimer) {
+    clearTimeout(room._emptyTimer);
+    room._emptyTimer = null;
+  }
 
   broadcastUsers(room);
+  if (wss) broadcastRoomList(wss);
 }
 
 function broadcastUsers(room) {
@@ -135,11 +151,7 @@ function attachChatServer(server) {
       }
 
       if (data.type === "create_room") {
-        const roomId = String(data.room || "")
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]/g, "")
-          .slice(0, 30);
+        const roomId = normalizeRoomId(data.room);
 
         if (!roomId) {
           send(socket, { type: "error", text: "Nom de salon invalide." });
@@ -158,7 +170,7 @@ function attachChatServer(server) {
       }
 
       if (data.type === "join_room") {
-        const roomId = String(data.room || "").trim();
+        const roomId = normalizeRoomId(data.room);
         const name = String(data.name || "Anonyme")
           .trim()
           .slice(0, 30);
@@ -167,14 +179,20 @@ function attachChatServer(server) {
 
         const room = rooms.get(roomId);
         if (!room) {
-          send(socket, { type: "error", text: "Ce salon n'existe plus." });
+          send(socket, { type: "error", text: "Ce salon n'existe plus. Créez-le avec le bouton Create." });
+          send(socket, { type: "rooms", rooms: listRooms() });
           return;
         }
 
-        leaveRoom(socket);
+        leaveRoom(socket, wss);
 
         socket.user = name;
         socket.roomId = roomId;
+        // A join cancels a pending empty-room expiry.
+        if (room._emptyTimer) {
+          clearTimeout(room._emptyTimer);
+          room._emptyTimer = null;
+        }
         room.users.set(socket, name);
 
         send(socket, {
@@ -185,11 +203,12 @@ function attachChatServer(server) {
 
         broadcast(room, { type: "system", text: `${name} est arrivé.` });
         broadcastUsers(room);
+        broadcastRoomList(wss);
         return;
       }
 
       if (data.type === "leave_room") {
-        leaveRoom(socket);
+        leaveRoom(socket, wss);
         return;
       }
 
@@ -213,7 +232,7 @@ function attachChatServer(server) {
     });
 
     socket.on("close", () => {
-      leaveRoom(socket);
+      leaveRoom(socket, wss);
     });
   });
 

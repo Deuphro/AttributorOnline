@@ -114,8 +114,30 @@ export class ChatNode extends Node{
             this.reconnectAttempt=0
             this.connect()
         })
+        const createButton=CE("button",{type:"button"},["Create"])
+        createButton.title="Create the room named in the room field, then join it"
+        createButton.addEventListener("click",()=>{
+            const nick=this.parameters.nick.trim()
+            if(!nick){
+                this.append("Choose a nick first.","system")
+                return
+            }
+            const room=this.parameters.room.trim()
+            if(!room){
+                this.append("Type a room name first.","system")
+                return
+            }
+            if(!this.socket||this.socket.readyState!==WebSocket.OPEN){
+                this.pendingCreate=room
+                this.disconnect()
+                this.reconnectAttempt=0
+                this.connect({joinOnOpen:false})
+                return
+            }
+            this.createRoom(room)
+        })
         const bar=CE("div",{className:"chat-bar"},[
-            this.statusLabel,urlField,nickField,roomField,joinButton
+            this.statusLabel,urlField,nickField,roomField,joinButton,createButton
         ])
         /* --- the log ------------------------------------------------------- */
         this.log=CE("div",{className:"chat-log"},[])
@@ -160,7 +182,7 @@ export class ChatNode extends Node{
            else. */
         this.status=connected?"resolved":"floating"
     }
-    connect(){
+    connect(options={}){
         const nick=this.parameters.nick.trim()
         if(!nick){
             /* No nick, no connection. Asking is better than posting as
@@ -184,10 +206,21 @@ export class ChatNode extends Node{
         this.setStatus("Connecting...",false)
         socket.addEventListener("open",()=>{
             this.reconnectAttempt=0
+            if(this.pendingCreate){
+                const room=this.pendingCreate
+                this.pendingCreate=null
+                this.createRoom(room)
+                return
+            }
             /* A named room is joined straight away; with no room, the server
                sends its list, which is exactly what an empty field asks for.
                Joining on open rather than on submit is what makes a restored
-               session rejoin the room it was in. */
+               session rejoin the room it was in. A pending create comes
+               FIRST: auto-joining here would ask for a room that the server
+               has not created yet, hence joinOnOpen:false. */
+            if(options.joinOnOpen===false){
+                return
+            }
             if(this.parameters.room.trim()){
                 this.transmit({type:"join_room",room:this.parameters.room.trim(),name:nick})
             }
@@ -232,6 +265,16 @@ export class ChatNode extends Node{
             this.connect()
         },delay)
     }
+    /* Create-then-join in one gesture: the server answers room_created and
+       onServerMessage joins it. If it already exists, join it directly. */
+    createRoom(room){
+        const nick=this.parameters.nick.trim()
+        if(!nick||!room){
+            return
+        }
+        this.pendingJoinOnCreated=room
+        this.transmit({type:"create_room",room})
+    }
     onServerMessage(data){
         if(data.type==="rooms"){
             this.renderRoomList(data.rooms??[])
@@ -239,6 +282,7 @@ export class ChatNode extends Node{
         }
         if(data.type==="room_created"){
             this.parameters.room=data.room
+            this.pendingJoinOnCreated=null
             this.transmit({type:"join_room",room:data.room,name:this.parameters.nick.trim()})
             return
         }
@@ -267,6 +311,13 @@ export class ChatNode extends Node{
             /* The server's own complaints go in the log: it is the only way a
                user learns that their nick was taken or the room is full. */
             this.append(data.text,"system")
+            if(this.pendingJoinOnCreated&&/existe déjà/.test(data.text)){
+                const room=this.pendingJoinOnCreated
+                this.pendingJoinOnCreated=null
+                this.transmit({type:"join_room",room,name:this.parameters.nick.trim()})
+            } else if(this.pendingJoinOnCreated){
+                this.pendingJoinOnCreated=null
+            }
         }
     }
     renderRoomList(rooms){
