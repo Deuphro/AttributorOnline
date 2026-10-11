@@ -258,6 +258,25 @@ fn nearest_standard(sorted: &[f64], gap: f64) -> Option<(usize, f64)> {
     best
 }
 
+/// Premier indice dont l'écart à `low` vaut au moins `x`.
+///
+/// La comparaison porte sur `masses[mid] - low` et NON sur `masses[mid] >=
+/// low + x`: les deux écritures ne donnent pas le même flottant, et c'est le
+/// premier qui décide in fine du lien.
+fn first_gap_at_least(masses: &[f64], low: f64, x: f64) -> usize {
+    let mut a = 0usize;
+    let mut b = masses.len();
+    while a < b {
+        let mid = (a + b) / 2;
+        if masses[mid] - low < x {
+            a = mid + 1;
+        } else {
+            b = mid;
+        }
+    }
+    a
+}
+
 /// Un résultat vide, et il est NOMÉ: c'est la réponse à une entrée refusée, pas
 /// un forgot de calcul. C'est donc une fermeture, pas une allocation écrite
 /// cinq fois.
@@ -348,27 +367,71 @@ pub fn forest_grow(
        devient la fenêtre: au-delà, aucune référence n'est plus atteignable, et
        comme les masses sont triées tous les `j` suivants le sont non plus.
        On peut donc SORTIR de la boucle, ce qu'Igor ne pouvait pas faire. */
-    let reach = reference_masses[reference_masses.len() - 1] + tolerance;
+    /* LA FENÊTRE EST ENCORE CELLE DE LA TOLÉRANCE, MAIS INDEXÉE PAR RÉFÉRENCE.
 
+       L'ancien code parcourait tous les `j` et s'arrêtait sur
+       `gap <= max(références) + tolérance`. Ce seuil ne donnait AUCUN gain
+       asymptotique: dès qu'une référence est grosse — un lipide C80 à 900 Da —
+       il couvrait la moitié de l'axe des masses, donc la boucle interne
+       visitait presque tous les pics suivants, pour CHAQUE pic. O(n²) sur
+       10⁵ pics, avec un `nearest_standard` par paire.
+
+       On inverse donc le sens de la marche: ce sont les RÉFÉRENCES qui pilotent,
+       et elles sont peu nombreuses. Pour chaque pic `k` et chaque référence `R`,
+       les seuls `j` possibles sont ceux dont l'écart tombe dans la fenêtre
+       autour de `R` — un intervalle CONTIGU sur `masses`, trouvé par recherche
+       dichotomique. On ne visite donc que les pics réellement candidats.
+
+       MÊME RÉSULTAT, POUR UNE RAISON PRÉCISE: un écart garde son lien s'il est à
+       moins de `tolerance` d'une référence AU PLUS, donc s'il tombe dans la
+       fenêtre de CETTE référence. Toute fenêtre visitée contient donc tous les
+       candidats, et le test `error < tolerance` — inchangé, et calculé dans le
+       même ordre qu'avant — rejette tout le reste. L'ancien seuil `reach` n'a
+       JAMAIS filtré quoi que ce soit: il ne bornait que la boucle, et aucune
+       fenêtre illevée ne pouvait s'y trouver, puisque `R + tolerance <= reach`
+       reste vrai pour la plus grosse référence. */
     let mut candidates: Vec<Candidate> = Vec::new();
+    /* LE DOUBLON, et il faut le prévoir: deux références à moins de deux fois la
+       tolérance l'une de l'autre donnent des fenêtres QUI SE CHEVAUCHENT, et le
+       même `j` serait alors vu deux fois. Or un couple (k, j) ne doit donner
+       qu'un candidat, celui de la référence la plus proche — le doublon le
+       ferait compter deux fois dans `candidates`, donc dans la courbe et dans la
+       coupure. Un tampon de marque suffit: il dit « ce `j` a déjà été servi pour
+       ce `k` », et il est réutilisé d'un `k` à l'autre par un compteur qui
+       change, donc jamais besoin de le remettre à zéro. */
+    let mut served: Vec<usize> = vec![usize::MAX; n];
+    let mut generation: usize = 0;
+    /* La fenêtre est élargie d'un souffle, puis le test exact fait le tri. Une
+       fenêtre trop ÉTROITE perdrait un candidat sur un simple arrondi; trop
+       large ne coûte qu'une comparaison de plus, que le test rejette. */
+    let slack = tolerance * 1e-9 + 1e-12;
     for k in 0..n {
         let low = masses[k];
         if !low.is_finite() {
             continue;
         }
-        for j in (k + 1)..n {
-            let gap = masses[j] - low;
-            if !(gap <= reach) {
-                break;
+        generation += 1;
+        for reference_mass in reference_masses.iter() {
+            let centre = *reference_mass;
+            let mut lo = first_gap_at_least(masses, low, centre - tolerance - slack);
+            if lo < k + 1 {
+                lo = k + 1;
             }
-            if let Some((index, error)) = nearest_standard(&reference_masses, gap) {
-                if error < tolerance {
-                    candidates.push(Candidate {
-                        weight: error,
-                        u: k,
-                        v: j,
-                        std_index: references[index].1,
-                    });
+            let hi = first_gap_at_least(masses, low, centre + tolerance + slack);
+            for j in lo..hi {
+                if served[j] == generation {
+                    continue;
+                }
+                served[j] = generation;
+                if let Some((index, error)) = nearest_standard(&reference_masses, masses[j] - low) {
+                    if error < tolerance {
+                        candidates.push(Candidate {
+                            weight: error,
+                            u: k,
+                            v: j,
+                            std_index: references[index].1,
+                        });
+                    }
                 }
             }
         }

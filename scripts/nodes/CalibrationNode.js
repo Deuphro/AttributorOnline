@@ -78,11 +78,23 @@ class SimpleOrbitControls{
         this._panStart=new THREE.Vector2()
         this._panEnd=new THREE.Vector2()
 
-        this.domElement.addEventListener('pointerdown',this._onPointerDown.bind(this))
-        this.domElement.addEventListener('pointermove',this._onPointerMove.bind(this))
-        this.domElement.addEventListener('pointerup',this._onPointerUp.bind(this))
-        this.domElement.addEventListener('wheel',this._onWheel.bind(this))
-        this.domElement.addEventListener('contextmenu',e=>e.preventDefault())
+        /* LES ÉCOUTEURS SONT NOMMÉS, et c'est la seule chose qui rende `dispose()`
+       possible. `.bind(this)` À CHAQUE APPEL produisait une fonction NEUVE: le
+       `removeEventListener` de `dispose()` retirait donc une adresse qui n'était
+       jamais celle de l'écouteur posé — un nettoyage silencieusement inopérant.
+       On pose une fois, on mémorise, on retire la même référence. */
+this._bound={
+    pointerdown:e=>this._onPointerDown(e),
+    pointermove:e=>this._onPointerMove(e),
+    pointerup:e=>this._onPointerUp(e),
+    wheel:e=>this._onWheel(e),
+    contextmenu:e=>e.preventDefault()
+}
+this.domElement.addEventListener('pointerdown',this._bound.pointerdown)
+this.domElement.addEventListener('pointermove',this._bound.pointermove)
+this.domElement.addEventListener('pointerup',this._bound.pointerup)
+this.domElement.addEventListener('wheel',this._bound.wheel)
+this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
     }
 
     update(){
@@ -155,10 +167,16 @@ class SimpleOrbitControls{
     }
 
     dispose(){
-        this.domElement.removeEventListener('pointerdown',this._onPointerDown)
-        this.domElement.removeEventListener('pointermove',this._onPointerMove)
-        this.domElement.removeEventListener('pointerup',this._onPointerUp)
-        this.domElement.removeEventListener('wheel',this._onWheel)
+        const b=this._bound
+        if(!b) return
+        this.domElement.removeEventListener('pointerdown',b.pointerdown)
+        this.domElement.removeEventListener('pointermove',b.pointermove)
+        this.domElement.removeEventListener('pointerup',b.pointerup)
+        this.domElement.removeEventListener('wheel',b.wheel)
+        //le contextmenu n'était retiré par AUCUN chemin: sans ce listener, un
+        //clic droit sur une surface 3D supprimée ouvrait encore le menu système
+        this.domElement.removeEventListener('contextmenu',b.contextmenu)
+        this._bound=null
     }
 }
                     }
@@ -725,10 +743,22 @@ class SimpleOrbitControls{
         this._animate3D()
     }
 
+    /* UNE SEULE CHAÎNE D'ANIMATION, garantie ici et non par l'appelant.
+       `_animationFrame` ne portait que le DERNIER identifiant demandé, donc un
+       second `setup3DCamera` — deux bascules 3D rapprochées — démarrait une
+       seconde boucle indépendante que `restore2DCamera` ne pouvait pas annuler:
+       `cancelAnimationFrame` ne visait qu'une des deux, et l'autre rendait
+       `renderer.render` pour toujours, sur un renderer peut-être déjà détruit.
+       Annuler systématiquement l'image en attente avant d'en demander une
+       autre rend la boucle unique QUOI QU'IL ARRIVE au nombre d'appels. */
     _animate3D(){
         if(!this.parameters.show3DSurface || !this.graph.glLayer){
             this.restore2DCamera()
             return
+        }
+        if(this._animationFrame){
+            cancelAnimationFrame(this._animationFrame)
+            this._animationFrame=null
         }
         if(this._orbitControls) this._orbitControls.update()
         this.graph.glLayer.renderer.render(this.graph.glLayer.scene,this.graph.glLayer.camera)
@@ -1026,5 +1056,27 @@ class SimpleOrbitControls{
         if(this.modeSelect) this.modeSelect.value=this.parameters.calibrationMode
         if(this.useCollectionErrorsCheckbox) this.useCollectionErrorsCheckbox.input.checked=this.parameters.useCollectionErrors
         if(this.show3DSurfaceCheckbox) this.show3DSurfaceCheckbox.input.checked=this.parameters.show3DSurface
+    }
+
+    /* Le CONTEXTE WEBGL, libéré avec le nœud — même raison et même surcharge que
+       `TrimmerNode`: ces deux nœuds étendent `NodeWithAccordion`, qui ne libère
+       que l'accordéon, alors que c'est `NodeWithAccordionGraph` qui appelle
+       `graph.dispose()`. Sans cela, chaque suppression laissait un contexte
+       OpenGL vivant — et, à 16 contextes, le navigateur en sacrifiait un autre,
+       celui d'un nœud encore affiché.
+
+       La surface 3D et ses contrôles sont libérés aussi : la géométrie et le
+       matériau sont des ressources GPU, exactement comme les tampons du tracé 2D,
+       et une orbite.camera encore active reprogrammerait un renderer mort. */
+    suicide(options={}){
+        this.graph?.dispose?.()
+        if(this._animationFrame!==null&&this._animationFrame!==undefined){
+            cancelAnimationFrame(this._animationFrame)
+            this._animationFrame=null
+        }
+        this._orbitControls?.dispose?.()
+        this._surfaceMesh?.geometry?.dispose?.()
+        this._surfaceMesh?.material?.dispose?.()
+        super.suicide(options)
     }
 }

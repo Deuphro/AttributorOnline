@@ -1505,7 +1505,25 @@ forestOverviewLayout({animate=false}={}){
             intensities:Array.from(points.order.map(index=>points.y[index])),
             standards:standards.masses,
             tolerance:Number.isFinite(tolerance)&&tolerance>0?tolerance:DEFAULT_LINK_TOLERANCE,
-            degreeMax:Number.isFinite(degreeMax)&&degreeMax>0?degreeMax:0,
+            /* LE DEGRÉ EST UN COMPTE, ET IL EST ARRONDI ICI, AU DERNIER ENDROIT
+           AVANT LE NOYAU. C'est la seule ligne par où la valeur entre dans le
+           calcul, donc elle ferme tous les chemins d'un coup: la saisie, la
+           restauration de session, un appel programmatique.
+
+           Pourquoi c'est nécessaire: le noyau borne un sommet par
+           `degree_max as usize`, et Rust tronque vers zéro. Une valeur entre 0
+           et 1 passe le test « > 0 » — donc les deux circuits croient tous deux
+           qu'un plafond est demandé — puis tronque à 0. Et là les deux langages
+           lisent ce 0 à l'opposé: `Some(0)` en Rust est un plafond de zéro, donc
+           AUCUNE arête n'est gardée et le réseau ressort vide; `if(cap && …)`
+           en JS voit un 0 falsy, donc le plafond est désactivé et toutes les
+           arêtes sont gardées. Même réglage, réseau vide en wasm et réseau
+           complet en repli JS.
+
+           Le champ arrondit déjà à la saisie, ce qui est ce que voit l'utilisateur
+           et ce qui évite d'afficher une valeur que le calcul n'utilise pas.
+           Cette ligne est la DERNIÈRE garantie, pas la première. */
+            degreeMax:Number.isFinite(degreeMax)&&degreeMax>0?Math.trunc(degreeMax):0,
             /* LA COUPURE PART AU NOYAU, et non au retour: c'est le noyau qui
                possède les poids triés, donc lui seul peut dire « prends les N
                meilleurs » sans les renvoyer d'abord pour être recoupés. */
@@ -2173,7 +2191,7 @@ forestOverviewLayout({animate=false}={}){
         },"How close two peaks must be to a reference mass to be linked. Igor used 0.5 as a constant; here it is a setting, because it is a geometry and not a physics")
         this.forestDegreeMaxInput=this.field(bounds,"Max degree",this.parameters.forestDegreeMax,{
             tag:"number",
-            onCommit:(raw)=>this.commitForestNumber("forestDegreeMax",raw,0,8)
+            onCommit:(raw)=>this.commitForestNumber("forestDegreeMax",raw,0,8,true)
         },"How many links one peak may hold. 0 = no limit (Igor's GrowForest); 2 gives a chain, Igor's GrowReticles")
         this.forestChargeInput=this.field(content,"Charge (0 = the plan's)",this.parameters.forestCharge,{
             tag:"number",
@@ -2306,9 +2324,24 @@ forestOverviewLayout({animate=false}={}){
        ferait recalculer des milliers de formules pour un résultat identique,
        et repeindrait le nœud « sale » alors que ses sorties sont à jour — le
        défaut inverse, et tout aussi mensonger. */
-    commitForestNumber(name,raw,low,high){
-        const value=Number(raw)
-        const bounded=Number.isFinite(value)?Math.min(high,Math.max(low,value)):low
+/* `integer` distingue les bornes qui sont un COMPTE de celles qui sont une
+   MESURE. Ce n'est pas décoratif, c'est ce qui tient les deux circuits
+   d'accord: le noyau borne un sommet par `degree_max as usize`, et Rust
+   TRONQUE vers zéro. Une valeur entre 0 et 1 — 0,5 — passe le test « > 0 » des
+   deux côtés (donc toutes deux croient qu'un plafond est demandé) puis tronque
+   à 0. Et là les deux langages lisent ce 0 différemment: en Rust `Some(0)` est
+   un plafond de zéro, donc AUCUNE arête n'est gardée et le réseau ressort vide;
+   en JS `if(cap && …)` voit un 0 falsy, donc le plafond est désactivé et toutes
+   les arêtes sont gardées. Le même réglage donnait un réseau vide en wasm et un
+   réseau complet en repli JS. On borne donc à l'ENTIER ici, à la source, pour
+   que la valeur qui atteint le noyau soit déjà celle qu'il veut dire.
+
+   La troncature précède la borne, comme dans `commitForestMinSize` juste
+   dessous: -2,4 devient -2 puis 0, et non pas borné à 0 deux fois. */
+commitForestNumber(name,raw,low,high,integer=false){
+    const value=Number(raw)
+    const whole=integer&&Number.isFinite(value)?Math.trunc(value):value
+    const bounded=Number.isFinite(whole)?Math.min(high,Math.max(low,whole)):low
         if(bounded===this.parameters[name]){
             this.renderForest()
             return

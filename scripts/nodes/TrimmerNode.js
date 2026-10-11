@@ -873,12 +873,27 @@ export class TrimmerNode extends NodeWithAccordion{
         const key=grabbed.key
         const before=this.trimSettingsSnapshot()
         this.setTrimBound(key,toValue(pointer()))
+        /* UN DRAG SE TERMINE PAR QUATRE ÉVÉNEMENTS, pas un seul. `pointercancel`
+           est celui que le tactile envoie dès que le geste est interrompu — le
+           système prend le doigt, une notification, un changement d'orientation —
+           et sans lui les deux écouteurs restaient accrochés à `window` pour le
+           reste de la session. `blur` couvre le cas où le pointeur sort de la
+           fenêtre sans relâcher. `Plot2D` traite déjà ces deux cas de la même
+           façon, avec un commentaire qui dit pourquoi: le même forget. */
+        const stopDrag=()=>{
+            window.removeEventListener("pointermove",onMove)
+            window.removeEventListener("pointerup",onUp)
+            window.removeEventListener("pointercancel",onUp)
+            window.removeEventListener("blur",onUp)
+            //le nœud pourra ainsi couper un drag en cours s'il est supprimé
+            this.trimDragCleanup=null
+        }
+        this.trimDragCleanup=stopDrag
         const onMove=(moveEvent)=>{
             this.setTrimBound(key,toValue(moveEvent.clientY-rect.top-graph.parameters.margins.top))
         }
         const onUp=()=>{
-            window.removeEventListener("pointermove",onMove)
-            window.removeEventListener("pointerup",onUp)
+            stopDrag()
             //the last position must not wait for the debounce: the drag is over,
             //so publish the final trim now instead of ~90ms later
             if(this.trimDebounceTimer){
@@ -890,6 +905,8 @@ export class TrimmerNode extends NodeWithAccordion{
         }
         window.addEventListener("pointermove",onMove)
         window.addEventListener("pointerup",onUp)
+        window.addEventListener("pointercancel",onUp)
+        window.addEventListener("blur",onUp)
     }
     //Hover highlighting is parked, not deleted: the bin-snapping logic below is
     //the right place to hang a proper readout, and the pointer handlers are
@@ -1216,6 +1233,22 @@ export class TrimmerNode extends NodeWithAccordion{
             this.pinTrimDomains()
         }
         this.refreshTrimmerUI()
+    }
+
+    /* Le CONTEXTE WEBGL, libéré avec le nœud.
+
+       Ce nœud étend `NodeWithAccordion`, et non `NodeWithAccordionGraph`: or
+       c'est ce dernier qui porte le `suicide()` qui appelle `graph.dispose()`.
+       Sans cette surcharge, supprimer un nœud Trimmer laissait vivre un contexte
+       OpenGL, ses tampons GPU, et les cinq boucles `requestAnimationFrame` du
+       tracé. Les navigateurs plafonnent le nombre de contextes WebGL vivants —
+       16 dans Chrome — et au-delà ils libèrent le PLUS ANCIEN, silencieusement:
+       supprimer un Trimmer pouvait donc faire noircir le graphique d'un AUTRE
+       nœud. Même surcharge que `PeakPickingNode`, même raison. */
+    suicide(options={}){
+        this.graph?.dispose?.()
+        this.trimDragCleanup?.()
+        super.suicide(options)
     }
 }
 

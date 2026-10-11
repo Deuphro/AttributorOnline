@@ -1092,6 +1092,49 @@ readCombining(entries){
     }
 }
 
+/* L'IDENTITÉ D'UN MULTIENSEMBLE, et elle est calquée sur `fingerprint` de
+   `attribution.rs`: un FNB dont on MÉLANGE l'indice de la brique à la
+   multiplicité. Mélanger l'indice est ce qui distingue « 12 C à la position 0 »
+   de « 12 C à la position 3 »: sans lui, deux briques différentes de même
+   multiplicité donneraient la même empreinte.
+
+   `count===0` est sauté ENTIÈREMENT, indice compris: un zéro n'ajoute rien à la
+   composition, donc il ne doit rien ajouter à l'empreinte. C'est ce qui rend
+   `[C:1]` et `[C:1, H:0]` identiques — et c'est correct, parce que ce sont le même
+   multiensemble.
+
+   CE QUE JS NE PEUT PAS FAIRE: le noyau hache en u64, que la machine fait
+   nativement. JS n'a pas d'entier 64 bits, et un `BigInt` alloue à chaque
+   opération — il deviendrait le poste dominant, bien plus cher que l'encodage
+   qu'il remplace. On tient donc deux accumulations 32 bits INDÉPENDANTES avec
+   `Math.imul` — qui est une multiplication 32 bits exacte, avec la même garantie
+   que le `wrapping_mul` du noyau — puis on les recolle en un nombre unique.
+   53 bits suffisent, pas 64: sur les 2 248 847 états de la fixture à ratio 0,
+   cela donne 2,7·10⁻⁴ de probabilité de collision.
+
+   ET LA PARITÉ AVEC LE NOYAU N'EST PAS MENACÉE, parce qu'il ne faut pas que les
+   deux circuits rendent le même NOMBRE: l'empreinte n'est qu'une clé opaque,
+   jamais lue par l'appelant, jamais comparée d'un circuit à l'autre. Ce qui doit
+   être égal, c'est l'ENSEMBLE des états rendus, et il ne dépend pas du nom de la
+   clé qu'on leur a donnée. */
+const FP_K1=0x9E3779B9|0
+const FP_K2=0x85EBCA6B|0
+function fingerprint(counts){
+    let h1=0x811C9DC5|0
+    let h2=0xC2B2AE35|0
+    for(let i=0;i<counts.length;i++){
+        const c=counts[i]
+        if(c===0) continue
+        h1=Math.imul(h1^((i*FP_K1)|0),FP_K1)>>>0
+        h2=Math.imul(h2^((i*FP_K2)|0),FP_K2)>>>0
+        h1=Math.imul(h1^(c|0),FP_K1)>>>0
+        h2=Math.imul(h2^(c|0),FP_K2)>>>0
+    }
+    //53 bits exacts: (2^21-1)·2^32 + (2^32-1) = 2^53-1, le plus grand entier
+    //qu'un flottant représente sans perte
+    return (h1&0x1FFFFF)*4294967296+h2
+}
+
 /* -------------------------------------------------------------------------
    LE CRIBLE — stratégie « tas ».
 
@@ -1144,57 +1187,34 @@ function cribleHeap(plan,{maxMass,minMass=0,limit=Infinity,accept=null,emit=null
        tout — pas « moins d'états », AUCUN. Un élagage appliqué au germe au lieu
        de la croissance viderait le crible sans qu'on le voie. */
     const heap=new MassHeap()
-    /* LA SIGNATURE D'UN VECTEUR EST UN ENTIER, et c'est la seule chose que le
-       `seen` change. Une base MIXTE: le chiffre d'une brique est sa multiplicité,
-       chaque position a son poids, et le vecteur entier s'additionne comme un
-       nombre. Deux vecteurs donnent le même nombre exactement quand ils sont le
-       même vecteur — c'est une bijection, donc exactement le même ensemble de
-       signatures qu'avant, et donc exactement le même espace couvert.
+    /* L'IDENTITÉ EST `fingerprint`, comme dans le noyau — et c'est un CHANGEMENT
+       DE FOND, pas un synonyme. La version précédente encodait le vecteur en base
+       mixte, un poids par brique, `strides[i] = Π(caps[j]+1)`, dans un
+       `Int32Array`.
 
-       Ce n'était pas un goût, c'était un choix qui cachait un CRASH. La version
-       qui joignait les multiplicités en CHAÎNE coûtait 24,4 s sur la fixture à
-       ratio 0.01. Elle pouvait aussi, à ratio 0, ne rien rendre du tout:
-       `RangeError: Set maximum size exceeded` — un `Set` ne peut pas contenir
-       plus d'entrées que V8 n'en alloue. CE CRASH N'EST PAS CORRIGÉ: le tableau
-       ci-dessous est un `Uint8Array`, donc il a sa propre limite, et au-delà on
-       retombe sur un `Set`. Ratio 0 échoue donc toujours. Je le dis ici, parce
-       que ce commentaire est précisément l'endroit où quelqu'un croirait le
-       problème réglé.
+       Ces poids sont des PRODUITS: ils croissent d'un facteur `(caps+1)` à chaque
+       brique, et les briques sont plus nombreuses que les groupes que l'on choisit
+       — un seul « CH2 » en fait déjà 7 (une par isotope). Sur les plans réels, le
+       poids sort de l'entier 32 bits dès la 6ᵉ brique: 4,4·10¹⁰ pour un groupe
+       unique. Un poids qui ne tient plus sur 32 bits est REPLIÉ par l'affectation,
+       et n'est donc plus le poids voulu. L'encodage cessait alors d'être une
+       bijection — deux compositions différentes donnaient la même signature, et le
+       `seen` écartait la seconde sans rien dire.
 
-       LE BITMAP EST JUSTE CE QU'IL FAUT POUR LE TRAVAIL QUOTIDIEN. La signature
-       EST une base mixte, donc l'espace entier a `∏(caps[i]+1)` positions, et on
-       peut réserver un octet par multiensemble adressable. La mémoire devient
-       PRÉVISIBLE — un octet, contre une trentaine par entrée de `Set` — et « déjà
-       vu » devient une lecture au lieu d'un hachage. On réserve jusqu'à 64 MiB,
-       ce qui couvre largement une fenêtre de travail. */
-    const strides=new Int32Array(count)
-    let span=1
-    for(let i=0;i<count;i++){
-        strides[i]=span
-        span*=caps[i]+1
-    }
-    /* LE BITMAP A UNE LIMITE, et elle se atteint. `span` est le nombre de
-       multiensembles ADRESSABLES, pas le nombre de multiensembles_visités: à
-       ratio 0 sur la fixture il vaut 2,5·10²¹, alors que le plafond de masse n'en
-       rend qu'un million. Réserver tout l'espace serait donc pire que le `Set`.
+       Le `span` n'y changeait rien: il ne servait qu'à choisir entre un bitmap et
+       un `Set`, et il était calculé EXACT pendant que les poids qu'il ostensibly
+       surveillait étaient déjà corrompus trois lignes plus haut. Le bitmap, au
+       passage, n'était jamais alloué en pratique — son seuil, 2²⁶, est dépassé dès
+       le premier groupe.
 
-       On réserve donc le bitmap quand il tient — jusqu'à 64 MiB, soit 6,7·10⁷
-       positions, ce qui couvre largement les fenêtres de travail — et on TOMBE
-       sur un `Set` au-delà. Les deux répondent à la même question par le même
-       chemin (`seen[signature]`), donc le reste du crible ne fait pas la
-       différence, et le choix se fait une fois, ici. */
-    const bitmap=span<=1<<26?new Uint8Array(span):null
-    /* UN OBJET PLUTÔT QUE DEUX FONCTIONS: `alreadySeen` et `markSeen` sont
-       appelées une fois par multiensemble — 725 429 fois sur la fixture — et une
-       fermeture appelée à chaque itération se paie. Un objet dont la forme ne
-       change jamais garde la même icône de code, donc le test de la branche
-       bitmap/Set devient une lecture de propriété. */
-    const setOf=bitmap?null:new Set([0])
-    const ledger=bitmap
-        ?{has:s=>bitmap[s]===1,add:s=>{bitmap[s]=1}}
-        :{has:s=>setOf.has(s),add:s=>setOf.add(s)}
-    ledger.add(0)
-    heap.push({mass:0,counts:new Int32Array(count),signature:0})
+       Le coût ne change pas de classe: la poussée alloue déjà `counts` en O(n), donc
+       hachée en O(n) est gratuit à côté. Ce qui disparaît en revanche, c'est tout
+       l'appareil à seuil: ni `strides`, ni `span`, ni bitmap, ni `Set` de repli. */
+    const seen=new Set()
+    const germe=new Int32Array(count)
+    const seed=fingerprint(germe)
+    seen.add(seed)
+    heap.push({mass:0,counts:germe,signature:seed})
     /* LA CANONIQUE, à la POUSSÉE et pas au rendu.
 
        Élaguer au rendu ne servirait à rien: le tas CONTINUERAIT de parcourir
@@ -1300,10 +1320,15 @@ function cribleHeap(plan,{maxMass,minMass=0,limit=Infinity,accept=null,emit=null
                des entiers, et il remplace 748 126 états. */
             if(dependence&&counts[takeA]>0&&counts[takeB]>0
                 &&counts[giveA]<caps[giveA]&&counts[giveB]<caps[giveB]) continue
-            const signature=state.signature+strides[i]
+            /* On hache le vecteur ENTIER, et non par delta comme le faisait l'ancien
+               encodage positionnel. Un delta aurait été plus rapide, mais il ne
+               serait correct que tant que les poids restent exacts — et c'est
+               précisément ce qui n'est pas garanti. Hasher le vecteur est le seul
+               moyen d'obtenir une identité qui ne dépende d'aucun dépassement. */
+            const signature=fingerprint(counts)
             //déjà dans la file ou déjà sorti: inutile de le repousser
-            if(ledger.has(signature)) continue
-            ledger.add(signature)
+            if(seen.has(signature)) continue
+            seen.add(signature)
             heap.push({mass,counts,signature})
         }
     }

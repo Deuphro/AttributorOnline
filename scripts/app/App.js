@@ -462,6 +462,21 @@ export class App{
                 observeResizeHandlers(child,obs)
             }
         }
+        /* LE MIROIR DE `observeResizeHandlers`, et il existait parce qu'un
+           `ResizeObserver` garde une RÉFÉRENCE FORTE sur chaque élément observé:
+           un nœud supprimé du DOM restait observé, donc vivait, donc retenait avec
+           lui son graphe, ses écouteurs et son contexte WebGL — jusqu'à la fin de
+           la session. `observe` sans `unobserve` opposé n'est pas un oubli
+           cosmétique, c'est ce qui empêche la libération. */
+        const unobserveResizeHandlers=(elt,obs)=>{
+            if(elt.handleResize){
+                obs.unobserve(elt)
+            }
+            for(let child of elt.children){
+                unobserveResizeHandlers(child,obs)
+            }
+        }
+        this.unobserveResizeHandlers=unobserveResizeHandlers
         //kept on the instance: the autosave registers its own resize listeners
         //through it, and a second copy of this walker is a second thing to keep
         //in step with the first
@@ -476,6 +491,14 @@ export class App{
                 for(const node of mutation.addedNodes){
                     if(node.nodeType===1){
                         observeResizeHandlers(node,this.resizeObserver)
+                    }
+                }
+                /* ET LES PARTIS, qui n'étaient pas observés. Sans ce second
+                   parcours, tout nœud retiré — panneau de nœud supprimé, dialogue
+                   refermé, ligne virtualisée — demeurait observé. */
+                for(const node of mutation.removedNodes){
+                    if(node.nodeType===1){
+                        unobserveResizeHandlers(node,this.resizeObserver)
                     }
                 }
             }

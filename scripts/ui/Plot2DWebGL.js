@@ -95,6 +95,7 @@ export class Plot2DWebGL extends Plot2D{
         window.addEventListener("keydown",this.onPickKey)
         //the recursive ResizeObserver pipeline now drives the GPU fast path
         this.container.handleResize=(e)=>this.handleResize(e)
+        this._resizeHook=this.container.handleResize
         this.drawGraph()
     }
 
@@ -897,6 +898,17 @@ export class Plot2DWebGL extends Plot2D{
     }
 
     dispose(){
+        /* Le CROCHET DE REDIMENSIONNEMENT est effacé ICI, pas seulement les
+           écouteurs. `container.handleResize` est une fonction POSÉE sur
+           l'élément DOM: le `ResizeObserver` de l'application observe ce conteneur
+           et ne l' observe jamais, donc le hook reste vivant après le dispose. Un
+           simple redimensionnement de fenêtre suffisait alors à rappeler
+           `handleResize` sur un tracé détruit, qui relançait un `drawGraph`
+           complet — sur des ressources GPU qui n'existaient plus. */
+        if(this.container&&this.container.handleResize===this._resizeHook){
+            this.container.handleResize=null
+        }
+        this._resizeHook=null
         this.container.removeEventListener("mousemove",this.onPickMove)
         this.container.removeEventListener("mouseleave",this.onPickLeave)
         this.container.removeEventListener("mousedown",this.onPickDown)

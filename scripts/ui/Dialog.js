@@ -219,8 +219,25 @@ export class Dialog{
         }
     }
     suicide(){
+        /* UN DRAG INTERROMPU PAR LA FERMETURE. `document.onmousemove` n'était
+           effacé que dans `onmouseup` : fermer le dialogue AU MILIEU du
+           glisser laissait le gestionnaire en place, et il écrivait ensuite des
+           `style.left/top` sur une fenêtre DÉTACHÉE — à chaque mouvement de
+           souris, pour le reste de la session. */
+        this.stopDrag()
         this.DOMelt.window.remove()
         dispatchEvent(this.events.broadcast.killed)
+    }
+    /* L'ARRÊT EST UN NOM, parce qu'il a trois appelants: la fin normale du
+       glisser, la fermeture du dialogue, et la perte de focus de la fenêtre —
+       un relâchement hors de la fenêtre ne livre jamais `mouseup`. */
+    stopDrag(){
+        document.onmousemove=null
+        document.onmouseup=null
+        if(this._onWindowBlur){
+            window.removeEventListener("blur",this._onWindowBlur)
+            this._onWindowBlur=null
+        }
     }
     gridSiblings(){
         const destination=this.destination
@@ -290,9 +307,10 @@ export class Dialog{
         }
         document.onmouseup=(e)=>{
             e.preventDefault();
-            document.onmousemove=null;
-            document.onmouseup=null;
+            this.stopDrag();
         }
+        this._onWindowBlur=()=>this.stopDrag();
+        window.addEventListener("blur",this._onWindowBlur);
     }
     resize(e){
         if(this.folded) return

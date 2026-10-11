@@ -68,9 +68,17 @@ export class Plot2D{
         this.zoomedWhileEmpty=false
         this.lastPanEndAt=-Infinity
         this.axisDrag=null
-        this.container.addEventListener("wheel",(event)=>this.handleWheelZoom(event),{passive:false})
-        this.container.addEventListener("dblclick",(event)=>this.handleZoomReset(event))
-        this.container.addEventListener("mousedown",(event)=>this.handlePanStart(event))
+        /* LES ÉCOUTEURS SONT NOMMÉS pour une raison simple: `Plot2D` n'avait AUCUN
+           `dispose()`, et des fonctions fléchées créées sur place ne peuvent pas
+           être retirées — rien ne gardait leur adresse. Chaque nœud supprimé
+           laissait donc trois écouteurs sur un conteneur mort. Ils sont maintenant
+           posés une fois, mémorisés, et retirés par `dispose()`. */
+        this._onWheel=(event)=>this.handleWheelZoom(event)
+        this._onDblClick=(event)=>this.handleZoomReset(event)
+        this._onMouseDown=(event)=>this.handlePanStart(event)
+        this.container.addEventListener("wheel",this._onWheel,{passive:false})
+        this.container.addEventListener("dblclick",this._onDblClick)
+        this.container.addEventListener("mousedown",this._onMouseDown)
     }
     get graphzone(){
         return {
@@ -716,7 +724,34 @@ export class Plot2D{
         //this the pan guard would stay stuck and silently kill every later
         //wheel-zoom resync (the inspector would freeze for the whole session)
         window.addEventListener("blur",onUp)
+        /* LE DÉTACHEMENT COMPLET, et non plus seulement `blur`. Les trois
+           écouteurs vivent sur `window`, pas sur le conteneur: rien d'autre ne
+           pouvait donc les reprendre, et un tracé supprimé AU MILIEU D'UN PAN
+           laissait les trois accrochés, chacun retenant le tracé. `dispose()`
+           appelle cette fonction — avant, `detachPanOnBlur` était écrit et
+           jamais appelé nulle part dans le dépôt. */
+        this.detachPan=()=>{
+            window.removeEventListener("mousemove",onMove)
+            window.removeEventListener("mouseup",onUp)
+            window.removeEventListener("blur",onUp)
+            this.detachPanOnBlur=null
+            this.detachPan=null
+        }
         this.detachPanOnBlur=()=>window.removeEventListener("blur",onUp)
+    }
+
+    /* LA LIBÉRATION. Elle manquait, et c'est ce qui rendait les trois
+       écouteurs ci-dessus — et ceux du pan — définitifs. */
+    dispose(){
+        this.detachPan?.()
+        this.detachPanOnBlur?.()
+        if(this.zoomGestureTimer){
+            clearTimeout(this.zoomGestureTimer)
+            this.zoomGestureTimer=null
+        }
+        this.container.removeEventListener("wheel",this._onWheel)
+        this.container.removeEventListener("dblclick",this._onDblClick)
+        this.container.removeEventListener("mousedown",this._onMouseDown)
     }
     markerPath(shape,size){
         const s=size??4

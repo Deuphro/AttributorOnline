@@ -149,20 +149,72 @@ export function growForest({masses,intensities,standards,tolerance=DEFAULT_LINK_
     }
     if(!references.length) return empty()
     references.sort((a,b)=>a.mass-b.mass)
-    /* LA COUPURE: au-delà de la plus grosse référence, plus aucun écart ne peut
-       être atteint, et les masses étant triées tous les suivants non plus. */
-    const reach=references[references.length-1].mass+tolerance
+    /* LA FENÊTRE EST ENCORE CELLE DE LA TOLÉRANCE, MAIS INDEXÉE PAR RÉFÉRENCE.
 
+       L'ancien code parcourait tous les `j` et s'arrêtait sur
+       `gap <= max(références) + tolérance`. Ce seuil ne donnait AUCUN gain
+       asymptotique: dès qu'une référence est grosse — un lipide C80 à 900 Da —
+       il couvre la moitié de l'axe des masses, donc la boucle interne visitait
+       presque tous les pics suivants, pour CHAQUE pic. En O(n²) sur 10⁵ pics,
+       avec un `nearestReference` et une allocation par paire.
+
+       On inverse donc le sens de la marche: ce sont les RÉFÉRENCES qui pilotent,
+       et elles sont peu nombreuses. Pour chaque pic `k` et chaque référence `R`,
+       les seuls `j` possibles sont ceux dont l'écart tombe dans la fenêtre
+       autour de `R` — un intervalle CONTIGU sur `masses`, trouvé par recherche
+       dichotomique. On ne visite donc que les pics réellement candidats.
+
+       MÊME RÉSULTAT, POUR UNE RAISON PRÉCISE: un écart garde son lien s'il est à
+       moins de `tolerance` d'une référence AU PLUS, donc s'il tombe dans la
+       fenêtre de CETTE référence. Toute fenêtre visitée contient donc tous les
+       candidats, et le test `error < tolerance` — inchangé, et calculé dans le
+       même ordre qu'avant — rejette tout le reste. L'ancien seuil `reach`
+       n'était jamais un filtre: il ne bornait que la boucle, et aucune fenêtre
+       illevée ne pouvait s'y trouver, puisque `R + tolerance <= reach` toujours. */
     const candidates=[]
+    /* LE DOUBLON, et il faut le prévoir: deux références proches de moins de
+       deux fois la tolérance donnent des fenêtres QUI SE CHEVAUCHENT, et le même
+       `j` serait alors vu deux fois. Or un couple (k, j) ne doit donner qu'un
+       candidat, celui de la référence la plus proche — le doublon le ferait
+       compter deux fois dans `candidates`, donc dans la courbe et dans la
+       coupure. Un tampon de marque suffit: il dit « ce `j` a déjà été servi
+       pour ce `k` », et il est réutilisé d'un `k` à l'autre par un compteur
+       qui change, donc jamais besoin de le remettre à zéro. */
+    const served=new Int32Array(n)
+    let generation=0
+    //premier `j` dont l'écart vaut au moins `x`. La comparaison se fait sur
+    //`masses[mid]-low` et NON sur `masses[mid] >= low+x`: les deux écritures ne
+    //sont pas le même flottant, et c'est le premier qui décide du lien
+    const firstGapAtLeast=(low,x)=>{
+        let a=0
+        let b=n
+        while(a<b){
+            const mid=(a+b)>>1
+            if(masses[mid]-low<x) a=mid+1
+            else b=mid
+        }
+        return a
+    }
+    //La fenêtre est élargie d'un souffle, puis le test exact fait le tri. Une
+    //fenêtre trop ÉTROITE perdrait un candidat sur un simple arrondi; trop large
+    //ne coûte qu'une comparaison de plus, que le test rejette.
+    const slack=tolerance*1e-9+1e-12
     for(let k=0;k<n;k++){
         const low=masses[k]
         if(!Number.isFinite(low)) continue
-        for(let j=k+1;j<n;j++){
-            const gap=masses[j]-low
-            if(!(gap<=reach)) break
-            const found=nearestReference(references,gap)
-            if(found&&found.error<tolerance){
-                candidates.push({weight:found.error,u:k,v:j,std:found.index})
+        generation++
+        for(let r=0;r<references.length;r++){
+            const centre=references[r].mass
+            let lo=firstGapAtLeast(low,centre-tolerance-slack)
+            if(lo<k+1) lo=k+1
+            const hi=firstGapAtLeast(low,centre+tolerance+slack)
+            for(let j=lo;j<hi;j++){
+                if(served[j]===generation) continue
+                served[j]=generation
+                const found=nearestReference(references,masses[j]-low)
+                if(found&&found.error<tolerance){
+                    candidates.push({weight:found.error,u:k,v:j,std:found.index})
+                }
             }
         }
     }

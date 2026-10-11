@@ -333,8 +333,14 @@ export class GLTraceLayer{
         this.pickCoordsU=null
         this.pickCoordsV=null
         this.lastUpload=null
-        canvas.addEventListener("webglcontextlost",(event)=>event.preventDefault(),false)
-        canvas.addEventListener("webglcontextrestored",()=>this.onContextRestored?.(),false)
+        /* Ces deux écouteurs sont nommés parce qu'ils doivent être RETIRÉS: le canvas
+           survit au `dispose()` tant que l'élément DOM existe, et chaque
+           `webglcontextrestored` déclenchait alors un `onContextRestored` sur un
+           couche déjà morte. */
+        this._onContextLost=event=>event.preventDefault()
+        this._onContextRestored=()=>this.onContextRestored?.()
+        canvas.addEventListener("webglcontextlost",this._onContextLost,false)
+        canvas.addEventListener("webglcontextrestored",this._onContextRestored,false)
     }
 
     get opacity(){
@@ -659,8 +665,29 @@ export class GLTraceLayer{
         return true
     }
 
+    /* CROÎTRE, ET RECONSTRUIRE LA GÉOMÉTRIE — ce n'est pas une élégance, c'est la
+       seule façon de rendre les anciens tampons.
+
+       Un `Float32Array` ne s'agrandit pas sur place, donc chaque croissance
+       rejoue `setAttribute` avec un NOUVEAU `BufferAttribute`. Or Three.js ne
+       libère un tampon GPU qu'à la destruction de la GÉOMÉTRIE : un attribut
+       simplement remplacé par `setAttribute` est oublié, et son tampon reste
+       dans la table de `WebGLAttributes` jusqu'à la fin de la session. Le
+       facteur de croissance est de 1,5, donc un spectre de 10⁶ points provoke
+       une vingtaine de ces fuites par tracé — et un nouveau tracé les recommence.
+
+       On détruit donc la géométrie, on en fait une neuve, et on la réattribue au
+       maillage: `WebGLGeometries` voit alors la destruction et supprime les
+       tampons qui y étaient encore attachés. */
     _bindAttributes(){
         const buffers=this.buffers
+        this.pointGeometry.dispose()
+        this.lineGeometry.dispose()
+        this.pointGeometry=new THREE.BufferGeometry()
+        this.lineGeometry=new THREE.BufferGeometry()
+        //le maillage garde sa géométrie dans un CHAMP: il faut le prévenir aussi
+        this.points.geometry=this.pointGeometry
+        this.lines.geometry=this.lineGeometry
         this.pointGeometry.setAttribute("position",new THREE.BufferAttribute(buffers.positions,3))
         this.pointGeometry.setAttribute("aColor",new THREE.BufferAttribute(buffers.colors,4))
         this.pointGeometry.setAttribute("aSize",new THREE.BufferAttribute(buffers.sizes,1))
@@ -899,6 +926,12 @@ export class GLTraceLayer{
 
     dispose(){
         try{
+            if(this.canvas&&this._onContextLost){
+                this.canvas.removeEventListener("webglcontextlost",this._onContextLost,false)
+                this.canvas.removeEventListener("webglcontextrestored",this._onContextRestored,false)
+            }
+            this._onContextLost=null
+            this._onContextRestored=null
             this.scene.remove(this.points,this.lines)
             this.pointGeometry.dispose()
             this.lineGeometry.dispose()

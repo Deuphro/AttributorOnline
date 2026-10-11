@@ -8,6 +8,10 @@ const MIN_PEAKS_FOR_REFERENCE=8
 //A gap must clear the noise to be read as a population split. Kept in step with
 //MIN_GAP_OVER_NOISE in antiradio.rs.
 const MIN_GAP_OVER_NOISE=8
+//Respawns consécutifs tolérés avant d'admettre que le noyau casse tous les
+//workers (un `panic!` wasm, un bug de structured-clone). Au-delà, on cesse
+//d'insister plutôt que de faire tourner une boucle de respawns.
+const MAX_RESPAWNS=3
 
 //WorkerPool: keeps a set of module workers alive and dispatches compute
 //tasks to them, so heavy kernels never run on the main thread.
@@ -22,6 +26,8 @@ class WorkerPool{
         this.workers=[]
         this.queue=[]
         this.counter=0
+        this.respawns=0
+        this.failing=false
     }
     spawn(){
         const worker=new Worker(new URL("./kernelWorker.js",import.meta.url),{type:"module"})
@@ -33,6 +39,10 @@ class WorkerPool{
                 return
             }
             worker.poolTasks.delete(id)
+            //un worker qui a rendu un résultat fonctionne: le budget de respawn
+            // repart à zéro, sinon des crashes espacés dans le temps finiraient
+            //par épuiser le budget et désactiver la pool pour rien.
+            this.respawns=0
             if(ok){
                 task.resolve(result)
             }else{
@@ -41,6 +51,8 @@ class WorkerPool{
             this.dispatch()
         })
         worker.addEventListener("error",e=>{
+            //Un worker mort emporte les tâches qu'il portait: on les refuse
+            //plutôt que de les laisser promise-pending pour toujours.
             for(const task of worker.poolTasks.values()){
                 task.reject(new Error(e.message||"worker error"))
             }
@@ -49,6 +61,25 @@ class WorkerPool{
             if(index!==-1){
                 this.workers.splice(index,1)
             }
+            /* UN WORKER QUI CRASHE EST REMPLACÉ. Sans ça la pool se dégrade à
+               chaque crash: il reste un slot en moins pour toujours, et un pool
+               à 0 ne relance rien tant qu'aucun `run` ne passe. On recompte le
+               budget: au-delà de quelques respawns d'affilée on suppose que le
+               noyau casse tout worker (un `panic!` wasm, par exemple) et on
+               cesse d'insister, sinon c'est une boucle de respawns. */
+            this.respawns++
+            if(this.respawns>MAX_RESPAWNS){
+                this.failing=true
+            }
+            if(!this.failing&&this.workers.length<this.size){
+                this.spawn()
+            }
+            //et la file est vidée seulement si plus aucun worker ne peut la porter
+            if(!this.workers.length){
+                for(const task of this.queue.splice(0)){
+                    task.reject(new Error("worker pool exhausted"))
+                }
+            }
             this.dispatch()
         })
         this.workers.push(worker)
@@ -56,9 +87,20 @@ class WorkerPool{
     }
     dispatch(){
         while(this.queue.length){
-            const worker=this.workers.find(w=>w.poolTasks.size===0)
+            let worker=this.workers.find(w=>w.poolTasks.size===0)
             if(!worker){
-                return
+                /* LA POOL GRANDIT ICI, ET SEULEMENT SI ÇA SERT. Un worker de
+                   plus n'est créé que lorsqu'il y a une tâche en attente ET
+                   qu'aucun worker libre ne peut la prendre: on ne paie donc pas
+                   N workers pour une charge qui n'en demande pas. C'est ce qui
+                   manquait — `this.size` était calculé puis jamais relu, et le
+                   seul `spawn()` était gardé par `!this.workers.length`, donc un
+                   seul worker pour toute la session. */
+                if(!this.failing&&this.workers.length<this.size){
+                    worker=this.spawn()
+                }else{
+                    return
+                }
             }
             const task=this.queue.shift()
             worker.poolTasks.set(task.id,task)
@@ -72,9 +114,9 @@ class WorkerPool{
         return new Promise((resolve,reject)=>{
             const id=`${++this.counter}-${Date.now()}`
             this.queue.push({id,kernel,payload,transfer,resolve,reject})
-            if(!this.workers.length){
-                this.spawn()
-            }
+            /* Un `run` ne force plus la création d'un worker: `dispatch()`
+               déclenche le premier spawn, et la croissance se fait d'elle-même
+               tant qu'il reste des tâches en attente. */
             this.dispatch()
         })
     }

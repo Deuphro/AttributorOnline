@@ -48,6 +48,25 @@ export class PeakPickingNode extends NodeWithAccordion{
         //monotonic ticket: a multiplexed resolve walking N spectra must not be
         //overwritten by a newer resolve that came in while it was still walking
         this.resolveRun=0
+        /* TWO MORE COUNTERS, and they are not the same one.
+
+           `resolveRun` belongs to the RESOLVE: which analysis of which spectrum
+           is the node currently describing. The multiplexed path raises it and
+           the single-input path compares against it, which is all that is needed
+           because the two never run at once.
+
+           `slopeRun` belongs to the FILTER: three separate user gestures reach
+           `applySlopeFilter` (the resolve, the z button, the slope field) and
+           each may be doubled by the next before the previous has finished its
+           four kernel calls. It is deliberately NOT `resolveRun`: a resolve in
+           flight must not be cancelled by someone dragging the slope, and the
+           filter guards itself instead by re-reading its own ticket.
+
+           `guessRun` belongs to z, which is a single SHARED field written from
+           two places — the button and the automatic read — so "whoever asked
+           last about z wins" is the whole rule. */
+        this.slopeRun=0
+        this.guessRun=0
         /* the slope GUESSED on the first input, which the panel draws and the
            field shows while multiplexed. It is deliberately NOT `parameters.slope`:
            see resolveMultiplexed. */
@@ -318,8 +337,11 @@ export class PeakPickingNode extends NodeWithAccordion{
        A guess is not a privileged way of setting z, it is a way of CHOOSING
        it, so it goes through the same commit as the field. */
     async guessZFromKernel(){
+        const run=++this.guessRun
         const z=await this.readZFromKernel()
-        if(z===null) return
+        //superseded while the kernel was reading: a newer guess already wrote the
+        //field, and committing this older reading would move it BACKWARDS
+        if(z===null||run!==this.guessRun) return
         this.applyZ(z,"guess")
         await this.applySlopeFilter()
         this.resolveChildren()
@@ -337,10 +359,16 @@ export class PeakPickingNode extends NodeWithAccordion{
        the state stays "convention" and the next resolve tries again - a first
        resolve on a short spectrum can be too poor to read, and the second one
        may not be. A genuine reading of 3.00 simply re-reads the same value. */
+    /* The auto z, and it publishes too: `applyZ` writes `parameters.z`, which is a
+       SHARED field, not a local. A resolve that runs while the user is dragging
+       z would otherwise read the guess of a spectrum it is no longer working on.
+       So it takes the SAME ticket as the guess button — one counter for "whoever
+       asked last about z wins" — and checks it after the kernel call. */
     async resolveZIfUnset(){
         if(this.parameters.zSource!=="convention") return
+        const run=++this.guessRun
         const z=await this.readZFromKernel()
-        if(z===null) return
+        if(z===null||run!==this.guessRun) return
         this.applyZ(z, z===CONVENTIONAL_Z ? "convention" : "guess")
     }
     /* Two readouts, matching the classifier's: the width reference in ppm, and
@@ -481,6 +509,16 @@ export class PeakPickingNode extends NodeWithAccordion{
     async resolveOneInput(inputWave){
         this.status = "pending"
         this.lastInputWave = inputWave
+        /* The single-input path is the one that ALWAYS runs — multiplexing is the
+           exception — so it is the one a new resolve must be able to cut short.
+           It has no counter of its own, and it does not need one: the multiplexed
+           path below only ever raises `resolveRun`, so comparing against it here
+           already separates "someone resolved while I was thinking" from "I am the
+           only resolve running". It compares AFTER the kernel call and before
+           `adoptAnalysis`, because adopting a stale analysis would overwrite the
+           newer resolve's persistence fields and the filter would then cut the
+           WRONG spectrum while looking entirely normal. */
+        const run=this.resolveRun
 
         const stride=inputWave.degree===2&&inputWave.dims[1]===2?2:1
 
@@ -489,14 +527,24 @@ export class PeakPickingNode extends NodeWithAccordion{
                 core: inputWave.core,
                 params: { mode: this.parameters.filtrationMode ?? "sublevel", stride }
             })
+            //superseded: a newer resolve owns the state now, so this analysis is thrown
+            //away BEFORE it can overwrite that resolve's persistence fields
+            if(run!==this.resolveRun) return
             this.adoptAnalysis(analysis)
             if(!Number.isFinite(this.parameters.slope) && Number.isFinite(analysis.slope)){
                 this.parameters.slope=analysis.slope
             }
             this.status="resolved"
             await this.applySlopeFilter()
+            //the filter takes its own ticket and can be superseded too; the UI is
+            //not republished then, or this resolve would redraw a node another
+            //one has since re-labelled
+            if(run!==this.resolveRun) return
             this.updateControlsUI()
         }catch(err){
+            //an error on a superseded resolve is not this node's problem to
+            //report: the newer run owns the output and its own error path
+            if(run!==this.resolveRun) return
             //fail() and not a bare status: a silent red node tells the user
             //nothing, and "error" here can come from the KERNEL (a stale wasm
             //build still exposes the 5-argument classify_persistence_0d) as
@@ -746,6 +794,14 @@ export class PeakPickingNode extends NodeWithAccordion{
 
     async applySlopeFilter(){
         if(!this.persistenceBirths) return
+        /* LE TICKET DU FILTRE, pris ici parce que c'est le PREMIER moment où
+           quelqu'un demande de publier des pics. Trois voies y mènent — le
+           resolve, le bouton z, le champ slope — et chacune peut être doublée
+           par la suivante avant que la précédente ait fini ses quatre appels
+           noyau. Sans ce numéro, deux exécutions se chevauchent, la plus
+           ancienne termine APRÈS la plus récente et la remplace par un résultat
+           périmé: le nœud décrit alors un spectre qu'il ne travaille plus. */
+        const run=++this.slopeRun
         const slope=Number.isFinite(this.parameters.slope)?this.parameters.slope:0
         const classification=await computePool.run("classifyPersistence0D",{
             births:this.persistenceBirths,
@@ -761,6 +817,8 @@ export class PeakPickingNode extends NodeWithAccordion{
             centroidX:this.persistenceCentroidX,
             params:{slope}
         })
+        //superseded: a newer filter is in flight and owns the outputs
+        if(run!==this.slopeRun) return
         const pairCount=this.persistenceBirths.length
         this.adoptClassification(classification)
 
@@ -770,8 +828,12 @@ export class PeakPickingNode extends NodeWithAccordion{
         //keeps a resolve at a single classifier run instead of two.
         await this.resolveZIfUnset()
 
-        await this.applyAntiRadio()
+        //the auto z may itself have been superseded; re-check before publishing
+        if(run!==this.slopeRun) return
+        await this.applyAntiRadio(run)
 
+        //one last gate: applyAntiRadio awaits too, so anything may have overtaken
+        if(run!==this.slopeRun) return
         this.paintDiagram(classification)
         if(this.countLabel) this.countLabel.textContent=this.countReadout(classification.keptCount,pairCount)
     }
@@ -793,7 +855,10 @@ export class PeakPickingNode extends NodeWithAccordion{
        and the classified peaks are published as they are: a width in ppm cannot
        be computed on a 1D wave, and silently passing everything through would
        claim the stage had found nothing. */
-    async applyAntiRadio(){
+    async applyAntiRadio(run){
+        //called with the filter's ticket; without it this stage could still
+        //publish from a chain that has been superseded since
+        if(run!==undefined&&run!==this.slopeRun) return
         const profile=this.lastInputWave
         const px=this.persistenceKeptPointsX
         /* anti-radio is given the CHIEF (`py`), because the width it measures is
@@ -820,6 +885,9 @@ export class PeakPickingNode extends NodeWithAccordion{
             this.radioResult=result
             //the mass, cut by the SAME mask — see massThroughMask
             const filteredMass=massThroughMask(this.persistenceKeptMass,result.isRadio,px.length)
+            //the filter kernel was the longest wait in the chain: re-check here,
+            //where the output is actually written, not only before the call
+            if(run!==undefined&&run!==this.slopeRun) return
             this.publishOutput(
                 result.pointsX,
                 filteredMass&&filteredMass.length===result.pointsX.length

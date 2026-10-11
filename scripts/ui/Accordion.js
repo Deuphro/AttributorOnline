@@ -91,14 +91,56 @@ this.DOMelt={
         this.setSizingMode("content")
         this.setUpReordering()
     }
+    /* LES CIBLES SONT DÉTOURNABLES, ET DONC RÉTIRABLES.
+
+       `dragover`/`drop` sont posés sur `this.destination` — le PANNEAU DE
+       COLONNE, partagé par tous les accordéons de la colonne. Ils étaient posés
+       une fois, dans le constructeur, avec des fonctions fléchées : rien ne
+       gardait leur adresse, et aucun `removeEventListener` n'existait dans ce
+       fichier. Chaque nœud recréé laissait donc deux closures mortes sur le
+       panneau de sa colonne, chacune retenant son accordéon defunct.
+
+       Le même oubli vaut quand le Panneau change de place: `popOut` et `dockBack`
+       réassignent `this.destination`, et les écouteurs restaient sur l'ancien —
+       le glisser-déposer ne fonctionnait donc plus une fois le panneau détaché. */
+    attachReorderTargets(){
+        const targets=this._reorderTargets??(this._reorderTargets=[])
+        this.detachReorderTargets()
+        for(const element of [this.DOMelt.container,this.destination]){
+            if(!element) continue
+            const onOver=(event)=>this.handleReorderOver(event)
+            const onDrop=(event)=>this.handleReorderDrop(event)
+            element.addEventListener("dragover",onOver)
+            element.addEventListener("drop",onDrop)
+            targets.push({element,onOver,onDrop})
+        }
+    }
+    detachReorderTargets(){
+        for(const {element,onOver,onDrop} of this._reorderTargets??[]){
+            element.removeEventListener("dragover",onOver)
+            element.removeEventListener("drop",onDrop)
+        }
+        this._reorderTargets=[]
+    }
     setUpReordering(){
         const grip=this.DOMelt.handler.querySelector(".accordion.handler.menu")
-        grip.addEventListener("dragstart",(event)=>this.startReorderDrag(event))
-        grip.addEventListener("dragend",()=>this.endReorderDrag())
-        for(const element of [this.DOMelt.container,this.destination]){
-            element.addEventListener("dragover",(event)=>this.handleReorderOver(event))
-            element.addEventListener("drop",(event)=>this.handleReorderDrop(event))
+        this._reorderGrip=grip
+        this._onDragStart=(event)=>this.startReorderDrag(event)
+        this._onDragEnd=()=>this.endReorderDrag()
+        grip.addEventListener("dragstart",this._onDragStart)
+        grip.addEventListener("dragend",this._onDragEnd)
+        this.attachReorderTargets()
+    }
+    /* `dockBack` RECRÉE le conteneur et son handler, donc la poignée de
+       glisser change d'adresse: il faut la réattacher, pas seulement la
+       détacher. */
+    refreshReorderGrip(){
+        this.detachReorderTargets()
+        if(this._reorderGrip&&this._onDragStart){
+            this._reorderGrip.removeEventListener("dragstart",this._onDragStart)
+            this._reorderGrip.removeEventListener("dragend",this._onDragEnd)
         }
+        this.setUpReordering()
     }
     reorderEdge(event){
         const box=this.DOMelt.container.getBoundingClientRect()
@@ -269,6 +311,9 @@ this.DOMelt={
         this.dialog.DOMelt.content.appendChild(this.DOMelt.content)
         this.DOMelt.container.remove()
         this.destination=this.dialog.DOMelt.content
+        //le panneau de destination a changé: les écouteurs suivent, sinon le
+        //glisser-déposer resterait attaché à l'ancien et cesserait de fonctionner
+        this.refreshReorderGrip()
         this.parameters.container.style.display="grid"
         this.parameters.container.style.width="100%"
         this.parameters.container.style.height="100%"
@@ -289,6 +334,7 @@ this.DOMelt={
         stylize(this.DOMelt.container,this.parameters.container.style);
         panel.appendChild(this.DOMelt.container)
         this.destination=panel
+        this.refreshReorderGrip()
         this.setSizingMode("content")
         this.origin.saveSessionSoon?.()
     }
@@ -298,6 +344,12 @@ this.DOMelt={
         }
         if(draggedAccordion===this){
             draggedAccordion=null
+        }
+        this.detachReorderTargets()
+        if(this._reorderGrip&&this._onDragStart){
+            this._reorderGrip.removeEventListener("dragstart",this._onDragStart)
+            this._reorderGrip.removeEventListener("dragend",this._onDragEnd)
+            this._reorderGrip=null
         }
         this.DOMelt.container.remove()
         if(this.events?.broadcast?.killed){
