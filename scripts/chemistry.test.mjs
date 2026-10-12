@@ -142,15 +142,16 @@ test("les cinq écritures isotopiques et les groupes négatifs",()=>{
     eq(isotopeCount(isotopeSwap,"C",12),-1)
 
     const groupSwap=parse("CH2-(NH)")
-    eq(isotopeCount(groupSwap,"C",12),1)
-    eq(isotopeCount(groupSwap,"H",1),1)
-    eq(isotopeCount(groupSwap,"N",14),-1)
+    eq(isotopeCount(groupSwap,"C",12),-1)
+    eq(isotopeCount(groupSwap,"H",1),-1)
+    eq(isotopeCount(groupSwap,"N",14),1)
+    ok(groupSwap.mass>0,"a negative-mass permutation is conjugated")
 
     const signedGroups=parse("C-2 2H-2 NH")
-    eq(isotopeCount(signedGroups,"C",12),-2)
-    eq(isotopeCount(signedGroups,"H",2),-2)
-    eq(isotopeCount(signedGroups,"N",14),1)
-    eq(isotopeCount(signedGroups,"H",1),1)
+    eq(isotopeCount(signedGroups,"C",12),2)
+    eq(isotopeCount(signedGroups,"H",2),2)
+    eq(isotopeCount(signedGroups,"N",14),-1)
+    eq(isotopeCount(signedGroups,"H",1),-1)
 
     for(const formula of [protonated,mixed,isotopeSwap,groupSwap,signedGroups]){
         const reread=parse(String(formula))
@@ -947,7 +948,7 @@ test("un A écrit qui n'existe pas est une faute, pas un silence",()=>{
     try{ Formula.parse("C6H12O6[99Na+]",TABLE) }catch{ threw=true }
     if(!threw) throw new Error("Na99 should not exist")
 })
-test("une stœchiométrie NÉGATIVE se relit comme elle a été écrite",()=>{
+test("une masse négative devient sa conjugée positive et se relit",()=>{
     /* LE COMPTE N'EST PLUS PERDU À L'AFFICHAGE.
 
        L'écriture était `n>1 ? name+n : name`: tout compte valant 1 ou moins
@@ -966,20 +967,20 @@ test("une stœchiométrie NÉGATIVE se relit comme elle a été écrite",()=>{
         eq(show(written),show(again),`${text} -> "${String(written)}" must read back`)
         if(expected!==undefined) eq(show(written),expected,`${text} composition`)
     }
-    roundTrip("-CH2","12C:-1 1H:-2")
-    roundTrip("-2H","1H:-2")
-    roundTrip("-C-H+N-O","12C:-1 1H:-1 14N:1 16O:-1")
+    roundTrip("-CH2","12C:1 1H:2")
+    roundTrip("-2H","1H:2")
+    roundTrip("-C-H+N-O","12C:1 1H:1 14N:-1 16O:1")
     roundTrip("C2-H2","12C:2 1H:-2")
-    roundTrip("2H-2","2H:-2")
-    eq(prettyNotation(String(Formula.parse("2H-2",TABLE))),"²H₋₂")
+    roundTrip("2H-2","2H:2")
+    eq(prettyNotation(String(Formula.parse("2H-2",TABLE))),"²H₂")
     /* ET LES FORMES POSITIVES N'ONT PAS BOUGÉ: le compte reste APRÈS le
        symbole, c'est seulement le signe qui change de place. */
     roundTrip("CH2","12C:1 1H:2")
     eq(String(Formula.parse("CH2",TABLE)),"CH2","a plain formula is still written plainly")
-    /* UNE MASSE NÉGATIVE EST UNE PERTE, PAS UNE ERREUR. */
-    const loss=Formula.parse("-CH2",TABLE)
-    ok(loss.mass<0,`-CH2 weighs ${loss.mass}, and a loss weighs less than nothing`)
-    close(Math.abs(loss.mass),14.01565006446,1e-9,"a CH2 loss weighs exactly a CH2 gain")
+    const conjugate=Formula.parse("-CH2",TABLE)
+    eq(conjugate.key,Formula.parse("CH2",TABLE).key,
+        "a negative-mass input becomes the positive-mass conjugate")
+    close(conjugate.mass,14.01565006446,1e-9,"the conjugate weighs the positive CH2 mass")
     /* UN ADDUCT N'A PAS DE CORPS PROPRE, et il doit donc s'écrire vide: les
        crochets portent l'information. Le « ±0 » qu'on avait mis en repli
        produisait « ±0[H+] », un ion qui s'annonçait contenir zéro atome. */

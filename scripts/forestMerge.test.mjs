@@ -6,9 +6,10 @@ import {
     forestDiffIsEmpty,
     forestDiffNotation,
     forestFindBrick,
-    forestMergeGraphs
+    forestMergeGraphs,
+    forestStandards
 } from "./forest.js"
-import {Element,Formula} from "./chemistry.js"
+import {Element,Formula,positiveMassConjugate} from "./chemistry.js"
 import {buildPlan,mergeComposition,propagateForest} from "./attribution.js"
 
 const TABLE=Element.load(JSON.parse(
@@ -70,12 +71,13 @@ test("a non-default isotope difference survives notation and propagation",()=>{
     const oneHeavy=Formula.parse("13C",TABLE)
     const heavyLoss=forestCompositionDiff(oneHeavy.composition,threeHeavy.composition)
     const heavyLossNotation=forestDiffNotation(heavyLoss)
-    assert.equal(heavyLossNotation,"13C-2")
-    assert.deepEqual(Formula.parse(heavyLossNotation,TABLE).composition,heavyLoss)
+    assert.equal(heavyLossNotation,"13C2")
+    assert.deepEqual(Formula.parse(heavyLossNotation,TABLE).composition,
+        positiveMassConjugate(heavyLoss))
     const lossGraph={rootIndex:0,vertices:[
         {index:0,mass:Formula.parse("13C3[+]",TABLE).mz},
         {index:1,mass:Formula.parse("13C[+]",TABLE).mz}
-    ],links:[{u:0,v:1,standard:0,label:heavyLossNotation}]}
+    ],links:[{u:1,v:0,standard:0,label:heavyLossNotation}]}
     const lossResult=propagateForest(lossGraph,Formula.parse("13C3[+]",TABLE),[
         {composition:Formula.parse(heavyLossNotation,TABLE).composition}
     ],{table:TABLE})
@@ -112,17 +114,18 @@ test("a brick is found by its SIGNED difference, and by nothing else",()=>{
         "-H2 must NOT match the +H2 brick: they are different bricks, and "
         +"matching them by magnitude is what lost the sign in the first place")
 
-    /* ET LA BRIQUE SIGNÉE EST BIEN CELLE-LÀ. */
-    const signed=planFor([{group:"CH2"},{group:"-CH2"}])
-    /* `diff(big, small) = big − small`, donc diff(∅, CH2) = −CH2: la perte. */
-    const loss=forestCompositionDiff(new Map(),asIs)
-    const items=signed.items.filter(item=>item.kind==="combining")
-    const found=forestFindBrick(items,loss)
-    assert.ok(found>=0,`a signed brick is findable by its signed difference, got -1 for ${forestDiffNotation(loss)}`)
-    assert.ok(items[found].atomicMass<0,
-        `and it weighs a NEGATIVE mass, got ${items[found].atomicMass} — `
-        +"a loss of CH2 is -14 Da, and the old code re-read the canonical key "
-        +"and answered +13 Da")
+    const normalized=planFor([{group:"CH2-(NH)"}],[])
+    const normalizedItems=normalized.items.filter(item=>item.kind==="combining")
+    assert.ok(normalizedItems.length>0)
+    assert.ok(normalizedItems.every(item=>item.atomicMass>0),
+        "every negative-mass typed permutation must enter the plan as its positive conjugate")
+    const standards=forestStandards(normalized)
+    assert.equal(standards.masses.length,1)
+    assert.ok(Math.abs(standards.masses[0]-0.995249)<1e-5,
+        `the conjugate NH-(CH2) must weigh about 0.995249 Da, got ${standards.masses[0]}`)
+    const conjugate=Formula.parse("NH-(CH2)",TABLE)
+    assert.ok(forestFindBrick(normalizedItems,conjugate.composition)>=0,
+        "the conjugate composition must be findable as a link reference")
 })
 
 test("merged graphs keep every vertex and link, plus the bridge",()=>{
@@ -179,7 +182,7 @@ const reloaded=Formula.parse(notation,TABLE)
         "and once it IS in the plan, the substitution links")
 })
 
-test("applying a SIGNED brick turns one root into the other, not into a bigger one",()=>{
+test("applying a positive-mass SIGNED brick turns one root into the other",()=>{
     /* LE CONTRAT DE LA PROPAGATION, VÉRIFIÉ SUR LA COMPOSITION SEULE.
 
        C'est ce que `propagateForest` fait de chaque lien: appliquer la
@@ -190,9 +193,9 @@ test("applying a SIGNED brick turns one root into the other, not into a bigger o
        L'ancien modèle échouait ici deux fois: il écrivait une brique en
        magnitudes, donc appliquait `CHNO` à C6H12O5 et obtenait C7H13O6N — quatre
        atomes de trop — au lieu de H11NO6. */
-    const plan=planFor([{group:between("C6H12O5","H11NO6")}])
+    const plan=planFor([{group:between("H11NO6","C6H12O5")}])
     const brick=plan.items.find(item=>item.kind==="combining")
-    const low=Formula.parse("C6H12O5",TABLE)
+    const low=Formula.parse("H11NO6",TABLE)
     /* LA COPIE EST PROFONDE, et c'est un piège que ce test vient de payer:
        `new Map(composition)` ne copie que le premier niveau — les tables
        d'isotopes restent les MÊMES objets, donc `mergeComposition` a modifié la
@@ -202,13 +205,13 @@ test("applying a SIGNED brick turns one root into the other, not into a bigger o
     const target=new Map([...low.composition].map(([el,byA])=>[el,new Map(byA)]))
     mergeComposition(target,brick.composition,1)
     const rebuilt=Formula.parse(Formula.compositionToString(target,"mostProbable"),TABLE)
-    eq(String(rebuilt),String(Formula.parse("H11NO6",TABLE)),
-        "C6H12O5 plus the signed brick must be H11NO6")
-    close(rebuilt.mass,Formula.parse("H11NO6",TABLE).mass,1e-6,
+    eq(String(rebuilt),String(Formula.parse("C6H12O5",TABLE)),
+        "H11NO6 plus the positive signed brick must be C6H12O5")
+    close(rebuilt.mass,Formula.parse("C6H12O5",TABLE).mass,1e-6,
         "and weigh the same")
     /* ET LA MASSE DE LA BRIQUE EST BIEN L'ÉCART ENTRE LES DEUX RACINES — c'est
        ce que le poids du lien compare, donc c'est ce qui doit être juste. */
-    const gap=Formula.parse("H11NO6",TABLE).mass-low.mass
+    const gap=Formula.parse("C6H12O5",TABLE).mass-low.mass
     close(brick.atomicMass,gap,1e-6,
         `the brick must weigh the gap between the roots: ${brick.atomicMass} vs ${gap}`)
 })

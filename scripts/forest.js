@@ -1,3 +1,5 @@
+import {positiveMassConjugate} from "./chemistry.js"
+
 /* =========================================================================
    forest.js — le RÉSEAU de mesures, hors du DOM.
 
@@ -376,19 +378,8 @@ export function forestStandards(plan,{charge=1}={}){
     if(plan.items.some(item=>item.kind==="ionising")){
         diagnostics.push("adducts are not used as references: they carry a charge, not a mass increment")
     }
-    if(bricks.some(item=>item.atomicMass<0)){
-        /* UNE BRIQUE NÉGATIVE EST LÉGITIME ET NE RELIERA DEUX PICS JAMAIS.
-
-           Une référence se compare à un ÉCART de m/z entre deux pics triés par
-           masse, donc toujours positif: une brique de masse négative n'a aucune
-           occurrence. Elle reste dans la liste pour deux raisons: elle doit
-           rester CHOISISABLE à l'édition d'un lien, et son retrait shiftingait
-           tous les rangs — donc le numéro d'une brique écrite par la main.
-
-           Le dire ici vaut mieux qu'un silence: l'utilisateur voit une brique
-           qu'il a tapée et qui ne fait rien, et c'est le seul endroit où il
-           peut l'apprendre. */
-        diagnostics.push("a group with a negative mass is kept as a reference but can link no pair of peaks: a gap between two peaks is always positive")
+    if(plan.items.some(item=>item.kind==="combining"&&item.atomicMass<0)){
+        diagnostics.push("negative-mass references were excluded; text formulas are conjugated when parsed")
     }
     /* L'ORDRE EST celui du plan, et il est celui que le noyau rend dans
        `edge_standard`: le noyau trie ses références en interne mais rend
@@ -409,10 +400,9 @@ export function forestStandards(plan,{charge=1}={}){
 }
 /* UNE BRIQUE EST-ELLE UTILISABLE COMME RÉFÉRENCE?
 
-   Une brique lisible et de masse NON NULLE. La masse peut être négative: c'est
-   une différence signée (voir `forestStandards`), et la retirer de la liste
-   décalerait tous les rangs — donc tous les numéros de brique que l'interface
-   écrit dans un lien.
+    Une brique lisible et de masse strictement POSITIVE. Le crible ne visite que
+    les écarts croissants; les entrées de masse négative sont donc conjuguées à
+    la frontière de lecture (`Formula.parse`) avant d'arriver ici.
 
    CETTE FONCTION EST LE FILTRE UNIQUE, et les trois endroits qui indexent les
    références DOIVENT l'appeler: `forestStandards` (les masses envoyées au
@@ -424,7 +414,7 @@ export function forestStandards(plan,{charge=1}={}){
 export function linkableBrick(item){
     return item?.kind==="combining"
         &&Number.isFinite(item.atomicMass)
-        &&item.atomicMass!==0
+    &&item.atomicMass>0
 }
 
 /* LA RÉFÉRENCE LA PLUS PROCHE, dans une liste de {mass,index} TRIÉE par masse.
@@ -991,7 +981,8 @@ export function forestDiffIsEmpty(diff){
     espaces pour que chaque signe reste attaché à son propre atome. */
 export function forestDiffNotation(diff){
     const terms=[]
-    const ordered=[...(diff?.keys()??[])].sort((a,b)=>{
+    const composition=positiveMassConjugate(diff)
+    const ordered=[...(composition?.keys()??[])].sort((a,b)=>{
         const sa=String(a?.symbol??a?.name??a)
         const sb=String(b?.symbol??b?.name??b)
         if(sa==="C"&&sb!=="C") return -1
@@ -1001,7 +992,7 @@ export function forestDiffNotation(diff){
         return sa<sb?-1:sa>sb?1:0
     })
     for(const element of ordered){
-        const byA=diff.get(element)
+        const byA=composition.get(element)
         const symbol=String(element?.symbol??element?.name??element)
         for(const [A,n] of [...(byA?.entries()??[])].sort((x,y)=>x[0]-y[0])){
             if(!n) continue

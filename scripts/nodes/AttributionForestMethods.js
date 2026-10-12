@@ -4,7 +4,7 @@ import {Accordion} from "../ui/Accordion.js"
 import {Dialog} from "../ui/Dialog.js"
 import {Plot2DWebGL} from "../ui/Plot2DWebGL.js"
 import {Wave,XYTrace} from "../formats.js"
-import {Formula,FormulaCollection} from "../chemistry.js"
+import {Formula,FormulaCollection,positiveMassConjugate} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
 import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
@@ -65,13 +65,9 @@ export class AttributionForestMethods{
        `attributeTree`). C'est donc CETTE liste — et elle seule — qui donne la
        signification d'un rang. Toute écriture de `link.standard` passe par ici.
 
-       LE FILTRE EST `linkableBrick`, ET NON « masse strictement positive ». Une
-       brique de masse négative est une différence signée: elle a sa place dans
-       la liste, sinon elle disparaît de tous les choix ET décale tous les
-       rangs — donc chaque `link.standard` déjà écrit désignerait une autre
-       brique. Elle ne reliera jamais deux pics, un écart entre deux pics triés
-       étant toujours positif, mais elle reste assignable à un lien: c'est
-       précisément le cas d'une substitution. */
+    LE FILTRE EST `linkableBrick`: seules les masses strictement positives
+    sont transmises au crible, dont les écarts sont croissants. Les saisies
+    négatives sont déjà conjuguées par le lecteur de formules partagé. */
     forestLinkBricks(){
         return((this.forestLinkPlan?.items??[]).filter(linkableBrick))
     }
@@ -122,8 +118,13 @@ export class AttributionForestMethods{
                 .sort((a,b)=>a.graph.rootIndex-b.graph.rootIndex)
             const low=pair[0]
             const high=pair[1]
-            const diff=forestCompositionDiff(
+            const rawDiff=forestCompositionDiff(
                 high.rootFormula.composition,low.rootFormula.composition)
+            let diffMass=0
+            for(const [element,byA] of rawDiff)
+                for(const [A,count] of byA) diffMass+=element.isotope(A).mass*count
+            const conjugated=diffMass<0
+            const diff=positiveMassConjugate(rawDiff)
             const lowRoot=low.graph.vertices.find(v=>v.index===low.graph.rootIndex)
             const highRoot=high.graph.vertices.find(v=>v.index===high.graph.rootIndex)
             if(forestDiffIsEmpty(diff)){
@@ -155,12 +156,12 @@ export class AttributionForestMethods{
                 label=items()[standard]?.notation??null
             }
             const refMass=(this.forestPlan?.masses??[])[standard]??0
-            /* L'ÉCART EST SIGNÉ, comme la référence qu'on lui compare. */
-            const gap=(highRoot?.mass??0)-(lowRoot?.mass??0)
+            /* Le crible ne voit que l'écart POSITIF et une référence positive. */
+            const gap=Math.abs((highRoot?.mass??0)-(lowRoot?.mass??0))
             const weight=Number.isFinite(refMass)?Math.abs(gap-refMass):0
-            const u=low.graph.rootIndex
-            const v=high.graph.rootIndex
-            links.push({u:Math.min(u,v),v:Math.max(u,v),weight,standard,label})
+            const u=conjugated?high.graph.rootIndex:low.graph.rootIndex
+            const v=conjugated?low.graph.rootIndex:high.graph.rootIndex
+            links.push({u,v,weight,standard,label})
         }
         const merged=forestMergeGraphs(drawn,links)
         if(!merged) return "merge produced nothing"

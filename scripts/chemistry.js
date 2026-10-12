@@ -136,6 +136,22 @@ class Element{
     }
 }
 
+export function positiveMassConjugate(composition){
+    let mass=0
+    for(const [element,byA] of composition??[])
+        for(const [A,count] of byA) mass+=element.isotope(A).mass*count
+    if(mass>=0) return composition
+    const conjugate=new Map()
+    for(const [element,byA] of composition??[]){
+        const opposite=new Map()
+        for(const [A,count] of byA) if(count) opposite.set(A,-count)
+        if(opposite.size) conjugate.set(element,opposite)
+    }
+    for(const symbol of Object.getOwnPropertySymbols(composition??[]))
+        conjugate[symbol]=composition[symbol]
+    for(const key of Object.keys(composition??{})) conjugate[key]=composition[key]
+    return conjugate
+}
 
 /* -------------------------------------------------------------------------
    Formula — une chose mesurable.
@@ -1224,7 +1240,7 @@ class Formula extends Stoichiometry{
         //tout ce qui n'est pas un terme d'ionisation est la composition
         const body=(brackets.length?core.replace(/\[[^\]]*\]/g," "):core.split(";")[0]).trim()
         if(!body) throw new Error(`no composition in "${text}"`)
-        const composition=Formula.parseComposition(body,table,rule)
+        const composition=positiveMassConjugate(Formula.parseComposition(body,table,rule))
         /* Le signe nu devient un terme d'ionisation à part entière: il doit
            apparaître dans la clé et s'additionner aux autres charges,
            exactement comme un [2+]. Le signe est indispensable, car "1" seul
@@ -2540,6 +2556,7 @@ function copyComposition(composition){
 
    The masses live in data/elements.json, and this module stays PURE: no fs,
    no fetch, no side effect at import time. Whoever needs the table asks for
+
    it - loadTable() in a browser (fetch), readFileSync under node (the tests)
    - and hands it to Formula.parse(text, table). Two ways to READ THE SAME
    DATA is one source of truth, not two.

@@ -167,14 +167,14 @@ test("a signed COEFFICIENT is not read as a mass number",()=>{
        ne produisait aucun terme de cette forme, un compte de moins de deux
        disparaissant purement et simplement. Les briques signées l'ont rendue
        possible, et l'affichage suivait l'écriture de près. */
-    eq(prettyNotation("-2H"),"⁻2H")
-    eq(prettyNotation("-6C"),"⁻6C")
-    eq(prettyNotation("-2H2"),"⁻2H₂","the count still goes under the symbol")
-    /* ET LES FORMES SIGNÉES À UN SEUL ATOME ÉTAIENT DÉJÀ BONNES: le signe va
-       en exposant, le compte en indice, et rien ne passe par le cas du
-       coefficient. */
-    eq(prettyNotation("-CH2"),"⁻CH₂")
-    eq(prettyNotation("-C-H+N-O"),"⁻C⁻H⁺N⁻O")
+    eq(prettyNotation("-2H"),"-2H")
+    eq(prettyNotation("-6C"),"-6C")
+    eq(prettyNotation("-2H2"),"-2H₂","the count still goes under the symbol")
+    /* A coefficient sign stays on the baseline; atom counts use subscripts. */
+    eq(prettyNotation("-CH2"),"-CH₂")
+    eq(prettyNotation("-C-H+N-O"),"-C-H+N-O")
+    eq(prettyNotation("C-2"),"C₋₂")
+    eq(prettyNotation("13C-2"),"¹³C₋₂")
     /* LE CAS D'AVANT, qui doit rester intact: un nombre de masse précède son
        symbole, un compte le suit, et une charge se colle à la fin. */
     eq(prettyNotation("12C6 1H12 16O6"),"¹²C₆ ¹H₁₂ ¹⁶O₆")

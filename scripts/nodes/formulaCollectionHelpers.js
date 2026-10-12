@@ -95,6 +95,15 @@ export function prettyNotation(notation){
             continue
         }
         if(ch==="+"||ch==="-"){
+            const negativeCount=ch==="-"
+                &&/^\d+/.test(text.slice(i+1))
+                &&/[A-Za-z]$/.test(text.slice(0,i))
+            if(negativeCount){
+                const digits=/^\d+/.exec(text.slice(i+1))[0]
+                out+=SUBSCRIPTS["-"]+[...digits].map(d=>SUBSCRIPTS[d]).join("")
+                i+=digits.length+1
+                continue
+            }
             const negativeIsotopeCount=ch==="-"
                 &&/^\d/.test(text.slice(i+1))
                 &&/\d+[A-Za-z]{1,2}$/.test(text.slice(0,i))
@@ -104,7 +113,8 @@ export function prettyNotation(notation){
                 i+=digits.length+1
                 continue
             }
-            out+=SUPERSCRIPTS[ch]
+            const coefficientSign=/^[+-](?:\d*)[A-Za-z(]/.test(text.slice(i))
+            out+=coefficientSign?ch:SUPERSCRIPTS[ch]
             i++
             continue
         }
