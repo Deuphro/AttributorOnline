@@ -10,6 +10,14 @@ import {forestStandards,forestComponents,componentLine,growForest,suggestWeightC
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 
+/* LE COMPTEUR DES `datalist`, et il ne sert qu'à DONNER UN NOM À CHAQUE NŒUD.
+   Un `id` HTML est global au document: deux panneaux d'attribution ouverts côte
+   à côte ne peuvent pas partager celui de leur liste de briques, sinon le
+   navigateur rattacherait les deux champs au même `datalist` — celui du premier
+   nœud — et les propositions de l'un s'afficheraient dans l'autre. Un simple
+   compteur suffit; il n'a pas besoin d'être stable, seulement unique. */
+let forestBrickListSerial=0
+
 export class AttributionForestMethods{
     /* LE MERGE, ET C'EST UNE OPÉRATION PUREMENT JS.
        « Grow network » (le noyau) ne sait pas qu'on a fusionné: le graphe
@@ -47,6 +55,25 @@ export class AttributionForestMethods{
             }
         }
         return out
+    }
+    /* LES BRIQUES DE LIAISON, DANS L'ORDRE OÙ LA PROPAGATION LES INDEXE.
+
+       `link.standard` n'est pas un identifiant de brique: c'est un RANG dans la
+       liste des références, et `propagateForest` lit `references[link.standard]`
+       où `references` est filtrée sur `kind==="combining" && atomicMass>0`
+       (voir `attributeTree`). C'est donc CETTE liste — et elle seule — qui
+       donne la signification d'un rang. Toute écriture de `link.standard`
+       passe donc par ici.
+
+       LE FILTRE `atomicMass>0` N'EST PAS OPTIONNEL. Une brique illisible reste
+       dans `items` sans masse, donc elle est présente dans une liste filtrée
+       seulement par `kind` et absente de celle de la propagation: les deux
+       listes se décalent d'un cran, et un rang écrit avec l'une désigne une
+       AUTRE brique avec l'autre. Une telle brique n'a de toute façon aucune
+       masse de référence, donc elle ne peut rien relier. */
+    forestLinkBricks(){
+        return((this.forestLinkPlan?.items??[])
+            .filter(item=>item.kind==="combining"&&item.atomicMass>0))
     }
     /* FUSIONNE LES ARBRES DESSINÉS, DU PLUS GRAND AU PLUS PETIT.
        Chaque maillon relie deux racines successives par leur différence
@@ -524,6 +551,26 @@ forestOverviewLayout({animate=false}={}){
                 bucket.colour,0.85,bucket.xs,bucket.ys,1)
         }
 
+        /* LE SEGMENT ÉDITÉ, REPASSÉ PAR-DESSUS EN BLANC.
+
+           Il est déjà dans son tas de couleur, comme les autres — donc sans
+           cette trace, l'utilisateur ne verrait pas lequel il vient de
+           sélectionner, et la carte qu'il vient d'ouvrir semblerait désigner
+           un lien au hasard. Elle est tracée APRÈS les natures, donc peinte au
+           dessus, et son titre porte la brique: elle apparaît dans le
+           sélecteur de traces comme « ce que je suis en train d'éditer ». */
+        const edit=this.forestSegmentEdit
+        if(edit){
+            const from=at(edit.rank,edit.link.u)
+            const to=at(edit.rank,edit.link.v)
+            if(from&&to){
+                segmentTrace(
+                    `${this.title}:forest:edit`,
+                    `editing ${edit.link.label??`#${edit.link.standard}`}`,
+                    "#ffffff",1,[from.x,to.x],[from.y,to.y],3)
+            }
+        }
+
         /* LES SOMMETS: DES ANNEAUX CREUX, COLORES PAR LEUR ERREUR.
 
            Le disque blanc ne laissait aucune place à l'erreur; un anneau
@@ -651,6 +698,218 @@ forestOverviewLayout({animate=false}={}){
         }
     }
 
+    /* Ferme la carte d'édition, et redessine pour retirer la mise en valeur. */
+    closeForestSegmentEditor(){
+        if(!this.forestSegmentEdit) return
+        this.forestSegmentEdit=null
+        if(this.forestSegmentEditHost){
+            this.forestSegmentEditHost.style.display="none"
+            this.forestSegmentEditHost.replaceChildren()
+        }
+        this.drawForestLayout(this.forestLayout)
+    }
+
+    /* Ouvre la carte d'édition sur UN SEGMENT, et le met en valeur.
+       `graph` est le graphe d'où vient le lien, `rank` son rang dans le
+       réseau — les deux parce qu'un lien ne se désigne ni par son `u`/`v` (qui
+       ne sont uniques que dans leur arbre) ni par son `standard` (qui est un
+       rang de brique, partagé par tous les arbres). */
+    openForestSegmentEditor(graph,rank,link){
+        if(!graph||!link) return
+        this.forestSegmentEdit={graph,rank,link}
+        this.renderForestSegmentEditor()
+        this.drawForestLayout(this.forestLayout)
+    }
+
+    /* LA CARTE D'ÉDITION, et elle est entièrement reconstruite à chaque
+       ouverture. Un champ `input` qui survit à deux segments porterait la
+       valeur du précédent — donc c'est un `replaceChildren`, pas une mise à
+       jour. */
+    renderForestSegmentEditor(){
+        const host=this.forestSegmentEditHost
+        const edit=this.forestSegmentEdit
+        if(!host||!edit) return
+        const {link,graph,rank}=edit
+        host.replaceChildren()
+
+        const title=CE("div",{},[
+            `Segment ${link.u} ↔ ${link.v} — tree #${rank}`
+        ])
+        stylize(title,{fontWeight:"bold"})
+        host.appendChild(title)
+
+        /* CE QUI EST ÉCRIT ICI EST L'INDEX DE LA BRIQUE, pas un texte: le champ
+           est pré-rempli avec la NOTATION, parce que c'est ce que l'utilisateur
+           connaît, et c'est ce qu'il retapera. Le rang vient d'un `title` et
+           jamais d'une valeur affichée — un champ qui affiche « 3 » pour une
+           brique ne veut rien dire pour personne. */
+        const bricks=this.forestLinkBricks()
+        const current=bricks[link.standard]
+        const row=CE("div",{},[])
+        stylize(row,{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
+        const input=CE("input",{},[])
+        input.type="text"
+        input.value=current?.notation??link.label??""
+        input.placeholder="CH2, NH, O, 13C..."
+        input.size=Math.max(12,Math.min(28,(input.value?.length??0)+8))
+        stylize(input,{flex:"1 1 160px",minWidth:"0",
+            background:"rgba(255,255,255,0.08)",color:"inherit",
+            border:"1px solid rgba(255,255,255,0.25)",borderRadius:"3px",
+            padding:"3px 5px",fontFamily:"monospace",fontSize:"1em"})
+        /* La liste des briques EXISTANTES, en proposition — et non en
+           contrainte: l'utilisateur peut taper une formule absente du plan,
+           auquel cas elle est ajoutée (comme au bouton « Merge »). Un
+           `datalist` ne bloque rien et donne les termes du vocabulaire de la
+           maison.
+
+           L'IDENTIFIANT EST PROPRE À CE NŒUD. Deux nœuds d'attribution
+           ouverts côte à côte partageraient sinon le même `id`, et le second
+           `datalist` — le premier trouvé par le document — s'afficherait pour
+           les deux champs: les propositions d'un arbre apneaient celles de
+           l'autre. Un compteur suffit, il n'a pas besoin d'être stable. */
+        const listId=this.forestBrickListId
+        const datalist=CE("datalist",{id:listId},[])
+        for(const brick of bricks){
+            if(!brick.notation) continue
+            datalist.appendChild(CE("option",{value:brick.notation},[]))
+        }
+        input.setAttribute("list",listId)
+        row.append(input,datalist)
+
+        const hint=CE("div",{},[
+            current
+                ?`now: ${current.notation} — rank ${link.standard}`
+                :`now: ${link.label??"(none)"} — not a reference of the plan`,
+            `error ${Number(link.weight??0).toFixed(4)} Da on ${link.u}↔${link.v}`
+        ])
+        stylize(hint,{opacity:"0.75",fontSize:"0.95em"})
+
+        const status=CE("div",{},[])
+        stylize(status,{opacity:"0.85",fontSize:"0.95em"})
+
+        const button=(text,handler)=>{
+            const b=CE("button",{},[text])
+            b.type="button"
+            stylize(b,{background:"rgba(255,255,255,0.12)",color:"inherit",
+                border:"1px solid rgba(255,255,255,0.25)",borderRadius:"3px",
+                padding:"2px 8px",fontFamily:"inherit",fontSize:"1em",cursor:"pointer"})
+            b.addEventListener("click",handler)
+            return b
+        }
+        const apply=async ()=>{
+            const message=await this.applyForestSegmentBrick(input.value)
+            status.textContent=message
+        }
+        row.append(
+            button("Apply",apply),
+            button("Close",()=>this.closeForestSegmentEditor()))
+
+        /* Entrée applique, Échap referme: ce sont les deux gestes qu'on attend
+           d'un champ unique, et ils évitent d'aller chercher la souris. */
+        input.addEventListener("keydown",async (event)=>{
+            if(event.key==="Enter"){ event.preventDefault(); await apply() }
+            else if(event.key==="Escape"){ event.preventDefault(); this.closeForestSegmentEditor() }
+        })
+
+        host.append(row,hint,status)
+        host.style.display="flex"
+        input.focus()
+        input.select()
+    }
+
+    /* CHANGE LA BRIQUE D'UN SEGMENT, ET RECALCULE LA PROPAGATION.
+
+       Le geste est « la liaison que la machine a trouvé ne veut pas dire ce que
+       je crois » — donc l'utilisateur écrit la brique qu'il avait en tête, et
+       tout ce qui en dépend est refait. Rend un texte d'état pour la carte.
+
+       TROIS ÉTAPES, ET LEUR ORDRE EST IMPOSÉ PAR LE CACHE:
+
+       1. la nouvelle brique doit EXISTER dans le plan de liaison, parce que
+          `link.standard` est un rang dans cette liste et que la propagation lit
+          `references[rank]`. Si elle n'y est pas, elle y est ajoutée — même
+          règle et même code que « Merge », et c'est nécessaire: interdire la
+          formule absente reviendrait à interdire la correction même pour
+          laquelle ce bouton existe;
+       2. `link.standard` et `link.label` sont réécrits, et le POIDS aussi —
+          l'erreur d'un lien est l'écart entre la différence de m/z mesurée et la
+          masse de la brique. Changer de brique sans changer le poids laisserait
+          un lien dont la longueur au repos et dont l'erreur affichée
+          décrivent la brique précédente;
+       3. le cache d'attribution est purgé PUIS les collections republiées,
+          comme le fait le clic sur un sommet. Le cache est indexé par graphe et
+          par réglages; c'est la suppression de l'entrée qui force le calcul,
+          pas le redessin. */
+    async applyForestSegmentBrick(text){
+        const edit=this.forestSegmentEdit
+        if(!edit) return "no segment selected"
+        const {link,graph,rank}=edit
+        const wanted=String(text??"").trim()
+        if(!wanted) return "type a formula first"
+
+        let bricks=this.forestLinkBricks()
+        let standard=bricks.findIndex(brick=>brick.notation===wanted)
+        if(standard<0){
+            /* La formule est-elle au moins LISIBLE? On la laisse passer par le
+               même chemin que le bouton « Merge »: `forestGroupList` la passe
+               au constructeur de plan, qui sait dire « isotope inconnu » au
+               lieu qu'on écrive un second lecteur de formule ici. */
+            const current=this.forestGroupList()
+            if(current.some(entry=>String(entry.group??"").trim()===wanted))
+                return `« ${wanted} » is in the plan but produced no reference mass — check its isotopes`
+            this.commitForestGroups([...current,{group:wanted}])
+            bricks=this.forestLinkBricks()
+            standard=bricks.findIndex(brick=>brick.notation===wanted)
+            if(standard<0)
+                return `« ${wanted} » could not be read as a linking group`
+        }
+        if(standard===link.standard) return "unchanged"
+
+        link.standard=standard
+        link.label=bricks[standard]?.notation??wanted
+        /* LE POIDS REFAIT SUR LA MASSE DE LA NOUVELLE BRIQUE. Les masses du
+           plan sont divisées par la charge (voir `forestStandards`), donc
+           c'est cette liste-là qu'il faut lire, pas les masses brutes: sinon un
+           spectre 2+ verrait son erreur multipliée par deux. */
+        const referenceMass=(this.forestPlan?.masses??[])[standard]
+        if(Number.isFinite(referenceMass)){
+            const from=graph.vertices.find(v=>v.index===link.u)
+            const to=graph.vertices.find(v=>v.index===link.v)
+            const gap=Math.abs((to?.mass??0)-(from?.mass??0))
+            link.weight=Math.abs(gap-referenceMass)
+        }
+        /* L'erreur du GROUPE change avec le lien: la somme des poids de ses
+           arêtes est lue et affichée dans la liste. Elle est cumulée dans
+           `component.weight` à la croissance de l'arbre, donc elle est
+           périmée dès que le lien change. */
+        for(const batchComp of this.forestComponents??[]){
+            const comp=batchComp.components?.find(c=>c.rank===rank)
+            if(comp){
+                comp.links=comp.links??[]
+                const found=comp.links.find(l=>l.u===link.u&&l.v===link.v)
+                if(found){
+                    found.standard=link.standard
+                    found.label=link.label
+                    found.weight=link.weight
+                }
+                comp.weight=(comp.links??[]).reduce((total,l)=>total+(Number(l.weight)||0),0)
+            }
+        }
+
+        this.forestAttributions?.byGraph?.delete(graph)
+        /* Le plan a pu changer — une brique vient d'être ajoutée — donc la clé
+           de contenu de l'attribution est périmée pour TOUS les arbres, pas
+           seulement pour celui-ci. `publishForestCollections` la compare et
+           purge de lui-même; on ne fait que ne pas laisser une entrée
+           stale dans le `Map` de ce graphe. */
+        this.forestLayoutOf=null
+        this.renderForestSegmentEditor()
+        await this.publishForestCollections()
+        this.renderForestList()
+        this.renderForestOverview()
+        return `link ${link.u}↔${link.v} now on ${link.label} — ${Number(link.weight??0).toFixed(4)} Da`
+    }
+
     /* CONFIGURE LES GESTIONNAIRES DE SOURIS POUR LE HOVER ET LE CLIC. */
     setupForestInteraction(plot){
         const svg=plot.graphSVG
@@ -658,22 +917,37 @@ forestOverviewLayout({animate=false}={}){
         const svgNode=svg.node()
         if(!svgNode) return
 
-        /* Conversion écran → données (data coordinates) via les échelles du plot. */
+        /* Conversion écran → données (data coordinates) via les échelles du plot.
+
+           `ux`/`uy` sont les VALEURS DE DONNÉE PAR PIXEL, mesurées sur place: une
+           seule inversion de plus, à dix pixels du pointeur. Les seuils de
+           pointage sont en pixels — ce que l'utilisateur vise — et les distances
+           sont en données, ce que le graphique stocke; sans ce facteur les deux
+           ne se comparent pas, et le geste dépendrait du zoom. */
         const screenToData=(clientX,clientY)=>{
             const pt=plot.pointerInGraphzone(clientX,clientY)
             if(!pt) return null
             const {xScale,yScale}=plot.plotScales()
-            return {x:xScale.invert(pt.x), y:yScale.invert(pt.y)}
+            const SPAN=10
+            const x=xScale.invert(pt.x)
+            const y=yScale.invert(pt.y)
+            const ux=Math.abs(xScale.invert(pt.x+SPAN)-x)/SPAN
+            const uy=Math.abs(yScale.invert(pt.y+SPAN)-y)/SPAN
+            return {x,y,ux:ux>0?ux:1e-9,uy:uy>0?uy:1e-9}
         }
 
-        /* Trouver le sommet le plus proche. */
-        const findNearestVertex=(dataX,dataY,groups,layout)=>{
+        /* Trouver le sommet le plus proche, À HUIT PIXELS.
+
+           La distance est convertie en pixels AVANT d'être comparée au seuil:
+           `dx/ux` et `dy/uy` sont des pixels, donc le seuil est le même au zoom 1
+           et au zoom 40 — et les deux axes n'ont pas à partager une échelle. */
+        const findNearestVertex=(dataX,dataY,ux,uy,layout)=>{
             let best=null
             let bestDist=Infinity
             for(const group of layout.groups){
                 for(const point of group.points){
-                    const dx=point.x-dataX
-                    const dy=point.y-dataY
+                    const dx=(point.x-dataX)/ux
+                    const dy=(point.y-dataY)/uy
                     const dist=dx*dx+dy*dy
                     if(dist<bestDist){
                         bestDist=dist
@@ -681,13 +955,17 @@ forestOverviewLayout({animate=false}={}){
                     }
                 }
             }
-            /* Seuil de détection: ~8px en coordonnées écran. */
             if(bestDist>64) return null
             return best
         }
 
-        /* Trouver le segment le plus proche. */
-        const findNearestSegment=(dataX,dataY,groups,batch,at)=>{
+        /* Trouver le segment le plus proche, À SIX PIXELS.
+
+           Mêmes unités que ci-dessus: la projection du pointeur sur le segment
+           est faite dans un repère où un pixel vaut une unité sur les DEUX
+           axes. Sinon un lien à l'horizontale aurait un seuil différent d'un
+           lien à la verticale, et l'un des deux serait impossible à attraper. */
+        const findNearestSegment=(dataX,dataY,ux,uy,groups,at)=>{
             let best=null
             let bestDist=Infinity
             for(const {graph,rank} of groups){
@@ -696,22 +974,23 @@ forestOverviewLayout({animate=false}={}){
                     const to=at(rank,link.v)
                     if(!from||!to) continue
                     /* Distance point-segment. */
-                    const x1=from.x,y1=from.y
-                    const x2=to.x,y2=to.y
+                    const x1=(from.x-dataX)/ux
+                    const y1=(from.y-dataY)/uy
+                    const x2=(to.x-dataX)/ux
+                    const y2=(to.y-dataY)/uy
                     const dx=x2-x1,dy=y2-y1
                     const len2=dx*dx+dy*dy
                     let t=0
-                    if(len2>0) t=Math.max(0,Math.min(1,((dataX-x1)*dx+(dataY-y1)*dy)/len2))
+                    if(len2>0) t=Math.max(0,Math.min(1,(-x1*dx-y1*dy)/len2))
                     const px=x1+t*dx
                     const py=y1+t*dy
-                    const dist=(px-dataX)*(px-dataX)+(py-dataY)*(py-dataY)
+                    const dist=px*px+py*py
                     if(dist<bestDist){
                         bestDist=dist
                         best={link,from,to,graph,rank,t}
                     }
                 }
             }
-            /* Seuil de détection: ~6px. */
             if(bestDist>36) return null
             return best
         }
@@ -740,7 +1019,7 @@ forestOverviewLayout({animate=false}={}){
             const at=(rank,index)=>place.get(`${rank}:${index}`)
 
             /* Sommet le plus proche. */
-            const vertexHit=findNearestVertex(data.x,data.y,groups,this.forestLayout)
+            const vertexHit=findNearestVertex(data.x,data.y,data.ux,data.uy,this.forestLayout)
             if(vertexHit){
                 const {point,group}=vertexHit
                 const graph=batch.graphs.find(g=>g.rank===group.rank)
@@ -772,7 +1051,7 @@ forestOverviewLayout({animate=false}={}){
             }
 
             /* Segment le plus proche. */
-            const segmentHit=findNearestSegment(data.x,data.y,groups,batch,at)
+            const segmentHit=findNearestSegment(data.x,data.y,data.ux,data.uy,groups,at)
             if(segmentHit){
                 const {link,graph,rank}=segmentHit
                 const palette=this.constructor.FOREST_FORMULA_COLOURS
@@ -809,7 +1088,17 @@ forestOverviewLayout({animate=false}={}){
             this.forestSegmentInfoHost.style.display="none"
         })
 
-        /* CLIC SUR UN SOMMET → DEVIENT LA NOUVELLE RACINE. */
+        /* LE CLIC: UN SOMMET, SINON UN SEGMENT.
+
+           L'ordre n'est pas un détail d'implémentation, c'est le geste. Un clic
+           à moins de huit pixels d'un sommet est un clic sur ce sommet — donc il
+           change la racine, et la carte de segment se referme. Tout le reste,
+           c'est-à-dire là où AUCUN sommet n'est sélectionnable, tombe sur le
+           segment le plus proche à six pixels et ouvre son édition. C'est ce qui
+           rend les deux gestes compatibles sans mode particulier: le sommet
+           reste prioritaire parce qu'il est petit et précis, le segment prend le
+           reste parce qu'il est long et qu'un clic à côté de lui vise
+           rarement autre chose. */
         svgNode.addEventListener("click",async (e)=>{
             const data=screenToData(e.clientX,e.clientY)
             if(!data) return
@@ -820,8 +1109,29 @@ forestOverviewLayout({animate=false}={}){
             const groups=hasSelection
                 ?allGroups.filter(g=>this.forestSelected.has(g.rank))
                 :allGroups
-            const vertexHit=findNearestVertex(data.x,data.y,groups,this.forestLayout)
-            if(!vertexHit) return
+            const place=new Map()
+            for(const group of this.forestLayout?.groups??[]){
+                for(const point of group.points) place.set(`${group.rank}:${point.index}`,point)
+            }
+            const at=(rank,index)=>place.get(`${rank}:${index}`)
+
+            const vertexHit=findNearestVertex(data.x,data.y,data.ux,data.uy,this.forestLayout)
+            if(!vertexHit){
+                /* PAS DE SOMMET: LE SEGMENT PREND LA MAIN. */
+                const segmentHit=findNearestSegment(data.x,data.y,data.ux,data.uy,groups,at)
+                if(!segmentHit){ this.closeForestSegmentEditor(); return }
+                const {link,graph,rank}=segmentHit
+                /* Re-cliquer sur le segment déjà sélectionné referme la carte:
+                   le clic sert alors à désélectionner, comme partout ailleurs. */
+                const same=this.forestSegmentEdit
+                    &&this.forestSegmentEdit.link===link
+                if(same){ this.closeForestSegmentEditor(); return }
+                this.openForestSegmentEditor(graph,rank,link)
+                return
+            }
+            /* Un sommet cache le segment: changer de racine et d'édition de
+               brique dans le même geste serait un contresens. */
+            this.closeForestSegmentEditor()
 
             const {point,group}=vertexHit
             const graph=batch.graphs.find(g=>g.rank===group.rank)
@@ -1202,6 +1512,27 @@ forestOverviewLayout({animate=false}={}){
             fontSize:"0.7em",maxWidth:"200px",fontFamily:"monospace"
         })
         this.forestPlotBox.appendChild(this.forestSegmentInfoHost)
+
+        /* LA CARTE D'ÉDITION DU SEGMENT, et elle est l'unique carte qui CAPTE
+           le pointeur: les deux autres ont `pointerEvents:"none"` et ne font
+           qu'afficher. Celle-ci reçoit la frappe, donc elle doit être
+           interactive — et pour cette raison elle vit au-dessus, sur toute la
+           largeur, en bas: un pavé qui suit le segment serait cliquable en
+           permanence et masquerait le graphique en permanence. */
+        this.forestSegmentEditHost=CE("div",{},[])
+        stylize(this.forestSegmentEditHost,{
+            position:"absolute",bottom:"0",left:"0",right:"0",zIndex:"2",
+            display:"none",flexDirection:"column",gap:"4px",
+            background:"rgba(0,0,0,0.82)",padding:"6px 8px",
+            borderTop:"1px solid rgba(255,255,255,0.18)",
+            fontSize:"0.75em",fontFamily:"monospace",color:"inherit"
+        })
+        this.forestPlotBox.appendChild(this.forestSegmentEditHost)
+        /* L'identifiant du `datalist` est alloué UNE fois par nœud: la carte est
+           reconstruite à chaque ouverture, et un compteur consulté à chaque
+           rendu laisserait derrière lui un identifiant par ouverture. */
+        this.forestBrickListId=`forest-bricks-${++forestBrickListSerial}`
+        this.forestSegmentEdit=null
 
         /* FORCER UN RESIZE APRÈS CRÉATION: le conteneur peut ne pas avoir sa taille
            finale au moment où le constructeur appelle drawGraph(). Un rAF assure

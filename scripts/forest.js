@@ -37,18 +37,55 @@
    valeur existe déjà dans l'oracle. */
 export const DEFAULT_LINK_TOLERANCE=0.5
 
-export const FOREST_LAYOUT_DEFAULTS={iterations:1e9,ideal:26,repulsion:1,restBase:0.9,restSpan:0.1,gravity:0,tempStart:1000,tempEnd:0.5,fac:20,viscosity:1,springExponent:3,massForce:0,defectForce:0,errorForce:0,depthForce:0}
-/* LE BUDGET DU MODE STATIQUE, en millisecondes par groupe.
+export const FOREST_LAYOUT_DEFAULTS={iterations:1e9,ideal:26,repulsion:1,restBase:0.9,restSpan:0.1,gravity:0,tempStart:1000,tempEnd:0,fac:20,viscosity:1,springExponent:3,massForce:0,defectForce:0,errorForce:0,depthForce:0}
+/* LE BUDGET DU MODE STATIQUE, et il est en TOURS DE PHYSIQUE, pas en
+   millisecondes.
 
    Il s'applique à `layoutGroup` SEULEMENT. Le mode animé garde `iterations` à
    10⁹ sans coût: là, atteindre le plafond ne fait que relancer la boucle — le
    graphe « respire » tant qu'il est affiché, c'est voulu. Seul le mode statique
    bloque le thread, et c'est lui qui avait besoin d'une borne.
 
-   150 ms est choisi pour rester sous le seuil où un gel devient perceptible,
-   tout en laissant un grand groupe correctement détendu. Si la mise en page vous
-   paraît trop serrée, montez cette valeur : c'est le seul réglage à toucher. */
-const FOREST_LAYOUT_BUDGET_MS=150
+   POURQUOI PAS EN MILLISECONDES. Un plafond de temps rend le RENDU
+   NON DÉTERMINISTE, et c'est le défaut le plus grave possible ici: deux rendus
+   du même réseau s'arrêtaient à des tours voisins — celui où la machine a eu
+   fini son tour — donc le même groupe s'affichait différemment d'un clic à
+   l'autre, et l'utilisateur n'avait plus rien à comparer. C'est exactement ce
+   que vérifie le test « the layout is DETERMINISTIC », et il échouait sur
+   cette raison-là, pas sur une variation de la physique.
+
+   Le budget est donc une QUANTITÉ DE TRAVAIL, non une durée: `WORK` unités
+   « sommet + lien », divisées entre les tours. Un groupe de vingt-quatre pics
+   en fait 48 par tour et dispose donc de tout le budget; un groupe de mille
+   pics en fait 2 000 et en reçoit dix fois moins. Le temps d'attente est
+   approximativement le même pour tous les groupes — le but initial du budget —
+   mais il est maintenant le MÊME pour deux rendus du même groupe.
+
+   Les deux bornes BORNE le résultat : `MAX_ROUNDS` est au-dessus du nombre de
+   tours que demande la convergence (1 114), donc un petit groupe se détend
+   complètement au lieu d'être arrêté au milieu; `MIN_ROUNDS` garantit qu'un
+   groupe énorme reçoit tout de même quelques dizaines de tours, sans quoi il
+   ne serait pas dessiné du tout.
+
+   `FOREST_LAYOUT_BUDGET_MS` reste, mais uniquement comme filet de sécurité pour
+   le cas où plusieurs groupes se cumulent. Il est VOLONTAIREMENT LARGE: à
+   150 ms il mordait dès mille sommets, c'est-à-dire dans le cas ordinaire — et
+   il réintroduisait alors exactement le défaut qu'on venait de supprimer, deux
+   rendus du même groupe différaient encore. Un budget de travail de 800 000
+   unités coûte au pire quelques centaines de millisecondes par groupe, donc un
+   plafond à 1 500 ms ne peut mordre que si plusieurs groupes se cumulent, et
+   laisse le temps de finir proprement avant. */
+const FOREST_LAYOUT_WORK=800000
+const FOREST_LAYOUT_MAX_ROUNDS=1200
+const FOREST_LAYOUT_MIN_ROUNDS=60
+const FOREST_LAYOUT_BUDGET_MS=1500
+/* LE NOMBRE DE TOURS, pour un groupe — et il ne dépend que du GROUPE. */
+function layoutRoundsFor(count,links){
+    const weight=count+(links??0)
+    if(!(weight>0)) return FOREST_LAYOUT_MIN_ROUNDS
+    return Math.max(FOREST_LAYOUT_MIN_ROUNDS,
+        Math.min(FOREST_LAYOUT_MAX_ROUNDS,Math.round(FOREST_LAYOUT_WORK/weight)))
+}
 /* LA VISCOSITÉ, et la TEMPÉRATURE qui bornait le pas sans jamais décroître.
 
    `tempEnd` valait 0.5 et n'était de toute façon JAMAIS transmis à `frStep`:
@@ -65,16 +102,30 @@ const FOREST_LAYOUT_BUDGET_MS=150
    décroissance proportionnelle au plafond ne produirait aucun refroidissement
    observable avant l'épuisement du temps.
 
-   `tempEnd` passe de 0.5 à 0 : tant qu'elle reposait sur un plancher non nul,
-   `maxSpeed` avait ce plancher pour plancher et ne pouvait donc pas franchir
-   1e-7. Le graphe ne s'immobilise jamais tout à fait — il se stabilise, ce qui
-   est le comportement voulu d'un FR. */
+`tempEnd` passe de 0.5 à 0 : tant qu'elle reposait sur un plancher non nul,
+    `maxSpeed` avait ce plancher pour plancher et ne pouvait donc plus franchir
+    le seuil d'arrêt. Le graphe ne s'immobilise jamais tout à fait — il se
+    stabilise, ce qui est le comportement voulu d'un FR. */
 const FOREST_TEMPERATURE_HALF_LIFE=60
 /* LE PLANCHER DE PROFONDEUR: la part de la force que reçoit le plus petit
    niveau d'un arbre, la racine étant la seule à n'en recevoir aucune. C'est ce
    qui tient la racine en bas — voir `depthBiasOf`. */
 const FOREST_DEPTH_FLOOR=0.25
 const FOREST_VISCOSITY=FOREST_LAYOUT_DEFAULTS.viscosity
+/* LE CRITÈRE DE CONVERGENCE, et il est RELATIF à `k`.
+
+   On déclare l'arrêt quand le déplacement du sommet le plus rapide est inférieur
+   à `k`/10 000. La même valeur vaut donc pour un groupe de deux pics et pour
+   une chaîne de trois mille — ce qu'un seuil ABSOLU ne peut pas faire, puisque
+   la longueur d'un graphe varie de deux ordres de grandeur alors que les
+   positions restent comparables.
+
+   Le seuil est atteint par la décroissance de la température, donc en un
+   nombre de tours FIXE, indépendant de la machine et de la taille: c'est ce qui
+   rend deux rendus du même réseau strictement identiques. Le budget de temps
+   reste une sécurité pour les groupes giants, où il peut encore trancher —
+   mais il n'est plus l'arrêt normal. */
+const FOREST_SETTLE_RATIO=1e-4
 
 /* LE PRNG, À GRAINE. `Math.random()` rendrait le même réseau différent à chaque
    rendu, et le test « the layout is DETERMINISTIC » existe précisément pour que
@@ -184,16 +235,31 @@ function depthBiasOf(vertices,links,rootIndex){
     const hops=new Int32Array(n).fill(-1)
     if(root===undefined) return bias
     hops[root]=0
-    const queue=[root]
-    for(let head=0;head<queue.length;head++){
+    /* DES LISTES D'ADJACENCE, ET NON UN BALAYAGE DE TOUS LES LIENS.
+
+       Le parcours en largeur konsommait, à chaque sommet qu'il déqueue, la
+       liste ENTIÈRE des liens du groupe pour y chercher ses voisins. Sur un
+       arbre de n sommets portant n-1 liens, c'est n×(n-1) tests — donc
+       quadratique, et c'était le second poste du profilage de mise en page
+       juste après `errorBiasOf`. Les listes d'adjacence coûtent une passe sur
+       les liens, et le parcours redevient linéaire. */
+    const adjacency=Array.from({length:n},()=>[])
+    for(const link of links??[]){
+        const a=at.get(link.u)
+        const b=at.get(link.v)
+        if(a===undefined||b===undefined) continue
+        adjacency[a].push(b)
+        adjacency[b].push(a)
+    }
+    const queue=new Int32Array(n)
+    let tail=1
+    queue[0]=root
+    for(let head=0;head<tail;head++){
         const current=queue[head]
-        for(const link of links??[]){
-            for(const end of [link.u,link.v]){
-                const next=at.get(end)
-                if(next===undefined||hops[next]!==-1) continue
-                hops[next]=hops[current]+1
-                queue.push(next)
-            }
+        for(const next of adjacency[current]){
+            if(hops[next]!==-1) continue
+            hops[next]=hops[current]+1
+            queue[tail++]=next
         }
     }
     let deepest=0
@@ -229,12 +295,19 @@ function errorBiasOf(vertices,links){
     const n=vertices?.length??0
     const bias=new Float64Array(n)
     if(!n) return bias
-    const best=new Float64Array(n)
-    for(let i=0;i<n;i++) best[i]=Infinity
+    const best=new Float64Array(n).fill(Infinity)
+    /* LA TABLE sommet→rang est bâtie UNE FOIS, hors de la boucle des liens.
+
+       Elle l'était à l'intérieur: une `Map` complète était reconstruite pour
+       chaque lien, donc E fois — soit n×E paires construites puis abandonnées,
+       le seul poste de coût du calcul d'erreur sur un vrai arbre, où le
+       nombre de liens est du même ordre que le nombre de pics. C'était aussi
+       la première chose que signalait un profilage de mise en page. */
+    const at=new Map()
+    for(let i=0;i<n;i++) at.set(vertices[i].index,i)
     for(const link of links??[]){
         const weight=Number(link?.weight)
         if(!Number.isFinite(weight)) continue
-        const at=new Map((vertices??[]).map((vertex,index)=>[vertex.index,index]))
         for(const end of [link.u,link.v]){
             const index=at.get(end)
             if(index===undefined) continue
@@ -1294,57 +1367,160 @@ function repulse(positions,disp,count,k,cutoff,cellSize,repulsion=1){
    - MOMENTUM + ATAN par nœud + recentrage dur: le vivant sans l'explosion.
    `repulsion` règle la FR, `restBase/restSpan` le repos, `fac` l'amplitude.
    `rootLocalIndex` (optional): index local du sommet racine à maintenir fixe à (0,0). */
+/* LES LIENS, EN INDEX LOCAUX, ET RÉSOLUS UNE SEULE FOIS.
+
+   `frStep` relisait `byIndex.get(link.u)` et `byIndex.get(link.v)` à CHAQUE
+   tour, pour chaque lien: deux recherches dans une `Map` de milliers d'entrées
+   à chaque tour, alors que la correspondance sommet→index ne bouge jamais
+   pendant la mise en page. Sur une chaîne de 3 000 sommets, ces 6 000
+   recherches pèsent déjà autant que la grille spatiale entière.
+
+   Elles sont donc résolues une fois et mémorisées sur le graphe — d'où le
+   `WeakMap`: le cache ne doit pas garder un graphe en vie, il doit être
+   ramassé avec lui. Trois tableaux typés plutôt qu'une liste d'objets,
+   parce que la boucle de ressort les relit deux fois par sommet et par tour. */
+const linkCache=new WeakMap()
+function physicsLinks(graph,byIndex){
+    const cached=linkCache.get(graph)
+    if(cached&&cached.byIndex===byIndex) return cached
+    const links=graph.links??[]
+    const u=new Int32Array(links.length)
+    const v=new Int32Array(links.length)
+    const weight=new Float64Array(links.length)
+    let kept=0
+    for(let i=0;i<links.length;i++){
+        const a=byIndex.get(links[i].u)
+        const b=byIndex.get(links[i].v)
+        if(a===undefined||b===undefined) continue
+        u[kept]=a
+        v[kept]=b
+        weight[kept]=Number(links[i].weight)||0
+        kept++
+    }
+    const table={byIndex,u,v,weight,count:kept}
+    linkCache.set(graph,table)
+    return table
+}
+
+/* UNE CELLULE VIDE, et une sentinelle qui ne peut pas être une coordonnée.
+   `Math.floor(x/2k)` reste très loin de 2³¹-1 pour toute position atteignable,
+   donc la valeur ne peut pas être prise pour une case réelle — et un tableau
+   `Int32Array` s'initialise à 0, qui EST une coordonnée possible: sans cette
+   sentinelle, toute case non occupée paraîtrait être la case (0,0). */
+const EMPTY_CELL=0x7FFFFFFF
+
+/* LA GRILLE DE RÉPULSION, EN TABLE DE HACHAGE À ADRESSAGE OUVERT.
+
+   La version d'avant était une `Map` dont la clé était `cx*4096+cy`, et
+   chaque sommet coûtait neuf `Map.get` par tour — une par case voisine. Sur
+   3 000 sommets étalés, il y a près de 3 000 cases occupées, donc près de
+   27 000 recherches dans une table de `Map` par tour: le premier poste de coût
+   du moteur, avant même les paires.
+
+   Ici la table est un `Int32Array` en adressage ouvert, les coordonnées de la
+   case étant conservées à côté pour lever les collisions par égalité. Un
+   `Int32Array` ne coûte rien à sonder là où une `Map` alloue, hascode et
+   abandonne: le voisinage ne relit plus que des entiers, sans rien allouer. */
+function gridProbe(cellX,cellY,mask,cx,cy){
+    const slot=((cx*73856093)^(cy*19349663))&mask
+    for(let step=0;;step++){
+        const at=(slot+step)&mask
+        const bx=cellX[at]
+        if(bx===EMPTY_CELL) return at
+        if(bx===cx&&cellY[at]===cy) return at
+    }
+}
+
+/* LE SEMISAGE INITIAL, et il est écrit UNE FOIS pour les deux chemins.
+
+   Le mode statique et le mode animé doivent partir du MÊME état, sinon un même
+   réseau s'afficherait différemment selon celui des deux qui est choisi. C'est
+   donc une fonction, et non deux copies — d'autant que le rayon dépend du
+   nombre de sommets (voir le commentaire dans `layoutGroup`). */
+function seedPositions(positions,graph,count,ideal,rootLocalIndex){
+    const seedRadius=Math.max(ideal,ideal*1.2*Math.sqrt(count/Math.PI))
+    const rand=layoutRandom(layoutSeed(graph,count))
+    for(let i=0;i<count;i++){
+        if(i===rootLocalIndex) continue
+        const radius=seedRadius*Math.sqrt(rand())
+        const angle=2*Math.PI*rand()
+        positions[i*2]=radius*Math.cos(angle)
+        positions[i*2+1]=radius*Math.sin(angle)
+    }
+}
+
 function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,restSpan=0,fac=null,rootLocalIndex=-1,temperature=Infinity,viscosity:viscosity_,springExponent=3,massBias=null,massForce=0,defectBias=null,defectForce=0,errorBias=null,errorForce=0,depthBias=null,depthForce=0}){
     const count=positions.length/2
-    /* GRILLE SPATIALE: portée 2k, comme avant — au-delà ils s'ignorent.
-       Clés NUMÉRIQUES `cx*4096+cy`, pas des strings: `cellOf` + `split` +
-       template coûtaient plus cher que la physique elle-même. */
+    /* GRILLE SPATIALE: portée 2k, comme avant — au-delà ils s'ignorent. */
     const cutoff=2*k
     const cellSize=2*k
-    const GRID_N=4096
-    const grid=new Map()
-    const cellCoords=index=>[
-        Math.floor(positions[index*2]/cellSize),
-        Math.floor(positions[index*2+1]/cellSize)]
-    const cellKey=(cx,cy)=>(cx%GRID_N+GRID_N)%GRID_N*GRID_N+((cy%GRID_N+GRID_N)%GRID_N)
-    const buckets=[]
+    /* La table est dimensionnée à 4× la population, soit un quart de
+       remplissage: les collisions restent rares, et la taille étant une
+       puissance de deux, le masque remplace la division. */
+    let capacity=8
+    while(capacity<count*4) capacity*=2
+    const mask=capacity-1
+    const head=new Int32Array(capacity).fill(-1)
+    const cellX=new Int32Array(capacity).fill(EMPTY_CELL)
+    const cellY=new Int32Array(capacity).fill(EMPTY_CELL)
+    /* `next` PORTE LA LISTE des sommets d'une case: le premier est dans `head`,
+       les suivants sont chaînés. Donc aucune liste, et donc aucune allocation
+       par case et par tour — c'était le second poste de coût. */
+    const next=new Int32Array(count).fill(-1)
+    const cells=new Int32Array(capacity).fill(-1)
+    let occupied=0
     for(let i=0;i<count;i++){
-        const [cx,cy]=cellCoords(i)
-        const key=cellKey(cx,cy)
-        let bucket=grid.get(key)
-        if(!bucket){ bucket={cx,cy,list:[]}; grid.set(key,bucket); buckets.push(bucket) }
-        bucket.list.push(i)
+        const cx=Math.floor(positions[i*2]/cellSize)
+        const cy=Math.floor(positions[i*2+1]/cellSize)
+        const at=gridProbe(cellX,cellY,mask,cx,cy)
+        if(cellX[at]===EMPTY_CELL){ cellX[at]=cx; cellY[at]=cy; cells[occupied++]=at }
+        next[i]=head[at]
+        head[at]=i
     }
+    /* LES CASES, À PARCOURIR UNE SEULE FOIS chacune: `cells` ne contient que
+       les cases OCCUPÉES, donc le balayage de voisinage ne parcourt plus trois
+       mille cases vides par tour comme le faisait l'ancienne liste de buckets. */
     /* RÉPULSION FR toutes paires proches: fr=k²/d le long de l'axe.
        Accumule dans `velo` (momentum) — PAS appliqué brut, sinon explosion
        quand d→0. C'est l'atan qui plafonne, en bas. */
-    for(const bucket of buckets){
-        const {cx,cy}=bucket
+    const cutoffSquared=cutoff*cutoff
+    const kSquared=k*k
+    const repulsionK2=repulsion*k*k
+    for(let c=0;c<occupied;c++){
+        const at=cells[c]
+        const cx=cellX[at]
+        const cy=cellY[at]
         for(let dx=-1;dx<=1;dx++){
             for(let dy=-1;dy<=1;dy++){
-                const other=grid.get(cellKey(cx+dx,cy+dy))
-                if(!other) continue
-                for(const i of bucket.list){
-                    for(const j of other.list){
+                /* La case voisine est sondée par la MÊME fonction que
+                   l'insertion, donc une collision est rejetée de la même façon:
+                   une adresse occupied ici peut appartenir à une autre case,
+                   et il ne faut pas la lire comme si c'était celle-ci. */
+                const other=gridProbe(cellX,cellY,mask,cx+dx,cy+dy)
+                if(cellX[other]===EMPTY_CELL) continue
+                for(let i=head[at];i>=0;i=next[i]){
+                    const xi=positions[i*2]
+                    const yi=positions[i*2+1]
+                    for(let j=head[other];j>=0;j=next[j]){
                         if(j<=i) continue
-                        let rx=positions[i*2]-positions[j*2]
-                        let ry=positions[i*2+1]-positions[j*2+1]
-                        let distance=rx*rx+ry*ry
-                        if(distance>cutoff*cutoff) continue
-                        distance=Math.sqrt(distance)
+                        let rx=xi-positions[j*2]
+                        let ry=yi-positions[j*2+1]
+                        let squared=rx*rx+ry*ry
+                        if(squared>cutoffSquared) continue
+                        let distance=Math.sqrt(squared)
                         /* Même point: pousse au hasard d'un millième de k pour
                            lever l'indétermination — trop petit pour se voir. */
                         let ux,uy
                         if(distance<1e-6){
                             rx=(i%2?1:-1)*k*1e-3
                             ry=(j%2?1:-1)*k*1e-3
-                            distance=Math.hypot(rx,ry)
+                            distance=Math.sqrt(rx*rx+ry*ry)
                             ux=rx/distance; uy=ry/distance
                         }else{
                             ux=rx/distance; uy=ry/distance
                         }
-                        /* FR: k²/d le long de l'axe unitaire — sans 2e hypot. */
-                        const push=repulsion*k*k/distance/distance
+                        /* FR: k²/d le long de l'axe unitaire. */
+                        const push=repulsionK2/distance/distance
                         velo[i*2]+=ux*push
                         velo[i*2+1]+=uy*push
                         velo[j*2]-=ux*push
@@ -1354,15 +1530,21 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
             }
         }
     }
-    for(const link of graph.links){
-        const u=byIndex.get(link.u)
-        const v=byIndex.get(link.v)
-        if(u===undefined||v===undefined) continue
-        const slack=Math.min(1,Math.max(0.02,(link.weight||0)/worst))
+    /* LES RESSORTS, sur les index DÉJÀ résolus — voir `physicsLinks`. */
+    const springs=physicsLinks(graph,byIndex)
+    const spring3=springExponent===3
+    for(let e=0;e<springs.count;e++){
+        const u=springs.u[e]
+        const v=springs.v[e]
+        const slack=Math.min(1,Math.max(0.02,springs.weight[e]/worst))
         const rest=k*(restBase+restSpan*slack)
         const rx=positions[u*2]-positions[v*2]
         const ry=positions[u*2+1]-positions[v*2+1]
-        const distance=Math.max(1e-6,Math.hypot(rx,ry))
+        /* `Math.hypot` est CORRECT pour les très grands écarts, où `rx*rx`
+           peut déborder — mais une position ici vaut quelques centaines, et
+           `hypot` est dix fois plus lent que le produit puis la racine. Sur
+           trois mille liens et deux mille tours, c'était le poste dominant. */
+        const distance=Math.max(1e-6,Math.sqrt(rx*rx+ry*ry))
         /* CUBIQUE: (d-rest)³/rest² le long de l'axe — ton `(dis-R)^3`,
            normalisé par `rest²` pour garder des unités de longueur.
            SIGNE: `rx = u-v` pointe de v vers u; si d>rest (étiré), u doit
@@ -1480,11 +1662,29 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
        le comportement d'avant si quelqu'un le demande explicitement. */
     const viscosity=Number.isFinite(viscosity_)?viscosity_:FOREST_VISCOSITY
     const ceiling=Number.isFinite(temperature)&&temperature>=0?Math.min(fac,temperature):fac
+    /* L'ARRÊT EST FAIT EN RELATIF, et non sur un 1e-7 absolu.
+
+       Les positions sont de l'ordre de la longueur du graphe — quelques
+       centaines d'unités pour un groupe, des dizaines de milliers pour une
+       chaîne longue. Un seuil ABSOLU de 1e-7 y est donc indécent : il ne peut
+       être atteint qu'à l'arrêt du refroidissement, après deux mille tours, et
+       il ne l'est qu'à la limite près. Le critère utile est « le sommet le plus
+       rapide ne bouge plus que de `k` millièmes de k », ce qui se lit dans la
+       même unité que la longueur au repos — donc la même valeur de convergence
+       vaut pour deux pics et pour trois mille.
+
+       C'est aussi ce qui rend la boucle DÉTERMINISTE : sur un critère physique,
+       deux rendus du même graphe s'arrêtent au MÊME tour, alors que sur un
+       plafond de temps ils s'arrêtent où le hasard de la machine les a
+       interrompus — et le même réseau s'affichait alors différemment d'un
+       rendu à l'autre. Le budget de temps reste, mais il n'est plus ce qui
+       arrête normalement. */
+    const stopSpeed=k*FOREST_SETTLE_RATIO
     let maxSpeed=0
     for(let i=0;i<count;i++){
         const vx=velo[i*2]*viscosity
         const vy=velo[i*2+1]*viscosity
-        const speed=Math.hypot(vx,vy)
+        const speed=Math.sqrt(vx*vx+vy*vy)
         if(speed<1e-12){
             velo[i*2]=0
             velo[i*2+1]=0
@@ -1529,7 +1729,7 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
    Ressort cubique sur liens, répulsion bornée toutes paires, momentum +
    saturation atan par nœud, recentrage dur. Convergence quand la vitesse max
    passe sous 1e-7 — `iterations` n'est qu'un plafond de sécurité. */
-function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0.6,gravity=0.005,tempStart=null,tempEnd=0.5,fac=null,budgetMs=FOREST_LAYOUT_BUDGET_MS,springExponent=FOREST_LAYOUT_DEFAULTS.springExponent,massForce=FOREST_LAYOUT_DEFAULTS.massForce,defectForce=FOREST_LAYOUT_DEFAULTS.defectForce,errorForce=FOREST_LAYOUT_DEFAULTS.errorForce,depthForce=FOREST_LAYOUT_DEFAULTS.depthForce}={}){
+function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0.6,gravity=0.005,tempStart=null,tempEnd=0,fac=null,budgetMs=FOREST_LAYOUT_BUDGET_MS,viscosity=FOREST_LAYOUT_DEFAULTS.viscosity,springExponent=FOREST_LAYOUT_DEFAULTS.springExponent,massForce=FOREST_LAYOUT_DEFAULTS.massForce,massBias=null,defectForce=FOREST_LAYOUT_DEFAULTS.defectForce,defectBias=null,errorForce=FOREST_LAYOUT_DEFAULTS.errorForce,errorBias=null,depthForce=FOREST_LAYOUT_DEFAULTS.depthForce,depthBias=null}={}){
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return positions
@@ -1540,26 +1740,32 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
        Le cercle rangeait les sommets par masse angulaire — le plus léger en
        tête — ce qui était déterministe, mais concentrait toute la population sur
        une courbe: les premiers tours les empilaient tous dans la MÊME case de
-       la grille de répulsion, et le coût d'un tour était donc quadratique. C'est
-       mesuré: sur 4 000 sommets, dix tours coûtaient déjà 2,6 s.
+       la grille de répulsion, et le coût d'un tour était donc quadratique.
 
-       Un tirage dans le disque de rayon `ideal` garde la même emprise mais
-       désordonne les positions, donc répartit la population sur toute la grille
-       dès le premier tour. `sqrt(rand())` et non `rand()`: c'est ce qui rend le
-       tirage UNIFORME en surface — sans le racine, les points se massent au
-       centre.
+       `sqrt(rand())` et non `rand()`: c'est ce qui rend le tirage UNIFORME en
+       surface — sans le racine, les points se massent au centre.
 
        Le tirage reste à GRAINE (voir `layoutRandom`): le même réseau repart du
        même nuage à chaque rendu, sans quoi deux réseaux cesseraient d'être
-       comparables. */
-    const rand=layoutRandom(layoutSeed(graph,count))
-    for(let i=0;i<count;i++){
-        if(i===rootLocalIndex) continue
-        const radius=ideal*Math.sqrt(rand())
-        const angle=2*Math.PI*rand()
-        positions[i*2]=radius*Math.cos(angle)
-        positions[i*2+1]=radius*Math.sin(angle)
-    }
+       comparables.
+
+       ET SON RAYON EST CELUI DU GROUPE, PAS CELUI D'UN PIC.
+
+       Un disque de rayon `ideal`, quelle que soit la population, écrit que
+       trois mille sommets tiennent dans la place d'un seul: ils s'y entassent
+       à la densité d'équilibre même, et la grille de répulsion voit alors
+       n²/2 paires par tour. Mesuré sur une chaîne de 3 000 : le PREMIER tour
+       coûtait 111 ms et les vingt premiers, 1,5 s sur 3,7 s au total — le
+       quart du temps du moteur passé à ouvrir un nuage déjà ouvert.
+
+       Le disque de départ est donc celui que le groupe OCCUPE à l'équilibre:
+       rayon `k·√(n/π)`, la surface qui laisse `k²` par sommet — exactement la
+       distance au repos d'un lien. La densité de départ est alors celle de
+       l'arrivée, donc le coût d'un tour est linéaire dès le premier. Un
+       coefficient de 1,2 laisse la marge nécessaire pour qu'une grappe
+       aléatoire ne s'y forme pas; en dessous de `ideal`, on retombe sur
+       l'ancien rayon, ce qui préserve exactement le cas des petits groupes. */
+    seedPositions(positions,graph,count,ideal,rootLocalIndex)
     if(count===1) return positions
     /* LA PLUS FORTE ERREUR DU GROUPE, et elle fixe l'échelle. La comparer à
        l'erreur MOYENNE — ou à la médiane — écraserait le groupe contre son
@@ -1569,50 +1775,37 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
     const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
     /* `vitesse=0` — ton `vitesse=0`: le momentum part de zéro et accumule. */
     const velo=new Float64Array(count*2)
-    const massBias=massBiasOf(graph.vertices)
-    /* LE BUDGET DE TEMPS, et il est la seule borne qui serve.
+    if(!massBias) massBias=massBiasOf(graph.vertices)
+    /* LE NOMBRE DE TOURS, et il est DÉTERMINISTE.
 
-       `maxSpeed<1e-7` ne se déclenche JAMAIS: `tempStart`/`tempEnd` sont
-       déstructurés ici mais ne sont transmis ni à `frStep` ni à rien d'autre —
-       il n'y a donc aucun refroidissement, et la seule friction est la
-       saturation `atan`, qui borne la vitesse sans la faire décroître. Mesuré :
-       20 000 tours sur une chaîne de 500 sommets, toujours en mouvement, et les
-       positions avaient encore bougé de 1 834 unités entre le tour 10 et le
-       tour 10 000.
-
-       Le seul filet restant était `iterations`, à 10⁹ par défaut. Le mode
-       STATIQUE — qui est le mode PAR DÉFAUT, `forestOverviewLayout({animate=false})`
-       — bloquait donc le thread principal indéfiniment, à l'init et à chaque
-       changement de racine puisque la clé de cache du panneau inclut le batch.
-
-       Un plafond de tours ne conviendrait pas : un tour coûte O(sommets), donc il
-       faudrait le fixer assez bas pour qu'un grand groupe tienne dans le temps
-       voulu, et assez haut pour qu'un petit converge — le même nombre ne peut
-       pas satisfaire les deux. Le budget donne le MÊME temps d'attente quelle que
-       soit la taille. Il ne faut pas non plus espacer la vérification: un tour coûte O(sommets) mais
-       les PREMIERS tours coûtent O(sommets²), parce que tous les points démarrent
-       sur le cercle de rayon `ideal` et sont donc entassés dans la même case de
-       la grille de répulsion. Un tour unique peut déjà durer des dizaines de
-       millisecondes sur un grand groupe, et vérifier tous les 4 tours laissait le
-       budget dépassé de quatre fois ce montant. `performance.now()` coûte une
-       centaine de nanosecondes: le tester à chaque tour est gratuit. */
+       C'est `layoutRoundsFor`, calculé sur la seule taille du groupe — donc le
+       même groupe s'arrête au même tour sur n'importe quelle machine. La
+       boucle physique s'arrête plus haut si elle converge (`maxSpeed`), mais le
+       plafond n'est plus une mesure de temps: c'était précisément ce qui
+       faisait qu'un même réseau s'affichait différemment d'un rendu à l'autre,
+       et qui faisait échouer le test de déterminisme. */
     const started=performance.now()
+    const rounds=Math.min(iterations,layoutRoundsFor(count,graph.links.length))
     /* La température de DÉPART vaut la moitié de `ideal` quand on ne la donne
        pas: c'est le pas initial maximal, assez pour ouvrir un nuage tiré au
        sort sans le disperser hors du cadre d'un tour. */
     const tempFrom=Number.isFinite(tempStart)?tempStart:ideal*0.5
     const tempTo=Number.isFinite(tempEnd)?tempEnd:0
-    for(let round=0;round<iterations;round++){
+    for(let round=0;round<rounds;round++){
         const maxSpeed=frStep(positions,velo,graph,byIndex,{
-            k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex,springExponent,massBias,massForce,defectBias,defectForce,errorBias,errorForce,depthBias,depthForce,
+            k:ideal,worst,repulsion,restBase,restSpan,fac,viscosity,rootLocalIndex,springExponent,massBias,massForce,defectBias,defectForce,errorBias,errorForce,depthBias,depthForce,
             temperature:layoutTemperature(round,tempFrom,tempTo)
         })
-        /* `while(wavemax(vitesse)>1e-7)` — ton critère d'arrêt. */
-        if(maxSpeed<1e-7) break
-        /* `Infinity` = pas de borne (usage explicite). Un budget de 0 doit
-           au contraire ARRÊTER IMMÉDIATEMENT: c'est ce que reçoit un groupe
-           arrivé après l'échéance, et le tester avec `>0` le laissait repartir
-           pour 10⁹ tours — donc exactement le gel qu'on vient de supprimer. */
+        /* `while(wavemax(vitesse)>seuil)` — ton critère d'arrêt, rendu RELATIF
+           à `k` par `FOREST_SETTLE_RATIO`: voir la constante. */
+        if(maxSpeed<ideal*FOREST_SETTLE_RATIO) break
+        /* LE FILET, et il ne devrait jamais mordre. Un tour coûte O(sommets):
+           si un seul tour dépasse le budget, il n'y a pas de position
+           intermédiaire où s'arrêter proprement — et le filet existe justement
+           pour ne pas laisser le thread se figer sur un groupe qui n'en finit
+           pas. C'est le SEUL endroit où le rendu dépend de la vitesse de la
+           machine, et il ne s'atteint que pour un groupe bien plus grand que
+           ceux que le panneau affiche. `Infinity` = pas de filet du tout. */
         if(budgetMs<Infinity&&performance.now()-started>budgetMs) break
     }
     return positions
@@ -1631,14 +1824,7 @@ export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.it
        graine dérivée du graphe: les deux chemins — statique et animé — doivent
        partir du même état, sinon un même réseau s'afficherait différemment selon
        lequel des deux est choisi. */
-    const rand=layoutRandom(layoutSeed(graph,count))
-    for(let i=0;i<count;i++){
-        if(i===rootLocalIndex) continue
-        const radius=ideal*Math.sqrt(rand())
-        const angle=2*Math.PI*rand()
-        positions[i*2]=radius*Math.cos(angle)
-        positions[i*2+1]=radius*Math.sin(angle)
-    }
+    seedPositions(positions,graph,count,ideal,rootLocalIndex)
     if(count===1) return {positions,done:true,totalIterations:0,rootLocalIndex}
     const worst=graph.links.reduce((n,link)=>Math.max(n,link.weight||0),0)||1
     const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
@@ -1675,7 +1861,8 @@ springExponent,
 }
 
 /* AVANCE LE LAYOUT D'UN NOMBRE D'ÉTAPES (par défaut 1).
-   Retourne true si `maxSpeed<1e-7` (ton `wavemax`) ou le plafond atteint. */
+   Retourne true si le déplacement maximal passe sous `k`/10 000
+   (FOREST_SETTLE_RATIO) ou si le plafond est atteint. */
 export function advanceLayout(state,steps=1){
     if(state.done) return true
     const {positions,velo,totalIterations,ideal,worst,byIndex,rootLocalIndex}=state
@@ -1709,7 +1896,7 @@ export function advanceLayout(state,steps=1){
             depthForce:state.depthForce,
             depthBias:state.depthBias
         })
-        if(maxSpeed<1e-7){
+        if(maxSpeed<ideal*FOREST_SETTLE_RATIO){
             state.done=true
             return true
         }
@@ -1754,7 +1941,7 @@ export function finalizeAnimatedLayout(state){
    redimensionne aucun de ceux qui précèdent. Une disposition dont la taille
    dépend du nombre de groupes ferait sautiller tout le graphique à chaque
    réseau. */
-export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac,budgetMs=FOREST_LAYOUT_BUDGET_MS,springExponent=FOREST_LAYOUT_DEFAULTS.springExponent,massForce=FOREST_LAYOUT_DEFAULTS.massForce,defectForce=FOREST_LAYOUT_DEFAULTS.defectForce,errorForce=FOREST_LAYOUT_DEFAULTS.errorForce,depthForce=FOREST_LAYOUT_DEFAULTS.depthForce}={}){
+export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac,viscosity=FOREST_LAYOUT_DEFAULTS.viscosity,budgetMs=FOREST_LAYOUT_BUDGET_MS,springExponent=FOREST_LAYOUT_DEFAULTS.springExponent,massForce=FOREST_LAYOUT_DEFAULTS.massForce,defectForce=FOREST_LAYOUT_DEFAULTS.defectForce,errorForce=FOREST_LAYOUT_DEFAULTS.errorForce,depthForce=FOREST_LAYOUT_DEFAULTS.depthForce}={}){
     const list=(graphs??[]).filter(graph=>(graph?.vertices?.length??0)>0)
     if(!list.length) return {width,height,groups:[],columns:0,rows:0}
     const span=width-2*margin
@@ -1771,18 +1958,21 @@ export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,column
        LA MÊME ÉCHELLE — celle du plus grand. Une échelle par groupe ferait d'un
        groupe de deux pics une tache qui occupe toute sa case: on perdrait
        exactement l'information qu'on est venu chercher, savoir qu'il est petit. */
-    /* LE BUDGET EST UN ÉCHÉANCE, ET ELLE EST PARTAGÉE PAR TOUS LES GROUPES.
+    /* LE FILET DE TEMPS EST PARTAGÉ PAR TOUS LES GROUPES, et il ne sert plus
+       qu'à cela.
 
        Un budget par groupe se multipliait: cinq arbres de 2 000 sommets
        coûtaient cinq fois le budget, donc toujours un gel. L'échéance est
-       calculée UNE fois ici, et chaque groupe reçoit le TEMPS RESTANT. Le
-       premier arbre obtient tout le budget, les suivants ce qui reste — et un
-       grand arbre ne peut donc pas être suivi de cinq autres qui refont le
-       compte à chaque clic. */
+       calculée UNE fois ici, et chaque groupe reçoit le TEMPS RESTANT — mais
+       ce n'est plus qu'un garde-fou: le nombre de tours de chaque groupe est
+       désormais fixé par sa taille (voir `layoutRoundsFor`), donc l'échéance ne
+       change rien à l'image rendue tant qu'elle ne mord pas. Un même lot de
+       groupes rend donc la même image d'un clic à l'autre, quel que soit le
+       nombre de groupes affiché. */
     const deadline=performance.now()+budgetMs
     const placed=list.map(graph=>{
         const remaining=Math.max(0,deadline-performance.now())
-        const positions=layoutGroup(graph,{iterations,ideal,repulsion,restBase,restSpan,gravity,tempStart,tempEnd,fac,budgetMs:remaining,springExponent,massForce,massBias:massBiasOf(graph.vertices),defectForce,defectBias:defectBiasOf(graph.vertices),errorForce,errorBias:errorBiasOf(graph.vertices,graph.links),depthForce,depthBias:depthBiasOf(graph.vertices,graph.links,graph.rootIndex)})
+        const positions=layoutGroup(graph,{iterations,ideal,repulsion,restBase,restSpan,gravity,tempStart,tempEnd,fac,viscosity,budgetMs:remaining,springExponent,massForce,massBias:massBiasOf(graph.vertices),defectForce,defectBias:defectBiasOf(graph.vertices),errorForce,errorBias:errorBiasOf(graph.vertices,graph.links),depthForce,depthBias:depthBiasOf(graph.vertices,graph.links,graph.rootIndex)})
         let minX=Infinity
         let maxX=-Infinity
         let minY=Infinity

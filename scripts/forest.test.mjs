@@ -441,6 +441,35 @@ test("the layout is DETERMINISTIC, or two networks cannot be compared",()=>{
     near(oncePoints.map(p=>p[1]),twicePoints.map(p=>p[1]),"y")
 })
 
+test("a LARGE network is drawn the same way twice, to the last bit",()=>{
+    /* LE MÊME RÉSEAU, À L'ÉCHELLE OÙ ÇA CASSAIT.
+
+       Le test d'après — vingt-quatre pics — passait même quand la boucle
+       s'arrêtait sur un plafond de TEMPS: vingt-quatre sommets sont assez peu
+       nombreux pour qu'un tour tienne largement dans les 150 ms, donc les deux
+       rendus s'arrêtaient au même tour. C'est ce qui a laissé passer le défaut
+       pendant si longtemps: le budget était un nombre de MILLISECONDES, et il
+       ne mordait qu'au-delà de quelques centaines de sommets.
+
+       Mille sommets le font mordre systématiquement, et les deux rendus
+       divergeaient alors de dizaines d'unités — visibles à l'écran. Le budget
+       est désormais un nombre de tours fonction de la taille du groupe, donc
+       cette comparaison se fait à l'ÉGALITÉ STRICTE, pas à une tolérance: il
+       n'y a plus d'écart « invisible » à autoriser, puisqu'il n'y a plus
+       d'écart. C'est ce qui distingue un rendu reproductible d'un rendu qui
+       se trouve généralement proche. */
+    const masses=Array.from({length:1000},(_,i)=>100+i*14.01565)
+    const components=[{
+        rank:0,root:0,size:masses.length,weight:0,
+        links:masses.map((_,i)=>i?{u:i-1,v:i,weight:0.02+i*0.001,standard:0,label:"CH2"}:null).filter(Boolean)
+    }]
+    const graphs=forestGraph(components,{masses})
+    const once=layoutForests(graphs,{width:600,height:400})
+    const twice=layoutForests(graphs,{width:600,height:400})
+    assert.deepStrictEqual(twice.groups[0].points.map(p=>[p.x,p.y]),
+        once.groups[0].points.map(p=>[p.x,p.y]))
+})
+
 test("every drawn point lands INSIDE the canvas it was given",()=>{
     const masses=Array.from({length:40},(_,i)=>100+i*7.00783)
     const components=[{

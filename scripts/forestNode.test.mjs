@@ -698,3 +698,123 @@ test("the merge button fuses the drawn trees, biggest first",()=>{
     assert.match(FOREST,/export function forestMergeGraphs\(/,
         "the fusion is pure: no DOM, no kernel, testable alone")
 })
+
+test("a click picks the VERTEX first, and the SEGMENT only when no vertex is there",async ()=>{
+    /* LE GESTE EST LE SUJET, ET IL EST EXÉCUTÉ, PAS LU.
+
+       Deux clics sur la même image ne doivent pas vouloir dire deux choses
+       différentes selon que le pointeur tombe ou non sur un sommet — donc on
+       joue le handler de clic pour de vrai, avec un `plot` faux qui ne sait
+       faire que trois choses: dire où est la zone, convertir, et capter les
+       écouteurs. Tout le reste — la distance point-segment, la priorité du
+       sommet, la fermeture de la carte — est le code du panneau. */
+    const evaluate=(name,source)=>new Function("window",
+        "return "+source.replace(/^(\s*)/,"$1function "))({devicePixelRatio:1})
+    const listeners={}
+    const node={
+        addEventListener:(type,handler)=>{listeners[type]=handler}
+    }
+    /* ÉCHELLES D'IDENTITÉ: `invert` est sa propre inverse, donc une unité de
+       donnée vaut un pixel — ce qui rend les seuils (8 px pour un sommet,
+       6 px pour un segment) directement lisibles dans le test. */
+    const plot={
+        graphSVG:{node:()=>node},
+        pointerInGraphzone:(x,y)=>({x,y}),
+        plotScales:()=>({xScale:{invert:v=>v},yScale:{invert:v=>v}})
+    }
+    const graph={
+        rank:0,
+        rootIndex:0,
+        vertices:[{index:0,mass:100,isRoot:true},{index:1,mass:114.01565}],
+        links:[{u:0,v:1,weight:0.02,standard:0,label:"CH2"}]
+    }
+    const opened=[]
+    let closed=0
+    const self={
+        forestGraphs:[{graphs:[graph]}],
+        forestSelected:new Set(),
+        forestLayout:{groups:[{rank:0,points:[
+            {index:0,x:0,y:0,mass:100},
+            {index:1,x:100,y:0,mass:114.01565}
+        ]}]},
+        forestSegmentEdit:null,
+        forestVertexInfoHost:{style:{}},
+        forestSegmentInfoHost:{style:{}},
+        forestAttributions:{byGraph:new Map()},
+        forestComponents:[],
+        openForestSegmentEditor(g,rank,link){opened.push({graph:g,rank,link})},
+        closeForestSegmentEditor(){closed++},
+        async publishForestCollections(){},
+        renderForestList(){},
+        renderForestOverview(){}
+    }
+    evaluate("setupForestInteraction",
+        method("setupForestInteraction","repositionForestCellTitles")).call(self,plot)
+    assert.ok(listeners.click,"the network must listen for clicks")
+
+    /* SUR UN SOMMET: c'est la racine qui change, jamais un segment. Le clic sur
+       un sommet est un geste plus précis — huit pixels — et il ne doit jamais
+       être volé par un lien qui passe à côté. */
+    await listeners.click({clientX:0,clientY:0})
+    assert.equal(graph.rootIndex,0,"clicking the root keeps it")
+    assert.equal(opened.length,0,"a vertex must not open the segment editor")
+
+    /* ENTRE LES DEUX SOMMETS, SUR LE SEGMENT: là il n'y a aucun sommet à
+       sélectionner — le plus proche est à 50 px — donc le segment prend la
+       main, et c'est le seul moyen d'ouvrir son édition. */
+    await listeners.click({clientX:50,clientY:3})
+    assert.equal(opened.length,1,"a click on a bare segment must select it")
+    assert.equal(opened[0].link,graph.links[0],"it must be the link under the cursor")
+    assert.equal(opened[0].rank,0,"and it must carry the tree rank, the link alone is ambiguous")
+
+    /* LOIN DE TOUT: plus de huit pixels d'un sommet ET plus de six d'un
+       segment — le clic est dans le vide, donc il ne selectionne rien et referme
+       ce qui était ouvert. Sans ce cas, on ne pourrait pas sortir d'une
+       édition. */
+    self.forestSegmentEdit={graph,rank:0,link:graph.links[0]}
+    await listeners.click({clientX:50,clientY:40})
+    assert.equal(opened.length,1,"empty space selects nothing")
+    assert.ok(closed>0,"an empty click must close the editor")
+})
+
+test("the segment editor writes the BRICK the propagation actually indexes",()=>{
+    /* `link.standard` n'est pas une étiquette: c'est un RANG dans la liste des
+       références de `propagateForest`. Écrire une brique sans écrire ce rang ne
+       change rien au rendu, et écrire le rang sans la brique change tout au
+       hasard. Ce test verrouille les DEUX ensemble, plus le poids — l'erreur
+       d'un lien, qui décide de sa longueur au repos et de l'erreur affichée. */
+    assert.match(FOREST_METHODS,/forestLinkBricks\(\)\{/,
+        "the link references must come from one place")
+    /* `method()` ancre sur le NOM de méthode, et construit `    nom(` — donc
+       l'ancre de fin porte `async` en toutes lettres quand la méthode est
+       asynchrone, et jamais un commentaire: c'est un nom de méthode qu'il
+       cherche. */
+    const bricksSource=method("forestLinkBricks","async mergeSelectedForests")
+    assert.match(bricksSource,/kind==="combining"&&item\.atomicMass>0/,
+        "the brick list must be filtered exactly like the one propagation reads")
+    /* La propagation lit `references[link.standard]` — donc son filtre et celui
+       de la liste doivent être le même, sinon un rang écrit par l'interface
+       désignerait une autre brique. */
+    assert.match(FOREST_METHODS,/kind==="combining"&&item\.atomicMass>0/)
+    const apply=method("async applyForestSegmentBrick","setupForestInteraction")
+    assert.match(apply,/link\.standard=standard/,"the rank must be rewritten")
+    assert.match(apply,/link\.label=/,"and so must its label, which is what is drawn")
+    assert.match(apply,/link\.weight=Math\.abs\(gap-referenceMass\)/,
+        "and its error, which follows from the brick that was chosen")
+    /* `masses??[]` — les deux `?` sont l'opérateur de coalescence du source, donc
+       ils s'échappent: sans `\?\?` la regex lit `??` comme un quantificateur et
+       ne verrait jamais le `??[]` qu'elle cherche. */
+    assert.match(apply,/forestPlan\?\.masses\?\?\[\]\)\[standard\]/,
+        "the reference mass must be read from the charge-divided list")
+    assert.match(apply,/forestAttributions\?\.byGraph\?\.delete\(graph\)/,
+        "the attribution of that tree must be dropped, or the old formulas stay")
+    assert.match(apply,/publishForestCollections\(\)/,
+        "and the propagation must actually run again")
+    /* UNE BRIQUE INCONNUE EST AJOUTÉE, pas refusée: refuser serait interdire la
+       correction même pour laquelle ce bouton existe. */
+    assert.match(apply,/commitForestGroups\(\[\.\.\.current,\{group:wanted\}\]\)/)
+    /* LE SEGMENT ÉDITÉ EST REPASSÉ PAR-DESSUS, sinon la carte qu'on vient
+       d'ouvrir ne désigne rien à l'œil. */
+    assert.match(FOREST_METHODS,/forest:edit/,
+        "the selected link must be drawn on top of the others")
+})
