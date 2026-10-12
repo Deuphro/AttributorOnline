@@ -21,7 +21,7 @@ export function formatValue(value){
     if(magnitude>=1e6||magnitude<1e-3) return value.toExponential(2)
     return value.toPrecision(6).replace(/0+$/,"").replace(/\.$/,"")
 }
-const SUBSCRIPTS={"0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉"}
+const SUBSCRIPTS={"0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉","-":"₋"}
 const SUPERSCRIPTS={"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹","+":"⁺","-":"⁻"}
 /* The notation, made readable: the COUNTS go down (C₆H₁₂O₆), the MASS NUMBERS
    go up and to the LEFT (¹²C₆), and the charge goes up at the end (H⁺).
@@ -95,6 +95,15 @@ export function prettyNotation(notation){
             continue
         }
         if(ch==="+"||ch==="-"){
+            const negativeIsotopeCount=ch==="-"
+                &&/^\d/.test(text.slice(i+1))
+                &&/\d+[A-Za-z]{1,2}$/.test(text.slice(0,i))
+            if(negativeIsotopeCount){
+                const digits=/^\d+/.exec(text.slice(i+1))[0]
+                out+=SUBSCRIPTS["-"]+[...digits].map(d=>SUBSCRIPTS[d]).join("")
+                i+=digits.length+1
+                continue
+            }
             out+=SUPERSCRIPTS[ch]
             i++
             continue

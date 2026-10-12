@@ -985,11 +985,10 @@ export function forestDiffIsEmpty(diff){
    +16O` et se relisait à −413 Da au lieu de −15 : la brique écrite, relue, et
    appliquée, n'était pas la différence qu'elle décrivait. Mesuré, pas supposé.
 
-   L'A N'EST ÉCRIT QUE S'IL DIFFÈRE DE L'ISOTOPE PAR DÉFAUT, pour la même
-   raison : `-14N` serait lu comme un coefficient, et `13C-` comme un isotope
-   d'abord. Un isotope non par défaut dans une différence signée n'est donc pas
-   exprimable en texte — et c'est dit ici plutôt que d'écrire une chaîne qui se
-   lirait autrement. */
+    L'ISOTOPE NON PAR DÉFAUT GARDE SON A DEVANT LE SYMBOLE. Son compte négatif
+    vient après le symbole (`13C-2`), car le mettre devant (`-13C`) en ferait un
+    coefficient de treize carbones par défaut. Les termes sont séparés par des
+    espaces pour que chaque signe reste attaché à son propre atome. */
 export function forestDiffNotation(diff){
     const terms=[]
     const ordered=[...(diff?.keys()??[])].sort((a,b)=>{
@@ -1001,7 +1000,6 @@ export function forestDiffNotation(diff){
         if(sb==="H"&&sa!=="H") return 1
         return sa<sb?-1:sa>sb?1:0
     })
-    let foreignIsotope=false
     for(const element of ordered){
         const byA=diff.get(element)
         const symbol=String(element?.symbol??element?.name??element)
@@ -1011,19 +1009,18 @@ export function forestDiffNotation(diff){
                l'écrire serait l'écrire deux fois — et le mal lire. */
             const isDefault=A===element?.pickA?.("mostProbable")
             const massTag=!isDefault&&Number.isInteger(A)&&A>0?`${A}`:""
-            if(massTag) foreignIsotope=true
             const sign=n<0?"-":"+"
             const count=Math.abs(n)
-            terms.push(`${sign}${massTag}${symbol}${count===1?"":count}`)
+            if(massTag){
+                terms.push(n<0
+                    ?`${massTag}${symbol}-${count}`
+                    :`${massTag}${symbol}${count===1?"":count}`)
+            }else{
+                terms.push(`${sign}${symbol}${count===1?"":count}`)
+            }
         }
     }
-    /* UNE DIFFERENCE AVEC UN ISOTOPE NON PAR DEFAUT N'EST PAS EXPRIMABLE EN
-       TEXTE: on écrit le nombre d'A, et le lecteur le prend pour un
-       coefficient. On ne rend donc pas une chaîne qui se relirait mal — on le
-       dit. C'est le seul endroit du programme où une différence ne se nomme
-       pas, et le silence y serait un mensonge de plus. */
-    if(foreignIsotope) return "±0"
-    return terms.join("")||"±0"
+    return terms.join(" ")||"±0"
 }
 
 /* RETROUVE UNE BRIQUE DU PLAN PAR SA COMPOSITION — comparaison isotope par

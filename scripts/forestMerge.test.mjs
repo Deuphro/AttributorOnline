@@ -9,7 +9,7 @@ import {
     forestMergeGraphs
 } from "./forest.js"
 import {Element,Formula} from "./chemistry.js"
-import {buildPlan,mergeComposition} from "./attribution.js"
+import {buildPlan,mergeComposition,propagateForest} from "./attribution.js"
 
 const TABLE=Element.load(JSON.parse(
     readFileSync(new URL("../data/elements.json",import.meta.url),"utf8")))
@@ -42,6 +42,44 @@ test("the root diff is big minus small, isotope by isotope",()=>{
     assert.ok(!forestDiffIsEmpty(diff))
     const same=forestCompositionDiff(ch2,byKey.get("12C 1H2"))
     assert.ok(forestDiffIsEmpty(same),"same formula twice must give an empty diff")
+})
+
+test("a non-default isotope difference survives notation and propagation",()=>{
+    const light=Formula.parse("12C",TABLE)
+    const heavy=Formula.parse("13C",TABLE)
+    const diff=forestCompositionDiff(heavy.composition,light.composition)
+    const notation=forestDiffNotation(diff)
+    assert.notEqual(notation,"±0","an isotope substitution must not disappear")
+    const reference=Formula.parse(notation,TABLE)
+    assert.deepEqual(reference.composition,diff,
+        "the forest's signed isotope difference must be readable as a formula")
+
+    const graph={rootIndex:0,vertices:[
+        {index:0,mass:Formula.parse("12C[+]",TABLE).mz},
+        {index:1,mass:Formula.parse("13C[+]",TABLE).mz}
+    ],links:[{u:0,v:1,standard:0,label:notation}]}
+    const references=[{composition:reference.composition}]
+    const forward=propagateForest(graph,Formula.parse("12C[+]",TABLE),references,{table:TABLE})
+    assert.equal(forward.rows.find(row=>row.index===1)?.notation,"13C[+]")
+
+    const reverse=propagateForest({...graph,rootIndex:1},Formula.parse("13C[+]",TABLE),references,{table:TABLE})
+    const returned=reverse.rows.find(row=>row.index===0)
+    assert.equal(Formula.parse(returned.notation,TABLE).key,Formula.parse("12C[+]",TABLE).key)
+
+    const threeHeavy=Formula.parse("13C3",TABLE)
+    const oneHeavy=Formula.parse("13C",TABLE)
+    const heavyLoss=forestCompositionDiff(oneHeavy.composition,threeHeavy.composition)
+    const heavyLossNotation=forestDiffNotation(heavyLoss)
+    assert.equal(heavyLossNotation,"13C-2")
+    assert.deepEqual(Formula.parse(heavyLossNotation,TABLE).composition,heavyLoss)
+    const lossGraph={rootIndex:0,vertices:[
+        {index:0,mass:Formula.parse("13C3[+]",TABLE).mz},
+        {index:1,mass:Formula.parse("13C[+]",TABLE).mz}
+    ],links:[{u:0,v:1,standard:0,label:heavyLossNotation}]}
+    const lossResult=propagateForest(lossGraph,Formula.parse("13C3[+]",TABLE),[
+        {composition:Formula.parse(heavyLossNotation,TABLE).composition}
+    ],{table:TABLE})
+    assert.equal(lossResult.rows.find(row=>row.index===1)?.notation,"13C[+]")
 })
 
 test("a brick is found by its SIGNED difference, and by nothing else",()=>{

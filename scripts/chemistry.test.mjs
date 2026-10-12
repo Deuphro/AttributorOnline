@@ -7,6 +7,7 @@
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
 import {Element,Formula} from "./chemistry.js"
+import {prettyNotation} from "./nodes/formulaCollectionHelpers.js"
 const TABLE=Element.load(JSON.parse(
     readFileSync(new URL("../data/elements.json",import.meta.url),"utf8")))
 const ELECTRON_MASS=TABLE.electronMass.value
@@ -43,6 +44,7 @@ const atoms=(formula,symbol)=>{
     }
     return n
 }
+const isotopeCount=(formula,symbol,A)=>formula.composition.get(TABLE.find(symbol))?.get(A)??0
 
 console.log("la recette n'a pas de masse, la formule en a une")
 test("C6H12O6 se lit sans espaces",()=>{
@@ -121,6 +123,38 @@ test("une clé relue redonne la même clé, adduit compris",()=>{
         if(again.charge!==first.charge){
             throw new Error(`"${text}": charge drifted ${first.charge} -> ${again.charge}`)
         }
+    }
+})
+test("les cinq écritures isotopiques et les groupes négatifs",()=>{
+    const protonated=parse("C12H24;H+")
+    eq(isotopeCount(protonated,"C",12),12)
+    eq(isotopeCount(protonated,"H",1),25)
+    eq(protonated.charge,1)
+
+    const mixed=parse("13C 12C11H24;+")
+    eq(isotopeCount(mixed,"C",13),1)
+    eq(isotopeCount(mixed,"C",12),11)
+    eq(isotopeCount(mixed,"H",1),24)
+    eq(mixed.charge,1)
+
+    const isotopeSwap=parse("13C-(12C)")
+    eq(isotopeCount(isotopeSwap,"C",13),1)
+    eq(isotopeCount(isotopeSwap,"C",12),-1)
+
+    const groupSwap=parse("CH2-(NH)")
+    eq(isotopeCount(groupSwap,"C",12),1)
+    eq(isotopeCount(groupSwap,"H",1),1)
+    eq(isotopeCount(groupSwap,"N",14),-1)
+
+    const signedGroups=parse("C-2 2H-2 NH")
+    eq(isotopeCount(signedGroups,"C",12),-2)
+    eq(isotopeCount(signedGroups,"H",2),-2)
+    eq(isotopeCount(signedGroups,"N",14),1)
+    eq(isotopeCount(signedGroups,"H",1),1)
+
+    for(const formula of [protonated,mixed,isotopeSwap,groupSwap,signedGroups]){
+        const reread=parse(String(formula))
+        eq(reread.key,formula.key,`${formula} must preserve its composition when re-read`)
     }
 })
 test("l'affichage dit ce qui a été tapé, l'adduit en crochets",()=>{
@@ -936,6 +970,8 @@ test("une stœchiométrie NÉGATIVE se relit comme elle a été écrite",()=>{
     roundTrip("-2H","1H:-2")
     roundTrip("-C-H+N-O","12C:-1 1H:-1 14N:1 16O:-1")
     roundTrip("C2-H2","12C:2 1H:-2")
+    roundTrip("2H-2","2H:-2")
+    eq(prettyNotation(String(Formula.parse("2H-2",TABLE))),"²H₋₂")
     /* ET LES FORMES POSITIVES N'ONT PAS BOUGÉ: le compte reste APRÈS le
        symbole, c'est seulement le signe qui change de place. */
     roundTrip("CH2","12C:1 1H:2")

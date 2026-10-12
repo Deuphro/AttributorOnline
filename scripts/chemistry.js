@@ -1544,7 +1544,7 @@ class Formula extends Stoichiometry{
                    a choisi: écrit si un nombre de masse est donné, sinon la
                    règle. C'est exactement ce que fait add(). */
                 const A=massNumber?Number(massNumber):el.pickA(rule)
-                const n=sign*(massNumber?Number(massNumber):1)
+                const n=sign*(signed&&massNumber?Number(massNumber):1)
                         *(count!==null&&count!==undefined&&count!==""?Number(count):1)
                 lastTerm=new Map([[A,n]])
                 add(el,massNumber,count,sign,signed)
@@ -1601,7 +1601,9 @@ class Formula extends Stoichiometry{
                         /* L'A de ce symbole, pas celui du dernier terme: "-H2O-1"
                            vise l'O et doit écrire un 16O, même si le terme
                            précédent était de l'hydrogène. */
-                        const signedA=el.pickA(rule)
+                        const signedA=lastPut===el&&lastTerm.size===1
+                            ?lastTerm.keys().next().value
+                            :el.pickA(rule)
                         /* Le terme "S-n" vaut S×(-n) TOUT ENTIER: le +1 que la
                            segmentation vient d'ajouter est donc annulé, puis le
                            compte écrit est soustrait. C'est un COEFFICIENT, pas une
@@ -2003,6 +2005,7 @@ class Formula extends Stoichiometry{
            l'identique. */
         const term=(name,n)=>{
             if(n===1) return name
+            if(n<0&&/^\d/.test(name)) return `${name}-${-n}`
             if(n===-1) return `-${name}`
             return n>0?`${name}${n}`:`-${-n}${name}`
         }
