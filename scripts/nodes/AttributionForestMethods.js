@@ -21,11 +21,24 @@ export class AttributionForestMethods{
         const merges=this.forestMerges
         if(!(merges?.size)||!Array.isArray(baseGraphs)) return baseGraphs
         const byRank=new Map(baseGraphs.map(g=>[g.rank,g]))
+        /* L'ENTRÉE EST LA PROVENANCE, ET NON LA CLÉ DE LA MAP.
+
+           La map est indexée par le rang du plus grand arbre, donc deux fusions
+           en chaîne écrivent la MÊME clé: la seconde remplaçait la première, et
+           l'historique des arbres absorbés disparaissait avec. On ne cherche donc
+           plus « la fusion de ce rang », mais « la fusion à laquelle ce rang
+           appartient » — ce qui tient même quand les clés se recouvrent. */
+        const absorbing=new Map()
+        for(const merged of merges.values()){
+            for(const rank of merged?.mergedFrom??[]){
+                if(!absorbing.has(rank)) absorbing.set(rank,merged)
+            }
+        }
         const consumed=new Set()
         const out=[]
         for(const graph of baseGraphs){
             if(consumed.has(graph.rank)) continue
-            const merged=merges.get(graph.rank)
+            const merged=absorbing.get(graph.rank)
             if(merged&&merged.mergedFrom?.every(rank=>byRank.has(rank))){
                 for(const rank of merged.mergedFrom) consumed.add(rank)
                 out.push(merged)

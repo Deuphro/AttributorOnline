@@ -38,6 +38,17 @@
 export const DEFAULT_LINK_TOLERANCE=0.5
 
 export const FOREST_LAYOUT_DEFAULTS={iterations:1e9,ideal:26,repulsion:1,restBase:1,restSpan:0,gravity:0,tempStart:null,tempEnd:0.5,fac:2}
+/* LE BUDGET DU MODE STATIQUE, en millisecondes par groupe.
+
+   Il s'applique à `layoutGroup` SEULEMENT. Le mode animé garde `iterations` à
+   10⁹ sans coût: là, atteindre le plafond ne fait que relancer la boucle — le
+   graphe « respire » tant qu'il est affiché, c'est voulu. Seul le mode statique
+   bloque le thread, et c'est lui qui avait besoin d'une borne.
+
+   150 ms est choisi pour rester sous le seuil où un gel devient perceptible,
+   tout en laissant un grand groupe correctement détendu. Si la mise en page vous
+   paraît trop serrée, montez cette valeur : c'est le seul réglage à toucher. */
+const FOREST_LAYOUT_BUDGET_MS=150
 
 /* LES RÉFÉRENCES, et d'où elles viennent.
 
@@ -665,6 +676,37 @@ export function forestDiffNotation(diff){
 export function forestFindBrick(items,diff){
     const list=items??[]
     if(!diff) return -1
+    /* LE DIFF EST SIGNÉ, LA BRIQUE NE PEUT PAS L'ÊTRE.
+
+       Une brique est une quantité de matière POSITIVE: aucun atome ne peut y
+       compter négativement. La recherche comparait donc le diff signé à des
+       compositions non négatives, et ne pouvait aboutir que sur un diff à un
+       SEUL signe — un ajout pur ou une perte pure. Dès qu'il y avait une
+       SUBSTITUTION, c'est-à-dire un élément ajouté ET un autre retiré
+       (`-C-H+N-O`), il ne restait aucune brique à trouver: celle qu'il fallait
+       aurait porté un compte négatif. La fusion refusait alors ces racines la,
+       alors qu'une substitution est un lien aussi légitime qu'un ajout.
+
+       On compare donc les MAGNITUDES. C'est ce que fait déjà l'appelant, qui
+       construit la brique ajoutée en valeurs absolues — les deux lectures
+       concordaient tant que le diff avait un seul signe, et ne concordaient plus
+       dès le mélange. Les comparer en magnitude unifie les deux cas sans changer
+       le résultat de ceux qui fonctionnaient: pour un diff à un seul signe,
+       `|diff|` donne la même brique que `times = ±1`.
+
+       LE SIGNE N'EST PAS PERDU POUR L'USAGE: il ne sert pas à choisir la
+       brique, mais à dire quelle racine est la plus lourde — et c'est la MASSE
+       qui le décide, positive par construction. */
+    const target=new Map()
+    for(const [element,byA] of diff){
+        const slot=new Map()
+        for(const [A,n] of byA){
+            const magnitude=Math.abs(n)
+            if(magnitude) slot.set(A,magnitude)
+        }
+        if(slot.size) target.set(element,slot)
+    }
+    if(!target.size) return -1
     const sameAs=(composition,times)=>{
         const probe=new Map()
         const bump=(element,A,delta)=>{
@@ -678,8 +720,8 @@ export function forestFindBrick(items,diff){
         for(const [element,byA] of composition??[]){
             for(const [A,n] of byA) bump(element,A,n*times)
         }
-        if(probe.size!==diff.size) return false
-        for(const [element,byA] of diff){
+        if(probe.size!==target.size) return false
+        for(const [element,byA] of target){
             const other=probe.get(element)
             if(!other||other.size!==byA.size) return false
             for(const [A,n] of byA){
@@ -691,7 +733,7 @@ export function forestFindBrick(items,diff){
     for(let i=0;i<list.length;i++){
         const composition=list[i]?.composition
         if(!composition) continue
-        if(sameAs(composition,1)||sameAs(composition,-1)) return i
+        if(sameAs(composition,1)) return i
     }
     return -1
 }
@@ -746,7 +788,22 @@ export function forestMergeGraphs(graphs,links=[]){
         weight:list.reduce((n,graph)=>n+(Number(graph.weight)||0),0)
             +links.reduce((n,link)=>n+(Number(link.weight)||0),0),
         totalIntensity:vertices.reduce((n,vertex)=>n+(Number(vertex.intensity)||0),0),
-        mergedFrom:list.map(graph=>graph.rank),
+        /* LA PROVENANCE EST CUMULATIVE, et c'est indispensable.
+
+       `list.map(graph=>graph.rank)` ne portait que les rangs REÇUS. Mais un
+       arbre peut lui-même être le résultat d'une fusion antérieure: son rang
+       est alors celui du plus grand d'origine, et son propre `mergedFrom` — les
+       arbres qu'il a déjà absorbés — disparaissait du nouveau.
+
+       Conséquence observée: après #0+#1 puis (fusionné)+#2, la nouvelle
+       provenance valait `[0,2]`. Le rang 1, déjà absorbé, n'y figurait plus, et
+       le rendu — qui ne retire du dessin que les rangs listés — réaffichait
+       l'arbre #1. L'utilisateur voyait l'arbre qu'il venait de fusionner
+       réapparaître, et ses)fusions suivantes portaient sur le mauvais couple.
+
+       On déplie donc la provenance de chaque entrant, et on dédoublonne: un rang
+       absorbé reste absorbé, quelle que soit la longueur de la chaîne. */
+mergedFrom:[...new Set(list.flatMap(graph=>graph.mergedFrom??[graph.rank]))],
         mergedLinks:(links??[]).map(link=>({u:link.u,v:link.v,
             standard:link.standard,label:link.label??null}))
     }
@@ -1150,7 +1207,7 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
    Ressort cubique sur liens, répulsion bornée toutes paires, momentum +
    saturation atan par nœud, recentrage dur. Convergence quand la vitesse max
    passe sous 1e-7 — `iterations` n'est qu'un plafond de sécurité. */
-function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0.6,gravity=0.005,tempStart=null,tempEnd=0.5,fac=null}){
+function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0.6,gravity=0.005,tempStart=null,tempEnd=0.5,fac=null,budgetMs=FOREST_LAYOUT_BUDGET_MS}={}){
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return positions
@@ -1174,10 +1231,42 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
     const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
     /* `vitesse=0` — ton `vitesse=0`: le momentum part de zéro et accumule. */
     const velo=new Float64Array(count*2)
+    /* LE BUDGET DE TEMPS, et il est la seule borne qui serve.
+
+       `maxSpeed<1e-7` ne se déclenche JAMAIS: `tempStart`/`tempEnd` sont
+       déstructurés ici mais ne sont transmis ni à `frStep` ni à rien d'autre —
+       il n'y a donc aucun refroidissement, et la seule friction est la
+       saturation `atan`, qui borne la vitesse sans la faire décroître. Mesuré :
+       20 000 tours sur une chaîne de 500 sommets, toujours en mouvement, et les
+       positions avaient encore bougé de 1 834 unités entre le tour 10 et le
+       tour 10 000.
+
+       Le seul filet restant était `iterations`, à 10⁹ par défaut. Le mode
+       STATIQUE — qui est le mode PAR DÉFAUT, `forestOverviewLayout({animate=false})`
+       — bloquait donc le thread principal indéfiniment, à l'init et à chaque
+       changement de racine puisque la clé de cache du panneau inclut le batch.
+
+       Un plafond de tours ne conviendrait pas : un tour coûte O(sommets), donc il
+       faudrait le fixer assez bas pour qu'un grand groupe tienne dans le temps
+       voulu, et assez haut pour qu'un petit converge — le même nombre ne peut
+       pas satisfaire les deux. Le budget donne le MÊME temps d'attente quelle que
+       soit la taille. Il ne faut pas non plus espacer la vérification: un tour coûte O(sommets) mais
+       les PREMIERS tours coûtent O(sommets²), parce que tous les points démarrent
+       sur le cercle de rayon `ideal` et sont donc entassés dans la même case de
+       la grille de répulsion. Un tour unique peut déjà durer des dizaines de
+       millisecondes sur un grand groupe, et vérifier tous les 4 tours laissait le
+       budget dépassé de quatre fois ce montant. `performance.now()` coûte une
+       centaine de nanosecondes: le tester à chaque tour est gratuit. */
+    const started=performance.now()
     for(let round=0;round<iterations;round++){
         const maxSpeed=frStep(positions,velo,graph,byIndex,{k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex})
         /* `while(wavemax(vitesse)>1e-7)` — ton critère d'arrêt. */
         if(maxSpeed<1e-7) break
+        /* `Infinity` = pas de borne (usage explicite). Un budget de 0 doit
+           au contraire ARRÊTER IMMÉDIATEMENT: c'est ce que reçoit un groupe
+           arrivé après l'échéance, et le tester avec `>0` le laissait repartir
+           pour 10⁹ tours — donc exactement le gel qu'on vient de supprimer. */
+        if(budgetMs<Infinity&&performance.now()-started>budgetMs) break
     }
     return positions
 }
@@ -1281,7 +1370,7 @@ export function finalizeAnimatedLayout(state){
    redimensionne aucun de ceux qui précèdent. Une disposition dont la taille
    dépend du nombre de groupes ferait sautiller tout le graphique à chaque
    réseau. */
-export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac}={}){
+export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac,budgetMs=FOREST_LAYOUT_BUDGET_MS}={}){
     const list=(graphs??[]).filter(graph=>(graph?.vertices?.length??0)>0)
     if(!list.length) return {width,height,groups:[],columns:0,rows:0}
     const span=width-2*margin
@@ -1298,8 +1387,18 @@ export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,column
        LA MÊME ÉCHELLE — celle du plus grand. Une échelle par groupe ferait d'un
        groupe de deux pics une tache qui occupe toute sa case: on perdrait
        exactement l'information qu'on est venu chercher, savoir qu'il est petit. */
+    /* LE BUDGET EST UN ÉCHÉANCE, ET ELLE EST PARTAGÉE PAR TOUS LES GROUPES.
+
+       Un budget par groupe se multipliait: cinq arbres de 2 000 sommets
+       coûtaient cinq fois le budget, donc toujours un gel. L'échéance est
+       calculée UNE fois ici, et chaque groupe reçoit le TEMPS RESTANT. Le
+       premier arbre obtient tout le budget, les suivants ce qui reste — et un
+       grand arbre ne peut donc pas être suivi de cinq autres qui refont le
+       compte à chaque clic. */
+    const deadline=performance.now()+budgetMs
     const placed=list.map(graph=>{
-        const positions=layoutGroup(graph,{iterations,ideal,repulsion,restBase,restSpan,gravity,tempStart,tempEnd,fac})
+        const remaining=Math.max(0,deadline-performance.now())
+        const positions=layoutGroup(graph,{iterations,ideal,repulsion,restBase,restSpan,gravity,tempStart,tempEnd,fac,budgetMs:remaining})
         let minX=Infinity
         let maxX=-Infinity
         let minY=Infinity

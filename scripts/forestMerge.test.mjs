@@ -60,3 +60,45 @@ test("merged graphs keep every vertex and link, plus the bridge",()=>{
     assert.equal(merged.totalIntensity,6)
     assert.ok(merged.vertices.every(v=>v.index!==undefined))
 })
+
+test("a SUBSTITUTION links two roots, like any other difference",()=>{
+    /* Une substitution, c'est un ï¿½lï¿½ment retirï¿½ ET un ï¿½lï¿½ment ajoutï¿½. C'est un
+       lien aussi lï¿½gitime qu'un ajout pur ï¿½ et la recherche de brique ne pouvait
+       pas la trouver: elle comparait le diff SIGNï¿½ ï¿½ des compositions POSITIVES,
+       et il aurait fallu une brique portant un compte nï¿½gatif pour que
+       `-C-H+N-O` corresponde. Le diff est donc comparï¿½ en magnitude; la masse,
+       elle, reste positive par construction, et c'est elle qui dï¿½cide de la
+       direction. */
+const plan=planFor([{group:"CHNO"},{group:"H2"}])
+    const byKey=new Map(plan.items.map(item=>[item.key,item.composition]))
+    const chno=byKey.get("12C 1H 14N 16O")
+    const h2=byKey.get("1H2")
+    assert.ok(chno&&h2,"the plan must carry both compositions")
+    // CHNO minus H2 is -1H +12C +14N +16O: one hydrogen removed, the rest added.
+    // |diff| is CHNO, which IS a brick of the plan â€” so this substitution must
+    // be found where the old signed comparison could not have found it.
+    const diff=forestCompositionDiff(chno,h2)
+    assert.ok(!forestDiffIsEmpty(diff))
+    assert.ok(forestDiffNotation(diff).includes("-"),"the diff must stay signed")
+    assert.ok(forestDiffNotation(diff).includes("+"),"and it must mix both signs")
+    const found=forestFindBrick(plan.items,diff)
+    assert.ok(found>=0,
+        `a substitution must match a brick, got -1 for ${forestDiffNotation(diff)}`)
+})
+test("a CHAIN of merges keeps every absorbed rank consumed",()=>{
+    /* Le bug : `mergedFrom` ne portait que les rangs REÇUS. Après #0+#1 puis
+       (fusionné)+#2, la provenance valait [0,2] — le rang 1, déjà absorbé, en
+       disparaissait, et l'arbre #1 RÉAPPARAISSAIT dans la liste. L'utilisateur le
+       voyait ressurgir et fusionnait ensuite le mauvais couple. */
+    const tree=rank=>({rank,size:1,rootIndex:rank*10,weight:0,vertices:[
+        {index:rank*10,mass:100+rank,intensity:1}],links:[]})
+    const g0=tree(0), g1=tree(1), g2=tree(2)
+    const first=forestMergeGraphs([g0,g1],[])
+    assert.deepEqual(first.mergedFrom,[0,1],"a first merge absorbs both")
+    // the first merge is drawn, then the user selects it with #2
+    const second=forestMergeGraphs([first,g2],[])
+    assert.deepEqual(second.mergedFrom,[0,1,2],
+        "a chained merge must carry the ranks its input had already absorbed")
+    assert.ok(second.mergedFrom.includes(1),
+        "an absorbed rank must never fall out of the provenance")
+})

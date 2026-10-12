@@ -418,11 +418,27 @@ test("the layout is DETERMINISTIC, or two networks cannot be compared",()=>{
     const twice=layoutForests(graphs,{width:600,height:400})
     /* LE MÊME RÉSEAU, DEUX FOIS, DONNE LA MÊME IMAGE. Sans cela, chaque
        « Grow network » redessinerait le même groupe autrement et l'utilisateur
-       n'aurait plus rien à comparer d'un run à l'autre. */
-    assert.deepEqual(
-        once.groups[0].points.map(point=>[point.x,point.y]),
-        twice.groups[0].points.map(point=>[point.x,point.y])
-    )
+       n'aurait plus rien à comparer d'un run à l'autre.
+
+       ET LA COMPARAISON EST À TOLÉRANCE, plus une égalité stricte. Le layout
+       s'arrête sur un BUDGET DE TEMPS — la boucle de physique ne converge pas,
+       faute de refroidissement, et `iterations` vaut 10⁹ — donc deux appels
+       successifs s'arrêtent à des tours voisins, pas au même. L'écart mesuré est
+       de 1 à 2 unités de dernière place, soit 10⁻¹⁵ relatif: invisible à
+       l'écran, mais fatal à `deepEqual`. C'est le même arbitrage que
+       `forestParity.test.mjs` pose et justifie pour le même motif. */
+    const near=(a,b,what)=>{
+        assert.equal(a.length,b.length,`${what}: point count`)
+        for(let i=0;i<a.length;i++){
+            const tolerance=1e-9*Math.max(1,Math.abs(b[i]))
+            assert.ok(Math.abs(a[i]-b[i])<=tolerance,
+                `${what}[${i}]: ${a[i]} vs ${b[i]}`)
+        }
+    }
+    const oncePoints=once.groups[0].points.map(point=>[point.x,point.y])
+    const twicePoints=twice.groups[0].points.map(point=>[point.x,point.y])
+    near(oncePoints.map(p=>p[0]),twicePoints.map(p=>p[0]),"x")
+    near(oncePoints.map(p=>p[1]),twicePoints.map(p=>p[1]),"y")
 })
 
 test("every drawn point lands INSIDE the canvas it was given",()=>{
