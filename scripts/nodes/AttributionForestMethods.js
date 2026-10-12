@@ -489,6 +489,7 @@ forestOverviewLayout({animate=false}={}){
         const plot=this.forestPlot
         if(!plot||!layout){
             this.drawForestLegend([],null)
+            plot?.graphSVG?.select(".forest-root-links").selectAll("*").remove()
             return
         }
         this.forestLayout=layout
@@ -710,6 +711,8 @@ forestOverviewLayout({animate=false}={}){
         /* FORMULES DES RACINES PRÈS DE CHAQUE SOMMET RACINE. */
         this.hookForestLabelZoom(plot)
         this.drawForestCellTitles(groups,layout,plot)
+        /* LIENS POINTILLÉS ENTRE RACINES, avec l'écart et la brique proche. */
+        this.drawForestRootLinks(groups,layout,plot)
         plot.drawGraph?.()
         /* CONFIGURER L'INTERACTION SOURIS (une seule fois). */
         if(!this.forestInteractionHooked){
@@ -946,9 +949,13 @@ forestOverviewLayout({animate=false}={}){
         if(!edit) return "no segment selected"
         const {link,graph,rank}=edit
         if(!graph||!link) return "no segment selected"
-        const at=(node)=>node===link.u||node===link.v
+        /* LES `u/v` SONT DES INDICES DE PICS (ordre trié), PAS DES RANGS :
+           la comparaison se fait sur l'identité, jamais sur < ou > qui
+           supposerait un ordre de parcours. */
         const cutIndex=(graph.links??[]).findIndex(item=>
-            item===link||(at(item.u)&&at(item.v)&&(item.u===link.u||item.u===link.v)))
+            item===link
+            ||(item.u===link.u&&item.v===link.v)
+            ||(item.u===link.v&&item.v===link.u))
         if(cutIndex<0) return `segment ${link.u}↔${link.v} is already gone`
         const rest=(graph.links??[]).filter((_,index)=>index!==cutIndex)
         const neighbours=new Map()
@@ -981,6 +988,17 @@ forestOverviewLayout({animate=false}={}){
         if(!verticesA.length||!verticesB.length) return "empty side — nothing severed"
         const linksA=rest.filter(item=>sideU.has(item.u)&&sideU.has(item.v))
         const linksB=rest.filter(item=>!sideU.has(item.u)&&!sideU.has(item.v))
+        /* GARDE-FOU : un arbre à N sommets a N-1 liens ; les deux moitiés
+           doivent totaliser N sommets et N-1 liens restants, sinon le graphe
+           affiché n'était pas un arbre (cycle, doublon) et la coupure
+           mentirait sur les tailles. */
+        const totalVertices=verticesA.length+verticesB.length
+        const totalLinks=linksA.length+linksB.length
+        const expectedVertices=graph.vertices?.length??totalVertices
+        const expectedLinks=(graph.links?.length??totalLinks+1)-1
+        if(totalVertices!==expectedVertices||totalLinks!==expectedLinks){
+            return `sever refused: ${expectedVertices} peaks / ${expectedLinks+1} links don't split cleanly`
+        }
         const rootOf=(vertices,keepIndex)=>{
             if(Number.isInteger(keepIndex)&&byIndex.has(keepIndex)) return keepIndex
             const chosen=forestRoot({vertices})
@@ -1063,7 +1081,7 @@ forestOverviewLayout({animate=false}={}){
         }
         this.renderForest()
         const massOf=(index)=>byIndex.get(index)?.mass??0
-        return `severed tree #${rank} at ${link.u}↔${link.v} — now #${rank} and #${freshRank}`
+        return `severed tree #${rank} at ${link.u}↔${link.v} — now #${rank} (${verticesA.length}) and #${freshRank} (${verticesB.length})`
     }
 
     /* CONFIGURE LES GESTIONNAIRES DE SOURIS POUR LE HOVER ET LE CLIC. */
@@ -1374,9 +1392,28 @@ forestOverviewLayout({animate=false}={}){
         plot.drawGraph=function(...args){
             const result=original(...args)
             try{ owner.repositionForestCellTitles(plot) }catch{}
+            try{ owner.repositionForestRootLinks(plot) }catch{}
             return result
         }
         plot._forestLabelsHooked=true
+    }
+    /* Le zoom/pan repositionne aussi les liens entre racines : les `x/y`
+       stockées sont des données, les échelles ont bougé. */
+    repositionForestRootLinks(plot){
+        const layer=plot.graphSVG?.select(".forest-root-links")
+        if(!layer||layer.empty()) return
+        let xScale=null
+        let yScale=null
+        try{ ({xScale,yScale}=plot.plotScales()) }catch{}
+        if(!xScale||!yScale) return
+        layer.selectAll("line")
+            .attr("x1",link=>xScale(link.low.point.x))
+            .attr("y1",link=>yScale(link.low.point.y))
+            .attr("x2",link=>xScale(link.high.point.x))
+            .attr("y2",link=>yScale(link.high.point.y))
+        layer.selectAll("text")
+            .attr("x",link=>(xScale(link.low.point.x)+xScale(link.high.point.x))/2)
+            .attr("y",link=>(yScale(link.low.point.y)+yScale(link.high.point.y))/2-4)
     }
     drawForestCellTitles(groups,layout,plot){
         const svg=plot?.graphSVG
@@ -1448,6 +1485,118 @@ forestOverviewLayout({animate=false}={}){
             this.forestRowIndexCache.set(rows,index)
         }
         return index
+    }
+
+    /* LES LIENS ENTRE RACINES, EN POINTILLÉS SVG PAR-DESSUS LE GL.
+       Chaînage par masse mesurée comme le merge : chaque lien porte la
+       différence de compositions attribuées, l'écart mesuré en Da, et
+       l'erreur mesuré-vs-théorique en Da et ppm. */
+    forestRootLinks(groups,layout){
+        /* LA POSITION VIENT DU LAYOUT, PAS DU GRAPHE : `graph.vertices` n'a
+           ni x ni y — d'où le NaN sur les attributs SVG. */
+        const placed=new Map()
+        for(const cell of layout?.groups??[]){
+            for(const point of cell.points??[]) placed.set(`${cell.rank}:${point.index}`,point)
+        }
+        const roots=[]
+        for(const {graph,rank} of groups??[]){
+            const vertex=[...(graph.vertices??[])].find(item=>item.index===graph.rootIndex)
+            if(!vertex) continue
+            const point=placed.get(`${rank}:${vertex.index}`)
+            if(!point||!Number.isFinite(point.x)||!Number.isFinite(point.y)) continue
+            const rows=this.forestAttributions?.byGraph?.get(graph)?.rows??null
+            const row=rows?this.forestRowIndex(rows).get(vertex.index):null
+            roots.push({rank,mass:vertex.mass,formula:row?.formula??null,point})
+        }
+        roots.sort((a,b)=>a.mass-b.mass)
+        const links=[]
+        for(let i=1;i<roots.length;i++){
+            const low=roots[i-1]
+            const high=roots[i]
+            const gap=high.mass-low.mass
+            /* LA MASSE THÉORIQUE DE LA DIFFÉRENCE ATTRIBUÉE : somme signée
+               des masses isotopiques — pas une brique du plan. */
+            let notation=null
+            let theoryMass=null
+            if(low.formula&&high.formula){
+                const raw=forestCompositionDiff(high.formula.composition,low.formula.composition)
+                if(raw&&!forestDiffIsEmpty(raw)){
+                    notation=forestDiffNotation(raw)
+                    let sum=0
+                    let known=true
+                    for(const [element,byA] of raw){
+                        for(const [A,n] of byA){
+                            const mass=element?.isotope?.(A)?.mass??NaN
+                            if(!Number.isFinite(mass)){ known=false; break }
+                            sum+=mass*n
+                        }
+                        if(!known) break
+                    }
+                    if(known) theoryMass=sum
+                }
+            }
+            /* L'ERREUR MESURÉ-VS-THÉORIQUE : écart des racines moins masse
+               de la diff. Le ppm se lit contre la masse théorique. */
+            const errorDa=theoryMass!==null?gap-theoryMass:null
+            const errorPpm=errorDa!==null&&theoryMass>0
+                ?errorDa/theoryMass*1e6
+                :null
+            links.push({low,high,gap,notation,theoryMass,errorDa,errorPpm})
+        }
+        return links
+    }
+    drawForestRootLinks(groups,layout,plot){
+        const anchor=plot.graphSVG?.select(".anchor")
+        if(!anchor||anchor.empty()) return
+        let layer=anchor.select(".forest-root-links")
+        if(layer.empty()){
+            layer=anchor.append("g")
+                .attr("class","forest-root-links")
+                .attr("clip-path","url(#forest-graphzone-clip)")
+        }
+        const links=this.forestRootLinks(groups,layout)
+        /* PROJETÉ, PAS BRUT : les points sont en DATA, le calque en PIXELS. */
+        let xScale=null
+        let yScale=null
+        try{ ({xScale,yScale}=plot.plotScales()) }catch{}
+        const X=(point)=>xScale?xScale(point.x):point.x
+        const Y=(point)=>yScale?yScale(point.y):point.y
+        layer.selectAll("line").data(links).join(
+            enter=>enter.append("line")
+                .attr("stroke","rgba(255,255,255,0.9)")
+                .attr("stroke-width",1.5)
+                .attr("stroke-dasharray","6 4"),
+            update=>update,
+            exit=>exit.remove())
+        layer.selectAll("line")
+            .attr("x1",link=>X(link.low.point))
+            .attr("y1",link=>Y(link.low.point))
+            .attr("x2",link=>X(link.high.point))
+            .attr("y2",link=>Y(link.high.point))
+        layer.selectAll("text").data(links).join(
+            enter=>enter.append("text")
+                .attr("fill","#ffffff")
+                .attr("font-size","12px")
+                .attr("font-weight","bold")
+                .attr("text-anchor","middle")
+                .attr("stroke","rgba(0,0,0,0.85)")
+                .attr("stroke-width",3)
+                .attr("paint-order","stroke"),
+            update=>update,
+            exit=>exit.remove())
+        layer.selectAll("text")
+            .attr("x",link=>(X(link.low.point)+X(link.high.point))/2)
+            .attr("y",link=>(Y(link.low.point)+Y(link.high.point))/2-4)
+            .text(link=>{
+                const parts=[]
+                if(link.notation) parts.push(link.notation)
+                parts.push(`mes ${link.gap>=0?"+":""}${link.gap.toFixed(4)} Da`)
+                if(link.theoryMass!==null) parts.push(`th ${link.theoryMass.toFixed(4)}`)
+                if(link.errorDa!==null) parts.push(
+                    `err ${link.errorDa>=0?"+":""}${link.errorDa.toFixed(4)} (${Number.isFinite(link.errorPpm)?link.errorPpm.toFixed(1)+" ppm":"?"})`)
+                else parts.push("unattributed root")
+                return parts.join(" · ")
+            })
     }
 
     /* LA LÉGENDE DU GRAPHE, POSÉE DANS SON COIN (host: `.an-forest-legend`
