@@ -2067,7 +2067,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                             x,
                             y,
                             {collection:collection.name, quantity:"vankrevelen"},
-                            ["O/C","H/C"]
+                            [xFormula,yFormula]
                         ),
                         options:{
                             color:traceColor(this.collections.indexOf(collection)),
@@ -2142,9 +2142,11 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             this.graph.parameters.axis.left.autoDomain=false
         }else if(isVankrevelen){
             this.graph.parameters.axis.left.scale="linear"
-            this.graph.parameters.axis.bottom.label="O/C"
+            const xAxisLabel=(this.parameters.vkXFormula??"").trim()||"O/C"
+            const yAxisLabel=(this.parameters.vkYFormula??"").trim()||"H/C"
+            this.graph.parameters.axis.bottom.label=xAxisLabel
             this.graph.parameters.axis.bottom.autoLabel=false
-            this.graph.parameters.axis.left.label="H/C"
+            this.graph.parameters.axis.left.label=yAxisLabel
             this.graph.parameters.axis.left.autoLabel=false
         }else{
             this.graph.parameters.axis.left.scale=(!byError&&this.parameters.logY)?"log":"linear"
@@ -2887,43 +2889,57 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         })
         /* VAN KREVELEN CONTROLS: custom X and Y axis formulas.
            User writes expressions using element symbols, e.g., "O/C", "1+C+N/2-H/2". */
-        this.vkXFormula=CE("input",{
-            type:"text",
-            value:this.parameters.vkXFormula,
-            title:"X-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: O/C or 1+C+N/2-H/2",
-            style:{width:"200px",minWidth:"0",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
-        },[])
-        this.vkXFormula.addEventListener("change",()=>{
+        const scheduleVkRefresh=()=>{
+            //`input` fires on every keystroke: debounce the recompute, or each
+            //letter rebuilds every trace. The trailing `change` (blur/Enter)
+            //flushes immediately so the axis labels never lag the field.
+            clearTimeout(this.vkRefreshTimer)
+            this.vkRefreshTimer=setTimeout(()=>{
+                this.parameters.vkXFormula=this.vkXFormula.value
+                this.parameters.vkYFormula=this.vkYFormula.value
+                this.origin?.saveSessionSoon?.()
+                this.refreshGraph()
+            },350)
+        }
+        const flushVkRefresh=()=>{
+            clearTimeout(this.vkRefreshTimer)
             this.parameters.vkXFormula=this.vkXFormula.value
-            this.origin?.saveSessionSoon?.()
-            this.refreshGraph()
-        })
-        this.vkYFormula=CE("input",{
-            type:"text",
-            value:this.parameters.vkYFormula,
-            title:"Y-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: H/C or 1+C+N/2-H/2",
-            style:{width:"200px",minWidth:"0",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
-        },[])
-        this.vkYFormula.addEventListener("change",()=>{
             this.parameters.vkYFormula=this.vkYFormula.value
             this.origin?.saveSessionSoon?.()
             this.refreshGraph()
-        })
+        }
+        this.vkXFormula=CE("input",{
+            type:"text",
+            value:this.parameters.vkXFormula,
+            placeholder:"X · O/C",
+            title:"X-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: O/C or 1+C+N/2-H/2",
+            style:{width:"100%",minWidth:"0",boxSizing:"border-box",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
+        },[])
+        this.vkXFormula.addEventListener("input",scheduleVkRefresh)
+        this.vkXFormula.addEventListener("change",flushVkRefresh)
+        this.vkYFormula=CE("input",{
+            type:"text",
+            value:this.parameters.vkYFormula,
+            placeholder:"Y · H/C",
+            title:"Y-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: H/C or 1+C+N/2-H/2",
+            style:{width:"100%",minWidth:"0",boxSizing:"border-box",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
+        },[])
+        this.vkYFormula.addEventListener("input",scheduleVkRefresh)
+        this.vkYFormula.addEventListener("change",flushVkRefresh)
         this.vkReadout=CE("span",{
             className:"pp-readout",
-            title:"Points drawn / points eligible"
+            title:"Points drawn / points eligible",
+            style:{justifySelf:"end"}
         },[""])
-        /* Van Krevelen controls use the SAME 3-column grid as error/intensity:
-           left = X/Y formula inputs, center = empty (flex), right = readout. */
-        this.vkLeft=CE("div",{style:{display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}},[])
-        this.vkLeft.append(
-            CE("span",{className:"pp-caption",style:{margin:"0"}},["X:"]),this.vkXFormula,
-            CE("span",{className:"pp-caption",style:{margin:"0",marginLeft:"16px"}},["Y:"]),this.vkYFormula
-        )
-        this.vkRight=CE("div",{style:{display:"flex",alignItems:"center",gap:"8px"}},[])
-        this.vkRight.append(this.vkReadout)
-        this.vkRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em",gap:"4px",alignItems:"center"}},[])
-        this.vkRow.append(this.vkLeft,CE("div",{},[]),this.vkRight)
+        /* Van Krevelen controls stack VERTICALLY: readout on top (it was pushed
+           off the panel by the old 3-column grid), X/Y inputs side by side
+           below. No visible "X:"/"Y:" spans — the axis lives in each input's
+           title and placeholder, and the inputs flex instead of holding a
+           fixed 200px that overflowed the narrow right panel. */
+        this.vkFields=CE("div",{style:{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:"4px",minWidth:"0"}},[])
+        this.vkFields.append(this.vkXFormula,this.vkYFormula)
+        this.vkRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"minmax(0,1fr)",fontSize:"0.95em",gap:"2px",paddingLeft:"0",paddingRight:"0"}},[])
+        this.vkRow.append(this.vkReadout,this.vkFields)
         if(!isVankrevelen){
             this.vkRow.style.display="none"
         }
@@ -2965,8 +2981,9 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         }
         /* LE MODE EN PREMIER, sur sa propre ligne: il dit ce qu'on regarde, et
            les deux lignes du dessous sont les réglages de CETTE lecture. */
-        const modeRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr)",fontSize:"0.95em"}},[])
-        modeRow.append(CE("span",{className:"pp-caption",style:{margin:"0"}},["Show"]),this.graphModeToggle)
+        const modeRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"minmax(0,1fr)",fontSize:"0.95em",paddingLeft:"0"}},[])
+        this.graphModeToggle.style.justifySelf="start"
+        modeRow.append(this.graphModeToggle)
         this.graphOptions.append(
             CE("div",{className:"pp-caption"},["Graphs"]),
             modeRow,
