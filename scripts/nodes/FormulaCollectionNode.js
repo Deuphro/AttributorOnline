@@ -2048,8 +2048,8 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                         const formula=entry.formula
                         if(!formula) continue
                         const counts=formula.counts
-                        const xv=evalX(counts,table)
-                        const yv=evalY(counts,table)
+                        const xv=evalX(counts,table,entry.formula)
+                        const yv=evalY(counts,table,entry.formula)
                         if(Number.isFinite(xv)&&Number.isFinite(yv)){
                             xs.push(xv)
                             ys.push(yv)
@@ -2183,15 +2183,44 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
     /* Compile a user formula like "O/C" or "1+C+N/2-H/2" into an evaluator.
        Variables are element symbols (C, H, O, N, S, P, etc.). Returns a function
        that takes a formula's `counts` Map<Element,number> and the periodic table. */
+    /* DBE d'une formule: 1 + Σ nᵢ·(vᵢ−2)/2 sur la composition NEUTRE écrite
+       (le core quand on s'en souvient — l'adduit d'ionisation ne compte pas
+       comme une insaturation). La valence lue est `valences.default` de
+       elements.json; les halogènes (valence 1) comptent donc comme H, ce qui
+       est la convention standard. Un élément sans valence renseignée est
+       ignoré, et une formule sans aucun atome à valence donne NaN. */
+    static dbeOfFormula(formula){
+        if(!formula) return NaN
+        //neutral written part: the core when remembered, else the composition
+        const written=formula.core??formula.composition
+        if(!(written instanceof Map)) return NaN
+        let sum=0
+        let seen=false
+        for(const [element,byA] of written){
+            let n=0
+            for(const count of byA?.values?.()??[]) n+=count
+            if(!n) continue
+            const valence=element?.valences?.default
+            if(!Number.isFinite(valence)) continue
+            seen=true
+            sum+=n*(valence-2)/2
+        }
+        return seen?1+sum:NaN
+    }
+
     static compileVkFormula(expr,table){
         if(!expr||!expr.trim()) return ()=>NaN
         const s=expr.trim()
         let i=0
         /* Recursive descent parser with precedence:
+           cmp    = expr (('=='|'!='|'<='|'>='|'<'|'>') expr)*
            expr   = term (('+'|'-') term)*
            term   = factor (('*'|'/') factor)*
            factor = number | variable | '(' expr ')' | ('+'|'-') factor
-           variable = element symbol (1-2 letters, first uppercase) */
+           variable = element symbol (1-2 letters, first uppercase),
+                      or a reserved word (any case): DBE, Mass
+           Comparisons yield 1 (true) or 0 (false); NaN on either side
+           propagates as NaN so the point is excluded, not counted false. */
         const peek=()=>i<s.length?s[i]:''
         const consume=()=>s[i++]
         const parseNumber=()=>{
@@ -2202,10 +2231,20 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         }
         const parseVariable=()=>{
             if(i>=s.length) return null
-            if(!/[A-Z]/.test(s[i])) return null
-            let sym=s[i++]
-            if(i<s.length&&/[a-z]/.test(s[i])) sym+=s[i++]
-            return sym
+            if(!/[A-Za-z]/.test(s[i])) return null
+            //letters only (case-insensitive match below): a following digit
+            //ends the name, so "C2" still reads C then 2, never "C2"
+            let run=s[i++]
+            while(i<s.length&&/[A-Za-z]/.test(s[i])) run+=s[i++]
+            //reserved word (any case): consume it whole
+            if(["DBE","MASS"].includes(run.toUpperCase())) return run
+            //otherwise an element symbol: an uppercase letter plus at most
+            //one lowercase; a leading lowercase letter never starts one
+            if(!/[A-Z]/.test(run[0])) return run[0]
+            let len=1
+            if(run.length>1&&/[a-z]/.test(run[1])) len=2
+            i-=run.length-len
+            return run.slice(0,len)
         }
         const parseFactor=()=>{
             while(peek()===' ') i++
@@ -2213,11 +2252,13 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             if(ch==='+'||ch==='-'){
                 const op=consume()
                 const val=parseFactor()
-                return op==='-'?()=>-val():val
+                return op==='-'?(counts,tbl,formula)=>-val(counts,tbl,formula):val
             }
             if(ch==='('){
                 consume()
-                const node=parseExpr()
+                //full expression inside parens (comparison level included):
+                //"(DBE==1)+(DBE==4)" must parse, not stop at the '=='
+                const node=parseCmp()
                 if(peek()===')') consume()
                 return node
             }
@@ -2227,6 +2268,12 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             }
             const sym=parseVariable()
             if(sym){
+                const upper=sym.toUpperCase()
+                //reserved words, resolved against the FORMULA, not the table:
+                //Mass is the ion mass (absorbed composition, charge-corrected),
+                //DBE the unsaturation count (see dbeOfFormula)
+                if(upper==="MASS") return (counts,tbl,formula)=>formula?.mass??NaN
+                if(upper==="DBE") return (counts,tbl,formula)=>FormulaCollectionNode.dbeOfFormula(formula)
                 return (counts,tbl)=>{
                     const el=tbl?.bySymbol?.get(sym)
                     return el?counts.get(el)??0:0
@@ -2244,8 +2291,8 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 const right=parseFactor()
                 const left=node
                 node=op==='*'
-                    ?(counts,tbl)=>left(counts,tbl)*right(counts,tbl)
-                    :(counts,tbl)=>right(counts,tbl)!==0?left(counts,tbl)/right(counts,tbl):NaN
+                    ?(counts,tbl,formula)=>left(counts,tbl,formula)*right(counts,tbl,formula)
+                    :(counts,tbl,formula)=>right(counts,tbl,formula)!==0?left(counts,tbl,formula)/right(counts,tbl,formula):NaN
             }
             return node
         }
@@ -2259,13 +2306,55 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 const right=parseTerm()
                 const left=node
                 node=op==='+'
-                    ?(counts,tbl)=>left(counts,tbl)+right(counts,tbl)
-                    :(counts,tbl)=>left(counts,tbl)-right(counts,tbl)
+                    ?(counts,tbl,formula)=>left(counts,tbl,formula)+right(counts,tbl,formula)
+                    :(counts,tbl,formula)=>left(counts,tbl,formula)-right(counts,tbl,formula)
             }
             return node
         }
-        const ast=parseExpr()
-        return (counts,tbl)=>ast(counts,tbl)
+        /* Comparisons, lowest precedence. Result is 1 or 0 (JS booleans are
+           coerced so downstream math stays numeric); if either operand is NaN
+           the comparison is NaN, which excludes the point downstream instead
+           of silently counting it as "false" (0). */
+        const parseCmp=()=>{
+            let node=parseExpr()
+            while(true){
+                while(peek()===' ') i++
+                const ch=peek()
+                if(ch!=='='&&ch!=='!'&&ch!=='<'&&ch!=='>') break
+                let op=''
+                if((ch==='='||ch==='!')&&s[i+1]==='='){op=s.slice(i,i+2);i+=2}
+                else if((ch==='<'||ch==='>')&&s[i+1]==='='){op=s.slice(i,i+2);i+=2}
+                //typo tolerance: a lone '=' means '==' and a lone '!' means '!='
+                else if(ch==='='){op='==';i++}
+                else if(ch==='!'){op='!=';i++}
+                else if(ch==='<'||ch==='>'){op=ch;i++}
+                else break
+                const right=parseExpr()
+                const left=node
+                node=(counts,tbl,formula)=>{
+                    const a=left(counts,tbl,formula)
+                    const b=right(counts,tbl,formula)
+                    if(!Number.isFinite(a)||!Number.isFinite(b)) return NaN
+                    switch(op){
+                        case '==': return a===b?1:0
+                        case '!=': return a!==b?1:0
+                        case '<' : return a<b?1:0
+                        case '<=': return a<=b?1:0
+                        case '>' : return a>b?1:0
+                        case '>=': return a>=b?1:0
+                        default  : return NaN
+                    }
+                }
+            }
+            return node
+        }
+        const ast=parseCmp()
+        /* Anything left over means the expression is malformed ("DBE==1)").
+           Returning NaN excludes the point rather than plotting a value
+           computed from a prefix of what the user typed. */
+        while(peek()===' ') i++
+        if(i<s.length) return ()=>NaN
+        return (counts,tbl,formula)=>ast(counts,tbl,formula)
     }
 
     /* --- Barycentric projection (JS fallback) ----------------------------------- */
@@ -2912,7 +3001,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             type:"text",
             value:this.parameters.vkXFormula,
             placeholder:"X · O/C",
-            title:"X-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: O/C or 1+C+N/2-H/2",
+            title:"X-axis formula using element symbols (C, H, O, N, S, P, etc.), DBE, Mass and comparisons (==, !=, <, <=, >, >=). Example: O/C or DBE==1",
             style:{width:"100%",minWidth:"0",boxSizing:"border-box",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
         },[])
         this.vkXFormula.addEventListener("input",scheduleVkRefresh)
@@ -2921,7 +3010,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             type:"text",
             value:this.parameters.vkYFormula,
             placeholder:"Y · H/C",
-            title:"Y-axis formula using element symbols (C, H, O, N, S, P, etc.). Example: H/C or 1+C+N/2-H/2",
+            title:"Y-axis formula using element symbols (C, H, O, N, S, P, etc.), DBE, Mass and comparisons (==, !=, <, <=, >, >=). Example: H/C or DBE==1",
             style:{width:"100%",minWidth:"0",boxSizing:"border-box",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
         },[])
         this.vkYFormula.addEventListener("input",scheduleVkRefresh)
