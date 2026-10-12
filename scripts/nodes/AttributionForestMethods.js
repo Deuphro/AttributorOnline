@@ -267,7 +267,7 @@ forestOverviewLayout({animate=false}={}){
         /* Les réglages FR font partie de la clé: changer `FOREST_LAYOUT_DEFAULTS`
            sans invalider redessinerait l'ancien layout figé. */
         const tune=this.forestTune??FOREST_LAYOUT_DEFAULTS
-        const tuneKey=[tune.iterations,tune.ideal,tune.repulsion,tune.restBase,tune.restSpan,tune.gravity,tune.tempStart,tune.tempEnd,tune.fac].join(",")
+        const tuneKey=[tune.iterations,tune.ideal,tune.repulsion,tune.restBase,tune.restSpan,tune.gravity,tune.tempStart,tune.tempEnd,tune.fac,tune.viscosity,tune.springExponent,tune.massForce,tune.defectForce,tune.errorForce,tune.depthForce].join(",")
         const cacheKey={batch,width,height,ranks,animate,tune:tuneKey}
         const cached=this.forestLayoutOf
         if(cached&&cached.key.batch===cacheKey.batch

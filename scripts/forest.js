@@ -37,7 +37,7 @@
    valeur existe déjà dans l'oracle. */
 export const DEFAULT_LINK_TOLERANCE=0.5
 
-export const FOREST_LAYOUT_DEFAULTS={iterations:1e9,ideal:26,repulsion:1,restBase:1,restSpan:0,gravity:0,tempStart:null,tempEnd:0.5,fac:2}
+export const FOREST_LAYOUT_DEFAULTS={iterations:1e9,ideal:26,repulsion:1,restBase:0.9,restSpan:0.1,gravity:0,tempStart:1000,tempEnd:0.5,fac:20,viscosity:1,springExponent:3,massForce:0,defectForce:0,errorForce:0,depthForce:0}
 /* LE BUDGET DU MODE STATIQUE, en millisecondes par groupe.
 
    Il s'applique à `layoutGroup` SEULEMENT. Le mode animé garde `iterations` à
@@ -49,6 +49,228 @@ export const FOREST_LAYOUT_DEFAULTS={iterations:1e9,ideal:26,repulsion:1,restBas
    tout en laissant un grand groupe correctement détendu. Si la mise en page vous
    paraît trop serrée, montez cette valeur : c'est le seul réglage à toucher. */
 const FOREST_LAYOUT_BUDGET_MS=150
+/* LA VISCOSITÉ, et la TEMPÉRATURE qui bornait le pas sans jamais décroître.
+
+   `tempEnd` valait 0.5 et n'était de toute façon JAMAIS transmis à `frStep`:
+   le pas était plafonné par la seule saturation `atan`, constante d'un tour à
+   l'autre. Il ne restait donc aucune perte d'énergie, `maxSpeed` ne descendait
+   jamais sous 1e-7, et la boucle ne s'arrêtait que par son plafond de 10⁹. C'est
+   ce qui gelait le mode statique, et ce qui faisait que `forest.test.mjs` ne
+   finissait jamais.
+
+   On rétablit ce que le commentaire annonçait déjà (« c'est la température qui
+   plafonne le pas »), mais une température qui DESCEND: elle part de
+   `tempStart` et tend vers `tempEnd`, par demi-vie. La demi-vie et non la
+   fraction `round/iterations` est délibéré — `iterations` vaut 10⁹, donc une
+   décroissance proportionnelle au plafond ne produirait aucun refroidissement
+   observable avant l'épuisement du temps.
+
+   `tempEnd` passe de 0.5 à 0 : tant qu'elle reposait sur un plancher non nul,
+   `maxSpeed` avait ce plancher pour plancher et ne pouvait donc pas franchir
+   1e-7. Le graphe ne s'immobilise jamais tout à fait — il se stabilise, ce qui
+   est le comportement voulu d'un FR. */
+const FOREST_TEMPERATURE_HALF_LIFE=60
+/* LE PLANCHER DE PROFONDEUR: la part de la force que reçoit le plus petit
+   niveau d'un arbre, la racine étant la seule à n'en recevoir aucune. C'est ce
+   qui tient la racine en bas — voir `depthBiasOf`. */
+const FOREST_DEPTH_FLOOR=0.25
+const FOREST_VISCOSITY=FOREST_LAYOUT_DEFAULTS.viscosity
+
+/* LE PRNG, À GRAINE. `Math.random()` rendrait le même réseau différent à chaque
+   rendu, et le test « the layout is DETERMINISTIC » existe précisément pour que
+   deux réseaux restent comparables. Mulberry32: quelques lignes, sans état
+   global, et la même graine redonne la même suite — donc le même placement
+   initial, donc le même résultat. */
+function layoutRandom(seed){
+    let state=seed>>>0
+    return()=>{
+        state=(state+0x6D2B79F5)>>>0
+        let t=state
+        t=Math.imul(t^(t>>>15),t|1)
+        t^=t+Math.imul(t^(t>>>7),t|61)
+        return((t^(t>>>14))>>>0)/4294967296
+    }
+}
+/* LA GRAINE VIENT DU GRAPHE, pour que deux arbres différents ne partent pas du
+   même nuage, tout en restant reproductibles d'un rendu à l'autre. */
+function layoutSeed(graph,count){
+    let h=0x9E3779B9^count
+    h=Math.imul(h^(graph.rootIndex+1),0x85EBCA6B)
+    const first=graph.vertices?.[0]?.index??0
+    h=Math.imul(h^(first+1),0xC2B2AE35)
+    return(h^(graph.vertices?.length??0))>>>0
+}
+/* LE DÉCALAGE DE MASSE, normalisé dans [-0.5, +0.5].
+
+   On normalise par l'ÉTENDUE et non par la masse brute: les masses sont en
+   Da autour de 100–900, et un écart de 800 unités de masse écraserait tout le
+   reste de la physique. Après normalisation, `massBias[i] > 0` veut dire « plus
+   lourd que le milieu du groupe », quelle que soit l'unité. Un seul sommet
+   aberrant tire donc le milieu, mais pas l'échelle. */
+function massBiasOf(vertices){
+    const n=vertices?.length??0
+    const bias=new Float64Array(n)
+    if(!n) return bias
+    let min=Infinity
+    let max=-Infinity
+    for(const vertex of vertices){
+        const mass=Number(vertex?.mass)
+        if(!Number.isFinite(mass)) continue
+        if(mass<min) min=mass
+        if(mass>max) max=mass
+    }
+    const span=max-min
+    for(let i=0;i<n;i++){
+        const mass=Number(vertices[i]?.mass)
+        bias[i]=span>0?(mass-min)/span-0.5:0
+    }
+    return bias
+}
+/* LE DÉFAUT DE MASSE, et c'est `round`, PAS le `massDefect` du fichier.
+
+   `massDefect` vaut `mass - Math.floor(mass)`, donc sa plage est [0, 1): elle
+   est ASYMÉTRIQUE, et s'en servir ici pousserait tous les sommets vers le haut,
+   sans jamais rien pousser vers le bas.
+
+   Ici on prend `mass - Math.round(mass)`, dont la plage est [-0.5, +0.5] —
+   centrée sur zéro, donc un sommet de masse entière reste au milieu et les
+   autres s'étagent également vers le haut et vers le bas. C'est ce qui donne au
+   réseau l'allure d'un diagramme de défaut de masse, où la deflection d'un pic
+   se lit directement en ordonnée.
+
+   Le sommet porte déjà un champ `defect`, mais c'est celui du `floor`: les deux
+   coexistent donc, et ils ne mesurent pas la même chose. */
+/* L'ERREUR PAR SOMMET, NORMALISÉE SUR LE GROUPE — et c'est la normalization
+   qui fait toute la différence.
+
+   Un sommet ne porte pas d'erreur: les liens en portent une (`weight`, l'écart
+   en Da à la masse de référence). On attribue donc à chaque sommet l'erreur de
+   son MEILLEUR lien — un sommet dont tous les liens sont précis est bien ancré,
+   et il ne doit pas hériter de l'erreur d'un maillon médiocre qui le touche.
+
+   Puis on NORMALISE sur l'étendue du groupe, en [-0.5, +0.5]. C'est la leçon de
+   `massForce`, qui atteint une corrélation de 0.94 : normalisé, l'axe vertical
+   s'étale sur toute la hauteur quelle que soit l'unité. Non normalisé, l'erreur
+   d'un réseau tient dans quelques millièmes de Da et se ferait écraser par les
+   ressorts — exactement ce qui arrive à `defectForce`, dont la plage réelle dans
+   un groupe est bien plus étroite que les [-0.5, +0.5] théoriques.
+
+   SIGNE: une erreur GRANDE tire vers le BAS, donc vers un ordonnée négative.
+   C'est la convention « les pics bien identifiés en haut, les doubtous en bas ».
+   Inverser le signe se fait en changeant `bias=-…` en `bias=…`. */
+/* LA DISTANCE À LA RACINE, EN NOMBRE DE SAUTS — jamais la distance
+   euclidienne.
+
+   La distance euclidienne bouge pendant que la mise en page se fait: une force
+   qui en dépendrait changerait de valeur à chaque tour, puisque c'est
+   exactement ce qu'elle déplace. Elle n'aurait donc aucune valeur stable, et le
+   résultat dépendrait de l'ordre des tours. Le nombre de sauts, lui, est une
+   propriété du graphe: il ne bouge jamais.
+
+   On mesure donc la profondeur dans l'arbre (parcours en largeur depuis la
+   racine), puis on normalise sur la profondeur maximale du groupe, pour la
+   même raison que `massForce` et `errorForce` — une profondeur en sauts n'a
+   pas d'unité naturelle, et non normalisée elle resterait collée à 0 ou 1.
+
+   La valeur est POSITIVE: elle vaut 0 à la racine et ~1 au sommet le plus
+   profond. La force pousse donc vers le DEHORS, radialement. */
+function depthBiasOf(vertices,links,rootIndex){
+    const n=vertices?.length??0
+    const bias=new Float64Array(n)
+    if(!n) return bias
+    const at=new Map()
+    for(let i=0;i<n;i++) at.set(vertices[i].index,i)
+    const root=at.get(rootIndex)
+    const hops=new Int32Array(n).fill(-1)
+    if(root===undefined) return bias
+    hops[root]=0
+    const queue=[root]
+    for(let head=0;head<queue.length;head++){
+        const current=queue[head]
+        for(const link of links??[]){
+            for(const end of [link.u,link.v]){
+                const next=at.get(end)
+                if(next===undefined||hops[next]!==-1) continue
+                hops[next]=hops[current]+1
+                queue.push(next)
+            }
+        }
+    }
+    let deepest=0
+    for(let i=0;i<n;i++) if(hops[i]>deepest) deepest=hops[i]
+    if(!(deepest>0)) return bias
+    for(let i=0;i<n;i++){
+        //sommet non atteignable : aucun lien ne le rattache à la racine
+        bias[i]=hops[i]<0?0:hops[i]/deepest
+    }
+    /* LE PLANCHER, et c'est lui qui tient la racine EN BAS.
+
+       Sans lui, un sommet à une profondeur 1 sur 37 reçoit un poids de 0,027 —
+       rien. La force est donc quasi nulle autour de la racine et maximale aux
+       feuilles, alors qu'on veut l'inverse: TOUT ce qui est sous la racine doit
+       s'en détacher. Les ressorts, eux, ramènent chaque voisin à la racine avec
+       une longueur au repos de l'ordre de `ideal`, donc ils annulaient cette
+       première version: le nuage encadrait l'origine et la racine paraissait
+       au centre du dessin.
+
+       Le plancher donne à tout sommet non-racine au moins une fraction de la
+       force, et la hauteur devient proportionnelle à la profondeur: un arbre
+       long reste dressé au lieu de se replier sur lui-même.
+
+       La racine garde zéro — elle doit rester posée, et c'est de toute façon
+       `frStep` qui l'épingle en (0,0) à chaque tour. */
+    for(let i=0;i<n;i++){
+        if(bias[i]<=0) continue
+        bias[i]=FOREST_DEPTH_FLOOR+(1-FOREST_DEPTH_FLOOR)*bias[i]
+    }
+    return bias
+}
+function errorBiasOf(vertices,links){
+    const n=vertices?.length??0
+    const bias=new Float64Array(n)
+    if(!n) return bias
+    const best=new Float64Array(n)
+    for(let i=0;i<n;i++) best[i]=Infinity
+    for(const link of links??[]){
+        const weight=Number(link?.weight)
+        if(!Number.isFinite(weight)) continue
+        const at=new Map((vertices??[]).map((vertex,index)=>[vertex.index,index]))
+        for(const end of [link.u,link.v]){
+            const index=at.get(end)
+            if(index===undefined) continue
+            if(weight<best[index]) best[index]=weight
+        }
+    }
+    let min=Infinity
+    let max=-Infinity
+    for(let i=0;i<n;i++){
+        if(!Number.isFinite(best[i])) continue
+        if(best[i]<min) min=best[i]
+        if(best[i]>max) max=best[i]
+    }
+    const span=max-min
+    for(let i=0;i<n;i++){
+        //sommet isolé : ni lien, donc ni erreur. On le met au milieu plutôt que
+        //de le coller à un bord qui n'est pas le sien
+        if(!Number.isFinite(best[i])||!(span>0)){ bias[i]=0; continue }
+        bias[i]=-((best[i]-min)/span-0.5)
+    }
+    return bias
+}
+function defectBiasOf(vertices){
+    const n=vertices?.length??0
+    const bias=new Float64Array(n)
+    for(let i=0;i<n;i++){
+        const mass=Number(vertices[i]?.mass)
+        bias[i]=Number.isFinite(mass)?mass-Math.round(mass):0
+    }
+    return bias
+}
+function layoutTemperature(round,from,to){
+    if(!Number.isFinite(from)) return to
+    if(round<=0) return from
+    return to+(from-to)*Math.pow(0.5,round/FOREST_TEMPERATURE_HALF_LIFE)
+}
 
 /* LES RÉFÉRENCES, et d'où elles viennent.
 
@@ -1072,7 +1294,7 @@ function repulse(positions,disp,count,k,cutoff,cellSize,repulsion=1){
    - MOMENTUM + ATAN par nœud + recentrage dur: le vivant sans l'explosion.
    `repulsion` règle la FR, `restBase/restSpan` le repos, `fac` l'amplitude.
    `rootLocalIndex` (optional): index local du sommet racine à maintenir fixe à (0,0). */
-function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,restSpan=0,fac=null,rootLocalIndex=-1}){
+function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,restSpan=0,fac=null,rootLocalIndex=-1,temperature=Infinity,viscosity:viscosity_,springExponent=3,massBias=null,massForce=0,defectBias=null,defectForce=0,errorBias=null,errorForce=0,depthBias=null,depthForce=0}){
     const count=positions.length/2
     /* GRILLE SPATIALE: portée 2k, comme avant — au-delà ils s'ignorent.
        Clés NUMÉRIQUES `cx*4096+cy`, pas des strings: `cellOf` + `split` +
@@ -1147,7 +1369,19 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
            revenir vers v donc `-ux*pull` avec pull>0. Ton Igor faisait
            `vitesse[k] += -rr*(d-R)^3` — pareil, le cube garde le signe. */
         const stretch=(distance-rest)/Math.max(1e-6,rest)
-        const pull=stretch*stretch*stretch*distance
+        /* L'EXPOSANT REND LE RESSORT RÉGLABLE, et `3` reste EXACTEMENT le
+           calcul d'origine. On ne passe pas par `Math.pow` à 3: il n'est pas
+           garanti identique à `x*x*x` au dernier bit, et la disposition par
+           défaut doit rester rigoureusement celle d'avant — c'est elle que le
+           test de déterminisme compare. Le produit est donc conservé tel quel,
+           et `Math.pow` ne sert que pour les autres exposants.
+
+           Un exposant plus bas rend le ressort plus MOU: la force croît moins
+           vite avec l'écart. `1` est linéaire, donc jamais raide — le graphe
+           s'affaisse et se tasse, ce qui va à l'encontre de ce qu'on cherche
+           contre les chevauchements. `2` est le compromis raisonnable. */
+        const shape=springExponent===3?stretch*stretch*stretch:Math.pow(stretch,springExponent)
+        const pull=shape*distance
         const ux=rx/distance
         const uy=ry/distance
         velo[u*2]-=ux*pull
@@ -1161,14 +1395,102 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
        `fac=0.1` ramené à l'échelle `k`: `fac=k*0.004` ≈ 0.1 à k=26.
        Le momentum est la vitesse saturée elle-même (pas de ×0.9: l'atan
        écrase déjà — un nœud qui allait vite repart de `fac` max). */
+    /* LA FORCE DE MASSE, ET ELLE EST HORIZONTALE ET PROPORTIONNELLE.
+
+       Un sommet tire vers la DROITE s'il est plus lourd que le milieu de son
+       groupe, vers la GAUCHE s'il est plus léger. Le résultat est un gradient
+       continu: pas un tri, mais les masses croissantes de gauche à droite, ce
+       qui laisse la force de répulsion ordonner le reste sans qu'un seul pic
+       soit épinglé à une coordonnée.
+
+       Elle s'ajoute à l'ÉLAN et non à la position: elle passe donc par la même
+       saturation `atan` et le même plafond de température que tout le reste,
+       donc elle ne peut pas produire un pas plus grand que les autres. Injectée
+       directement dans `positions`, elle Ignorerait les deux.
+
+       `massForce` est sans dimension, relatif à `k`. À 0 le comportement est
+       exactement celui d'avant. */
+    if(massBias&&massForce>0){
+        const push=massForce*k
+        for(let i=0;i<count;i++){
+            const bias=massBias[i]
+            if(bias===0) continue
+            velo[i*2]+=bias*push
+        }
+    }
+    /* LA MÊME CHOSE VERTICALEMENT, et par le DÉFAUT DE MASSE. Comme
+       `massForce`, elle passe par l'élan et non par la position, donc elle est
+       bornée par la saturation et par la température comme tout le reste. */
+    if(defectBias&&defectForce>0){
+        const push=defectForce*k
+        for(let i=0;i<count;i++){
+            const bias=defectBias[i]
+            if(bias===0) continue
+            velo[i*2+1]+=bias*push
+        }
+    }
+    /* ET LE MÊME PRINCIPE POUR L'ERREUR, en ordonnée. Comme les deux autres, elle
+       passe par l'élan: bornée par la saturation et par la température, donc
+       elle ne peut pas produire un pas plus grand que les ressorts. */
+    if(errorBias&&errorForce>0){
+        const push=errorForce*k
+        for(let i=0;i<count;i++){
+            const bias=errorBias[i]
+            if(bias===0) continue
+            velo[i*2+1]+=bias*push
+        }
+    }
+    /* LA PROFONDEUR POUSSE VERS LE HAUT, ET SEULEMENT VERS LE HAUT.
+
+       Une poussée RADIALE — vers l'extérieur dans toutes les directions — était
+       la mauvaise physique: ce n'est pas une croissance d'arbre, c'est une
+       répulsion. Elle s'auto-alimente: pousser dehors allonge les
+       liens, ce qui étire les ressorts, qui repoussent encore plus loin, et la
+       mise en page finit en fuite — mesuré, le rayon moyen multipliait par
+       quatorze.
+
+       Ce qu'on simule est une CROISSANCE: la racine en bas, les feuilles vers le
+       haut. Donc une seule composante, l'ordonnée, et la racine épinglée en
+       (0,0) fait le bas du dessin toute seule. L'abscisse reste libre — c'est
+       elle qui accueille la masse, avec `massForce`, et les deux forces ne se
+       disputent plus rien. */
+    if(depthBias&&depthForce>0){
+        const push=depthForce*k
+        for(let i=0;i<count;i++){
+            const bias=depthBias[i]
+            if(bias===0) continue
+            velo[i*2+1]+=bias*push
+        }
+    }
     fac=fac??k*0.004
+    /* LA VISCOSITÉ, puis LA TEMPÉRATURE — les deux pertes d'énergie.
+
+       La VISCOSITÉ multiplie l'élan par un facteur < 1 à chaque tour: c'est une
+       fuite d'énergie franche, et elle est ce qui ramène le système vers un point
+       fixe plutôt que de le laisser osciller.
+
+       La TEMPÉRATURE borne ensuite le pas, comme l'annonçait le commentaire sur
+       la répulsion (« c'est la température qui plafonne le pas, en bas »). Le
+       plafond `fac` seul était une borne CONSTANTE: un sommet qui allait vite
+       repartait donc à pleine vitesse indéfiniment, et `maxSpeed` ne pouvait pas
+       décroître. Une température qui descend vers `tempEnd` rend le critère
+       d'arrêt `maxSpeed<1e-7` atteignable, donc la boucle peut enfin finir.
+
+       `temperature` infinie ou absente = pas de refroidissement, ce qui laisse
+       le comportement d'avant si quelqu'un le demande explicitement. */
+    const viscosity=Number.isFinite(viscosity_)?viscosity_:FOREST_VISCOSITY
+    const ceiling=Number.isFinite(temperature)&&temperature>=0?Math.min(fac,temperature):fac
     let maxSpeed=0
     for(let i=0;i<count;i++){
-        const vx=velo[i*2]
-        const vy=velo[i*2+1]
+        const vx=velo[i*2]*viscosity
+        const vy=velo[i*2+1]*viscosity
         const speed=Math.hypot(vx,vy)
-        if(speed<1e-9) continue
-        const capped=2*Math.atan(speed)/Math.PI*fac
+        if(speed<1e-12){
+            velo[i*2]=0
+            velo[i*2+1]=0
+            continue
+        }
+        const capped=Math.min(2*Math.atan(speed)/Math.PI*fac,ceiling)
         velo[i*2]=vx/speed*capped
         velo[i*2+1]=vy/speed*capped
         positions[i*2]+=velo[i*2]
@@ -1207,20 +1529,36 @@ function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,res
    Ressort cubique sur liens, répulsion bornée toutes paires, momentum +
    saturation atan par nœud, recentrage dur. Convergence quand la vitesse max
    passe sous 1e-7 — `iterations` n'est qu'un plafond de sécurité. */
-function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0.6,gravity=0.005,tempStart=null,tempEnd=0.5,fac=null,budgetMs=FOREST_LAYOUT_BUDGET_MS}={}){
+function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0.6,gravity=0.005,tempStart=null,tempEnd=0.5,fac=null,budgetMs=FOREST_LAYOUT_BUDGET_MS,springExponent=FOREST_LAYOUT_DEFAULTS.springExponent,massForce=FOREST_LAYOUT_DEFAULTS.massForce,defectForce=FOREST_LAYOUT_DEFAULTS.defectForce,errorForce=FOREST_LAYOUT_DEFAULTS.errorForce,depthForce=FOREST_LAYOUT_DEFAULTS.depthForce}={}){
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return positions
     /* Trouver l'index local de la racine. */
     const rootLocalIndex=graph.vertices.findIndex(v=>v.index===graph.rootIndex)
-    /* LE CERCLE INITIAL, rangé par masse — donc le plus léger en tête, et les
-       sommets déjà dans l'ordre où le réseau les a construits.
-       La racine est placée au centre (0,0). */
+    /* LE NUAGE INITIAL EST TIRÉ AU SORT, ET PLUS POSÉ SUR UN CERCLE.
+
+       Le cercle rangeait les sommets par masse angulaire — le plus léger en
+       tête — ce qui était déterministe, mais concentrait toute la population sur
+       une courbe: les premiers tours les empilaient tous dans la MÊME case de
+       la grille de répulsion, et le coût d'un tour était donc quadratique. C'est
+       mesuré: sur 4 000 sommets, dix tours coûtaient déjà 2,6 s.
+
+       Un tirage dans le disque de rayon `ideal` garde la même emprise mais
+       désordonne les positions, donc répartit la population sur toute la grille
+       dès le premier tour. `sqrt(rand())` et non `rand()`: c'est ce qui rend le
+       tirage UNIFORME en surface — sans le racine, les points se massent au
+       centre.
+
+       Le tirage reste à GRAINE (voir `layoutRandom`): le même réseau repart du
+       même nuage à chaque rendu, sans quoi deux réseaux cesseraient d'être
+       comparables. */
+    const rand=layoutRandom(layoutSeed(graph,count))
     for(let i=0;i<count;i++){
         if(i===rootLocalIndex) continue
-        const angle=2*Math.PI*i/count
-        positions[i*2]=ideal*Math.cos(angle)
-        positions[i*2+1]=ideal*Math.sin(angle)
+        const radius=ideal*Math.sqrt(rand())
+        const angle=2*Math.PI*rand()
+        positions[i*2]=radius*Math.cos(angle)
+        positions[i*2+1]=radius*Math.sin(angle)
     }
     if(count===1) return positions
     /* LA PLUS FORTE ERREUR DU GROUPE, et elle fixe l'échelle. La comparer à
@@ -1231,6 +1569,7 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
     const byIndex=new Map(graph.vertices.map((vertex,index)=>[vertex.index,index]))
     /* `vitesse=0` — ton `vitesse=0`: le momentum part de zéro et accumule. */
     const velo=new Float64Array(count*2)
+    const massBias=massBiasOf(graph.vertices)
     /* LE BUDGET DE TEMPS, et il est la seule borne qui serve.
 
        `maxSpeed<1e-7` ne se déclenche JAMAIS: `tempStart`/`tempEnd` sont
@@ -1258,8 +1597,16 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
        budget dépassé de quatre fois ce montant. `performance.now()` coûte une
        centaine de nanosecondes: le tester à chaque tour est gratuit. */
     const started=performance.now()
+    /* La température de DÉPART vaut la moitié de `ideal` quand on ne la donne
+       pas: c'est le pas initial maximal, assez pour ouvrir un nuage tiré au
+       sort sans le disperser hors du cadre d'un tour. */
+    const tempFrom=Number.isFinite(tempStart)?tempStart:ideal*0.5
+    const tempTo=Number.isFinite(tempEnd)?tempEnd:0
     for(let round=0;round<iterations;round++){
-        const maxSpeed=frStep(positions,velo,graph,byIndex,{k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex})
+        const maxSpeed=frStep(positions,velo,graph,byIndex,{
+            k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex,springExponent,massBias,massForce,defectBias,defectForce,errorBias,errorForce,depthBias,depthForce,
+            temperature:layoutTemperature(round,tempFrom,tempTo)
+        })
         /* `while(wavemax(vitesse)>1e-7)` — ton critère d'arrêt. */
         if(maxSpeed<1e-7) break
         /* `Infinity` = pas de borne (usage explicite). Un budget de 0 doit
@@ -1274,17 +1621,23 @@ function layoutGroup(graph,{iterations,ideal,repulsion=1,restBase=0.4,restSpan=0
 /* CRÉE UN ÉTAT DE LAYOUT ANIMÉ — pour pilotage par requestAnimationFrame.
    `velo` accumule comme ton `vitesse` (jamais remis à zéro); la boucle
    s'arrête sur `maxSpeed<1e-7`, `iterations` n'est qu'un plafond. */
-export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac}={}){
+export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac,viscosity=FOREST_LAYOUT_DEFAULTS.viscosity,springExponent=FOREST_LAYOUT_DEFAULTS.springExponent,massForce=FOREST_LAYOUT_DEFAULTS.massForce,defectForce=FOREST_LAYOUT_DEFAULTS.defectForce,errorForce=FOREST_LAYOUT_DEFAULTS.errorForce,depthForce=FOREST_LAYOUT_DEFAULTS.depthForce}={}){
     const count=graph.vertices.length
     const positions=new Float64Array(count*2)
     if(!count) return {positions,done:true,totalIterations:0}
     /* Trouver l'index local de la racine. */
     const rootLocalIndex=graph.vertices.findIndex(v=>v.index===graph.rootIndex)
+    /* Le nuage initial est TIRÉ AU SORT comme dans `layoutGroup`, avec la même
+       graine dérivée du graphe: les deux chemins — statique et animé — doivent
+       partir du même état, sinon un même réseau s'afficherait différemment selon
+       lequel des deux est choisi. */
+    const rand=layoutRandom(layoutSeed(graph,count))
     for(let i=0;i<count;i++){
         if(i===rootLocalIndex) continue
-        const angle=2*Math.PI*i/count
-        positions[i*2]=ideal*Math.cos(angle)
-        positions[i*2+1]=ideal*Math.sin(angle)
+        const radius=ideal*Math.sqrt(rand())
+        const angle=2*Math.PI*rand()
+        positions[i*2]=radius*Math.cos(angle)
+        positions[i*2+1]=radius*Math.sin(angle)
     }
     if(count===1) return {positions,done:true,totalIterations:0,rootLocalIndex}
     const worst=graph.links.reduce((n,link)=>Math.max(n,link.weight||0),0)||1
@@ -1304,6 +1657,19 @@ export function createAnimatedLayout(graph,{iterations=FOREST_LAYOUT_DEFAULTS.it
         restSpan,
         fac,
         rootLocalIndex,
+        /* La température est portée par l'ÉTAT, pas recalculée : c'est elle qui
+           doit descendre au fil des frames. `tempFrom` vaut la moitié de `ideal`
+           quand on ne donne rien, comme dans `layoutGroup`. */
+        tempFrom:Number.isFinite(tempStart)?tempStart:ideal*0.5,
+        tempTo:Number.isFinite(tempEnd)?tempEnd:0,
+springExponent,
+        massBias:massBiasOf(graph.vertices),
+        defectBias:defectBiasOf(graph.vertices),
+        massForce,
+        defectForce,
+        errorForce,
+        depthForce,
+        depthBias:depthBiasOf(graph.vertices,graph.links,graph.rootIndex),        errorBias:errorBiasOf(graph.vertices,graph.links),        viscosity:viscosity,
         done:false
     }
 }
@@ -1324,7 +1690,25 @@ export function advanceLayout(state,steps=1){
             state.done=true
             return true
         }
-        const maxSpeed=frStep(positions,velo,state.graph,byIndex,{k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex})
+        const maxSpeed=frStep(positions,velo,state.graph,byIndex,{
+            k:ideal,worst,repulsion,restBase,restSpan,fac,rootLocalIndex,
+            /* LA MÊME PHYSIQUE QUE LE MODE STATIQUE. Sans la température ici, le
+               mode animé plafonnait toujours par `fac`, constant: c'était lui —
+               et non le mode statique — que mon test de convergence mesurait, et
+               il ne convergait donc pas, alors que le chemin statique, lui, était
+               déjà refroidi. Les deux doivent être le même calcul. */
+            temperature:layoutTemperature(round,state.tempFrom,state.tempTo),
+            viscosity:state.viscosity,
+            springExponent:state.springExponent,
+            massBias:state.massBias,
+            massForce:state.massForce,
+            defectForce:state.defectForce,
+            defectBias:state.defectBias,
+            errorForce:state.errorForce,
+            errorBias:state.errorBias,
+            depthForce:state.depthForce,
+            depthBias:state.depthBias
+        })
         if(maxSpeed<1e-7){
             state.done=true
             return true
@@ -1370,7 +1754,7 @@ export function finalizeAnimatedLayout(state){
    redimensionne aucun de ceux qui précèdent. Une disposition dont la taille
    dépend du nombre de groupes ferait sautiller tout le graphique à chaque
    réseau. */
-export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac,budgetMs=FOREST_LAYOUT_BUDGET_MS}={}){
+export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,columns=0,iterations=FOREST_LAYOUT_DEFAULTS.iterations,ideal=FOREST_LAYOUT_DEFAULTS.ideal,repulsion=FOREST_LAYOUT_DEFAULTS.repulsion,restBase=FOREST_LAYOUT_DEFAULTS.restBase,restSpan=FOREST_LAYOUT_DEFAULTS.restSpan,gravity=FOREST_LAYOUT_DEFAULTS.gravity,tempStart=FOREST_LAYOUT_DEFAULTS.tempStart,tempEnd=FOREST_LAYOUT_DEFAULTS.tempEnd,fac=FOREST_LAYOUT_DEFAULTS.fac,budgetMs=FOREST_LAYOUT_BUDGET_MS,springExponent=FOREST_LAYOUT_DEFAULTS.springExponent,massForce=FOREST_LAYOUT_DEFAULTS.massForce,defectForce=FOREST_LAYOUT_DEFAULTS.defectForce,errorForce=FOREST_LAYOUT_DEFAULTS.errorForce,depthForce=FOREST_LAYOUT_DEFAULTS.depthForce}={}){
     const list=(graphs??[]).filter(graph=>(graph?.vertices?.length??0)>0)
     if(!list.length) return {width,height,groups:[],columns:0,rows:0}
     const span=width-2*margin
@@ -1398,7 +1782,7 @@ export function layoutForests(graphs,{width=800,height=400,gap=8,margin=6,column
     const deadline=performance.now()+budgetMs
     const placed=list.map(graph=>{
         const remaining=Math.max(0,deadline-performance.now())
-        const positions=layoutGroup(graph,{iterations,ideal,repulsion,restBase,restSpan,gravity,tempStart,tempEnd,fac,budgetMs:remaining})
+        const positions=layoutGroup(graph,{iterations,ideal,repulsion,restBase,restSpan,gravity,tempStart,tempEnd,fac,budgetMs:remaining,springExponent,massForce,massBias:massBiasOf(graph.vertices),defectForce,defectBias:defectBiasOf(graph.vertices),errorForce,errorBias:errorBiasOf(graph.vertices,graph.links),depthForce,depthBias:depthBiasOf(graph.vertices,graph.links,graph.rootIndex)})
         let minX=Infinity
         let maxX=-Infinity
         let minY=Infinity
