@@ -1,5 +1,5 @@
 import {Menu} from "./Menu.js"
-import {Command,Node,NodeWithAccordion,Operation,nodeRestoreData} from "../core/index.js"
+import {Command,Node,NodeWithAccordion,Operation,nodeRestoreData,createNodeForHistory} from "../core/index.js"
 import {
     AttributionNode,
     CalibrationNode,

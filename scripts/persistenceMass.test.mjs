@@ -42,19 +42,15 @@ const close=(a,b,msg)=>{
 }
 
 /* One block per class, so a test can ask about PeakPickingNode WITHOUT running
-   it — it needs d3 and a real DOM. Reading interface.js as text and checking
+   it — it needs d3 and a real DOM. Reading the node module as text and checking
    the wiring is a cheap guard, not a substitute for running the node; it is
    here because the thing that broke (the published column) is decided by a
    single argument name, which is exactly the kind of thing a test that only
-   checked the KERNEL would sail straight past. */
-function classBlocks(text){
-    const starts=[...text.matchAll(/^class\s+(\w+)(?:\s+extends\s+(\w+))?[^{]*\{/gm)]
-    return new Map(starts.map((match,index)=>[
-        match[1],
-        text.slice(match.index,starts[index+1]?.index??text.length)
-    ]))
-}
-const blocks=classBlocks(readFileSync(join(here,"interface.js"),"utf8"))
+   checked the KERNEL would sail straight past.
+
+   It read interface.js until the refactor deleted that file, taking this guard
+   with it. scripts/nodeSource.mjs reads the node modules that replaced it. */
+const {blocks}=await import("./nodeSource.mjs")
 
 /* The JS fallback, lifted OUT of kernelWorker.js rather than retyped here.
    kernelWorker.js is a worker: importing it for a test would need a Worker and

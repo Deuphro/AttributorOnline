@@ -10,6 +10,7 @@ import {Formula,Stoichiometry,FormulaCollection,loadTable} from "../chemistry.js
 import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula,propagateForest} from "../attribution.js"
 import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,layoutForests,DEFAULT_LINK_TOLERANCE} from "../forest.js"
 import {LAYOUT_DEFAULTS,autoLinkPlan,buildGraph,layoutFlow} from "../layout.js"
+import {buildNode} from "../utils/index.js"
 import {
     clearLocalSession,
     debounce,

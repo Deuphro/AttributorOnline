@@ -1,4 +1,4 @@
-﻿/* -------------------------------------------------------------------------
+/* -------------------------------------------------------------------------
    Test — node scripts/attribution.test.mjs
 
    Ce qui est vérifié ici, c'est le CRIBLE: combien de combinaisons il trouve,
@@ -18,6 +18,7 @@
    seul un crible rencontre — le doublon, l'état bloqué, et la masse plafonnée.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
+import {blocks} from "./nodeSource.mjs"
 import {Element,Formula,Stoichiometry} from "./chemistry.js"
 import {
     buildPlan,
@@ -1017,11 +1018,18 @@ await test("sans sélection, le moteur se comporte comme avant",()=>{
     ok(result.entries.length>20000,`everything should be rendered, got ${result.entries.length}`)
 })
 
-const NAME=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+/* The node used to live in interface.js, which the refactor deleted. Its
+   readGroups is here now, so the guard that lifts the DELIVERED text out and
+   re-runs it points at the module that carries it. */
+const NAME=blocks.get("AttributionNode")??""
+if(!NAME){
+    console.error("AttributionNode could not be read - the test cannot run")
+    process.exit(1)
+}
 const start=NAME.indexOf("/* UNE LISTE DE GROUPES, QUELLE QUE SOIT SON")
 const end=NAME.indexOf("/* La liste du nœud, normalisée")
 if(start<0||end<start){
-    console.error("readGroups could not be located in interface.js - the test cannot run")
+    console.error("readGroups could not be located in AttributionNode - the test cannot run")
     process.exit(1)
 }
 const slice=NAME.slice(start,end)
@@ -1099,7 +1107,7 @@ await test("le nœud ne passe que des options que le moteur connaît",()=>{
        côtés ne peut attraper l'erreur seul, puisque chacun est correct
        isolément. */
     const engine=readFileSync(new URL("./attribution.js",import.meta.url),"utf8")
-    const node=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+    const node=blocks.get("AttributionNode")??""
 
     /* Les options que le moteur ACCEPTE, lues dans sa signature. */
     const signature=/function attributeSpectrum\(plan,points,\{([^}]*)\}=/.exec(engine)
@@ -1168,7 +1176,7 @@ await test("le nom du réglage est le même des deux côtés",()=>{
        nom qui diverge entre la session, l'écran et le moteur ne casse rien
        immédiatement — ça casse à la PROCHAINE relecture, dans un fichier
        enregistré chez quelqu'un d'autre. */
-    const node=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+    const node=blocks.get("AttributionNode")??""
     const engine=readFileSync(new URL("./attribution.js",import.meta.url),"utf8")
     const persisted=/serializeState\(\)\{[\s\S]*?bestMatches:this\.parameters\.bestMatches/.test(node)
     ok(persisted,"the session stores `bestMatches`")
@@ -1555,7 +1563,7 @@ await test("ÉCRAN — bestMatches et ppm s'appliquent SANS passer par le bouton
 
        Ce test lit le SOURCE pour prouver que la branche existe, et vérifie
        qu'aucun chemin ne l'atteint depuis les deux champs. */
-    const node=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+    const node=blocks.get("AttributionNode")??""
 
     /* L'INTENTION EST ÉCRITE — dans `commitGroups`, où elle ne peut rien
        atteindre. Ce test ne l'exige PAS: il exige qu'elle soit là où elle

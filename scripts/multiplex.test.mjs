@@ -24,12 +24,7 @@
    persistenceMass.test.mjs uses for the published column, and deliberately not
    a substitute for running the node.
    ------------------------------------------------------------------------- */
-import {readFileSync} from "fs"
-import {fileURLToPath} from "url"
-import {dirname, join} from "path"
-
-const here=dirname(fileURLToPath(import.meta.url))
-const source=readFileSync(join(here,"interface.js"),"utf8")
+import {blocks} from "./nodeSource.mjs"
 
 let passed=0
 const failures=[]
@@ -40,15 +35,6 @@ const test=(name,fn)=>{
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??`expected a truthy value, got ${value}`) }
 const no=(value,msg)=>{ if(value) throw new Error(msg??`expected nothing, got: ${String(value).slice(0,90)}`) }
 
-/* One block per class, so a test can ask about ONE node without running it. */
-function classBlocks(text){
-    const starts=[...text.matchAll(/^class\s+(\w+)(?:\s+extends\s+(\w+))?[^{]*\{/gm)]
-    return new Map(starts.map((match,index)=>[
-        match[1],
-        text.slice(match.index,starts[index+1]?.index??text.length)
-    ]))
-}
-const blocks=classBlocks(source)
 const trimmer=blocks.get("TrimmerNode")??""
 const peaks=blocks.get("PeakPickingNode")??""
 
@@ -64,7 +50,7 @@ function method(text,name){
     return next<0?text.slice(start):text.slice(start,start+1+next)
 }
 
-console.log("the file still parses into the classes this test knows about")
+console.log("the node modules still parse into the classes this test knows about")
 test("both classes were found",()=>{
     ok(blocks.has("TrimmerNode"),"class TrimmerNode not found - the parser is broken")
     ok(blocks.has("PeakPickingNode"),"class PeakPickingNode not found - the parser is broken")

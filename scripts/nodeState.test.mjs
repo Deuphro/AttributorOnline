@@ -9,13 +9,17 @@
     came back as a pass-through with no window, and nothing said so.
 
     This test cannot run the node classes (they need d3 and a real DOM), so it
-    reads interface.js as TEXT and checks the contract instead: a class that can
+    reads them as TEXT and checks the contract instead: a class that can
     be rebuilt from a session must define BOTH halves. It is a cheap guard
     against the whole family of bug, not a replacement for exercising a node.
+
+    It used to read interface.js. The refactor split that file into nodes/*.js,
+    core/index.js and flow/*.js and deleted it, which killed this test outright
+    — it died on ENOENT and the guard it was written for stopped existing.
+    scripts/nodeSource.mjs now reads the modules that replaced it.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
-
-const source=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
+import {blocks,parents,DUPLICATE_CLASSES,balancedObject,defines,reaches} from "./nodeSource.mjs"
 
 let passed=0
 const failures=[]
@@ -26,39 +30,25 @@ const test=(name,fn)=>{
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value") }
 const eq=(a,b,msg)=>{ if(a!==b) throw new Error(`${msg??`${a} != ${b}`}`) }
 
-/* One block per class: from `class X ...{` to the next class (or the end of the
-   file). Anchored on ^ and on the brace, so a class mentioned in a comment
-   never becomes a block of its own. */
-function classBlocks(text){
-    const starts=[...text.matchAll(/^class\s+(\w+)(?:\s+extends\s+(\w+))?[^{]*\{/gm)]
-    return starts.map((match,index)=>({
-        name:match[1],
-        parent:match[2]??null,
-        body:text.slice(match.index,starts[index+1]?.index??text.length)
-    }))
-}
-const blocks=new Map(classBlocks(source).map(block=>[block.name,block.body]))
-const parents=new Map(classBlocks(source).map(block=>[block.name,block.parent]))
-//a DEFINITION, not a mention: four spaces, then the name, then the parens. A
-//comment line cannot look like that, so a comment naming serializeState cannot
-//make a class look like it implements it.
-const defines=(body,name)=>new RegExp(`^ {4}${name}\\(`,`m`).test(body??"")
-/* A node type is often a thin subclass that inherits its state - SimpleXYPlotNode
-   keeps its axes through NodeWithRightAccordionGraph - so "does this class save
-   anything" is a question about the WHOLE chain, not about one body. */
-function reaches(name,method,seen=new Set()){
-    if(seen.has(name)) return false
-    seen.add(name)
-    if(defines(blocks.get(name),method)) return true
-    const parent=parents.get(name)
-    return parent?reaches(parent,method,seen):false
-}
-
-console.log("the file still parses into the classes this test knows about")
-test("every class in interface.js was found",()=>{
-    for(const name of ["Node","TrimmerNode","FKMDNode","PeakPickingNode","DelimitedTextNode","Flow","App"]){
+console.log("the modules still parse into the classes this test knows about")
+test("every class this test names was found",()=>{
+    for(const name of ["Node","TrimmerNode","FKMDNode","PeakPickingNode","DelimitedTextNode","Flow"]){
         ok(blocks.has(name),`class ${name} not found - the parser is broken`)
     }
+})
+test("no class name is claimed by two modules",()=>{
+    /* A duplicate would make the later block shadow the earlier one, and the
+       inheritance walk would then answer from the wrong body — every assertion
+       below would still run, and quietly describe the wrong class. */
+    eq(DUPLICATE_CLASSES.length,0,
+        `${DUPLICATE_CLASSES.join(", ")}: two modules define the same class, so one shadowed the other`)
+})
+test("the parser found every node module, not just the first",()=>{
+    /* One file read and twenty ignored looks exactly like a passing test, so the
+       count is asserted: the contract is "every node is covered", and a parser
+       that quietly read one module would satisfy a per-class loop over one
+       module's classes. */
+    ok(blocks.size>20,`only ${blocks.size} classes found - is nodeSource.mjs listing every module?`)
 })
 test("the parser did not swallow the whole file in one block",()=>{
     ok(blocks.size>20,`only ${blocks.size} classes found`)
@@ -70,20 +60,44 @@ test("inheritance is read, not guessed",()=>{
 })
 
 console.log("a node with settings of its own saves them")
-/* The list mirrors createNodeForHistory's switch - a type missing from it
-   cannot be rebuilt by an undo, so a state for it would be write-only. */
-const RESTORABLE=[
-    "DelimitedTextNode",
-    "SimpleXYPlotNode",
-    "NodeWithAccordionGraph",
-    "NodeWithRightAccordionGraph",
-    "PeakPickingNode",
-    "TrimmerNode",
-    "FKMDNode",
-    //the collection reader keeps its view, its filters and its annotations: all
-    //three are choices no resolve can reconstruct, so all three must travel
-    "FormulaCollectionNode"
-]
+/* Derived from the registration the menu itself uses, not written out here.
+
+   An undo of a deletion rebuilds the node from nodeRestoreData +
+   createNodeForHistory, so a type with no state is a type whose settings are
+   written and never read back. This list used to be eight names typed by hand
+   while nine node classes existed: AttributionNode, CalibrationNode,
+   ThermoRawNode and ChatNode all implement the pair and none of them was
+   checked, so the guard passed on the nodes it happened to remember. Reading
+   the registration means a node added there cannot be forgotten here — which
+   is the whole point of the comment above NODE_CONSTRUCTORS. */
+const REGISTERED=readFileSync(new URL("./app/registerNodeTypes.js",import.meta.url),"utf8")
+/* The registration is an Object.assign(NODE_CONSTRUCTORS, { … }) rather than a
+   bare `const NODE_CONSTRUCTORS = { … }`, so the name appears inside a CALL.
+   constBlock looks for the assignment shape and finds nothing here — which would
+   leave the list empty, and an empty list passes every assertion in this section
+   without checking a single node. The bracket walk still does the work, so it is
+   pointed at the argument instead of the declaration. */
+const registrationStart=REGISTERED.indexOf("NODE_CONSTRUCTORS")
+ok(registrationStart>0,
+    "registerNodeTypes.js does not fill NODE_CONSTRUCTORS: nothing to check, and the guard is inert")
+const registrations=balancedObject(REGISTERED,REGISTERED.indexOf("{",registrationStart))
+//shorthand entries (`TrimmerNode,`) and aliases (`AntiRadioNode:PeakPickingNode`)
+//both name a real class; only the VALUE of an alias is ever instantiated, so the
+//key is dropped and the class kept
+/* Node owns position and pinned, and the session format already carries both as
+   fields of their own, so a serializeState there would be an empty object
+   pretending to be a safety net. Operation and NodeWithAccordion add no setting
+   of their own either. They are REGISTERED — a session can name them — so they
+   have to be excluded here explicitly rather than by being absent. */
+const STATELESS=new Set(["Node","Operation","NodeWithAccordion"])
+const RESTORABLE=[...new Set(
+    [...registrations.matchAll(/^\s*"?([A-Za-z]\w*)"?\s*(?::\s*(\w+))?\s*,?\s*$/gm)]
+        .map(match=>match[2]??match[1])
+)]
+    //the three that own no setting are checked separately, and CORRECTLY, below
+    .filter(name=>!STATELESS.has(name))
+    .filter(name=>blocks.has(name)).sort()
+console.log(`  (${RESTORABLE.length} registered node classes: ${RESTORABLE.join(", ")})`)
 for(const name of RESTORABLE){
     test(`${name} saves what it was set to`,()=>{
         ok(reaches(name,"serializeState"),`${name} has no serializeState: its settings are lost on every save`)
@@ -105,13 +119,9 @@ for(const name of blocks.keys()){
 }
 
 console.log("a node with nothing to save says so, and needs no state")
-/* Node is the base: it owns position and pinned, and the session format already
-   carries both as fields of their own (serializeNode), so a serializeState here
-   would be an empty object pretending to be a safety net. Operation and
-   NodeWithAccordion add no setting of their own either. Saying this out loud is
-   the point: an empty serializeState added to "satisfy" a linter would hide the
-   fact that nothing needs saving. */
-for(const name of ["Node","Operation","NodeWithAccordion"]){
+/* Said out loud on purpose: an empty serializeState added to "satisfy" a linter
+   would hide the fact that nothing needs saving. */
+for(const name of STATELESS){
     test(`${name} has no state, and that is correct`,()=>{
         ok(!reaches(name,"serializeState"),`${name} grew a state it has no setting for`)
         ok(!reaches(name,"restoreState"),`${name} grew a restore for a state it does not have`)

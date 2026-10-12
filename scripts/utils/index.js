@@ -293,58 +293,12 @@ export const TRIM_CURSOR_FIELD_FONT="0.95em"
    a bare Node with no inputs at all, silently. */
 export const NODE_CONSTRUCTORS={}
 
-export function nodeRestoreData(node){
-    return {
-        title:node.title,
-        type:node.constructor.name,
-        registrationName:node.events?.registrationName,
-        //inputs keep their shape only: Maps are rebuilt from the live links by
-        //syncInputs (and by resolveFlow), so parent nodes are never deep-cloned
-        inputs:node.inputs.map(entry=>entry instanceof Map ? new Map() : DC(entry)),
-        outputs:DC(node.outputs),
-        position:{...node.parameters.position},
-        //the pin travels with the node: an undo that brings a node back must
-        //bring back the choice the user made about where it lives
-        pinned:!!node.parameters.pinned,
-        status:node.status,
-        source:node.parameters.source?DC(node.parameters.source):null,
-        state:node.serializeState?.()??null
-    }
-}
-
-export function createNodeForHistory(origin,flow,data){
-    const position={...data.position}
-    //DC on the shape only: a record must not share its arrays with the node it
-    //brings back, or the next resolve would rewrite the history
-    const node=buildNode(
-        {
-            ...data,
-            inputs:data.inputs===undefined?undefined:DC(data.inputs),
-            outputs:data.outputs===undefined?undefined:DC(data.outputs)
-        },
-        origin,
-        flow
-    )
-    origin.channel.register(data.registrationName??"node",node,node.title)
-    node.parameters.pinned=!!data.pinned
-    if(data.source){
-        node.parameters.source=DC(data.source)
-        node.updateLabel(node.parameters.source.fileName)
-        node.startResolve().then(()=>node.renderAccordion?.())
-        return node
-    }
-    if(data.state&&typeof node.restoreState==="function"){
-        node.restoreState(data.state)
-    }
-    if(data.status){
-        node.status=data.status
-    }
-    if(Array.isArray(data.outputs)&&data.outputs.length===node.outputs.length){
-        node.outputs=DC(data.outputs)
-    }
-    node.graph?.drawGraph()
-    return node
-}
+/* nodeRestoreData and createNodeForHistory live in core/index.js, next to the
+   Command and History that call them. They used to be duplicated here, and only
+   the core copies were ever imported: an undo of a deletion threw `buildNode is
+   not defined` and a redo of a creation threw `createNodeForHistory is not
+   defined`, while this copy sat here looking like a second implementation that
+   nothing tested. One implementation, one home. */
 
 /* THE ONE place that knows how a node class is called.
 

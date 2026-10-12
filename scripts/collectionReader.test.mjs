@@ -1,4 +1,4 @@
-/* -------------------------------------------------------------------------
+   /* -------------------------------------------------------------------------
    Test — node scripts/collectionReader.test.mjs
 
    The collection reader's decisions are PURE functions of a formula: how a
@@ -10,45 +10,48 @@
 
    So they are tested against the real engine, on the real classes, with the
    periodic table loaded from data/elements.json — the same oracle
-   stoichiometry.test.mjs uses. The functions are read out of interface.js as
-   TEXT and evaluated here, because that file needs a DOM and d3 to import;
-   this way the code under test is the code that ships, not a copy of it.
+   stoichiometry.test.mjs uses.
+
+   They used to be lifted out of interface.js as TEXT and evaluated, because
+   that file needed a DOM and d3 to import. The refactor split the display
+   helpers into nodes/formulaCollectionHelpers.js, which needs neither — its own
+   header says they were separated precisely so a number format could be tested
+   on its own. So they are IMPORTED now. The code under test is still the code
+   that ships, and it is now the shipped module rather than a slice of it: the
+   method-level slices further down still read text, because a METHOD of the
+   class still needs d3.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
 import {Element,Formula,FormulaCollection,nearestByMz,nearestTarget} from "./chemistry.js"
 import {Wave,XYTrace} from "./formats.js"
+import {
+    formatCount,
+    formatMz,
+    formatValue,
+    prettyNotation,
+    traceColor,
+    FORMULA_SORTS,
+    formulaComparator
+} from "./nodes/formulaCollectionHelpers.js"
 
 const TABLE=Element.load(JSON.parse(
     readFileSync(new URL("../data/elements.json",import.meta.url),"utf8")))
 
-/* The DISPLAY helpers are lifted out of interface.js as TEXT.
+/* Only the METHODS are still sliced out of text. The reader is a DOM-bound class
+   that cannot be imported into node, so each method is taken between two anchors
+   and evaluated on a stand-in `this`.
 
-   They cannot be imported — that file needs a DOM and d3 — but they are the
-   code that ships, and a copy in a test is a copy that stops being true the
-   first time the original changes. The slice runs between two anchors, and BOTH
-   are verified: an anchor that silently fails to match would slice to the end
-   of the file and hand `new Function` a module with an `export` in it.
-
-   The start anchor is the COMMENT above the first helper, not the helper
-   itself: formatCount, formatValue and formatMz are declared before
-   SUBSCRIPTS, so starting the slice at the constants would leave them out and
-   the evaluation would fail on a name that plainly exists in the file. */
-const source=readFileSync(new URL("./interface.js",import.meta.url),"utf8")
-const helpersStart=source.indexOf("//\"1 234 567\" — the counts here reach six digits")
-const helpersEnd=source.indexOf("class FormulaCollectionNode extends NodeWithAccordionGraph")
-if(helpersStart<0||helpersEnd<helpersStart){
-    console.error("the helper block could not be located in interface.js - the test cannot run")
+   BOTH anchors are verified: an anchor that silently failed to match would slice
+   to the end of the file and hand `new Function` a module with an `export` in it
+   — or, worse, a slice that happens to parse and quietly tests the wrong code. */
+const source=readFileSync(new URL("./nodes/FormulaCollectionNode.js",import.meta.url),"utf8")
+/* VirtualRowList was its own class inside interface.js; it is its own module now,
+   so its body is read from there rather than sliced out of the reader. */
+const rowListSource=readFileSync(new URL("./nodes/VirtualRowList.js",import.meta.url),"utf8")
+if(!source.includes("export class FormulaCollectionNode")){
+    console.error("FormulaCollectionNode.js could not be read - the test cannot run")
     process.exit(1)
 }
-const helpersSource=source.slice(helpersStart,helpersEnd)
-if(!helpersSource.includes("function prettyNotation")){
-    console.error("the helper slice is incomplete - the test cannot run")
-    process.exit(1)
-}
-const helpers=new Function(`${helpersSource}
-    return {prettyNotation,formatCount,formatValue,formatMz,traceColor,FORMULA_SORTS,formulaComparator}`
-)()
-const {prettyNotation,formatCount,formatValue,formatMz,traceColor,FORMULA_SORTS,formulaComparator}=helpers
 
 /* `visibleRows` is a METHOD of the reader, so it cannot be pulled out of the
    helper slice — but it is the code that decides what a row CARRIES, and the
@@ -63,7 +66,7 @@ const {prettyNotation,formatCount,formatValue,formatMz,traceColor,FORMULA_SORTS,
 const visibleRowsStart=source.indexOf("    visibleRows(){")
 const visibleRowsEnd=source.indexOf("    renderRows(){",visibleRowsStart)
 if(visibleRowsStart<0||visibleRowsEnd<visibleRowsStart){
-    console.error("visibleRows could not be located in interface.js - the test cannot run")
+    console.error("visibleRows could not be located in FormulaCollectionNode.js - the test cannot run")
     process.exit(1)
 }
 const visibleRowsSource=source.slice(visibleRowsStart,visibleRowsEnd)
@@ -580,12 +583,12 @@ test("un pli n'a qu'un niveau, par construction",()=>{
 console.log("ce qu'une ligne de PIC affiche, qui n'est pas ce qu'affiche la formule")
 /* `drawRow` is the other half of what a line IS: `visibleRows` says which
    numbers a line carries, `drawRow` says which of them the user reads. Both are
-   sliced out of interface.js as TEXT and evaluated here, because that file needs
+   sliced out of FormulaCollectionNode.js as TEXT and evaluated here, because that module needs
    a DOM — the code under test is still the code that ships. */
 const drawStart=source.indexOf("    drawRow(element,row){")
-const drawEnd=source.indexOf("    refreshGraph(){",drawStart)
+const drawEnd=source.indexOf("    async refreshGraph(){",drawStart)
 if(drawStart<0||drawEnd<drawStart){
-    console.error("drawRow could not be located in interface.js - the test cannot run")
+    console.error("drawRow could not be located in FormulaCollectionNode.js - the test cannot run")
     process.exit(1)
 }
 const drawRow=new Function("CE","prettyNotation","formatMz","formatValue","formatCount",
@@ -743,7 +746,7 @@ console.log("les DEUX sorties, et le jumeau exact")
 const publishStart=source.indexOf("    publishOutput(){")
 const publishEnd=source.indexOf("    async startResolve(){",publishStart)
 if(publishStart<0||publishEnd<publishStart){
-    console.error("publishOutput could not be located in interface.js - the test cannot run")
+    console.error("publishOutput could not be located in FormulaCollectionNode.js - the test cannot run")
     process.exit(1)
 }
 const publishOutput=new Function("Wave",
@@ -919,10 +922,8 @@ test("la liste lit le défilement sur le conteneur qui défile",()=>{
        the first ones, and the wrap scrolls them out of sight. A few rows, then
        nothing — and only while scrolling, because at rest the position 0 is the
        correct one and the list looks perfectly fine. */
-    const start=source.indexOf("class VirtualRowList{")
-    const end=source.indexOf("/* ---- small pure helpers for the collection reader",start)
-    ok(start>0&&end>start,"the VirtualRowList block is locatable")
-    const block=source.slice(start,end)
+    const block=rowListSource
+    ok(/class\s+VirtualRowList\b/.test(block),"the VirtualRowList module could not be read")
     ok(!/this\.element\.scrollTop/.test(block),
         "scrollTop must not be read on .fc-viewport: it never scrolls, the wrap does")
     ok(!/this\.element\.clientHeight/.test(block),
@@ -1167,13 +1168,19 @@ test("a session of typed formulas survives a re-read",()=>{
 console.log("le graphe: l'ERREUR en fonction de la masse mesurée, par défaut")
 /* `refreshGraph` decides what ONE POINT SAYS, and that is the whole contract of
    the central graph. It is a method of the reader, so it is sliced out of
-   interface.js and called against a stand-in `this` carrying a fake graph — the
+   the node module and called against a stand-in `this` carrying a fake graph — the
    real method, and no DOM needed: everything it touches is `setTraces`, the axis
    parameters and `drawGraph`. */
-const graphStart=source.indexOf("    refreshGraph(){")
-const graphEnd=source.indexOf("    /* What this node publishes",graphStart)
+/* The end anchor is the NEXT METHOD, publishOutput. It used to be a comment —
+   "What this node publishes" — which sat after two `static` helpers
+   (compileVkFormula, barycentricProjectJS) rather than immediately after the
+   method. Those statics landed inside the slice, and `new Function` rejected the
+   class syntax with "Unexpected identifier 'static'": the anchor was never wrong
+   about the reader, it was just cutting the block at the wrong place. */
+const graphStart=source.indexOf("    async refreshGraph(){")
+const graphEnd=source.indexOf("    publishOutput(){",graphStart)
 if(graphStart<0||graphEnd<graphStart){
-    console.error("refreshGraph could not be located in interface.js - the test cannot run")
+    console.error("refreshGraph could not be located in FormulaCollectionNode.js - the test cannot run")
     process.exit(1)
 }
 const graphSource=source.slice(graphStart,graphEnd)

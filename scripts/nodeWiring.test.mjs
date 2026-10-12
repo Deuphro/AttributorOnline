@@ -7,16 +7,20 @@
    would come back as a bare Node with no inputs at all, silently".
 
    It cannot RUN the node classes â€” they need d3 and a real DOM â€” so it reads
-   interface.js as TEXT, exactly as nodeState.test.mjs does, and checks the
-   contract instead. That is a cheap guard against the whole family of bug; it
-   is not a replacement for clicking the thing.
+   them as TEXT, exactly as nodeState.test.mjs does, and checks the contract
+   instead. That is a cheap guard against the whole family of bug; it is not a
+   replacement for clicking the thing.
+
+   It used to read interface.js. The refactor split that file and deleted it,
+   which killed this test on ENOENT â€” so did the guards inside it. The modules
+   that replaced it are read through scripts/nodeSource.mjs now.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
 import {fileURLToPath} from "url"
 import {dirname, join} from "path"
+import {blocks,parents,source,balancedObject,stripComments,defines,reaches} from "./nodeSource.mjs"
 
 const here=dirname(fileURLToPath(import.meta.url))
-const source=readFileSync(join(here,"interface.js"),"utf8")
 const config=readFileSync(join(here,"../resources/config.js"),"utf8")
 const css=readFileSync(join(here,"../styles/main.css"),"utf8")
 
@@ -28,90 +32,105 @@ const test=(name,fn)=>{
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value") }
 
-function classBlocks(text){
-    const starts=[...text.matchAll(/^class\s+(\w+)(?:\s+extends\s+(\w+))?[^{]*\{/gm)]
-    return starts.map((match,index)=>({
-        name:match[1],
-        parent:match[2]??null,
-        body:text.slice(match.index,starts[index+1]?.index??text.length)
-    }))
+/* constBlock, stripComments, defines and reaches all live in nodeSource.mjs
+   now: nodeState.test.mjs needed the same four, and two copies of a bracket
+   counter is two chances for one of them to be the wrong one. */
+
+/* The two registration lists, read as sets rather than as prose.
+
+   BOTH SHAPES, because the code does not use one: NODE_CONSTRUCTORS is filled
+   with Object.assign over a plain object literal (it carries the legacy
+   aliases) while SELF_SHAPED_NODES is filled from an array literal.
+
+   BOTH ARE FILLED IN registerNodeTypes.js, not declared there. utils/index.js
+   only owns the two empty containers, because the node classes import the core
+   and the core imports buildNode: putting the classes in the same file would be
+   a cycle. Reading the declarations therefore found `{}` and `new Set([])` —
+   an empty list passes "every creatable node class is registered" without
+   checking one — and the test then failed for the opposite reason, claiming
+   ChatNode was missing. The list that is actually consulted is read here. */
+const REGISTERED=readFileSync(join(here,"app/registerNodeTypes.js"),"utf8")
+const constructors=bracketedAfter(REGISTERED,"NODE_CONSTRUCTORS")??""
+const selfShaped=bracketedAfter(REGISTERED,"SELF_SHAPED_NODES")??""
+
+function bracketedAfter(text,name){
+    /* TWO SHAPES, and neither one is `const NAME = { … }`.
+
+       NODE_CONSTRUCTORS is filled IN PLACE:
+           Object.assign(NODE_CONSTRUCTORS,{ … })
+       The name is the target and the block follows it, so a forward walk finds
+       the list on the first try.
+
+       SELF_SHAPED_NODES is filled from a list declared ABOVE the call:
+           for(const NodeType of [ … ]) SELF_SHAPED_NODES.add(NodeType)
+       The name is the DESTINATION, and there is no bracket after it anywhere —
+       the walk forward runs into the `)` of add( and gives up. That is why this
+       check spent three passes reporting ChatNode as unregistered while it is
+       plainly on the line above the call.
+
+       So the list is found by walking BACK from the call to the `]` that closes
+       it, then matching that bracket to its opener. */
+    const at=text.lastIndexOf(name)
+    const call=text.indexOf(`${name}.add(`,at)
+    const close=call<0?-1:text.lastIndexOf("]",call)
+    const opener=close<0?-1:matchingOpener(text,close)
+    if(opener>=0){
+        const block=text.slice(opener,close+1)
+        /* A registration list that lost its entries to a mis-aimed walk looks
+           exactly like one that was never written, and an empty list makes
+           "every name is a real class" pass while checking nothing. So emptiness
+           is reported rather than accepted. */
+        return /^\s*\[\s*\]\s*$/.test(block)?null:block
+    }
+    /* In-place fill. The LAST mention of the name, not the first: the first is
+       in the import statement, whose `{` opens BEFORE the name, and a forward
+       scan from there crosses the end of the import and stops on the `{` of
+       `export function registerNodeTypes(){` — returning the whole function body
+       and reading the NODE_CONSTRUCTORS entries out of the loop below it. */
+    let forward=-1
+    for(let i=at;i<text.length;i++){
+        if(text[i]==="{"||text[i]==="["){ forward=i; break }
+        if(text[i]===")"||text[i]===";") break
+    }
+    if(forward<0) return null
+    return balancedObject(text,forward)
 }
-const blocks=new Map(classBlocks(source).map(b=>[b.name,b.body]))
-const parents=new Map(classBlocks(source).map(b=>[b.name,b.parent]))
-const defines=(body,name)=>new RegExp(`^ {4}${name}\\(`,"m").test(body??"")
-function reaches(name,method,seen=new Set()){
-    if(seen.has(name)) return false
-    seen.add(name)
-    if(defines(blocks.get(name),method)) return true
-    const parent=parents.get(name)
-    return parent?reaches(parent,method,seen):false
-}
-/* The body of a `new Set([...])`, so the two registration lists can be read as
-   sets rather than as prose.
 
-   The bracket counting starts at the opening `[` of the array literal, NOT at
-   the first `[` after the name: NODE_CONSTRUCTORS contains no nested bracket
-   today, but SELF_SHAPED_NODES could, and a walker that stops at the first
-   balanced pair would silently return half a list. The depth counter is what
-   makes that impossible. */
-/* The body of a `const NAME = { … }` or `const NAME = new Set([ … ])`, so the
-   registration lists can be read as sets rather than as prose.
-
-   BOTH SHAPES, because the file does not use one: NODE_CONSTRUCTORS is a plain
-   object literal (it carries the legacy aliases) while SELF_SHAPED_NODES is a
-   Set. A helper that assumed the Set shape returned null for the first and
-   reported every node as unregistered — a test failing on its own assumption,
-   which is the kind that gets deleted instead of fixed.
-
-   The depth counter is what makes the walk safe: it finds the bracket that
-   MATCHES the opener, so an inner `{` or `[` cannot end the block early. */
-function constBlock(name){
-    const start=source.search(new RegExp(`const\\s+${name}\\s*=`))
-    if(start<0) return null
-    const opener=source.indexOf("{",start)
-    const bracket=source.indexOf("[",start)
-    const open=(opener>=0&&(bracket<0||opener<bracket))?opener:bracket
-    if(open<0) return null
-    /* The depth is counted on the CHARACTER that opened the block, and both
-       kinds of bracket are counted while walking. An object literal can hold a
-       nested array (and a Set can hold a nested call), and counting only the
-       one kind would end the block at the first inner bracket of the other —
-       which is how this returned "[]" for a list that plainly had entries. */
+/* The index of the bracket that OPENS the one at `close`. A depth counter, so a
+   nested array inside the list cannot be mistaken for its own boundary. */
+function matchingOpener(text,close){
     let depth=0
-    for(let i=open;i<source.length;i++){
-        const character=source[i]
-        if(character==="{"||character==="[") depth++
-        else if(character==="}"||character==="]"){
+    for(let i=close;i>=0;i--){
+        if(text[i]==="]") depth++
+        else if(text[i]==="["){
             depth--
-            if(depth===0) return source.slice(open,i+1)
+            if(depth===0) return i
         }
     }
-    return null
+    return -1
 }
-const constructors=constBlock("NODE_CONSTRUCTORS")??""
-const selfShaped=constBlock("SELF_SHAPED_NODES")??""
 
-/* Comments are stripped before any of this is read.
+/* Comments are stripped before any of this is read (stripComments lives in
+   nodeSource.mjs).
 
-   Not for tidiness: the comments in interface.js DISCUSS these very names
+   Not for tidiness: the comments in utils/index.js DISCUSS these very names
    ("a node that builds its own inputs and outputs takes..."), so a naive word
    scan finds `builds`, `listens` and half the English language in the
    declaration it is trying to check. A test that reads prose as code is worse
    than no test, because it fails for the wrong reason and gets deleted.
 
    ONLY block comments are stripped, and that is a deliberate limit rather than
-   an oversight. A `//` stripper is tempting and wrong here: the file contains
-   "ws://" and "http://" inside string literals, and a line-comment regex runs
-   to the end of the line from the first "//" it sees — which silently deleted
-   the whole `this.DOMelt.handler=CE(...)` line and made the tiler look absent
-   from a class that plainly carries it.
+   an oversight. A `//` stripper is tempting and wrong here: ChatNode and Dialog
+   hold "ws://" and "http://" inside string literals, and a line-comment regex
+   runs to the end of the line from the first "//" it sees — which silently
+   deleted the whole `this.DOMelt.handler=CE(...)` line and made the tiler look
+   absent from a class that plainly carries it.
 
    Telling a `//` in a string from a real line comment needs a real parser.
    What is left is one honest limitation, stated rather than hidden: a `//`
    comment standing between a declaration and the code it describes can hide
    that code from this test. The tests below therefore also assert on the RAW
    text wherever a `//` comment could plausibly sit in between. */
-const stripComments=(text)=>text.replace(/\/\*[\s\S]*?\*\//g,"")
 const constructorsCode=stripComments(constructors)
 const selfShapedCode=stripComments(selfShaped)
 
@@ -162,8 +181,16 @@ test("SELF_SHAPED_NODES covers every self-shaped class",()=>{
        BUILDS its own inputs" — and reports `builds` as a class that does not
        exist, which is a failure about the test's own reading, not about the
        file. Only the entries are on their own lines. */
+    /* `\r` is stripped along with the whitespace. The files are checked out
+       with CRLF on Windows, and `String.trim()` DOES remove it — but the filter
+       runs on the trimmed line, so that part was fine; what broke it was
+       splitting on "\n" and testing `^\w+$` against a line that still carried
+       the carriage return, which matched nothing. The list came back EMPTY, and
+       an empty list makes "every name is a real class" pass while
+       `entries.includes("ChatNode")` correctly fails — so the test did notice,
+       but it blamed ChatNode rather than the line ending. */
     const entries=selfShapedCode
-        .split("\n")
+        .split(/\r?\n/)
         .map(line=>line.trim().replace(/,$/,"").replace(/^\/\/.*$/,""))
         .filter(line=>/^\w+$/.test(line))
     for(const name of entries){
