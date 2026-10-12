@@ -7,7 +7,7 @@ import {Wave,XYTrace} from "../formats.js"
 import {Formula,FormulaCollection,positiveMassConjugate} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 
@@ -820,8 +820,13 @@ forestOverviewLayout({animate=false}={}){
             const message=await this.applyForestSegmentBrick(input.value)
             status.textContent=message
         }
+        const sever=async ()=>{
+            const message=await this.severForestSegment()
+            status.textContent=message
+        }
         row.append(
             button("Apply",apply),
+            button("Sever",sever),
             button("Close",()=>this.closeForestSegmentEditor()))
 
         /* Entrée applique, Échap referme: ce sont les deux gestes qu'on attend
@@ -928,6 +933,137 @@ forestOverviewLayout({animate=false}={}){
         this.renderForestList()
         this.renderForestOverview()
         return `link ${link.u}↔${link.v} now on ${link.label} — ${Number(link.weight??0).toFixed(4)} Da`
+    }
+
+    /* LA COUPURE D'UN SEGMENT, VOLATILE COMME LE MERGE.
+       Retire le lien du graphe affiché, partage les sommets en deux côtés
+       par parcours des liens restants, donne à chaque moitié sa racine
+       (l'ancienne quand elle y est, sinon `forestRoot`), remplace le graphe
+       et son composant par les deux moitiés, purge les caches et repeint.
+       Un nouveau « Grow network » régénère tout et efface la coupure. */
+    async severForestSegment(){
+        const edit=this.forestSegmentEdit
+        if(!edit) return "no segment selected"
+        const {link,graph,rank}=edit
+        if(!graph||!link) return "no segment selected"
+        const at=(node)=>node===link.u||node===link.v
+        const cutIndex=(graph.links??[]).findIndex(item=>
+            item===link||(at(item.u)&&at(item.v)&&(item.u===link.u||item.u===link.v)))
+        if(cutIndex<0) return `segment ${link.u}↔${link.v} is already gone`
+        const rest=(graph.links??[]).filter((_,index)=>index!==cutIndex)
+        const neighbours=new Map()
+        for(const item of rest){
+            if(!neighbours.has(item.u)) neighbours.set(item.u,[])
+            if(!neighbours.has(item.v)) neighbours.set(item.v,[])
+            neighbours.get(item.u).push(item.v)
+            if(item.v!==item.u) neighbours.get(item.v).push(item.u)
+        }
+        const sideOf=(start)=>{
+            const seen=new Set([start])
+            const queue=[start]
+            for(let head=0;head<queue.length;head++){
+                for(const next of neighbours.get(queue[head])??[]){
+                    if(seen.has(next)) continue
+                    seen.add(next)
+                    queue.push(next)
+                }
+            }
+            return seen
+        }
+        const sideU=sideOf(link.u)
+        if(sideU.has(link.v)) return `segment ${link.u}↔${link.v} is not a bridge`
+        const byIndex=new Map((graph.vertices??[]).map(vertex=>[vertex.index,vertex]))
+        const verticesA=[]
+        const verticesB=[]
+        for(const vertex of graph.vertices??[]){
+            (sideU.has(vertex.index)?verticesA:verticesB).push(vertex)
+        }
+        if(!verticesA.length||!verticesB.length) return "empty side — nothing severed"
+        const linksA=rest.filter(item=>sideU.has(item.u)&&sideU.has(item.v))
+        const linksB=rest.filter(item=>!sideU.has(item.u)&&!sideU.has(item.v))
+        const rootOf=(vertices,keepIndex)=>{
+            if(Number.isInteger(keepIndex)&&byIndex.has(keepIndex)) return keepIndex
+            const chosen=forestRoot({vertices})
+            return Number.isInteger(chosen?.index)?chosen.index:vertices[0]?.index??null
+        }
+        const rootA=rootOf(verticesA,sideU.has(graph.rootIndex)?graph.rootIndex:null)
+        const rootB=rootOf(verticesB,!sideU.has(graph.rootIndex)?graph.rootIndex:null)
+        const batch=this.forestGraphs?.[0]
+        let batchIndex=(this.forestGraphs??[]).indexOf(batch)
+        if(batchIndex<0) batchIndex=0
+        const compRanks=(this.forestComponents?.[batchIndex]?.components??[]).map(item=>item.rank??0)
+        const ranks=[...(batch?.graphs??[]).map(item=>item.rank??0),...compRanks]
+        const freshRank=Math.max(rank,...ranks,-1)+1
+        const weightOf=(links)=>links.reduce((n,item)=>n+(Number(item.weight)||0),0)
+        const piece=(vertices,links,pieceRank,rootIndex)=>({
+            rank:pieceRank,
+            size:vertices.length,
+            vertices:[...vertices].sort((a,b)=>a.mass-b.mass),
+            links,
+            rootIndex,
+            rootReason:`severed from tree #${rank}`,
+            rootCandidates:vertices.length,
+            meanMass:vertices.length
+                ?vertices.reduce((n,vertex)=>n+(Number(vertex.mass)||0),0)/vertices.length
+                :0,
+            span:vertices.length?vertices[vertices.length-1].mass-vertices[0].mass:0,
+            weight:weightOf(links),
+            totalIntensity:vertices.reduce((n,vertex)=>n+(Number(vertex.intensity)||0),0),
+        })
+        const severedA=piece(verticesA,linksA,rank,rootA)
+        const severedB=piece(verticesB,linksB,freshRank,rootB)
+        /* LE REBÂTIMENT RELIT LES COMPOSANTS (`forestGraph` + `forestRoot`):
+           on ne touche pas aux graphes affichés, on remplace le composant
+           par ses deux moitiés et on force la reconstruction. */
+        const components=this.forestComponents?.[batchIndex]?.components
+        if(Array.isArray(components)){
+            const massOf=(index)=>byIndex.get(index)?.mass??0
+            const toComponent=(severed)=>({
+                rank:severed.rank,
+                root:severed.rootIndex,
+                rootMass:massOf(severed.rootIndex),
+                peakMass:severed.vertices.reduce(
+                    (best,vertex)=>((vertex.intensity??0)>(best.intensity??-Infinity)?vertex:best),
+                    severed.vertices[0])?.mass??0,
+                size:severed.size,
+                maxIntensity:severed.vertices.reduce(
+                    (n,vertex)=>Math.max(n,Number(vertex.intensity)||0),0),
+                weight:severed.weight,
+                links:severed.links.map(item=>({
+                    u:item.u,v:item.v,weight:item.weight,
+                    standard:item.standard,label:item.label??null,
+                })),
+            })
+            const freshComponents=[...components]
+            const atComponent=components.findIndex(item=>item?.rank===rank)
+            const made=[toComponent(severedA),toComponent(severedB)]
+            if(atComponent>=0) freshComponents.splice(atComponent,1,...made)
+            else freshComponents.push(...made)
+            /* ON REMPLACE LE TABLEAU EXTERNE AUSSI: `buildForestGraphs` est
+               mémoïsé sur son identité (`forestGraphsOf===source`). */
+            const freshBatches=[...(this.forestComponents??[])]
+            freshBatches[batchIndex]={
+                ...this.forestComponents[batchIndex],components:freshComponents}
+            this.forestComponents=freshBatches
+        }
+        /* L'ANCIENNE ENTRÉE N'EXISTE PLUS: on purge par RANG, pas par identité
+           d'objet — `buildForestGraphs` va recréer des objets graphes neufs. */
+        if(this.forestAttributions?.byGraph){
+            for(const [keyGraph] of [...this.forestAttributions.byGraph]){
+                if(keyGraph?.rank===rank) this.forestAttributions.byGraph.delete(keyGraph)
+            }
+        }
+        this.forestLayoutOf=null
+        this.forestSelected.add(rank)
+        this.forestSelected.add(freshRank)
+        this.forestSegmentEdit=null
+        if(this.forestSegmentEditHost){
+            this.forestSegmentEditHost.style.display="none"
+            this.forestSegmentEditHost.replaceChildren()
+        }
+        this.renderForest()
+        const massOf=(index)=>byIndex.get(index)?.mass??0
+        return `severed tree #${rank} at ${link.u}↔${link.v} — now #${rank} and #${freshRank}`
     }
 
     /* CONFIGURE LES GESTIONNAIRES DE SOURIS POUR LE HOVER ET LE CLIC. */
