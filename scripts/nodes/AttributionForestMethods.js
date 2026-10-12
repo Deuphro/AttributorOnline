@@ -1,4 +1,5 @@
 ﻿import {CE,stylize} from "../util.js"
+import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 import {Accordion} from "../ui/Accordion.js"
 import {Dialog} from "../ui/Dialog.js"
 import {Plot2DWebGL} from "../ui/Plot2DWebGL.js"
@@ -1404,11 +1405,20 @@ forestOverviewLayout({animate=false}={}){
         this.forestPlot?.dispose?.()
         stylize(content,{
             display:"grid",
-            /* TROIS RANGÉES: le graphe, son titre, et LE RÉCAP À 15% — la
-               part d'un graphique qu'on lit d'un coup d'œil sans chasser les
-               chiffres. La rangée du milieu reste `auto`: un titre ne pèse
-               que sa propre hauteur. */
-            "grid-template-rows":"minmax(0,1fr) auto 15%",
+            /* DEUX RANGÉES, ET NON TROIS: le graphe, puis le récap. Il y en avait trois —
+           le graphe, le titre « Attribution », et le récap à 15 % — et le titre
+           ayant disparu, le récap est tombé dans la rangée `auto` du milieu
+           pendant que celle du bas, les 15 %, restait vide: une bande morte sous
+           le panneau, et un histogramme qui se retrouvait hors de la place qui
+           était la sienne.
+
+           `auto` ET NON UN POURCENTAGE. Le récap est plus haut quand il y a
+           trois entrées que quand il y en a une, et une part fixe le tronquait
+           au point de perdre l'histogramme lui-même — le bas d'un bloc à
+           défilement, c'est-à-dire ce qu'on était venu regarder. En `auto` il
+           prend ce qu'il lui faut, et c'est le graphe qui rend le reste: le
+           graphe est la seule chose qui se passe bien d'être étiré. */
+            "grid-template-rows":"minmax(0,1fr) auto",
             "grid-template-columns":"minmax(0,1fr)",
             height:"100%",
             minHeight:"0",
@@ -1417,12 +1427,6 @@ forestOverviewLayout({animate=false}={}){
             gap:"4px",
             overflow:"hidden"
         })
-        const caption=(text)=>{
-            const label=CE("div",{},[text])
-            stylize(label,{fontSize:"0.78em",opacity:"0.6",margin:"6px 0 2px"})
-            content.appendChild(label)
-            return label
-        }
         this.forestPlotBox=CE("div",{className:"an-forest-plot"},[])
         stylize(this.forestPlotBox,{
             /* L'ANCRAGE DE LA LÉGENDE (absolue): sans `relative` elle
@@ -1442,21 +1446,41 @@ forestOverviewLayout({animate=false}={}){
             background:"rgba(255,255,255,0.04)",
             border:"1px solid rgba(255,255,255,0.15)",borderRadius:"3px"
         })
-        /* FORWARD RESIZE OBSERVER: le plot doit être notifié quand sa boîte change de taille. */
-        this.forestPlotBox.handleResize=()=>this.forestPlot?.handleResize?.()
+        /* FORWARD RESIZE OBSERVER: le plot doit être notifié quand sa boîte change de taille.
+
+           LE RÉCAP EST DESSINÉ À UNE LARGEUR FIXE, ET CETTE LARGEUR EST LUE UNE
+           SEULE FOIS par `renderForestRecap`. Un SVG étiré par `width:100%`
+           s'étirerait visuellement mais ses repères — l'axe des ppm, la courbe
+           cumulée — resteraient à leur place d'origine: la forme mentirait sur
+           ses propres échelles. Il faut donc redessiner, et c'est ce forwarding
+           qui le déclenche: le récap est dans la MÊME colonne que le graphe, donc
+           ils se redimensionnent ensemble. */
+        this.forestPlotBox.handleResize=()=>{
+            this.forestPlot?.handleResize?.()
+            this.renderForestRecap()
+        }
         content.appendChild(this.forestPlotBox)
 
-        /* LE RÉCAPITULATIF, SOUS LE GRAPHE — et non au-dessus. Le graphique
-           répond à « à quoi ressemble ce réseau », les trois chiffres à « qu'est-ce
-           que j'ai là ». Le premier est une forme, le second une quantité: poser
-           la quantité au-dessus ferait chercher la forme dans un tableau. */
-        caption("Attribution")
+        /* LE RÉCAPITULATIF, SOUS LE GRAPHE — et il ne s'annonce plus par un titre
+           séparé. Le titre « Attribution » au-dessus du bloc était une étiquette
+           dans le vide: le graphe juste au-dessus est déjà le réseau
+           d'attribution, donc l'étiquette ne distinguait rien — et le récap,
+           lui, s'annonçait par sa première ligne, qui porte le nom du spectre.
+           Une étiquette qui répète ce que la ligne dit déjà est du bruit, et
+           du bruit dans un panneau de lecture coûte de la place à chaque
+           chose. */
         this.forestRecapHost=CE("div",{className:"an-recap"},[])
-        /* 15% de la fenêtre (grid-template-rows): l'histogramme tient dans la
-           part; `overflow:auto` couvre un récap à quatre lots sur hauteur
-           réduite. `alignContent:start` empêche la grille d'étirer ses lignes. */
-        stylize(this.forestRecapHost,{display:"grid",gap:"4px",
-            alignContent:"start",minHeight:"0",overflow:"auto"})
+        /* UN BLOC UNIQUE, BORDÉ: les lignes se distinguaient par rien, donc une
+           pile de texte de tailles voisines se lisait comme un paragraphe —
+           on ne savait pas où un spectre finissait et où l'autre commençait.
+           `alignContent:start` empêche la grille d'étirer ses lignes, et
+           `overflow:auto` couvre un récap à plusieurs entrées sur hauteur
+           réduite. */
+        stylize(this.forestRecapHost,{display:"grid",gap:"6px",
+            alignContent:"start",minHeight:"0",overflow:"auto",
+            padding:"5px 7px",borderRadius:"4px",
+            border:"1px solid rgba(255,255,255,0.12)",
+            background:"rgba(255,255,255,0.03)"})
         content.appendChild(this.forestRecapHost)
 
         /* LE PLOT, EN DERNIER: tout ce qui occupe de la place est déjà en place,
@@ -1558,8 +1582,22 @@ forestOverviewLayout({animate=false}={}){
        la médiane et les proportions sous la fenêtre, la demi-fenêtre et le
        dixième de la fenêtre — les trois seuils que l'œil retient déjà en
        lisant la liste. */
-    forestRecap(batchIndex){
-        const attribution=(this.attributions??[])[batchIndex]
+    /* LE RÉCAPITULATIF DE L'ATTRIBUTION EN FORCE BRUTE, une ligne par ENTRÉE.
+
+       `batchIndex` était un rang de LOT D'ARBRES, et il servait à lire
+       `this.attributions[batchIndex]` — c'est-à-dire un résultat de crible. Ce
+       sont deux collections sans rapport: l'une compte les réseaux construits,
+       l'autre les spectres entrés. Les index coïncent par hasard tant qu'il n'y
+       a qu'un de chaque, et au-delà la ligne titled« entrée 2 » affiche
+       l'histogramme d'erreurs d'un AUTRE spectre — un récap faux, ce qui est la
+       seule chose qu'un récap ne doit jamais être. Ou bien il n'affiche rien du
+       tout, quand la force brute n'a pas tourné: le panneau forest se lit
+       justement avant le crible, donc c'est le cas le plus fréquent.
+
+       On indexe donc les RÉSULTATS, pas les réseaux, et la ligne porte le titre
+       de la vague qui les a produits. */
+    forestRecap(inputIndex){
+        const attribution=(this.attributions??[])[inputIndex]
         if(!attribution) return null
         const entries=attribution.entries??[]
         const targets=attribution.pointCount??0
@@ -1605,81 +1643,129 @@ forestOverviewLayout({animate=false}={}){
             return under/targets
         }
         return {
-            title:(this.forestGraphs?.[batchIndex]?.title)??"attribution",
+            /* LE TITRE VIENT DE LA VAGUE, parce que le résultat lui-même ne le
+               porte pas: deux spectres du même dossier ne se distinguent que par
+               lui. `collectInputWaves` est le MÊME lecteur que le resolve —
+               réappeler une autre liste donnerait des noms qui ne correspondent
+               pas à l'ordre des résultats, ce qui serait pire que « Entrée N ».
+               Un plan vide ou une entrée cassée renvoient une liste plus courte:
+               on retombe alors sur le numéro, et la ligne reste truthful. */
+            title:this.forestInputTitle(inputIndex),
             targets,attributed,counts,domain,window,median,
+            /* CES TROIS NOMBRES SONT CE QUI MANQUE LE PLUS. Un histogramme dit
+               « les erreurs sont basses » sans dire « sur combien de pics » — et
+               une attribution qui couvre trois pics sur mille n'est pas une
+               attribution, quelle que soit la finesse de son histogramme. */
+            readings:entries.length,
+            keptMatches:attribution.keptMatches??null,
+            unexplained:Math.max(0,targets-errors.length),
+            truncated:!!attribution.truncated,
             under:window===null?null:share(window),
             half:window===null?null:share(window/2),
             tenth:window===null?null:share(window/10)
         }
     }
 
-/* LE RÉCAPITULATIF, ET IL EST UN HISTOGRAMME.
+    /* LE TITRE D'UNE ENTRÉE, résolu une fois par rendu. */
+    forestInputTitle(index){
+        if(this.forestInputTitlesOf!==this.attributions){
+            this.forestInputTitlesOf=this.attributions
+            let titles=[]
+            try{ titles=(this.collectInputWaves?.().waves??[]).map(wave=>wave.metadata?.title??"") }
+            catch{ titles=[] }
+            this.forestInputTitles=titles
+        }
+        const title=this.forestInputTitles?.[index]
+        return title?`${title} · input ${index+1}`:`input ${index+1}`
+    }
 
-       Une ligne par lot: le titre avec ses cibles et ses attribuées, la
-       distribution des MEILLEURES erreurs en seize tranches — teintées par la
+/* LE RÉCAPITULATIF, ET IL EST UN HISTOGRAMME PAR ENTRÉE.
+
+       Une ligne par spectre passé au crible: le titre, ce qui a été trouvé, puis
+       la distribution des MEILLEURES erreurs en seize tranches — teintées par la
        MÊME échelle que les anneaux du graphe, repères à 1/10 et 1/2 de la
-       fenêtre — puis la phrase: médiane et les trois proportions. La forme
-       dit « où ça se casse », la phrase le dit en nombres; les deux se
-       relisent, et c'est le point. */
+       fenêtre — puis les chiffres.
+
+       ET LES CHIFFRES PASSENT DEVANT LA FORME. « 1 842 pics, 96 attribués » se
+       lit en une seconde et décide s'il faut regarder l'histogramme; la forme,
+       elle, ne dit rien tant qu'on ne sait pas sur combien de pics elle porte.
+       L'histogramme était déjà bon — c'est ce qui faisait le récap, et non ce
+       qui le rendait muet.
+
+       LE VRAI ÉTAT VIDE, ENFIN DIT. Sans résultat de crible, le panneau forest
+       affiche « run the brute force to fill this in » au lieu de « — resolve
+       first », qui était une consigne déguisée en tiret cadratin: rien n'indiquait
+       QUE faire pour le remplir. */
     renderForestRecap(){
         const host=this.forestRecapHost
         if(!host) return
         host.replaceChildren()
-        const rows=(this.forestGraphs??[])
+        const rows=(this.attributions??[])
             .map((_,index)=>this.forestRecap(index))
             .filter(Boolean)
         if(!rows.length){
-            stylize(host.appendChild(CE("div",{},["— resolve first —"])),
-                {fontSize:"0.8em",opacity:"0.5"})
+            stylize(host.appendChild(CE("div",{},["run the brute force to fill this in"])),
+                {fontSize:"0.75em",opacity:"0.55"})
             return
         }
+        /* LE RÉCAPITULATIF DOIT DIRE CE QU'IL RÉCAPITULE, ET IL L'A AVAIT CESSÉ
+           DE FAIRE.
+
+           Il est posé sous le graphe d'ARBRES, et tout ce qu'il affiche —
+           « 100 peak(s) · 90 attributed », une médiane en ppm — porte sur TOUT
+           le spectre d'entrée du crible, alors que le graphe juste au-dessus
+           ne dessine que les arbres sélectionnés. Les deux nombres ne
+           correspondent à rien de ce qu'on voit, et rien ne le disait: on
+           comparait 90 attribuées aux quelques pics du dessin et on en
+           concluait que le réseau était cassé.
+
+           L'étiquette « Attribution » qu'on avait retiré ne réparait rien non
+           plus — elle ne disait pas « force brute » non plus. Elle est donc
+           REMISE, mais dans le bloc, sur une seule ligne, et elle dit le mot
+           qui départage les deux lectures.
+
+           LA FENÊTRE EST DANS CETTE LIGNE ET NULLE PART AILLEURS DANS CE
+           PANNEAU. C'est le réglage qui décide de tout ce qui suit — le trait
+           pointillé du graphique est sa position — et le panneau forest ne
+           l'affiche nulle part: sans elle, la règle en pointillés est une
+           ligne sans raison d'être. */
+        const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):null
+        const caption=CE("div",{},[
+            "Brute force — the sieve, not the trees above"
+            +(ppm!==null?` · window ${this.formatPPM(ppm)} ppm`:"")
+        ])
+        stylize(caption,{fontSize:"0.72em",opacity:"0.6",fontWeight:"bold"})
+        host.appendChild(caption)
         for(const row of rows){
             const line=CE("div",{className:"an-recap-line"},[])
             stylize(line,{display:"grid",gap:"2px",minHeight:"0"})
-            const head=CE("div",{},[
-                `${row.title} · ${row.targets} target(s) · ${row.attributed} attributed`])
+            const head=CE("div",{},[row.title])
             stylize(head,{fontSize:"0.72em",opacity:"0.65",overflow:"hidden"})
             line.appendChild(head)
-            const chart=CE("div",{},[])
-            stylize(chart,{position:"relative",height:"38px",minHeight:"0"})
-            const bars=CE("div",{},[])
-            stylize(bars,{display:"flex",alignItems:"flex-end",gap:"1px",height:"100%"})
-            const peak=Math.max(1,...row.counts)
-            row.counts.forEach((count,index)=>{
-                const bar=CE("div",{},[])
-                /* ZÉRO COMPRIS ET IL SE VOIT: deux pour cent de hauteur, pas
-                   zéro — une barre absente dirait « rien ici », qui est faux:
-                   il y a zéro point, et ça se dit aussi. */
-                const height=count>0?Math.max(6,Math.round(100*count/peak)):2
-                stylize(bar,{
-                    height:`${height}%`,
-                    background:count>0
-                        ?this.constructor.forestErrorColor((index+0.5)/row.counts.length)
-                        :"rgba(127,140,155,0.35)"
-                })
-                if(count>0){
-                    const low=row.domain*index/row.counts.length
-                    const high=row.domain*(index+1)/row.counts.length
-                    bar.title=`${count} target(s): ${this.formatPPM(low)}–${this.formatPPM(high)} ppm`
-                }
-                bars.appendChild(bar)
-            })
-            chart.appendChild(bars)
-            if(row.window!==null){
-                /* LES REPÈRES DE LA PHRASE, POSÉS SUR LA FORME: 1/10 et 1/2 de
-                   la fenêtre. L'axe est la fenêtre — au-delà, rien à voir. */
-                for(const ratio of [0.1,0.5]){
-                    const tick=CE("div",{},[])
-                    stylize(tick,{position:"absolute",top:"0",bottom:"0",
-                        width:"1px",background:"rgba(255,255,255,0.55)",
-                        left:`${Math.round(100*ratio)}%`,pointerEvents:"none"})
-                    tick.title=`${this.formatPPM(row.window*ratio)} ppm`
-                    chart.appendChild(tick)
-                }
+
+            /* LE COMPTE EN TÊTE ET EN CHIFFRES LUS: c'est lui qui décide si la
+               ligne vaut qu'on regarde la forme en dessous. */
+            const counts=CE("div",{},[
+                `${row.targets} peak(s) · ${row.attributed} attributed`
+                +(row.unexplained>0?` · ${row.unexplained} with no formula`:"")
+            ])
+            stylize(counts,{fontSize:"0.72em",opacity:"0.85",overflow:"hidden"})
+            line.appendChild(counts)
+
+            if(row.truncated){
+                /* UNE LISTE tronquée est un préfixe, et son histogramme est donc
+                   plus étroit que la vérité. Le dire ici, sinon la forme passe
+                   pour complète. */
+                const warn=CE("div",{},["truncated — this histogram is a prefix"])
+                stylize(warn,{fontSize:"0.72em",opacity:"0.7"})
+                line.appendChild(warn)
             }
-            line.appendChild(chart)
-            const parts=[`median ${row.median===null
-                ?"—":`${this.formatPPM(row.median)} ppm`}`]
+
+            line.appendChild(this.drawForestRecapChart(row))
+            const parts=[`${row.readings} reading(s)`]
+            if(row.keptMatches!==null) parts.push(`up to ${row.keptMatches}/peak`)
+            parts.push(`median ${row.median===null
+                ?"—":`${this.formatPPM(row.median)} ppm`}`)
             if(row.window!==null&&row.under!==null){
                 parts.push(
                     `≤${this.formatPPM(row.window)} ppm ${Math.round(100*row.under)}%`,
@@ -1693,6 +1779,223 @@ forestOverviewLayout({animate=false}={}){
             line.appendChild(stats)
             host.appendChild(line)
         }
+    }
+
+    /* LA COURBE CUMULÉE, CALCULÉE À PART ET SANS D3.
+
+       C'est la seule chose que ce graphique AFFIRME, donc c'est la seule
+       partie qui mérite d'être lue sans le dessin: `forestRecap` donne les
+       comptes, cette méthode donne la courbe, et le test peut vérifier les deux
+       sans DOM ni navigateur.
+
+       LE PREMIER POINT EST À ZÉRO ET NON À LA PREMIÈRE TRANCHE: la courbe part
+       de « aucun pic encore expliqué » et monte par paliers jusqu'au bord de
+       la dernière tranche. Le dernier point n'est PAS À 1, et c'est voulu: un
+       pic sans formule n'appartient à aucune tranche, donc la proportion
+       plafonne à `attributed/targets`. Une courbe qui atteint 100 % alors que
+       des pics n'ont rien reçu serait la pire des mensonges — elle dirait
+       « tout est expliqué » au moment précis où l'utilisateur demande quels
+       pics ne le sont pas.
+
+       ET LE DÉNOMINATEUR EST LE NOMBRE DE CIBLES, jamais le nombre de
+       lectures: une cible peut porter trois formules et n'en est qu'une. */
+    forestRecapSteps(row){
+        const bins=row.counts.length
+        const steps=[{error:0,share:0,count:0}]
+        let running=0
+        row.counts.forEach((count,index)=>{
+            running+=count
+            steps.push({
+                error:row.domain*(index+1)/bins,
+                share:row.targets>0?running/row.targets:0,
+                count,
+                low:row.domain*index/bins,
+                high:row.domain*(index+1)/bins
+            })
+        })
+        return steps
+    }
+
+    /* LE RÉCAP EN D3, ET LA COURBE CUMULÉE EST LA MOITIÉ UTILE.
+
+       L'histogramme en `div` disait où se concentrent les erreurs, ce qui est
+       vrai et peu utile: une attestation en masse donne un gros pic unique, et
+       toutes les attributions d'exactitude comparable en donnent un
+       aussi. Il ne disait surtout pas LA question qu'on se pose devant un
+       crible: « si je serre la fenêtre, que je perds? ». Cette question est de
+       forme CUMULÉE — la part des pics expliqués en dessous d'un seuil — et c'est
+       elle qui décide si on change un réglage. Elle est donc tracée, et pas
+       déduite de trois pourcentages écrits en toutes lettres.
+
+       DEUX ÉCHELLES, ET ILS NE PEUVENT PAS ÊTRE UN SEUL AXE. Les barres
+       comptent des pics, la courbe compte une fraction des CIBLES; une barre
+       vaut dix fois plus qu'une autre selon les données, une courbe part de 0
+       et finit à 100 % quoi qu'il arrive. Les confondre donnerait une courbe
+       qui bouge selon la taille du lot — donc une lecture qui change quand on
+       ne change rien. Deux axes, donc: les pics à gauche, la part à droite.
+
+       LE DÉNOMINATEUR EST LE NOMBRE DE CIBLES, PAS LE NOMBRE DE LECTURES:
+       un pic peut porter trois formules et n'est qu'une cible. Un pic sans
+       formule, lui, n'a AUCUNE erreur à comparer: il n'a pas de courbe à dire.
+       Il compterait au dénominateur sans jamais apparaître au numérateur — il
+       ferait alors descendre la courbe, ce qui est la bonne chose: c'est lui
+       qu'on voit manquer.
+
+       LA COURBE EST EN MARCHES, pas en segments droits. La donnée est
+       comptée par tranches: entre deux bords de tranche la proportion est
+       constante par construction, et une oblique entre deux points dirait
+       qu'il y a eu des pics entre les deux — donc afficherait une précision
+       que la mesure n'a pas. */
+    drawForestRecapChart(row){
+        /* LE TROISIÈME ARGUMENT N'EST PAS OPTIONNEL, et il ne l'est pas par goût:
+           `CE` fait `for (let elt of child)` sur un `undefined` et lève. Un
+           `CE("div",{})` pour un conteneur vide est donc une exception, pas un
+           div vide — et elle tombe au premier rendu du récap, donc au premier
+           resolve. Le conteneur doit donc passer `[]`. */
+        const host=CE("div",{},[])
+        stylize(host,{minWidth:"0",minHeight:"0"})
+        const width=Math.max(180,Math.floor(this.forestRecapHost?.clientWidth||240))
+        const HEIGHT=78
+        const PAD={top:8,right:30,bottom:16,left:0}
+        const innerW=Math.max(40,width-PAD.left-PAD.right)
+        const innerH=HEIGHT-PAD.top-PAD.bottom
+        const bins=row.counts.length
+
+        const x=d3.scaleLinear().domain([0,row.domain]).range([PAD.left,PAD.left+innerW])
+        const yPeak=d3.scaleLinear().domain([0,Math.max(1,d3.max(row.counts)??1)])
+            .range([PAD.top+innerH,PAD.top])
+        const yShare=d3.scaleLinear().domain([0,1]).range([PAD.top+innerH,PAD.top])
+
+        /* LA COURBE CUMULÉE: un point par BORD DE TRANCHE, parce que
+           « au plus X ppm » se lit à un bord. Les marches, et non les
+           obliques: la donnée est comptée par tranches, donc entre deux bords
+           la proportion est constante par construction — une oblique dirait
+           qu'il y a eu des pics entre les deux, donc afficherait une précision
+           que la mesure n'a pas. */
+        const steps=this.forestRecapSteps(row)
+
+        const svg=d3.select(host).append("svg")
+            .attr("width","100%")
+            .attr("height",HEIGHT)
+            .attr("viewBox",`0 0 ${width} ${HEIGHT}`)
+            .attr("preserveAspectRatio","none")
+            .style("display","block")
+
+        /* LES BARRES D'ABORD, ET DERRIÈRE: la courbe passe dessus. */
+        svg.append("g").selectAll("rect").data(row.counts).join("rect")
+            .attr("x",(count,index)=>x(row.domain*index/bins))
+            .attr("width",Math.max(1,innerW/bins-1))
+            .attr("y",count=>yPeak(count))
+            .attr("height",count=>PAD.top+innerH-yPeak(count))
+            /* ZÉRO COMPRIS ET IL SE VOIT: une tranche vide garde une hauteur
+               d'un pixel, sinon elle se lit comme une absence de donnée alors
+               que c'est une mesure nulle — et « rien ici » et « zéro ici » ne
+               se ressemblent pas. */
+            .attr("fill",(count,index)=>count>0
+                ?this.constructor.forestErrorColor((index+0.5)/bins)
+                :"rgba(127,140,155,0.30)")
+            .attr("shape-rendering","crispEdges")
+            .append("title")
+            .text((count,index)=>{
+                const low=row.domain*index/bins
+                const high=row.domain*(index+1)/bins
+                return `${count} target(s): ${this.formatPPM(low)}–${this.formatPPM(high)} ppm`
+            })
+
+        /* LE REMPLISSAGE SOUS LA COURBE: il donne la PART VISIBLE d'un coup
+           d'œil, et il est ce qu'on regarde en premier — « quelle moitié du
+           spectre est déjà réglée ».
+
+           `datum(steps)` ET NON `area()(steps)`: `d3.area` est un GÉNÉRATEUR,
+           il transforme les données qu'on lui passe; appelé sans argument dans
+           une sélection, il reçoit `undefined` et lève. Les deux écritures
+           marchent, mais `datum` pose les données une fois pour toutes et le
+           générateur se lit comme une définition de forme. */
+        svg.append("path")
+            .datum(steps)
+            .attr("d",d3.area()
+                .x(step=>x(step.error))
+                .y0(PAD.top+innerH)
+                .y1(step=>yShare(step.share))
+                .curve(d3.curveStepAfter))
+            .attr("fill","rgba(255,255,255,0.13)")
+            .attr("pointer-events","none")
+
+        svg.append("path")
+            .datum(steps)
+            .attr("d",d3.line()
+                .x(step=>x(step.error))
+                .y(step=>yShare(step.share))
+                .curve(d3.curveStepAfter))
+            .attr("fill","none")
+            .attr("stroke","#ffffff")
+            .attr("stroke-width",1.4)
+            .attr("stroke-linejoin","round")
+            .attr("pointer-events","none")
+
+        /* LA FENÊTRE EN ppm, ET ELLE EST UN SEUIL DE RÉSERVE, PAS UN BORD DE
+           TRANCHE. Elle traverse tout le graphique: en dessous, le crible a
+           publishé; au-dessus, il a écarté. C'est la seule information que la
+           forme ne donne pas et qu'il faut avoir sous les yeux. */
+        if(row.window!==null&&row.window<=row.domain){
+            const wx=x(row.window)
+            svg.append("line")
+                .attr("x1",wx).attr("x2",wx)
+                .attr("y1",PAD.top-4).attr("y2",PAD.top+innerH)
+                .attr("stroke","rgba(255,255,255,0.7)")
+                .attr("stroke-width",1)
+                .attr("stroke-dasharray","3 2")
+            svg.append("text")
+                .attr("x",Math.min(wx+3,PAD.left+innerW-1))
+                .attr("y",PAD.top-1)
+                .attr("fill","rgba(255,255,255,0.75)")
+                .attr("font-size",8)
+                .attr("text-anchor",wx>PAD.left+innerW*0.7?"end":"start")
+                .text(`${this.formatPPM(row.window)} ppm`)
+        }
+
+        /* L'AXE DES ppm, EN DESSOUS, et il porte la seule unité du graphique. */
+        svg.append("g").attr("transform",`translate(0,${PAD.top+innerH})`)
+            .call(d3.axisBottom(x)
+                .ticks(Math.max(2,Math.min(5,Math.floor(innerW/60))))
+                .tickSize(3)
+                .tickFormat(value=>`${this.formatPPM(value)}`))
+            .call(group=>group.selectAll("text")
+                .attr("fill","rgba(255,255,255,0.6)")
+                .attr("font-size",8))
+            .call(group=>group.selectAll("line,path")
+                .attr("stroke","rgba(255,255,255,0.35)"))
+            .call(group=>group.select(".domain").attr("stroke","rgba(255,255,255,0.35)"))
+
+        /* L'AXE DE LA PART, À DROITE: 0, moitié, 100 %. Trois repères, pas
+           plus — au-delà, on ne lit plus une courbe, on la devine. */
+        const shareAxis=svg.append("g")
+            .attr("transform",`translate(${PAD.left+innerW},0)`)
+            .call(d3.axisRight(yShare).tickValues([0,0.5,1]).tickSize(0)
+                .tickFormat(value=>`${Math.round(value*100)}%`))
+        shareAxis.selectAll("text")
+            .attr("fill","rgba(255,255,255,0.6)")
+            .attr("font-size",8)
+            .attr("dx",2)
+        shareAxis.select(".domain").remove()
+
+        /* UN POINT PAR TRANCHE, AVEC SA VALEUR: le survol donne le couple
+           (ppm, part) sans qu'il faille déduire la courbe à l'œil. */
+        svg.append("g").selectAll("circle").data(steps).join("circle")
+            .attr("cx",step=>x(step.error))
+            .attr("cy",step=>yShare(step.share))
+            .attr("r",step=>step.error>0&&step.error<=row.domain+1e-9?1.5:0)
+            .attr("fill","#ffffff")
+            .append("title")
+            .text(step=>step.error===0
+                ?"no target yet"
+                :`${Math.round(step.share*100)}% of ${row.targets} target(s) within `
+                    +`${this.formatPPM(step.error)} ppm`)
+
+        /* LA LECTURE EN CHIFFRES, SOUS L'IMAGE ET DANS L'IMAGE. Elle ne double
+           pas la courbe: elle en donne le point médian et les trois seuils de la
+           fenêtre, que la courbe ne montre qu'à l'œil. */
+        return host
     }
 
     /* LE RENDU DU PANNEAU, EN UN SEUL ENDROIT.

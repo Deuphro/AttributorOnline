@@ -1983,6 +1983,22 @@ export class AttributionNode extends NodeWithAccordion{
         this.renderGroupTables()
         this.armProbe()
         this.renderReadout()
+        /* LE RÉCAPITULATIF DU PANNEAU FOREST, ICI ET PAS SEULEMENT AU RÉSEAU.
+
+           C'est le récap de l'attribution EN FORCE BRUTE, donc il se remplit au
+           RESOLVE — et pas au « Grow network », qui ne le concerne pas. Rien ne
+           le repeignait à ce moment-là: il gardait son état de montage, celui
+           d'avant le premier calcul, et le panneau forest affichait « run the
+           brute force to fill this in » au-dessus d'un crible déjà rempli. Le
+           message ne mentait pas sur ce qu'il fallait faire — il mentait sur ce
+           qui venait d'être fait.
+
+           On ne rappelle PAS `renderForestOverview`: il relance la mise en page
+           force, qui est la partie chère, alors que le récap ne lit que
+           `this.attributions` — mis à jour une ligne plus haut. L'accordéon
+           forest n'est pas ouvert, `forestRecapHost` n'existe pas, et la méthode
+           sort sur son garde-fou. */
+        this.renderForestRecap?.()
         /* LE BOUTON EST REPEINT ICI, ET C'EST LA SEULE FIN DE RESOLVE.
 
            `startResolve` repeint le bouton tout de suite, pour annoncer le

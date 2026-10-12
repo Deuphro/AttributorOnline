@@ -818,3 +818,215 @@ test("the segment editor writes the BRICK the propagation actually indexes",()=>
     assert.match(FOREST_METHODS,/forest:edit/,
         "the selected link must be drawn on top of the others")
 })
+
+test("the recap summarises the BRUTE FORCE, indexed by input and not by tree batch",()=>{
+    /* LE DÉFAUT ÉTAIT UN RÉCAP FAUX, PAS UN RÉCAP MOU.
+
+       `renderForestRecap` itérait `this.forestGraphs` — les lots d'arbres — et
+       lisait `this.attributions[index]` avec le MÊME index: deux collections
+       sans rapport, dont les rangs ne coïncident que tant qu'il y a un réseau
+       et un spectre. Au-delà, la ligne « entrée 2 » affichait la distribution
+       d'erreurs d'un AUTRE spectre. */
+    const render=method("renderForestRecap","startForestAnimation")
+    assert.match(render,/\(this\.attributions\?\?\[\]\)/,
+        "the recap must iterate the crible results, one per input spectrum")
+    assert.doesNotMatch(render,/this\.forestGraphs/,
+        "never the tree batches: they are a different collection, and indexing "
+        +"one by the other is how a recap starts lying")
+    /* LE RÉCAP EST EXÉCUTÉ sur deux entrées, pour vérifier qu'il suit bien le
+       résultat et non la position — deux spectres aux erreurs opposées. */
+    const evaluate=(name,source)=>new Function("window",
+        "return "+source.replace(/^(\s*)/,"$1function "))({devicePixelRatio:1})
+    const entries=error=>Array.from({length:error},(_,i)=>({
+        errorPpm:i+1,target:{index:i,mz:100+i,errorPpm:i+1}
+    }))
+    const titles=["sample-A","sample-B"]
+    const node={
+        parameters:{ppm:10},
+        attributions:[
+            {entries:entries(3),pointCount:3,keptMatches:3},
+            {entries:entries(90),pointCount:100,keptMatches:3,truncated:true}
+        ],
+        formatPPM:v=>`${Math.round(v*10)/10}`,
+        forestRecap:null,
+        collectInputWaves:()=>({waves:titles.map(title=>({metadata:{title}}))})
+    }
+    const recapSource=method("forestRecap","forestInputTitle")
+    /* `forestRecap` appelle son voisin pour le titre: il faut donc le poser sur
+       le même faux `this`, sinon le test échouerait pour une raison qui n'a rien
+       à voir avec ce qu'il vérifie. */
+    node.forestInputTitle=evaluate("forestInputTitle",
+        method("forestInputTitle","renderForestRecap"))
+    const first=evaluate("forestRecap",recapSource).call(node,0)
+    assert.equal(first.targets,3,"input 1 must report ITS peak count, not another's")
+    assert.equal(first.title,"sample-A · input 1",
+        "a line must say which spectrum it is about")
+    assert.equal(first.unexplained,0,"3 targets, 3 attributed: nothing is missing")
+    const second=evaluate("forestRecap",recapSource).call(node,1)
+    assert.equal(second.targets,100,"input 2 must report its own 100 peaks")
+    assert.equal(second.unexplained,10,
+        "100 peaks, 90 attributed: the 10 that got no formula are exactly what "
+        +"a histogram cannot say")
+    assert.equal(second.truncated,true,
+        "a truncated result must say so, or its histogram passes for complete")
+    /* ET L'ÉTAT VIDE PARLE. « — resolve first » était une consigne sans verbe:
+       rien ne disait QUOI lancer. */
+    assert.match(render,/run the brute force to fill this in/)
+    /* ET IL DOIT DIRE QUEL RÉSULTAT IL RÉCAPITULE, pas seulement le contenir.
+
+       Le récap est posé sous le graphe d'ARBRES et ses chiffres portent sur tout
+       le spectre du crible. Sans le mot « brute force » à l'écran, on compare
+       « 90 attributed » aux quelques pics du dessin au-dessus et on en conclut
+       que le réseau est cassé. L'étiquette « Attribution » qu'on avait retirée
+       ne départageait rien non plus — d'où l'exigence, pas le simple retour
+       d'un titre. */
+    assert.match(render,/Brute force/,
+        "the recap must name what it summarises: it sits under the tree graph, "
+        +"and its counts describe the sieve's whole input spectrum")
+    assert.match(render,/window \$\{this\.formatPPM\(ppm\)\} ppm/,
+        "and the ppm window, which the dashed rule on the chart marks and which "
+        +"this panel shows nowhere else")
+})
+
+test("the recap is repainted by the RESOLVE, and has a row of its own",()=>{
+    /* LE SYMPTÔME: « run the brute force to fill this in » affiché alors que la
+       force brute vient de tourner. Le récap se remplissait au « Grow network »
+       — un bouton qui n'a rien à y voir — et rien ne le repeignait au resolve,
+       qui est le seul moment où `this.attributions` change. Le message ne
+       mentait pas sur l'action à faire: il mentait sur ce qui venait d'être
+       fait. */
+    const renderAll=method("async renderAll","serializeState")
+    assert.match(renderAll,/renderForestRecap\?\.\(\)/,
+        "the resolve must repaint the brute-force recap")
+    /* PAS `renderForestOverview`: il relance la mise en page force, qui est la
+       partie chère, alors que le récap ne lit que `this.attributions`. */
+    assert.doesNotMatch(renderAll,/renderForestOverview\(\)/,
+        "a resolve must not relayout the network to refresh a histogram")
+    /* Il doit être appelé AVEC POINT-VIRGULE-OU-RIEN: l'accordéon forest peut
+       ne pas être ouvert, et `renderAll` est sur le chemin du montage. */
+    assert.doesNotMatch(renderAll,/this\.renderForestRecap\(\)/,
+        "the recap host does not exist before the forest panel is opened")
+
+    /* ET LA RANGÉE: le récap doit avoir la place qui était la sienne. La
+       grille en gardait trois — le graphe, le titre, le récap à 15 % — et le
+       titre ayant disparu, le récap tombait dans la rangée du milieu pendant
+       que celle du bas restait vide: une bande morte, et un histogramme hors de
+       la place prévue pour lui. */
+    /* `method()` n'ancre que sur des NOMS de méthode, et la grille est
+       déclarée dans le corps de `setupForestOverview` par une affectation —
+       donc on lit la valeur dans le fichier entier, où elle est unique. */
+    const rows=/"grid-template-rows":"([^"]+)"/.exec(FOREST_METHODS)?.[1]
+    assert.ok(rows,`the plot grid must declare its rows, got none`)
+    assert.equal(rows.split(/\s+/).length,2,
+        `two rows for two children, got "${rows}" — a third one leaves a dead band`)
+    assert.match(rows,/^minmax\(0,1fr\) auto$/,
+        "and the recap must be content-sized: a fixed share clips the histogram")
+})
+
+test("the cumulative curve counts CIBLES and admits the peaks it could not explain",()=>{
+    /* LA COURBE NE DOIT PAS ATTEINDRE 100 % TANT QUE DES PICS N'ONT RIEN REÇU.
+
+       C'est l'affirmation que ce graphique porte, donc elle est calculée à part
+       (`forestRecapSteps`, sans D3 ni DOM) et vérifiée ici. Le test joue sur un
+       lot où la moitié des pics n'a aucune formule: une courbe qui finit à 1
+       dirait « tout est expliqué » au moment précis où l'utilisateur demande
+       quels pics ne le sont pas. */
+    const evaluate=(name,source)=>new Function("window",
+        "return "+source.replace(/^(\s*)/,"$1function "))({devicePixelRatio:1})
+    const stepsOf=evaluate("forestRecapSteps",
+        method("forestRecapSteps","drawForestRecapChart"))
+    const row={counts:[2,3,1,0,4,0,0,0],domain:10,targets:20,attributed:10}
+    const steps=stepsOf(row)
+    assert.equal(steps.length,row.counts.length+1,
+        "one point per bin EDGE, plus the origin: « within X ppm » is read at an edge")
+    assert.equal(steps[0].share,0,"the curve starts at nothing explained")
+    assert.equal(steps[steps.length-1].share,0.5,
+        "10 attributed over 20 TARGETS — the denominator is peaks, not readings, "
+        +"and the curve must not pretend it reached 100 %")
+    /* LE DÉNO MINATEUR EST LE NOMBRE DE CIBLES. Une cible porte plusieurs
+       formules (`bestMatches`), donc compter les lectures ferait monter la courbe
+       au-dessus de 1 — impossible à tracer. */
+    const manyReadings={...row,readings:57}
+    assert.equal(stepsOf(manyReadings)[steps.length-1].share,0.5,
+        "readings per peak must not move the curve")
+    /* ET LE PAS EST UN COMPTE, PAS UNE MOYENNE: la somme des tranches est le
+       nombre d'attribuées, jamais plus. */
+    const total=steps.slice(1).reduce((sum,step)=>sum+step.count,0)
+    assert.equal(total,row.attributed,"the bins must sum to the attributed count")
+    assert.ok(steps.every((step,index)=>index===0||step.share>=steps[index-1].share),
+        "a cumulative curve never goes down")
+
+    /* LE DESSIN, LUI, EST VÉRIFIÉ STRUCTURELLEMENT: d3 n'est pas une dépendance
+       du bac à test, et un test qui construirait un faux d3 testerait le faux.
+       Ce qu'on verrouille ici est ce que la lecture ne voit pas — les DEUX
+       échelles (barres = comptes, courbe = part), parce qu'une seule rendrait la
+       courbe dépendante de la taille du lot. */
+    const chart=method("drawForestRecapChart","startForestAnimation")
+    assert.match(chart,/d3\.scaleLinear\(\)[\s\S]*yShare=d3\.scaleLinear\(\)\.domain\(\[0,1\]\)/,
+        "the share axis is 0–1 and separate from the peak counts")
+    assert.match(chart,/curveStepAfter/,
+        "steps, not slopes: between two bin edges the share is constant by construction")
+    assert.match(chart,/\.datum\(steps\)[\s\S]*d3\.area\(\)/,
+        "d3.area is a GENERATOR — called without data it receives undefined and throws")
+    assert.match(chart,/d3\.axisRight\(yShare\)[\s\S]*tickFormat\(value=>`\$\{Math\.round\(value\*100\)\}%`\)/,
+        "the right-hand axis must be in percent, or the curve is read as counts")
+})
+
+test("every CE() call passes its child array — the helper does NOT default it",()=>{
+    /* `CE` fait `for (let elt of child)`: le troisième argument n'a pas de
+       valeur par défaut. Un `CE("div",{})` paraît inoffensif — c'est un
+       conteneur vide — et lève `TypeError: child is undefined` au premier
+       appel.
+
+       Ça a cassé le récap en production alors qu'une vérification locale le
+       rendait vert: le `CE` de la vérification traitait un `child` manquant
+       comme un tableau vide, donc PLUS TOLÉRANT que le vrai. Un helper qui rend les
+       tests verts plus facilement que la production n'est pas un helper, c'est
+       un mensonge — d'où ce test sur la SOURCE, qui ne dépend d'aucun DOM.
+
+       Le comptage des arguments ignore les virgules imbriquées (objets, appels,
+       littéraux) et celles qui sont dans des chaînes: c'est le seul endroit où
+       une regex naïve se tromperait, donc le seul endroit à écrire sérieusement. */
+    const countArguments=(source)=>{
+        const args=[]
+        let depth=0
+        let current=""
+        let quote=null
+        for(let i=source.indexOf("(")+1;i<source.length;i++){
+            const ch=source[i]
+            if(quote){
+                current+=ch
+                if(ch===quote&&source[i-1]!=="\\") quote=null
+                continue
+            }
+            if(ch==='"'||ch==="'"||ch==="`"){ quote=ch; current+=ch; continue }
+            if("([{".includes(ch)) depth++
+            else if(")]}".includes(ch)) depth--
+            if(ch===","&&depth===0){ args.push(current); current=""; continue }
+            current+=ch
+        }
+        args.push(current)
+        return args.length
+    }
+    for(const [name,source] of [["AttributionForestMethods",FOREST_METHODS],
+        ["AttributionNode",MODULAR_ATTRIBUTION]]){
+        let at=source.indexOf("CE(")
+        while(at>=0){
+            /* On ne compte que les appels à la HELPER, pas les occurrences de la
+               chaîne: `.append(CE("div",...))` est un appel, `new CE(` ne l'est
+               pas, et un commentaire qui la mentionne n'est rien. Une limite
+               simple et honnête: ce qui suit `CE(` est soit `(` soit une
+               lettre. */
+            const before=source.slice(Math.max(0,at-6),at)
+            const after=source[at+3]
+            if(after==="("&&!/[A-Za-z0-9_$]/.test(before.slice(-1))){
+                const count=countArguments(source.slice(at))
+                assert.ok(count>=3,
+                    `${name}: CE( at offset ${at} takes ${count} argument(s) — `
+                    +"`CE` iterates the third one with no default, so a missing "
+                    +"`[]` throws instead of making an empty element")
+            }
+            at=source.indexOf("CE(",at+1)
+        }
+    }
+})
