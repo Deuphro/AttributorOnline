@@ -8,11 +8,21 @@ import {
     forestFindBrick,
     forestMergeGraphs
 } from "./forest.js"
-import {Element} from "./chemistry.js"
-import {buildPlan} from "./attribution.js"
+import {Element,Formula} from "./chemistry.js"
+import {buildPlan,mergeComposition} from "./attribution.js"
 
 const TABLE=Element.load(JSON.parse(
     readFileSync(new URL("../data/elements.json",import.meta.url),"utf8")))
+
+/* LA NOTATION D'UNE SUBSTITUTION, déduite de deux formules réelles — c'est
+   exactement ce que fait le bouton « Merge » quand il n'a pas de brique. */
+const between=(from,to)=>{
+    const a=Formula.parse(from,TABLE)
+    const b=Formula.parse(to,TABLE)
+    return forestDiffNotation(forestCompositionDiff(b.composition,a.composition))
+}
+const eq=(a,b,msg)=>{ if(a!==b) throw new Error(`${msg??`${a} != ${b}`}`) }
+const close=(a,b,tol,msg)=>{ if(!(Math.abs(a-b)<=tol)) throw new Error(`${msg??`${a} vs ${b}`}`) }
 
 const planFor=(combining,ionising=[{group:"[H+]",min:1,max:1,ratio:1}])=>buildPlan({
     combining,ionising,ratio:1,chargeMin:1,chargeMax:1,table:TABLE
@@ -25,25 +35,56 @@ test("the root diff is big minus small, isotope by isotope",()=>{
     const ch2=byKey.get("12C 1H2")
     assert.ok(ch4&&ch2,"the plan must carry both compositions")
     const diff=forestCompositionDiff(ch4,ch2)
-    assert.equal(forestDiffNotation(diff),"+1H2")
+    /* L'A PAR DÉFAUT N'EST PLUS ÉCRIT: « +1H2 » se lisait, mais « -14N » ne se
+       lirait pas — le nombre devant le symbole est un COEFFICIENT. La notation
+       dit donc « +H2 », et le lecteur prend l'isotope par défaut tout seul. */
+    assert.equal(forestDiffNotation(diff),"+H2")
     assert.ok(!forestDiffIsEmpty(diff))
     const same=forestCompositionDiff(ch2,byKey.get("12C 1H2"))
     assert.ok(forestDiffIsEmpty(same),"same formula twice must give an empty diff")
 })
 
-test("a brick is found in either direction, or not at all",()=>{
+test("a brick is found by its SIGNED difference, and by nothing else",()=>{
+    /* LE MODÈLE A CHANGÉ, ET CE TEST L'ANCIEN VERSION AVAIT RAISON.
+
+       Il affirmait que « -CH2 doit trouver la brique CH2, le sens du lien
+       décide du signe ». C'était coherent tant qu'une brique ne pouvait pas
+       porter de compte négatif: il n'y avait alors qu'une seule brique
+       possible, et le sens du lien decidait effectivement du signe. Le plan
+       accepte maintenant des briques signées — la composition du groupe est
+       rendue telle qu'elle a été lue — donc `CH2` et `-CH2` sont DEUX briques,
+       et la question « laquelle? » a une réponse: celle dont la différence
+       signée est exactement celle qu'on cherche.
+
+       Connaître le signe à l'avance n'est donc plus une information perdue:
+       c'est ce qui choisit la brique. */
     const plan=planFor([{group:"CH4"},{group:"CH2"}])
     const byKey=new Map(plan.items.map(item=>[item.key,item.composition]))
     const plus=forestCompositionDiff(byKey.get("12C 1H4"),byKey.get("12C 1H2"))
     const minus=forestCompositionDiff(byKey.get("12C 1H2"),byKey.get("12C 1H4"))
-    assert.equal(forestFindBrick(plan.items,plus),-1)
-    assert.equal(forestFindBrick(plan.items,minus),-1)
+    assert.equal(forestFindBrick(plan.items,plus),-1,
+        "the plan has no +H2 brick, so +H2 must not be found")
+    assert.equal(forestFindBrick(plan.items,minus),-1,
+        "and no -H2 brick either: the plan must not answer from magnitudes")
     const asIs=byKey.get("12C 1H2")
     assert.equal(forestFindBrick(plan.items,asIs),1)
     const negated=forestCompositionDiff(
         forestCompositionDiff(asIs,asIs),asIs)
-    assert.equal(forestFindBrick(plan.items,negated),1,
-        "-CH2 must match the CH2 brick: the link direction decides the sign")
+    assert.equal(forestFindBrick(plan.items,negated),-1,
+        "-H2 must NOT match the +H2 brick: they are different bricks, and "
+        +"matching them by magnitude is what lost the sign in the first place")
+
+    /* ET LA BRIQUE SIGNÉE EST BIEN CELLE-LÀ. */
+    const signed=planFor([{group:"CH2"},{group:"-CH2"}])
+    /* `diff(big, small) = big − small`, donc diff(∅, CH2) = −CH2: la perte. */
+    const loss=forestCompositionDiff(new Map(),asIs)
+    const items=signed.items.filter(item=>item.kind==="combining")
+    const found=forestFindBrick(items,loss)
+    assert.ok(found>=0,`a signed brick is findable by its signed difference, got -1 for ${forestDiffNotation(loss)}`)
+    assert.ok(items[found].atomicMass<0,
+        `and it weighs a NEGATIVE mass, got ${items[found].atomicMass} — `
+        +"a loss of CH2 is -14 Da, and the old code re-read the canonical key "
+        +"and answered +13 Da")
 })
 
 test("merged graphs keep every vertex and link, plus the bridge",()=>{
@@ -62,33 +103,82 @@ test("merged graphs keep every vertex and link, plus the bridge",()=>{
 })
 
 test("a SUBSTITUTION links two roots, like any other difference",()=>{
-    /* Une substitution, c'est un �l�ment retir� ET un �l�ment ajout�. C'est un
-       lien aussi l�gitime qu'un ajout pur � et la recherche de brique ne pouvait
-       pas la trouver: elle comparait le diff SIGN� � des compositions POSITIVES,
-       et il aurait fallu une brique portant un compte n�gatif pour que
-       `-C-H+N-O` corresponde. Le diff est donc compar� en magnitude; la masse,
-       elle, reste positive par construction, et c'est elle qui d�cide de la
-       direction. */
-const plan=planFor([{group:"CHNO"},{group:"H2"}])
+    /* Une substitution, c'est un élément retiré ET un élément ajouté. Le diff
+       reste SIGNÉ, et il mélange les deux signes.
+
+       L'ancien modèle cherchait la brique par MAGNITUDES, donc `+C-H+N+O`
+       trouvait la brique `CHNO`: le lien était créé, et il était faux — la
+       brique pesait 43 Da au lieu des 15 Da de la différence réelle, et la
+       propagation ajoutait les quatre atomes au lieu d'échanger C contre N et O.
+       Le poids du lien portait donc l'erreur du modèle, pas celle de la mesure.
+
+       Ici la brique est la différence signée: elle n'est pas trouvée tant qu'elle
+       n'est pas dans le plan, et elle s'écrit dans la langue que le lecteur parle
+       — ce qui est vérifié en la relisant, pas en comparant des chaînes. */
+    const plan=planFor([{group:"CHNO"},{group:"H2"}])
     const byKey=new Map(plan.items.map(item=>[item.key,item.composition]))
     const chno=byKey.get("12C 1H 14N 16O")
     const h2=byKey.get("1H2")
     assert.ok(chno&&h2,"the plan must carry both compositions")
-    // CHNO minus H2 is -1H +12C +14N +16O: one hydrogen removed, the rest added.
-    // |diff| is CHNO, which IS a brick of the plan — so this substitution must
-    // be found where the old signed comparison could not have found it.
     const diff=forestCompositionDiff(chno,h2)
     assert.ok(!forestDiffIsEmpty(diff))
-    assert.ok(forestDiffNotation(diff).includes("-"),"the diff must stay signed")
-    assert.ok(forestDiffNotation(diff).includes("+"),"and it must mix both signs")
-    const found=forestFindBrick(plan.items,diff)
-    assert.ok(found>=0,
-        `a substitution must match a brick, got -1 for ${forestDiffNotation(diff)}`)
+    const notation=forestDiffNotation(diff)
+    assert.ok(notation.includes("-"),"the diff must stay signed")
+    assert.ok(notation.includes("+"),"and it must mix both signs")
+    assert.equal(forestFindBrick(plan.items,diff),-1,
+        "a CHNO brick is not a substitution: magnitudes must not decide")
+
+    /* LA BRIQUE ÉCRITE EST RELUE, ET ELLE PÈSE CE QUE PÈSE LA DIFFÉRENCE. */
+const reloaded=Formula.parse(notation,TABLE)
+    let realMass=0
+    for(const [el,byA] of chno) for(const [A,n] of byA) realMass+=el.isotope(A).mass*n
+    let otherMass=0
+    for(const [el,byA] of h2) for(const [A,n] of byA) otherMass+=el.isotope(A).mass*n
+    assert.ok(Math.abs(reloaded.mass-(realMass-otherMass))<1e-6,
+        `the notation must read back as the difference: ${reloaded.mass} vs ${realMass-otherMass}`)
+    const withBrick=planFor([{group:"CHNO"},{group:"H2"},{group:notation}])
+    assert.ok(forestFindBrick(withBrick.items,diff)>=0,
+        "and once it IS in the plan, the substitution links")
 })
+
+test("applying a SIGNED brick turns one root into the other, not into a bigger one",()=>{
+    /* LE CONTRAT DE LA PROPAGATION, VÉRIFIÉ SUR LA COMPOSITION SEULE.
+
+       C'est ce que `propagateForest` fait de chaque lien: appliquer la
+       composition de la référence à celle de la formule déjà attribuée. Le graphe
+       n'est pas nécessaire pour le vérifier, et il évite d'avoir à en
+       fabriquer un — ce qui compte, c'est qu'une substitution SOIT un échange.
+
+       L'ancien modèle échouait ici deux fois: il écrivait une brique en
+       magnitudes, donc appliquait `CHNO` à C6H12O5 et obtenait C7H13O6N — quatre
+       atomes de trop — au lieu de H11NO6. */
+    const plan=planFor([{group:between("C6H12O5","H11NO6")}])
+    const brick=plan.items.find(item=>item.kind==="combining")
+    const low=Formula.parse("C6H12O5",TABLE)
+    /* LA COPIE EST PROFONDE, et c'est un piège que ce test vient de payer:
+       `new Map(composition)` ne copie que le premier niveau — les tables
+       d'isotopes restent les MÊMES objets, donc `mergeComposition` a modifié la
+       composition de la racine elle-même, et le calcul de l'écart s'est fait
+       sur une formule déjà changée. C'est exactement à cela que sert
+       `copyComposition`, qui n'est pas exporté: on refait la copie ici. */
+    const target=new Map([...low.composition].map(([el,byA])=>[el,new Map(byA)]))
+    mergeComposition(target,brick.composition,1)
+    const rebuilt=Formula.parse(Formula.compositionToString(target,"mostProbable"),TABLE)
+    eq(String(rebuilt),String(Formula.parse("H11NO6",TABLE)),
+        "C6H12O5 plus the signed brick must be H11NO6")
+    close(rebuilt.mass,Formula.parse("H11NO6",TABLE).mass,1e-6,
+        "and weigh the same")
+    /* ET LA MASSE DE LA BRIQUE EST BIEN L'ÉCART ENTRE LES DEUX RACINES — c'est
+       ce que le poids du lien compare, donc c'est ce qui doit être juste. */
+    const gap=Formula.parse("H11NO6",TABLE).mass-low.mass
+    close(brick.atomicMass,gap,1e-6,
+        `the brick must weigh the gap between the roots: ${brick.atomicMass} vs ${gap}`)
+})
+
 test("a CHAIN of merges keeps every absorbed rank consumed",()=>{
-    /* Le bug : `mergedFrom` ne portait que les rangs RE�US. Apr�s #0+#1 puis
-       (fusionn�)+#2, la provenance valait [0,2] � le rang 1, d�j� absorb�, en
-       disparaissait, et l'arbre #1 R�APPARAISSAIT dans la liste. L'utilisateur le
+    /* Le bug : `mergedFrom` ne portait que les rangs RE�US. Apr�s #0+#1 puis
+       (fusionn�)+#2, la provenance valait [0,2] � le rang 1, d�j� absorb�, en
+       disparaissait, et l'arbre #1 R�APPARAISSAIT dans la liste. L'utilisateur le
        voyait ressurgir et fusionnait ensuite le mauvais couple. */
     const tree=rank=>({rank,size:1,rootIndex:rank*10,weight:0,vertices:[
         {index:rank*10,mass:100+rank,intensity:1}],links:[]})

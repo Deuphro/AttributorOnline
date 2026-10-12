@@ -156,6 +156,27 @@ test("a count of one is not written at all",()=>{
 test("a signed charge of two is written whole",()=>{
     eq(prettyNotation("SO4[2-]"),"SO₄²⁻")
 })
+test("a signed COEFFICIENT is not read as a mass number",()=>{
+    /* « -2H » est deux hydrogènes EN MOINS, pas du deutérium — et le nombre se
+       colle devant le symbole, donc il se confondait avec un nombre de masse.
+
+       La confusion ne s'était pas encore produite: l'écriture des compositions
+       ne produisait aucun terme de cette forme, un compte de moins de deux
+       disparaissant purement et simplement. Les briques signées l'ont rendue
+       possible, et l'affichage suivait l'écriture de près. */
+    eq(prettyNotation("-2H"),"⁻2H")
+    eq(prettyNotation("-6C"),"⁻6C")
+    eq(prettyNotation("-2H2"),"⁻2H₂","the count still goes under the symbol")
+    /* ET LES FORMES SIGNÉES À UN SEUL ATOME ÉTAIENT DÉJÀ BONNES: le signe va
+       en exposant, le compte en indice, et rien ne passe par le cas du
+       coefficient. */
+    eq(prettyNotation("-CH2"),"⁻CH₂")
+    eq(prettyNotation("-C-H+N-O"),"⁻C⁻H⁺N⁻O")
+    /* LE CAS D'AVANT, qui doit rester intact: un nombre de masse précède son
+       symbole, un compte le suit, et une charge se colle à la fin. */
+    eq(prettyNotation("12C6 1H12 16O6"),"¹²C₆ ¹H₁₂ ¹⁶O₆")
+    eq(prettyNotation("CH2[2-]"),"CH₂²⁻")
+})
 console.log("a molecule is what a formula belongs to, isotopes forgotten")
 test("two isotopologues share one molecule",()=>{
     const light=parse("12C6 1H12 16O6")

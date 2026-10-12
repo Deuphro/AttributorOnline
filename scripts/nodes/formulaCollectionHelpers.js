@@ -66,6 +66,20 @@ export function prettyNotation(notation){
                 out+=[...digits].map(d=>SUPERSCRIPTS[d]).join("")+SUPERSCRIPTS[sign[1]]
                 //the sign is consumed here, so the main loop must not see it
                 i+=sign.index+sign[0].length
+            }else if(/^[+\-]/.test(before)&&/^[A-Za-z]/.test(rest)){
+                /* UN COEFFICIENT, ET IL RESTE SUR LA LIGNE DE BASE.
+
+                   C'est la forme que le lecteur accepte devant un symbole: « -2H »
+                   est deux hydrogènes EN MOINS, pas du deutérium. Rendu en
+                   exposant — donc en nombre de masse — il affichait « ⁻²H », et la
+                   ligne racontait un isotope qui n'existait pas.
+
+                   La base est le troisième emplacement, et il n'était pas
+                   utilisé: un nombre de masse précède son symbole en exposant,
+                   un compte le suit en indice. Un nombre qui précède un symbole
+                   SANS être en exposant ne peut être qu'un coefficient, donc le
+                   laisser tel quel est déjà sans ambiguïté. */
+                out+=digits
             }else{
                 /* A MASS NUMBER, and it goes UP, on the left of its symbol.
 

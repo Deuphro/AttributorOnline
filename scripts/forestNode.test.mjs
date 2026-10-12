@@ -790,12 +790,17 @@ test("the segment editor writes the BRICK the propagation actually indexes",()=>
        asynchrone, et jamais un commentaire: c'est un nom de méthode qu'il
        cherche. */
     const bricksSource=method("forestLinkBricks","async mergeSelectedForests")
-    assert.match(bricksSource,/kind==="combining"&&item\.atomicMass>0/,
-        "the brick list must be filtered exactly like the one propagation reads")
-    /* La propagation lit `references[link.standard]` — donc son filtre et celui
-       de la liste doivent être le même, sinon un rang écrit par l'interface
-       désignerait une autre brique. */
-    assert.match(FOREST_METHODS,/kind==="combining"&&item\.atomicMass>0/)
+    assert.match(bricksSource,/\.filter\(linkableBrick\)/,
+        "the brick list must be filtered by the ONE predicate the three "
+        +"readers share")
+    /* Les trois endroits qui indexent les références doivent appeler LE MÊME
+       prédicat. Un filtre différent à l'un des trois fait porter, par un même
+       `link.standard`, une brique différente selon le lecteur — c'est
+       exactement le décalage que la recherche par magnitudes introduisait. */
+    assert.match(FOREST,/export function linkableBrick\(/,
+        "the predicate must exist and be exported, or the panel re-invents it")
+    assert.match(FOREST_METHODS,/const references=\(linkPlan\?\.items\?\?\[\]\)\s*\r?\n\s*\.filter\(linkableBrick\)/,
+        "propagation must read its references through the same predicate")
     const apply=method("async applyForestSegmentBrick","setupForestInteraction")
     assert.match(apply,/link\.standard=standard/,"the rank must be rewritten")
     assert.match(apply,/link\.label=/,"and so must its label, which is what is drawn")

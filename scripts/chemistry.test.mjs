@@ -913,6 +913,43 @@ test("un A écrit qui n'existe pas est une faute, pas un silence",()=>{
     try{ Formula.parse("C6H12O6[99Na+]",TABLE) }catch{ threw=true }
     if(!threw) throw new Error("Na99 should not exist")
 })
+test("une stœchiométrie NÉGATIVE se relit comme elle a été écrite",()=>{
+    /* LE COMPTE N'EST PLUS PERDU À L'AFFICHAGE.
+
+       L'écriture était `n>1 ? name+n : name`: tout compte valant 1 ou moins
+       disparaissait. Une perte se relisait donc comme un ajout — « -2H » se
+       lisait « H », et une substitution perdait tous ses signes d'un coup. Le
+      Round-trip ci-dessous est la propriété qui compte: écrire, relire, et
+       retrouver le même compte, signe compris. */
+    const roundTrip=(text,expected)=>{
+        const written=Formula.parse(text,TABLE)
+        const again=Formula.parse(String(written),TABLE)
+        const show=f=>{
+            const parts=[]
+            for(const [el,byA] of f.composition) for(const [A,n] of byA) parts.push(`${A}${el.symbol}:${n}`)
+            return parts.join(" ")
+        }
+        eq(show(written),show(again),`${text} -> "${String(written)}" must read back`)
+        if(expected!==undefined) eq(show(written),expected,`${text} composition`)
+    }
+    roundTrip("-CH2","12C:-1 1H:-2")
+    roundTrip("-2H","1H:-2")
+    roundTrip("-C-H+N-O","12C:-1 1H:-1 14N:1 16O:-1")
+    roundTrip("C2-H2","12C:2 1H:-2")
+    /* ET LES FORMES POSITIVES N'ONT PAS BOUGÉ: le compte reste APRÈS le
+       symbole, c'est seulement le signe qui change de place. */
+    roundTrip("CH2","12C:1 1H:2")
+    eq(String(Formula.parse("CH2",TABLE)),"CH2","a plain formula is still written plainly")
+    /* UNE MASSE NÉGATIVE EST UNE PERTE, PAS UNE ERREUR. */
+    const loss=Formula.parse("-CH2",TABLE)
+    ok(loss.mass<0,`-CH2 weighs ${loss.mass}, and a loss weighs less than nothing`)
+    close(Math.abs(loss.mass),14.01565006446,1e-9,"a CH2 loss weighs exactly a CH2 gain")
+    /* UN ADDUCT N'A PAS DE CORPS PROPRE, et il doit donc s'écrire vide: les
+       crochets portent l'information. Le « ±0 » qu'on avait mis en repli
+       produisait « ±0[H+] », un ion qui s'annonçait contenir zéro atome. */
+    eq(String(Formula.parse("CH4[H+]",TABLE)),"CH4[H+]",
+        "an adduct writes as itself, with no phantom atoms in front of it")
+})
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if(failures.length>0) process.exitCode=1
 

@@ -369,12 +369,26 @@ export function forestStandards(plan,{charge=1}={}){
     }
     const z=Math.abs(Number(charge))
     const divisor=Number.isFinite(z)&&z>0?z:1
-    const bricks=plan.items.filter(item=>item.kind==="combining"&&item.atomicMass>0)
+    const bricks=plan.items.filter(item=>item.kind==="combining"&&linkableBrick(item))
     if(!bricks.length){
         diagnostics.push("no combining group produced a mass, so no pair of peaks can be linked")
     }
     if(plan.items.some(item=>item.kind==="ionising")){
         diagnostics.push("adducts are not used as references: they carry a charge, not a mass increment")
+    }
+    if(bricks.some(item=>item.atomicMass<0)){
+        /* UNE BRIQUE NÉGATIVE EST LÉGITIME ET NE RELIERA DEUX PICS JAMAIS.
+
+           Une référence se compare à un ÉCART de m/z entre deux pics triés par
+           masse, donc toujours positif: une brique de masse négative n'a aucune
+           occurrence. Elle reste dans la liste pour deux raisons: elle doit
+           rester CHOISISABLE à l'édition d'un lien, et son retrait shiftingait
+           tous les rangs — donc le numéro d'une brique écrite par la main.
+
+           Le dire ici vaut mieux qu'un silence: l'utilisateur voit une brique
+           qu'il a tapée et qui ne fait rien, et c'est le seul endroit où il
+           peut l'apprendre. */
+        diagnostics.push("a group with a negative mass is kept as a reference but can link no pair of peaks: a gap between two peaks is always positive")
     }
     /* L'ORDRE EST celui du plan, et il est celui que le noyau rend dans
        `edge_standard`: le noyau trie ses références en interne mais rend
@@ -393,6 +407,26 @@ export function forestStandards(plan,{charge=1}={}){
     const compositions=bricks.map(item=>item.composition??null)
     return {masses,labels,compositions,charge:divisor,diagnostics}
 }
+/* UNE BRIQUE EST-ELLE UTILISABLE COMME RÉFÉRENCE?
+
+   Une brique lisible et de masse NON NULLE. La masse peut être négative: c'est
+   une différence signée (voir `forestStandards`), et la retirer de la liste
+   décalerait tous les rangs — donc tous les numéros de brique que l'interface
+   écrit dans un lien.
+
+   CETTE FONCTION EST LE FILTRE UNIQUE, et les trois endroits qui indexent les
+   références DOIVENT l'appeler: `forestStandards` (les masses envoyées au
+   noyau), `forestLinkBricks` (la liste des choix) et `attributeTree` (les
+   compositions lues par la propagation). Un filtre différent à l'un des trois
+   fait porter, par un même `link.standard`, une brique différente selon le
+   lecteur — le défaut que la recherche d'une brique par magnitudes introduisait
+   déjà une fois. */
+export function linkableBrick(item){
+    return item?.kind==="combining"
+        &&Number.isFinite(item.atomicMass)
+        &&item.atomicMass!==0
+}
+
 /* LA RÉFÉRENCE LA PLUS PROCHE, dans une liste de {mass,index} TRIÉE par masse.
 
    La liste triée est construite ici plutôt que par l'appelant: c'est un tri
@@ -933,11 +967,29 @@ export function forestDiffIsEmpty(diff){
     return true
 }
 
-/* ÉCRIT UN DIFF SIGNÉ EN NOTATION DE GROUPE — `+H2` / `-CH2` / `+2H-1C`.
+/* ÉCRIT UN DIFF SIGNÉ DANS LA LANGUE QUE LE LECTUREUR PARLE RÉELLEMENT.
+
    Sert à nommer la brique ajoutée au plan de liaison quand le diff ne
-   correspond à aucune brique existante. L'ordre est Hill (C, H, puis
-   alphabétique) comme `compositionToString`: la même différence s'écrit
-   toujours pareil. */
+   correspond à aucune brique existante — donc cette chaîne va être RE-LUE par
+   `Formula.parse`, et c'est ce qui la contraint entièrement.
+
+   LA LANGUE EST CELLE DE `parseComposition`, et elle n'est pas celle
+   qu'écrirait un chimiste : le signe précède le symbole et le compte suit.
+
+       -C      un carbone en moins        -2H   deux hydrogènes en moins
+       -H2     deux H en moins, de même   +N    un azote en plus
+
+   L'ancienne écriture mettait le nombre d'A DEVANT le symbole — `-12C6` — et le
+   lecteur y voyait un COEFFICIENT : `-12C6` devenait −6 × 12 = −72 carbons, au
+   lieu de six carbones en moins. Une substitution s'écrivait donc `-12C6-1H+14N
+   +16O` et se relisait à −413 Da au lieu de −15 : la brique écrite, relue, et
+   appliquée, n'était pas la différence qu'elle décrivait. Mesuré, pas supposé.
+
+   L'A N'EST ÉCRIT QUE S'IL DIFFÈRE DE L'ISOTOPE PAR DÉFAUT, pour la même
+   raison : `-14N` serait lu comme un coefficient, et `13C-` comme un isotope
+   d'abord. Un isotope non par défaut dans une différence signée n'est donc pas
+   exprimable en texte — et c'est dit ici plutôt que d'écrire une chaîne qui se
+   lirait autrement. */
 export function forestDiffNotation(diff){
     const terms=[]
     const ordered=[...(diff?.keys()??[])].sort((a,b)=>{
@@ -949,55 +1001,73 @@ export function forestDiffNotation(diff){
         if(sb==="H"&&sa!=="H") return 1
         return sa<sb?-1:sa>sb?1:0
     })
+    let foreignIsotope=false
     for(const element of ordered){
         const byA=diff.get(element)
         const symbol=String(element?.symbol??element?.name??element)
         for(const [A,n] of [...(byA?.entries()??[])].sort((x,y)=>x[0]-y[0])){
             if(!n) continue
-            const sign=n>0?"+":"-"
+            /* L'ISOTOPE PAR DÉFAUT, celui que le lecteur choisirait de lui-même:
+               l'écrire serait l'écrire deux fois — et le mal lire. */
+            const isDefault=A===element?.pickA?.("mostProbable")
+            const massTag=!isDefault&&Number.isInteger(A)&&A>0?`${A}`:""
+            if(massTag) foreignIsotope=true
+            const sign=n<0?"-":"+"
             const count=Math.abs(n)
-            const massTag=Number.isInteger(A)&&A>0?`${A}`:""
             terms.push(`${sign}${massTag}${symbol}${count===1?"":count}`)
         }
     }
+    /* UNE DIFFERENCE AVEC UN ISOTOPE NON PAR DEFAUT N'EST PAS EXPRIMABLE EN
+       TEXTE: on écrit le nombre d'A, et le lecteur le prend pour un
+       coefficient. On ne rend donc pas une chaîne qui se relirait mal — on le
+       dit. C'est le seul endroit du programme où une différence ne se nomme
+       pas, et le silence y serait un mensonge de plus. */
+    if(foreignIsotope) return "±0"
     return terms.join("")||"±0"
 }
 
 /* RETROUVE UNE BRIQUE DU PLAN PAR SA COMPOSITION — comparaison isotope par
-   isotope, dans les deux sens (le diff peut être signé dans un sens et la
-   brique écrite dans l'autre: `+CH2` relie aussi bien que `−CH2`, c'est le
-   sens du lien `u < v` qui décide de l'addition ou du retrait). Rend l'index
+   isotope, SIGNE par signe (`forestFindBrick`): une brique est une différence
+   signée, donc elle se compare comme telle.
+signe signed par signe. Rend l'index
    dans `items`, ou -1. */
 export function forestFindBrick(items,diff){
     const list=items??[]
     if(!diff) return -1
-    /* LE DIFF EST SIGNÉ, LA BRIQUE NE PEUT PAS L'ÊTRE.
+    /* UNE SUBSTITUTION N'EST PLUS UN CAS IMPOSSIBLE.
 
-       Une brique est une quantité de matière POSITIVE: aucun atome ne peut y
-       compter négativement. La recherche comparait donc le diff signé à des
-       compositions non négatives, et ne pouvait aboutir que sur un diff à un
-       SEUL signe — un ajout pur ou une perte pure. Dès qu'il y avait une
-       SUBSTITUTION, c'est-à-dire un élément ajouté ET un autre retiré
-       (`-C-H+N-O`), il ne restait aucune brique à trouver: celle qu'il fallait
-       aurait porté un compte négatif. La fusion refusait alors ces racines la,
-       alors qu'une substitution est un lien aussi légitime qu'un ajout.
+       Une brique était réputée ne pas pouvoir porter de compte négatif, parce
+       que le plan ne les produisait pas: le moteur relisait la clé canonique
+       d'une formule, donc une perte entrait comme un ajout de masse et de
+       signe. Le plan garde maintenant la composition signée (`readCombining`),
+       et une brique EST une différence signée — donc `-C-H+N-O` est une brique
+       comme une autre, que l'on peut écrire, relire, comparer et appliquer.
 
-       On compare donc les MAGNITUDES. C'est ce que fait déjà l'appelant, qui
-       construit la brique ajoutée en valeurs absolues — les deux lectures
-       concordaient tant que le diff avait un seul signe, et ne concordaient plus
-       dès le mélange. Les comparer en magnitude unifie les deux cas sans changer
-       le résultat de ceux qui fonctionnaient: pour un diff à un seul signe,
-       `|diff|` donne la même brique que `times = ±1`.
+       Ce que la recherche par magnitudes apportait — trouver une brique pour une
+       substitution — est désormais obtenu SANS elle, et sans rien perdre de
+       deuxième main:
 
-       LE SIGNE N'EST PAS PERDU POUR L'USAGE: il ne sert pas à choisir la
-       brique, mais à dire quelle racine est la plus lourde — et c'est la MASSE
-       qui le décide, positive par construction. */
+       La comparaison se fait SUR LA DIFFÉRENCE SIGNÉE, et non sur ses
+       magnitudes. C'était la seule manière de répondre au problème premier —
+       une substitution ne peut pas s'écrire en brique positive — mais
+       l'astuce des magnitudes était fausse deux fois:
+
+       elle perdait les SIGNES, donc une différence `-C-H+N-O` se retrouvait
+       comparée à la brique `CHNO` sans que rien ne distingue les deux; et elle
+       perdait la MASSE, donc une brique choisie par magnitudes ne pesait pas
+       ce que valait la différence. Comme le poids d'un lien se calcule sur
+       l'écart moins la masse de la brique, l'erreur du lien portait alors
+       l'erreur du modèle — 60 Da mesurés sur une substitution.
+
+       Une brique EST donc la différence signée, et elle est comparée comme
+        telle. Une brique non signée reste cherchable, parce que c'est le cas
+        général: `CH2` et `-CH2` sont deux briques distinctes, et le lien
+        choisit. */
     const target=new Map()
     for(const [element,byA] of diff){
         const slot=new Map()
         for(const [A,n] of byA){
-            const magnitude=Math.abs(n)
-            if(magnitude) slot.set(A,magnitude)
+            if(n) slot.set(A,n)
         }
         if(slot.size) target.set(element,slot)
     }

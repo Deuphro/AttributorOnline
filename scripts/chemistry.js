@@ -451,7 +451,26 @@ class Stoichiometry{
                l'eau devient "2H2 O". */
             const startsOnMassNumber=/^[0-9]/.test(part)
             const previousEndsOnMassNumber=/[0-9]+[A-Za-z]$/.test(parts[i-1])
-            const glued=!startsOnMassNumber&&!previousEndsOnMassNumber
+            /* UN TERME SIGNÉ NE SE COLLE JAMAIS.
+
+               Le collage existe pour écrire « C6H12O6 » et non « C H12 O6 ». Mais
+               « -C » suivi de « -2H » collé devient « -C-2H », que le lecteur
+               relit comme un seul terme : le signe ne déborde jamais, donc le
+               deuxième disparaît et la formule se relit à moitié. Un terme qui
+               commence par « + » ou « - » reste donc sur sa propre ligne. */
+            const startsOnSign=/^[+-]/.test(part)
+            /* ET ON NE COLLE RIEN DERRIÈRE UN TERME SIGNÉ NON PLUS: « -H »
+               suivi de « N » donnerait « -HN », que le lecteur prendrait pour un
+               seul terme signé. On regarde donc que le terme PRÉCÉDENT commence
+               par un signe — pas qu'il finit par un signe, ce qui n'est jamais le
+               cas puisque « -H » finit par « H ».
+
+               Le signe ne déborde jamais sur ce qui suit, donc cette séparation
+               n'est pas une préférence d'écriture: c'est ce qui rend la formule
+               relisible. */
+            const previousIsSigned=/^[+-]/.test(parts[i-1])
+            const glued=!startsOnSign&&!startsOnMassNumber
+                &&!previousEndsOnMassNumber&&!previousIsSigned
             text+=glued?part:` ${part}`
         }
         return text+this.brackets
@@ -1967,6 +1986,26 @@ class Formula extends Stoichiometry{
         //les ELEMENTS, triés en Hill: C, H, puis le reste par symbole
         const ordered=[...composition.keys()].sort(
             (a,b)=>rank(a)-rank(b)||(a.symbol<b.symbol?-1:1))
+        /* UN TERME, ET LE SIGNE EST TOUJOURS ÉCRIT.
+
+           L'écriture précédente était `n>1 ? name+n : name`: tout compte valant
+           0 ou 1 disparaissait, donc -1 devenait +1 et -2 devenait +1 aussi. Une
+           différence stœchiométrique s'affichait donc à l'envers, et silencieusement:
+           « -2H » se relisait « H », « -C-H+N-O » se relisait « C H N O », et
+           la clé de la formule — qui EST cette fonction — ne distinguait plus une
+           perte d'une absence.
+
+           Le signe va donc devant, mais le NOMBRE PAS: côté positif on écrit
+           encore `H2` comme l'utilisateur l'a tapé, et c'est côté négatif que
+           le compte passe devant — `-2H` et `-H2`, qui sont justement les deux
+           écritures que `parseComposition` distingue (coefficient contre
+           compte). C'est donc exactement le langage du lecteur, rendu à
+           l'identique. */
+        const term=(name,n)=>{
+            if(n===1) return name
+            if(n===-1) return `-${name}`
+            return n>0?`${name}${n}`:`-${-n}${name}`
+        }
         for(let el of ordered){
             const byA=composition.get(el)
             //rule null = clé: tout s'écrit en entier
@@ -1974,17 +2013,27 @@ class Formula extends Stoichiometry{
             //un seul isotope: abrégé seulement si c'est celui de la règle
             if(byA.size===1){
                 const [[A,n]]=[...byA]
+                /* UN COMPTE NUL NE S'ÉCRIT PAS: un élément à zéro n'est pas un
+                   élément, c'est le résidu d'un calcul. « CH2-CH2 » vaut zéro
+                   partout et doit se lire comme tel. */
+                if(!n) continue
                 const name=isDefault(A)?el.symbol:`${A}${el.symbol}`
-                parts.push(n>1?`${name}${n}`:name)
+                parts.push(term(name,n))
             }else{
                 //plusieurs isotopes du même élément: toujours TOUS en entier,
                 //car l'abréviation y serait ambiguë même pour l'affichage
 
                 for(let [A,n] of [...byA].sort((a,b)=>a[0]-b[0])){
-                    parts.push(`${A}${el.symbol}${n>1?n:""}`)
+                    if(!n) continue
+                    parts.push(term(`${A}${el.symbol}`,n))
                 }
             }
         }
+        /* RIEN À ÉCRIRE EST LÉGITIME: un adduit nu comme « [H+] » ou « [Na+] » n'a
+           aucune composition — il est la charge qui le définit, et les crochets
+           qu'on ajoute ensuite portent cette information. Renvoyer un « ±0 »
+           ici produisait « ±0[H+] », c'est-à-dire un ion qui s'annonçait comme
+           contenant un nombre d'atomes nul, ce qui veut dire autre chose. */
         return parts.join(" ")
     }
 }

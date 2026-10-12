@@ -649,7 +649,20 @@ readCombining(entries){
                calculée. C'est ce qui permet d'utiliser des différences de masse
                comme briques, comme dans F-KMD. */
             if(hasNegativeCount){
-                const composition=Formula.parseComposition(root.key,this.table,this.rule)
+                /* LA COMPOSITION SIGNÉE EST DÉJÀ LÀ: `root.composition` la
+                   porte depuis la lecture, et c'est elle qu'il faut employer.
+
+                   Le code relisait `root.key` — et `key` est la formeCANONIQUE de
+                   la composition, donc SANS SIGNE: « -CH2 » y devenait « 12C 1H ».
+                   La brique entrait alors dans le plan pesant 13.0078 Da au lieu
+                   de −14.0157, étiquetée « CH », c'est-à-dire l'ajout d'un CH. Pas
+                   d'erreur, pas d'avertissement: une perte se faisait passer pour
+                   un ajout, et la seule trace du substitut était invisible.
+
+                   On lit donc la composition, et sa masse est donc signée — c'est
+                   ce que la propagation et le poids d'un lien ont toujours
+                   supposé. */
+                const composition=root.composition
                 this.combinables.push({
                     groupIndex:groupKeyOf(true,index),
                     groupKey:root.key,
@@ -657,6 +670,14 @@ readCombining(entries){
                     key:root.key,
                     notation:String(root),
                     atomicMass:atomicMassOf(composition),
+                    /* LA COMPOSITION EST RENDUE, parce que le reste du programme
+                       en a besoin: une substitution se raconte en SIGNES, et une
+                       liste de briques sans composition ne peut pas être
+                       comparée à une différence. C'est ce qui permet à un lien
+                       fusionné de porter le VRAI substitut au lieu de ses
+                       magnitudes. */
+                    composition,
+                    signed:true,
                     logProbability:0,
                     groupMin:entry.min,
                     groupMax:entry.max
@@ -704,6 +725,14 @@ readCombining(entries){
                     key:state.key,
                     notation:state.notation,
                     atomicMass:atomicMassOf(composition),
+                    /* LA COMPOSITION EST RENDUE ICI AUSSI, et c'est ce qui permet
+                       à `attributeTree` de donner à la propagation une
+                       composition par rang sans la relire: `link.standard` est
+                       un indice, il faut donc que l'indice mène à la
+                       composition. Elle était reconstruite ailleurs, ou
+                       absente — donc la propagation ne recevait rien
+                       d'exploitable. */
+                    composition,
                     logProbability:state.logProbability,
                     /* LES BORNES DU GROUPE, sur la brique. Elles voyagent avec
                        elle parce que `capsFor` ne connaît que les briques: c'est

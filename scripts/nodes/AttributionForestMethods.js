@@ -7,7 +7,7 @@ import {Wave,XYTrace} from "../formats.js"
 import {Formula,FormulaCollection} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 
@@ -61,20 +61,19 @@ export class AttributionForestMethods{
 
        `link.standard` n'est pas un identifiant de brique: c'est un RANG dans la
        liste des références, et `propagateForest` lit `references[link.standard]`
-       où `references` est filtrée sur `kind==="combining" && atomicMass>0`
-       (voir `attributeTree`). C'est donc CETTE liste — et elle seule — qui
-       donne la signification d'un rang. Toute écriture de `link.standard`
-       passe donc par ici.
+       où `references` est filtrée par `linkableBrick` (voir
+       `attributeTree`). C'est donc CETTE liste — et elle seule — qui donne la
+       signification d'un rang. Toute écriture de `link.standard` passe par ici.
 
-       LE FILTRE `atomicMass>0` N'EST PAS OPTIONNEL. Une brique illisible reste
-       dans `items` sans masse, donc elle est présente dans une liste filtrée
-       seulement par `kind` et absente de celle de la propagation: les deux
-       listes se décalent d'un cran, et un rang écrit avec l'une désigne une
-       AUTRE brique avec l'autre. Une telle brique n'a de toute façon aucune
-       masse de référence, donc elle ne peut rien relier. */
+       LE FILTRE EST `linkableBrick`, ET NON « masse strictement positive ». Une
+       brique de masse négative est une différence signée: elle a sa place dans
+       la liste, sinon elle disparaît de tous les choix ET décale tous les
+       rangs — donc chaque `link.standard` déjà écrit désignerait une autre
+       brique. Elle ne reliera jamais deux pics, un écart entre deux pics triés
+       étant toujours positif, mais elle reste assignable à un lien: c'est
+       précisément le cas d'une substitution. */
     forestLinkBricks(){
-        return((this.forestLinkPlan?.items??[])
-            .filter(item=>item.kind==="combining"&&item.atomicMass>0))
+        return((this.forestLinkPlan?.items??[]).filter(linkableBrick))
     }
     /* FUSIONNE LES ARBRES DESSINÉS, DU PLUS GRAND AU PLUS PETIT.
        Chaque maillon relie deux racines successives par leur différence
@@ -102,46 +101,65 @@ export class AttributionForestMethods{
         }
         const links=[]
         for(let i=0;i<attributions.length-1;i++){
-            const big=attributions[i]
-            const small=attributions[i+1]
+            /* LE SENS EST DÉCIDÉ PAR LA MASSE, ET PAR L'INDICE DU SOMMET.
+
+               `propagateForest` applique la brique DE `u` VERS `v`
+               (`mergeComposition(…, isU?1:-1)`), donc la brique doit être, très
+               exactement, `v − u`. Les deux se valent en masse, et l'ordre des
+               deux racines était jusqu'ici déduit de la TAILLE de l'arbre — un
+               arbre de 200 pics peut avoir la racine la plus légère. La brique
+               était alors la différence dans un sens, et appliquée dans
+               l'autre: le lien produisait une formule qui n'était ni l'un ni
+               l'autre.
+
+               C'est aussi ce qui rend le poids honnête: il se calcule sur
+               l'écart signé `m(v) − m(u)`, comparé à une masse de référence
+               elle-même signée. Avec une brique en magnitudes et un écart en
+               valeur absolue, les deux erreurs se compensaient parfois et se
+               cumulaient d'autres fois — 60 Da d'écart sur une substitution,
+               mesuré. */
+            const pair=[attributions[i],attributions[i+1]]
+                .sort((a,b)=>a.graph.rootIndex-b.graph.rootIndex)
+            const low=pair[0]
+            const high=pair[1]
             const diff=forestCompositionDiff(
-                big.rootFormula.composition,small.rootFormula.composition)
+                high.rootFormula.composition,low.rootFormula.composition)
+            const lowRoot=low.graph.vertices.find(v=>v.index===low.graph.rootIndex)
+            const highRoot=high.graph.vertices.find(v=>v.index===high.graph.rootIndex)
             if(forestDiffIsEmpty(diff)){
-                links.push({u:small.graph.rootIndex,v:big.graph.rootIndex,
+                links.push({u:low.graph.rootIndex,v:high.graph.rootIndex,
                     weight:0,standard:-1,label:"="})
                 continue
             }
-            const items=()=>((this.forestLinkPlan?.items??[])
-                .filter(item=>item.kind==="combining"))
+            const items=()=>((this.forestLinkPlan?.items??[]).filter(linkableBrick))
             let standard=forestFindBrick(items(),diff)
             let label=null
             if(standard<0){
-                const absolute=new Map()
-                for(const [element,byA] of diff){
-                    const slot=new Map()
-                    for(const [A,n] of byA){
-                        if(n) slot.set(A,Math.abs(n))
-                    }
-                    if(slot.size) absolute.set(element,slot)
-                }
-                const {Formula}=await import("../chemistry.js")
-                const notation=Formula.compositionToString(absolute,"mostProbable")
+                /* LA BRIQUE EST LA DIFFÉRENCE SIGNÉE, et non la somme de ses
+                   MAGNITUDES. Les magnitudes perdaient deux choses: les signes,
+                   donc l'affichage devenait l'inverse de la différence; et la
+                   masse, donc le poids du lien sortait faux. `-C-H+N-O` devenait
+                   `CHNO`, pesant 43 Da, alors que la différence réelle pesait
+                   −15: l'écart valait 58 Da de pure erreur de modèle. */
+                const notation=forestDiffNotation(diff)
                 const current=this.readGroups(this.parameters.forestGroups,"combining")
                 this.parameters.forestGroups=[...current,{group:notation,min:0,max:1,ratio:1}]
                 this.refreshForestPlan()
                 standard=forestFindBrick(items(),diff)
-                if(standard<0) return `cannot link #${small.graph.rank} to #${big.graph.rank}: ${forestDiffNotation(diff)} matches nothing, even added`
+                if(standard<0){
+                    return `cannot link #${low.graph.rank} to #${high.graph.rank}: `
+                        +`${notation} matches nothing, even added`
+                }
                 label=items()[standard]?.notation??notation
             }else{
                 label=items()[standard]?.notation??null
             }
-            const bigRoot=big.graph.vertices.find(v=>v.index===big.graph.rootIndex)
-            const smallRoot=small.graph.vertices.find(v=>v.index===small.graph.rootIndex)
             const refMass=(this.forestPlan?.masses??[])[standard]??0
-            const gap=Math.abs((bigRoot?.mass??0)-(smallRoot?.mass??0))
+            /* L'ÉCART EST SIGNÉ, comme la référence qu'on lui compare. */
+            const gap=(highRoot?.mass??0)-(lowRoot?.mass??0)
             const weight=Number.isFinite(refMass)?Math.abs(gap-refMass):0
-            const u=small.graph.rootIndex
-            const v=big.graph.rootIndex
+            const u=low.graph.rootIndex
+            const v=high.graph.rootIndex
             links.push({u:Math.min(u,v),v:Math.max(u,v),weight,standard,label})
         }
         const merged=forestMergeGraphs(drawn,links)
@@ -256,7 +274,7 @@ export class AttributionForestMethods{
         const rootFormula=centre[0].formula
         if(!rootFormula) return null
         const references=(linkPlan?.items??[])
-            .filter(item=>item.kind==="combining"&&item.atomicMass>0)
+            .filter(linkableBrick)
             .map(item=>({composition:item.composition??null}))
         const result=propagateForest(graph,rootFormula,references,{
             table:this.loadedTable
