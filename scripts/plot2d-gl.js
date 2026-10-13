@@ -42,7 +42,7 @@ export const MARKER_SHAPES={
     plus:6,
     //anneau (hollow circle): the forest vertex, filled by its own error
     ring:7,
-    //halo (radial falloff): the forest root, where a cross used to be
+    //luminous point (derived core + rim + halo): the forest root
     glow:8
 }
 
@@ -155,12 +155,19 @@ export function parseCssColor(value){
     addresses the marker inside a -1..1 box (1 unit => a marker of half
     extent `marker.size`, i.e. exactly the SVG marker extents).
     Every shape is an analytic mask (pixels outside are discarded) with a
-    one device pixel feather derived from the sprite size: no derivative
-    extension required, so it compiles on WebGL1 and WebGL2 alike.
+    one device pixel feather derived from the sprite size.
+    The glow shape instead uses drawPoint() (GLSL ES 3.00): a luminous
+    point with a derived core/rim/halo and an fwidth-antialiased edge.
+    Three.js compiles this ShaderMaterial as #version 300 es on WebGL2
+    (fwidth is core there); extensions.derivatives covers a WebGL1 device.
    --------------------------------------------------------------------- */
 
 const MARKER_VERTEX_SHADER=`
 uniform float uPixelRatio;
+
+//luminous shape (glow, id 8) inflates its sprite so the wide, blurred halo
+//fits inside the point-sprite square instead of being clipped
+const float GLOW_SPRITE_SCALE=2.5;
 
 attribute vec4 aColor;
 attribute float aSize;
@@ -169,22 +176,30 @@ attribute float aShape;
 varying vec4 vColor;
 varying float vShape;
 varying float vSize;
+varying float vSprite;
 
 void main(){
     vColor=aColor;
     vShape=aShape;
     vSize=max(aSize*uPixelRatio,1.0);
-    gl_PointSize=vSize;
+    float sprite=vSize;
+    //only shape 8 (glow) is drawn by drawPoint(); every other shape keeps
+    //its exact size (circle, square, ring… are hard masks)
+    if(aShape>7.5) sprite=vSize*GLOW_SPRITE_SCALE;
+    vSprite=sprite;
+    gl_PointSize=sprite;
     gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
 }
 `
 
 const MARKER_FRAGMENT_SHADER=`
 uniform float uOpacity;
+uniform float uHaloIntensity;
 
 varying vec4 vColor;
 varying float vShape;
 varying float vSize;
+varying float vSprite;
 
 //signed area of the triangle (a,b,p): positive inside for the vertex
 //order used below (the same winding as the SVG marker paths)
@@ -207,17 +222,156 @@ float plusMask(vec2 c){
     return max(horizontal,vertical);
 }
 
+/* ---------------------------------------------------------------------
+    drawPoint — one luminous point (GLSL ES 3.00, fwidth is core on
+    WebGL2; extensions.derivatives covers WebGL1).
+
+    Everything derives from a single input colour baseColor. derive()
+    computes the core, the rim and the halo; drawPoint() shades one
+    point centred on the origin, radius R in pixels, and returns its
+    colour + alpha. The caller composes it into the scene.
+   --------------------------------------------------------------------- */
+
+//sRGB hue/sat/lightness. The pipeline keeps colours sRGB-verbatim, so
+//these are read and written in the same space as baseColor and only ever
+//*relative* to it — hue is preserved through every derivation.
+vec3 rgb2hsl(vec3 c){
+    float maxc=max(max(c.r,c.g),c.b);
+    float minc=min(min(c.r,c.g),c.b);
+    float l=(maxc+minc)*0.5;
+    float h=0.0;
+    float s=0.0;
+    float d=maxc-minc;
+    if(d>1e-6){
+        s=l>0.5 ? d/(2.0-maxc-minc) : d/(maxc+minc);
+        if(maxc==c.r)       h=(c.g-c.b)/d+(c.g<c.b?6.0:0.0);
+        else if(maxc==c.g)  h=(c.b-c.r)/d+2.0;
+        else                h=(c.r-c.g)/d+4.0;
+        h/=6.0;
+    }
+    return vec3(h,s,l);
+}
+
+float hue2rgb(float p,float q,float t){
+    if(t<0.0) t+=1.0;
+    if(t>1.0) t-=1.0;
+    if(t<1.0/6.0) return p+(q-p)*6.0*t;
+    if(t<0.5)     return q;
+    if(t<2.0/3.0) return p+(q-p)*(2.0/3.0-t)*6.0;
+    return p;
+}
+
+vec3 hsl2rgb(vec3 hsl){
+    float h=hsl.x;
+    float s=hsl.y;
+    float l=hsl.z;
+    if(s<=0.0) return vec3(l);
+    float q=l<0.5 ? l*(1.0+s) : l+s-l*s;
+    float p=2.0*l-q;
+    return vec3(hue2rgb(p,q,h+1.0/3.0),hue2rgb(p,q,h),hue2rgb(p,q,h-1.0/3.0));
+}
+
+struct PointColors{
+    vec3 core;   //perceived colour of the point
+    vec3 rim;    //pure white outer edge
+    vec3 halo;   //darker + saturated glow
+};
+
+//Dérive {core, rim, halo} d'une seule couleur de base, sans rupture de
+//teinte: seules la clarté et la saturation bougent.
+PointColors derive(vec3 base){
+    vec3 hsl=rgb2hsl(base);
+    float h=hsl.x;
+    float s=hsl.y;
+    float l=hsl.z;
+
+    //core: nettement désaturé et éclairci pour rester lisible sur fond sombre.
+    //La clarté monte franchement, puis l'adaptation de contraste (smoothstep
+    //sur la luminance) rattrape les extrêmes: on éclaircit un cœur trop
+    //sombre (L<0.25) pour qu'il reste lisible, on pousse un cœur très clair
+    //vers le blanc cassé.
+    float dark=smoothstep(0.28,0.0,l);      //1 quand base est très sombre
+    float light=smoothstep(0.65,1.0,l);     //1 quand base est très clair
+    float coreS=s*0.65;                     //plus désaturé → plus clair
+    float coreL=l+0.20;                     //lift plus généreux
+    coreL=mix(coreL,max(coreL,0.62),dark);
+    coreL=mix(coreL,max(coreL,0.92),light);
+    vec3 core=hsl2rgb(vec3(h,clamp(coreS,0.0,1.0),clamp(coreL,0.0,1.0)));
+    core=mix(core,vec3(1.0),0.28);          //mélange ~28% vers le blanc
+
+    //rim: blanc pur, net et non estompé (le rendu s'en charge, pas ici)
+    vec3 rim=vec3(1.0);
+
+    //halo: base assombrie ET saturée (luminance x0.45, saturation x1.35),
+    //teinte conservée — c'est ce qui garde le halo cohérent quelle que
+    //soit la couleur de départ, au lieu de virer au noir.
+    vec3 halo=hsl2rgb(vec3(h,clamp(s*1.35,0.0,1.0),clamp(l*0.45,0.0,1.0)));
+
+    PointColors pc;
+    pc.core=core;
+    pc.rim=rim;
+    pc.halo=halo;
+    return pc;
+}
+
+//p: décalage en pixels depuis le centre; R: rayon du cœur en pixels.
+vec4 drawPoint(vec2 p,float R,vec3 baseColor){
+    PointColors col=derive(baseColor);
+    float Rn=max(R,1e-3);
+    float d=length(p)/Rn;                    //1.0 == bord du cœur
+
+    //cœur, gradient INVERSÉ: blanc pur au centre (d=0), puis la couleur
+    //dérivée (core) gagne en allant vers l'extérieur et occupe tout le disque
+    //à partir de 95% du rayon (mix(rim, core, pow(clamp(d/0.95,0,1),1.6))).
+    float coreMix=pow(clamp(d/0.95,0.0,1.0),1.6);
+    vec3 coreColor=mix(col.rim,col.core,coreMix);
+
+    //halo: somme de deux gaussiennes en screen — une large et faible
+    //(sigma ~2.0R, amplitude 0.55) plus une serrée et intense
+    //(sigma ~0.8R, amplitude 0.9). Sigmas volontairement généreux pour un
+    //halo smooth, large et blurred (déborde jusqu'a ~2R).
+    //uHaloIntensity==0 is a hard early-out: the two exp() are the dominant
+    //per-fragment cost, so a dense cloud can switch the halo off entirely
+    //(setHaloIntensity(0)) and pay only for the core.
+    float haloField=0.0;
+    if(uHaloIntensity>0.0){
+        float wide=0.55*exp(-0.5*pow(d/2.00,2.0));
+        float tight=0.90*exp(-0.5*pow(d/0.80,2.0));
+        haloField=1.0-(1.0-wide)*(1.0-tight);            //screen blend
+        haloField*=smoothstep(1.0,1.15,d);               //invisible dans le disque
+        haloField*=uHaloIntensity;
+    }
+
+    //antialiasing du bord du coeur sur ~1.5px via fwidth/smoothstep
+    float aa=fwidth(d)*1.5;
+    float coreMask=1.0-smoothstep(1.0-aa,1.0+aa,d);
+
+    //alpha: 1 dans le disque, décroissant uniquement dans le halo
+    //(jamais de bord franc sur le halo).
+    float alpha=coreMask+haloField*(1.0-coreMask);
+    //couleur: le coeur opaque par-dessus le halo
+    vec3 rgb=mix(col.halo,coreColor,coreMask);
+    return vec4(rgb,clamp(alpha,0.0,1.0));
+}
+
 void main(){
     vec2 c=gl_PointCoord*2.0-1.0;
-    //glow (shape 8): NOT a mask — a radial quadratic falloff. It returns
-    //before the feather below: a feathered edge would clip the halo into a
-    //hard disc, which is exactly what a cross did wrong
+    //glow (shape 8): the only luminous point, drawn by drawPoint(). p is the
+    //pixel offset from the centre, R the core radius in device pixels. The
+    //sprite is inflated (see vertex shader) so the wide halo is not clipped,
+    //and a soft radial window fades the gaussian tail to 0 at the sprite
+    //edge so the halo never shows a hard cut.
     if(vShape>7.5){
-        float d=length(c);
-        if(d>=1.0) discard;
-        float a=1.0-d;
-        a*=a;
-        gl_FragColor=vec4(vColor.rgb,uOpacity*vColor.a*a);
+        vec2 p=c*(vSprite*0.5);
+        float R=vSize*0.5;
+        vec4 point=drawPoint(p,R,vColor.rgb);
+        //fade the halo smoothly out to the sprite border: with GLOW_SPRITE_SCALE
+        //2.5 the edge sits at 2.5R, so a wide smoothstep from 0.70 spreads the
+        //falloff over ~0.7..1.0 (≈1.75R..2.5R) — soft exterior, no hard cut
+        float edge=1.0-smoothstep(0.70,1.0,length(c));
+        float a=uOpacity*vColor.a*point.a*edge;
+        if(a<=0.0) discard;
+        gl_FragColor=vec4(point.rgb,a);
         return;
     }
     float mask;
@@ -256,7 +410,7 @@ void main(){
    --------------------------------------------------------------------- */
 
 export class GLTraceLayer{
-    constructor(canvas,{opacity=0.7,pixelRatioCap=2,depth=2000}={}){
+    constructor(canvas,{opacity=0.7,pixelRatioCap=2,depth=2000,haloIntensity=1.0}={}){
         this.canvas=canvas
         this.pixelRatioCap=Math.max(1,pixelRatioCap)
         this.pixelRatio=1
@@ -283,14 +437,19 @@ export class GLTraceLayer{
         this.markerMaterial=new THREE.ShaderMaterial({
             uniforms:{
                 uOpacity:{value:opacity},
-                uPixelRatio:{value:1}
+                uPixelRatio:{value:1},
+                uHaloIntensity:{value:Number.isFinite(haloIntensity)?haloIntensity:1.0}
             },
             vertexShader:MARKER_VERTEX_SHADER,
             fragmentShader:MARKER_FRAGMENT_SHADER,
             transparent:true,
             opacity:opacity,
             depthTest:false,
-            depthWrite:false
+            depthWrite:false,
+            //drawPoint() calls fwidth(): core in ES 3.00 (WebGL2, where
+            //Three compiles this material), but the extension is what makes
+            //it compile on a WebGL1 fallback device
+            extensions:{derivatives:true}
         })
         //line material: RGBA vertex colours, one shared batch for every trace
         this.lineMaterial=new THREE.LineBasicMaterial({
@@ -345,6 +504,15 @@ export class GLTraceLayer{
 
     get opacity(){
         return this.markerMaterial.uniforms.uOpacity.value
+    }
+
+    get haloIntensity(){
+        return this.markerMaterial.uniforms.uHaloIntensity.value
+    }
+
+    setHaloIntensity(value){
+        const v=Number.isFinite(value)?Math.max(0,value):1.0
+        this.markerMaterial.uniforms.uHaloIntensity.value=v
     }
 
     setOpacity(value){

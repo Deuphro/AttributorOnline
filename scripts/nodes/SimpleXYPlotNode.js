@@ -181,7 +181,7 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             layer.addEventListener("change",()=>{trace.options.layer=layer.value;this.graph.drawGraph()})
             control("Layer",layer)
             const markerShape=document.createElement("select")
-            for(const [value,text] of [["circle","Circle"],["square","Square"],["diamond","Diamond"],["triangle-up","Triangle up"],["triangle-down","Triangle down"],["cross","Cross"],["plus","Plus"]]){
+            for(const [value,text] of [["circle","Circle"],["glow","Glow (luminous)"],["ring","Ring"],["square","Square"],["diamond","Diamond"],["triangle-up","Triangle up"],["triangle-down","Triangle down"],["cross","Cross"],["plus","Plus"]]){
                 const option=new Option(text,value); option.selected=(trace.options.marker.shape??"circle")===value; markerShape.add(option)
             }
             markerShape.addEventListener("change",()=>{trace.options.marker.shape=markerShape.value;this.graph.drawGraph()})

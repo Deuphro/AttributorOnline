@@ -611,7 +611,9 @@ forestOverviewLayout({animate=false}={}){
             }
         }
         const unselX=[],unselY=[]
-        const rootX=[],rootY=[]
+        const rootByStepX=Array.from({length:STEPS},()=>[])
+        const rootByStepY=Array.from({length:STEPS},()=>[])
+        const rootNeutralX=[],rootNeutralY=[]
         const neutralX=[],neutralY=[]
         const errorX=Array.from({length:STEPS},()=>[])
         const errorY=Array.from({length:STEPS},()=>[])
@@ -625,18 +627,24 @@ forestOverviewLayout({animate=false}={}){
                 const point=at(rank,vertex.index)
                 if(!point) continue
                 if(isTreeSelected){
-                    if(vertex.isRoot){
-                        rootX.push(point.x); rootY.push(point.y)
-                    }
                     const row=attrByIndex?attrByIndex.get(vertex.index):null
                     const err=row&&Number.isFinite(row.errorPpm)
                         ?Math.abs(row.errorPpm):null
-                    if(err===null||!(errorScale>0)){
-                        neutralX.push(point.x); neutralY.push(point.y)
-                    }else{
-                        let step=Math.floor(err/errorScale*STEPS)
+                    let step=-1
+                    if(err!==null&&errorScale>0){
+                        step=Math.floor(err/errorScale*STEPS)
                         if(step<0) step=0
                         if(step>=STEPS) step=STEPS-1
+                    }
+                    //le glow de racine rejoint la tranche d'erreur de SON sommet:
+                    //le halo reprend la teinte de l'anneau posé au même endroit
+                    if(vertex.isRoot){
+                        if(step<0){ rootNeutralX.push(point.x); rootNeutralY.push(point.y) }
+                        else{ rootByStepX[step].push(point.x); rootByStepY[step].push(point.y) }
+                    }
+                    if(step<0){
+                        neutralX.push(point.x); neutralY.push(point.y)
+                    }else{
                         errorX[step].push(point.x)
                         errorY[step].push(point.y)
                         colored++
@@ -656,19 +664,33 @@ forestOverviewLayout({animate=false}={}){
                 wave:Wave.fromCoordinates(Float64Array.from(unselX),Float64Array.from(unselY),{},["x","y"])
             }))
         }
-        /* LE HALO DE RACINE, ET PAS UNE CROIX VERTE. La croix se lisait comme
-           un marqueur de données — la forme et la force d'un point de
-           mesure; le halo dit « ici » sans rien prétendre mesurer. Il est
-           peint AVANT les anneaux (même buffer de points, ordre d'upload)
-           pour rester derrière eux. */
-        if(rootX.length){
+        /* LE HALO DE RACINE, COLORÉ PAR L'ERREUR DU POINT QU'IL MARQUE. Chaque
+           racine rejoint la tranche d'erreur de son propre sommet, donc le halo
+           reprend la teinte de l'anneau posé au même endroit — informatif, pas
+           décoratif. Peint AVANT les anneaux (ordre d'upload) pour rester
+           derrière eux; opacité volontairement plus basse que les anneaux. */
+        for(let step=0;step<STEPS;step++){
+            if(!rootByStepX[step].length) continue
+            const low=step/STEPS
+            const high=(step+1)/STEPS
             traces.push(new XYTrace({
-                id:`${this.title}:forest:rootglow`,
-                title:"selected roots",
+                id:`${this.title}:forest:rootglow:${step}`,
+                title:`selected roots (${this.formatPPM(low*errorScale)}–${this.formatPPM(high*errorScale)} ppm error)`,
                 mode:"points",layer:"gl",
-                options:{mode:"points",layer:"gl",color:"#aef22e",opacity:0.5,
-                    line:{size:1},marker:{shape:"glow",size:13}},
-                wave:Wave.fromCoordinates(Float64Array.from(rootX),Float64Array.from(rootY),{},["x","y"])
+                options:{mode:"points",layer:"gl",
+                    color:this.constructor.forestErrorColor((low+high)/2),
+                    opacity:0.4,line:{size:1},marker:{shape:"glow",size:6}},
+                wave:Wave.fromCoordinates(Float64Array.from(rootByStepX[step]),Float64Array.from(rootByStepY[step]),{},["x","y"])
+            }))
+        }
+        if(rootNeutralX.length){
+            traces.push(new XYTrace({
+                id:`${this.title}:forest:rootglow:neutral`,
+                title:"selected roots (no reading yet)",
+                mode:"points",layer:"gl",
+                options:{mode:"points",layer:"gl",color:"#dfe6ee",opacity:0.4,
+                    line:{size:1},marker:{shape:"glow",size:6}},
+                wave:Wave.fromCoordinates(Float64Array.from(rootNeutralX),Float64Array.from(rootNeutralY),{},["x","y"])
             }))
         }
         /* LES ANNEAUX: gris (rien de lu pour l'arbre) puis les huit teintes
