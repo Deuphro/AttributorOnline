@@ -387,6 +387,245 @@ export function parse_thermo_raw(data, options) {
 }
 
 /**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_components
+* @returns {Float64Array}
+*/
+export function pca_project(data, n_samples, n_features, n_components) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.pca_project(retptr, ptr0, len0, n_samples, n_features, n_components);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v2 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+* @param {number} a
+* @param {number} b
+* @returns {number}
+*/
+export function compute(a, b) {
+    const ret = wasm.compute(a, b);
+    return ret;
+}
+
+/**
+* @param {number} a
+* @param {number} b
+* @returns {number}
+*/
+export function add(a, b) {
+    const ret = wasm.add(a, b);
+    return ret;
+}
+
+/**
+* @param {Float64Array} data
+*/
+export function arrust(data) {
+    var ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+    var len0 = WASM_VECTOR_LEN;
+    wasm.arrust(ptr0, len0, addHeapObject(data));
+}
+
+/**
+* @param {Float64Array} data
+* @param {number} scalar
+*/
+export function add_scalar(data, scalar) {
+    var ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+    var len0 = WASM_VECTOR_LEN;
+    wasm.add_scalar(ptr0, len0, addHeapObject(data), scalar);
+}
+
+/**
+* @param {bigint} n
+* @returns {bigint}
+*/
+export function bench(n) {
+    const ret = wasm.bench(n);
+    return BigInt.asUintN(64, ret);
+}
+
+/**
+* @returns {string}
+*/
+export function sieve() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.sieve(retptr);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+function getArrayI32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getInt32Memory0().subarray(ptr / 4, ptr / 4 + len);
+}
+/**
+* @param {number} n
+* @returns {Int32Array}
+*/
+export function zeros_matrix(n) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.zeros_matrix(retptr, n);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v1 = getArrayI32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+* Computes 0D persistent homology on a 1D sequence of values (Y values).
+* Supports sublevel (default) and superlevel set filtration.
+* Returns a flat, non-interleaved vector with four contiguous blocks:
+* [births..., deaths..., birth_indices..., death_indices...].
+* @param {Float64Array} data
+* @param {string} mode
+* @returns {Float64Array}
+*/
+export function persistent_homology_0d(data, mode) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.persistent_homology_0d(retptr, ptr0, len0, ptr1, len1);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v3 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v3;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+* Where the SELECTED method wants the low cursor to sit, as a single number.
+*
+* Deliberately returns one f64 and allocates nothing: the shell only needs the
+* threshold, and the previous design had it call the full trim and throw away
+* every kept point but that number - three vectors built, three clones out of
+* wasm, megabytes through postMessage, all discarded.
+*
+* An unknown method name falls back to passthrough (an infinite low bound),
+* so a stale front end still resolves its flow.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {string} method
+* @param {number} k
+* @param {number} window
+* @param {number} threshold
+* @returns {number}
+*/
+export function trim_guess(core, stride, method, k, window, threshold) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.trim_guess(ptr0, len0, stride, ptr1, len1, k, window, threshold);
+    return ret;
+}
+
+/**
+* Applies the two bounds and returns the surviving points. This is a pure
+* primitive: it knows NOTHING about methods, parameters or guesses. Where the
+* bounds come from is the shell's business (trim_guess, or the user dragging a
+* cursor), which is what keeps the two roles from getting confused.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} low_bound
+* @param {number} high_bound
+* @returns {TrimResult}
+*/
+export function trim_apply(core, stride, low_bound, high_bound) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.trim_apply(ptr0, len0, stride, low_bound, high_bound);
+    return TrimResult.__wrap(ret);
+}
+
+/**
+* Histogram of the wave values, in the same "binned value / count" shape the
+* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
+* "log" (evenly spaced DECADES, i.e. log10 of the value).
+*
+* A linear histogram of a spectrum spanning five orders of magnitude is
+* useless: every bar piles into the first one and the rest is empty. Binning
+* evenly in log10 gives one bar per decade fraction, which is what makes the
+* distribution readable.
+*
+* In log mode the bar CENTRES are geometric means, so that a log-scaled value
+* axis spaces the bars evenly on screen. Non-positive values have no log10 and
+* are left out of the log histogram; `dropped` reports how many, so the shell
+* can say so instead of silently showing a distribution that does not add up.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} bins
+* @param {string} scale
+* @returns {TrimHistogram}
+*/
+export function trim_histogram(core, stride, bins, scale) {
+    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(scale, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.trim_histogram(ptr0, len0, stride, bins, ptr1, len1);
+    return TrimHistogram.__wrap(ret);
+}
+
+/**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_clusters
+* @param {number} sigma
+* @param {number} k_neighbors
+* @returns {Float64Array}
+*/
+export function spectral_cluster(data, n_samples, n_features, n_clusters, sigma, k_neighbors) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.spectral_cluster(retptr, ptr0, len0, n_samples, n_features, n_clusters, sigma, k_neighbors);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v2 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
 * Fits a polynomial calibration from reference points.
 *
 * `ref_x` are the measured m/z values (from the spectrum).
@@ -511,47 +750,6 @@ export function calibration_apply_2d(x, y, coeffs, mode) {
 }
 
 /**
-* L'arbre couvrant de poids minimal sur des points MESURÉS.
-*
-* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
-* précoce de la boucle des paires, et le seul prérequis que la fonction ne
-* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
-* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
-* écrit est un bug qui n'apparaît qu'à l'écran.
-*
-* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
-* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
-* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
-* `forest.js` le fait, à partir des briques du plan.
-*
-* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
-* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
-*
-* `limit` est LA COUPURE: combien de candidats, dans l'ordre des poids
-* croissants, Kruskal est autorisé à consommer. `<= 0` les prend tous — c'est le
-* `GrowForest` d'Igor. C'est ici, et nulle part ailleurs, que la coupure agit:
-* l'arbre se construit par dessus un PRÉFIXE de la liste triée, donc changer la
-* coupure ne change que le nombre d'arêtes considérées, jamais leur ordre.
-* @param {Float64Array} masses
-* @param {Float64Array} intensities
-* @param {Float64Array} standards
-* @param {number} tolerance
-* @param {number} degree_max
-* @param {number} limit
-* @returns {Forest}
-*/
-export function forest_grow(masses, intensities, standards, tolerance, degree_max, limit) {
-    const ptr0 = passArrayF64ToWasm0(masses, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(intensities, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(standards, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.forest_grow(ptr0, len0, ptr1, len1, ptr2, len2, tolerance, degree_max, limit);
-    return Forest.__wrap(ret);
-}
-
-/**
 * Computes one H0 interval per input point. `core` is canonical:
 * [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
 * Superlevel activates points by decreasing Y; sublevel by increasing Y.
@@ -604,77 +802,44 @@ export function classify_persistence_0d(births, deaths, points_x, points_y, poin
 }
 
 /**
-* Where the SELECTED method wants the low cursor to sit, as a single number.
+* L'arbre couvrant de poids minimal sur des points MESURÉS.
 *
-* Deliberately returns one f64 and allocates nothing: the shell only needs the
-* threshold, and the previous design had it call the full trim and throw away
-* every kept point but that number - three vectors built, three clones out of
-* wasm, megabytes through postMessage, all discarded.
+* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
+* précoce de la boucle des paires, et le seul prérequis que la fonction ne
+* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
+* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
+* écrit est un bug qui n'apparaît qu'à l'écran.
 *
-* An unknown method name falls back to passthrough (an infinite low bound),
-* so a stale front end still resolves its flow.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {string} method
-* @param {number} k
-* @param {number} window
-* @param {number} threshold
-* @returns {number}
+* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
+* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
+* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
+* `forest.js` le fait, à partir des briques du plan.
+*
+* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
+* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
+*
+* `limit` est LA COUPURE: combien de candidats, dans l'ordre des poids
+* croissants, Kruskal est autorisé à consommer. `<= 0` les prend tous — c'est le
+* `GrowForest` d'Igor. C'est ici, et nulle part ailleurs, que la coupure agit:
+* l'arbre se construit par dessus un PRÉFIXE de la liste triée, donc changer la
+* coupure ne change que le nombre d'arêtes considérées, jamais leur ordre.
+* @param {Float64Array} masses
+* @param {Float64Array} intensities
+* @param {Float64Array} standards
+* @param {number} tolerance
+* @param {number} degree_max
+* @param {number} limit
+* @returns {Forest}
 */
-export function trim_guess(core, stride, method, k, window, threshold) {
-    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+export function forest_grow(masses, intensities, standards, tolerance, degree_max, limit) {
+    const ptr0 = passArrayF64ToWasm0(masses, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const ptr1 = passArrayF64ToWasm0(intensities, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.trim_guess(ptr0, len0, stride, ptr1, len1, k, window, threshold);
-    return ret;
-}
-
-/**
-* Applies the two bounds and returns the surviving points. This is a pure
-* primitive: it knows NOTHING about methods, parameters or guesses. Where the
-* bounds come from is the shell's business (trim_guess, or the user dragging a
-* cursor), which is what keeps the two roles from getting confused.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {number} low_bound
-* @param {number} high_bound
-* @returns {TrimResult}
-*/
-export function trim_apply(core, stride, low_bound, high_bound) {
-    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.trim_apply(ptr0, len0, stride, low_bound, high_bound);
-    return TrimResult.__wrap(ret);
-}
-
-/**
-* Histogram of the wave values, in the same "binned value / count" shape the
-* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
-* "log" (evenly spaced DECADES, i.e. log10 of the value).
-*
-* A linear histogram of a spectrum spanning five orders of magnitude is
-* useless: every bar piles into the first one and the rest is empty. Binning
-* evenly in log10 gives one bar per decade fraction, which is what makes the
-* distribution readable.
-*
-* In log mode the bar CENTRES are geometric means, so that a log-scaled value
-* axis spaces the bars evenly on screen. Non-positive values have no log10 and
-* are left out of the log histogram; `dropped` reports how many, so the shell
-* can say so instead of silently showing a distribution that does not add up.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {number} bins
-* @param {string} scale
-* @returns {TrimHistogram}
-*/
-export function trim_histogram(core, stride, bins, scale) {
-    const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(scale, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.trim_histogram(ptr0, len0, stride, bins, ptr1, len1);
-    return TrimHistogram.__wrap(ret);
+    const ptr2 = passArrayF64ToWasm0(standards, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.forest_grow(ptr0, len0, ptr1, len1, ptr2, len2, tolerance, degree_max, limit);
+    return Forest.__wrap(ret);
 }
 
 /**
@@ -739,6 +904,36 @@ export function anti_radio_filter(core, stride, points_x, points_y, points_index
 }
 
 /**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core, mz) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.fkmd(retptr, ptr0, len0, mz);
+        var r0 = getInt32Memory0()[retptr / 4 + 0];
+        var r1 = getInt32Memory0()[retptr / 4 + 1];
+        var v2 = getArrayF64FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_free(r0, r1 * 8, 8);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
 * @param {Uint32Array} compositions
 * @param {number} n_compositions
 * @param {number} k
@@ -783,147 +978,25 @@ export function barycentric_project_f64(compositions, n_compositions, k) {
 }
 
 /**
-* Applies the F-KMD transform to a canonical core.
-*
-* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
-* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
-* without a second reshape.
-*
-* The output y is the DEFECT, and the input y (the intensities) is not carried
-* over: the caller asked for one value per point, and the defect is that value.
-* Intensities stay reachable on the input wave, which the caller still holds.
-* @param {Float64Array} core
-* @param {number} mz
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_clusters
+* @param {number} max_iter
+* @param {bigint} seed
 * @returns {Float64Array}
 */
-export function fkmd(core, mz) {
+export function kmeans_cluster(data, n_samples, n_features, n_clusters, max_iter, seed) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(core, wasm.__wbindgen_malloc);
+        const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.fkmd(retptr, ptr0, len0, mz);
+        wasm.kmeans_cluster(retptr, ptr0, len0, n_samples, n_features, n_clusters, max_iter, seed);
         var r0 = getInt32Memory0()[retptr / 4 + 0];
         var r1 = getInt32Memory0()[retptr / 4 + 1];
         var v2 = getArrayF64FromWasm0(r0, r1).slice();
         wasm.__wbindgen_free(r0, r1 * 8, 8);
         return v2;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
-* @param {number} a
-* @param {number} b
-* @returns {number}
-*/
-export function compute(a, b) {
-    const ret = wasm.compute(a, b);
-    return ret;
-}
-
-/**
-* @param {number} a
-* @param {number} b
-* @returns {number}
-*/
-export function add(a, b) {
-    const ret = wasm.add(a, b);
-    return ret;
-}
-
-/**
-* @param {Float64Array} data
-*/
-export function arrust(data) {
-    var ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
-    var len0 = WASM_VECTOR_LEN;
-    wasm.arrust(ptr0, len0, addHeapObject(data));
-}
-
-/**
-* @param {Float64Array} data
-* @param {number} scalar
-*/
-export function add_scalar(data, scalar) {
-    var ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
-    var len0 = WASM_VECTOR_LEN;
-    wasm.add_scalar(ptr0, len0, addHeapObject(data), scalar);
-}
-
-/**
-* @param {bigint} n
-* @returns {bigint}
-*/
-export function bench(n) {
-    const ret = wasm.bench(n);
-    return BigInt.asUintN(64, ret);
-}
-
-/**
-* @returns {string}
-*/
-export function sieve() {
-    let deferred1_0;
-    let deferred1_1;
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        wasm.sieve(retptr);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        deferred1_0 = r0;
-        deferred1_1 = r1;
-        return getStringFromWasm0(r0, r1);
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-    }
-}
-
-function getArrayI32FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getInt32Memory0().subarray(ptr / 4, ptr / 4 + len);
-}
-/**
-* @param {number} n
-* @returns {Int32Array}
-*/
-export function zeros_matrix(n) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        wasm.zeros_matrix(retptr, n);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        var v1 = getArrayI32FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_free(r0, r1 * 4, 4);
-        return v1;
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
-* Computes 0D persistent homology on a 1D sequence of values (Y values).
-* Supports sublevel (default) and superlevel set filtration.
-* Returns a flat, non-interleaved vector with four contiguous blocks:
-* [births..., deaths..., birth_indices..., death_indices...].
-* @param {Float64Array} data
-* @param {string} mode
-* @returns {Float64Array}
-*/
-export function persistent_homology_0d(data, mode) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        wasm.persistent_homology_0d(retptr, ptr0, len0, ptr1, len1);
-        var r0 = getInt32Memory0()[retptr / 4 + 0];
-        var r1 = getInt32Memory0()[retptr / 4 + 1];
-        var v3 = getArrayF64FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_free(r0, r1 * 8, 8);
-        return v3;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }

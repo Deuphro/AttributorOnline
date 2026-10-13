@@ -80,6 +80,121 @@ export function crible_heap(item_masses: Float64Array, item_charges: Float64Arra
 */
 export function parse_thermo_raw(data: Uint8Array, options: any): any;
 /**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_components
+* @returns {Float64Array}
+*/
+export function pca_project(data: Float64Array, n_samples: number, n_features: number, n_components: number): Float64Array;
+/**
+* @param {number} a
+* @param {number} b
+* @returns {number}
+*/
+export function compute(a: number, b: number): number;
+/**
+* @param {number} a
+* @param {number} b
+* @returns {number}
+*/
+export function add(a: number, b: number): number;
+/**
+* @param {Float64Array} data
+*/
+export function arrust(data: Float64Array): void;
+/**
+* @param {Float64Array} data
+* @param {number} scalar
+*/
+export function add_scalar(data: Float64Array, scalar: number): void;
+/**
+* @param {bigint} n
+* @returns {bigint}
+*/
+export function bench(n: bigint): bigint;
+/**
+* @returns {string}
+*/
+export function sieve(): string;
+/**
+* @param {number} n
+* @returns {Int32Array}
+*/
+export function zeros_matrix(n: number): Int32Array;
+/**
+* Computes 0D persistent homology on a 1D sequence of values (Y values).
+* Supports sublevel (default) and superlevel set filtration.
+* Returns a flat, non-interleaved vector with four contiguous blocks:
+* [births..., deaths..., birth_indices..., death_indices...].
+* @param {Float64Array} data
+* @param {string} mode
+* @returns {Float64Array}
+*/
+export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
+/**
+* Where the SELECTED method wants the low cursor to sit, as a single number.
+*
+* Deliberately returns one f64 and allocates nothing: the shell only needs the
+* threshold, and the previous design had it call the full trim and throw away
+* every kept point but that number - three vectors built, three clones out of
+* wasm, megabytes through postMessage, all discarded.
+*
+* An unknown method name falls back to passthrough (an infinite low bound),
+* so a stale front end still resolves its flow.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {string} method
+* @param {number} k
+* @param {number} window
+* @param {number} threshold
+* @returns {number}
+*/
+export function trim_guess(core: Float64Array, stride: number, method: string, k: number, window: number, threshold: number): number;
+/**
+* Applies the two bounds and returns the surviving points. This is a pure
+* primitive: it knows NOTHING about methods, parameters or guesses. Where the
+* bounds come from is the shell's business (trim_guess, or the user dragging a
+* cursor), which is what keeps the two roles from getting confused.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} low_bound
+* @param {number} high_bound
+* @returns {TrimResult}
+*/
+export function trim_apply(core: Float64Array, stride: number, low_bound: number, high_bound: number): TrimResult;
+/**
+* Histogram of the wave values, in the same "binned value / count" shape the
+* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
+* "log" (evenly spaced DECADES, i.e. log10 of the value).
+*
+* A linear histogram of a spectrum spanning five orders of magnitude is
+* useless: every bar piles into the first one and the rest is empty. Binning
+* evenly in log10 gives one bar per decade fraction, which is what makes the
+* distribution readable.
+*
+* In log mode the bar CENTRES are geometric means, so that a log-scaled value
+* axis spaces the bars evenly on screen. Non-positive values have no log10 and
+* are left out of the log histogram; `dropped` reports how many, so the shell
+* can say so instead of silently showing a distribution that does not add up.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} bins
+* @param {string} scale
+* @returns {TrimHistogram}
+*/
+export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
+/**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_clusters
+* @param {number} sigma
+* @param {number} k_neighbors
+* @returns {Float64Array}
+*/
+export function spectral_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, sigma: number, k_neighbors: number): Float64Array;
+/**
 * Fits a polynomial calibration from reference points.
 *
 * `ref_x` are the measured m/z values (from the spectrum).
@@ -142,6 +257,32 @@ export function calibration_fit_2d(measured_mz: Float64Array, intensity: Float64
 */
 export function calibration_apply_2d(x: Float64Array, y: Float64Array, coeffs: Float64Array, mode: string): Float64Array;
 /**
+* Computes one H0 interval per input point. `core` is canonical:
+* [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
+* Superlevel activates points by decreasing Y; sublevel by increasing Y.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {string} mode
+* @returns {PersistenceAnalysis}
+*/
+export function persistent_homology_0d_waves(core: Float64Array, stride: number, mode: string): PersistenceAnalysis;
+/**
+* `points_index` is the position of each point in the INPUT wave (the
+* birth_indices of persistent_homology_0d_waves, already sorted and aligned
+* with the points). It is carried through the classifier untouched: the slope
+* decides WHICH points survive, never where they came from.
+* @param {Float64Array} births
+* @param {Float64Array} deaths
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} slope
+* @param {Float64Array} integrated_mass
+* @param {Float64Array} centroid_x
+* @returns {PersistenceClassification}
+*/
+export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number, integrated_mass: Float64Array, centroid_x: Float64Array): PersistenceClassification;
+/**
 * L'arbre couvrant de poids minimal sur des points MESURÉS.
 *
 * `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
@@ -172,84 +313,6 @@ export function calibration_apply_2d(x: Float64Array, y: Float64Array, coeffs: F
 * @returns {Forest}
 */
 export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number, limit: number): Forest;
-/**
-* Computes one H0 interval per input point. `core` is canonical:
-* [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
-* Superlevel activates points by decreasing Y; sublevel by increasing Y.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {string} mode
-* @returns {PersistenceAnalysis}
-*/
-export function persistent_homology_0d_waves(core: Float64Array, stride: number, mode: string): PersistenceAnalysis;
-/**
-* `points_index` is the position of each point in the INPUT wave (the
-* birth_indices of persistent_homology_0d_waves, already sorted and aligned
-* with the points). It is carried through the classifier untouched: the slope
-* decides WHICH points survive, never where they came from.
-* @param {Float64Array} births
-* @param {Float64Array} deaths
-* @param {Float64Array} points_x
-* @param {Float64Array} points_y
-* @param {Float64Array} points_index
-* @param {number} slope
-* @param {Float64Array} integrated_mass
-* @param {Float64Array} centroid_x
-* @returns {PersistenceClassification}
-*/
-export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number, integrated_mass: Float64Array, centroid_x: Float64Array): PersistenceClassification;
-/**
-* Where the SELECTED method wants the low cursor to sit, as a single number.
-*
-* Deliberately returns one f64 and allocates nothing: the shell only needs the
-* threshold, and the previous design had it call the full trim and throw away
-* every kept point but that number - three vectors built, three clones out of
-* wasm, megabytes through postMessage, all discarded.
-*
-* An unknown method name falls back to passthrough (an infinite low bound),
-* so a stale front end still resolves its flow.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {string} method
-* @param {number} k
-* @param {number} window
-* @param {number} threshold
-* @returns {number}
-*/
-export function trim_guess(core: Float64Array, stride: number, method: string, k: number, window: number, threshold: number): number;
-/**
-* Applies the two bounds and returns the surviving points. This is a pure
-* primitive: it knows NOTHING about methods, parameters or guesses. Where the
-* bounds come from is the shell's business (trim_guess, or the user dragging a
-* cursor), which is what keeps the two roles from getting confused.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {number} low_bound
-* @param {number} high_bound
-* @returns {TrimResult}
-*/
-export function trim_apply(core: Float64Array, stride: number, low_bound: number, high_bound: number): TrimResult;
-/**
-* Histogram of the wave values, in the same "binned value / count" shape the
-* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
-* "log" (evenly spaced DECADES, i.e. log10 of the value).
-*
-* A linear histogram of a spectrum spanning five orders of magnitude is
-* useless: every bar piles into the first one and the rest is empty. Binning
-* evenly in log10 gives one bar per decade fraction, which is what makes the
-* distribution readable.
-*
-* In log mode the bar CENTRES are geometric means, so that a log-scaled value
-* axis spaces the bars evenly on screen. Non-positive values have no log10 and
-* are left out of the log histogram; `dropped` reports how many, so the shell
-* can say so instead of silently showing a distribution that does not add up.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {number} bins
-* @param {string} scale
-* @returns {TrimHistogram}
-*/
-export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
 /**
 * A z READ FROM THE DATA, which is a different thing from the 3σ convention.
 *
@@ -292,20 +355,6 @@ export function anti_radio_guess_z(core: Float64Array, stride: number, points_in
 */
 export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
 /**
-* @param {Uint32Array} compositions
-* @param {number} n_compositions
-* @param {number} k
-* @returns {Float64Array}
-*/
-export function barycentric_project(compositions: Uint32Array, n_compositions: number, k: number): Float64Array;
-/**
-* @param {Float64Array} compositions
-* @param {number} n_compositions
-* @param {number} k
-* @returns {Float64Array}
-*/
-export function barycentric_project_f64(compositions: Float64Array, n_compositions: number, k: number): Float64Array;
-/**
 * Applies the F-KMD transform to a canonical core.
 *
 * Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
@@ -321,50 +370,29 @@ export function barycentric_project_f64(compositions: Float64Array, n_compositio
 */
 export function fkmd(core: Float64Array, mz: number): Float64Array;
 /**
-* @param {number} a
-* @param {number} b
-* @returns {number}
-*/
-export function compute(a: number, b: number): number;
-/**
-* @param {number} a
-* @param {number} b
-* @returns {number}
-*/
-export function add(a: number, b: number): number;
-/**
-* @param {Float64Array} data
-*/
-export function arrust(data: Float64Array): void;
-/**
-* @param {Float64Array} data
-* @param {number} scalar
-*/
-export function add_scalar(data: Float64Array, scalar: number): void;
-/**
-* @param {bigint} n
-* @returns {bigint}
-*/
-export function bench(n: bigint): bigint;
-/**
-* @returns {string}
-*/
-export function sieve(): string;
-/**
-* @param {number} n
-* @returns {Int32Array}
-*/
-export function zeros_matrix(n: number): Int32Array;
-/**
-* Computes 0D persistent homology on a 1D sequence of values (Y values).
-* Supports sublevel (default) and superlevel set filtration.
-* Returns a flat, non-interleaved vector with four contiguous blocks:
-* [births..., deaths..., birth_indices..., death_indices...].
-* @param {Float64Array} data
-* @param {string} mode
+* @param {Uint32Array} compositions
+* @param {number} n_compositions
+* @param {number} k
 * @returns {Float64Array}
 */
-export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
+export function barycentric_project(compositions: Uint32Array, n_compositions: number, k: number): Float64Array;
+/**
+* @param {Float64Array} compositions
+* @param {number} n_compositions
+* @param {number} k
+* @returns {Float64Array}
+*/
+export function barycentric_project_f64(compositions: Float64Array, n_compositions: number, k: number): Float64Array;
+/**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_clusters
+* @param {number} max_iter
+* @param {bigint} seed
+* @returns {Float64Array}
+*/
+export function kmeans_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, max_iter: number, seed: bigint): Float64Array;
 /**
 */
 export class CalibrationFitResult {
@@ -646,6 +674,33 @@ export interface InitOutput {
   readonly crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
   readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
   readonly parse_thermo_raw: (a: number, b: number, c: number, d: number) => void;
+  readonly pca_project: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+  readonly compute: (a: number, b: number) => number;
+  readonly add: (a: number, b: number) => number;
+  readonly arrust: (a: number, b: number, c: number) => void;
+  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
+  readonly bench: (a: number) => number;
+  readonly sieve: (a: number) => void;
+  readonly zeros_matrix: (a: number, b: number) => void;
+  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly __wbg_trimresult_free: (a: number) => void;
+  readonly trimresult_points_x: (a: number, b: number) => void;
+  readonly trimresult_points_y: (a: number, b: number) => void;
+  readonly trimresult_kept_indices: (a: number, b: number) => void;
+  readonly trimresult_total_count: (a: number) => number;
+  readonly __wbg_trimhistogram_free: (a: number) => void;
+  readonly trimhistogram_centres: (a: number, b: number) => void;
+  readonly trimhistogram_counts: (a: number, b: number) => void;
+  readonly trimhistogram_min: (a: number) => number;
+  readonly trimhistogram_max: (a: number) => number;
+  readonly trimhistogram_dropped: (a: number) => number;
+  readonly trim_guess: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+  readonly trim_apply: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly trim_histogram: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly trimresult_low_bound: (a: number) => number;
+  readonly trimresult_high_bound: (a: number) => number;
+  readonly trimresult_kept_count: (a: number) => number;
+  readonly spectral_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly __wbg_calibrationfitresult_free: (a: number) => void;
   readonly calibrationfitresult_coeffs: (a: number, b: number) => void;
   readonly calibrationfitresult_rmse: (a: number) => number;
@@ -653,26 +708,6 @@ export interface InitOutput {
   readonly calibration_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
   readonly calibration_fit_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
   readonly calibration_apply_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
-  readonly __wbg_forest_free: (a: number) => void;
-  readonly forest_edge_u: (a: number, b: number) => void;
-  readonly forest_edge_v: (a: number, b: number) => void;
-  readonly forest_edge_weight: (a: number, b: number) => void;
-  readonly forest_edge_standard: (a: number, b: number) => void;
-  readonly forest_degree: (a: number, b: number) => void;
-  readonly forest_component_of: (a: number, b: number) => void;
-  readonly forest_component_root: (a: number, b: number) => void;
-  readonly forest_component_size: (a: number, b: number) => void;
-  readonly forest_component_max_intensity: (a: number, b: number) => void;
-  readonly forest_component_weight: (a: number, b: number) => void;
-  readonly forest_component_root_mass: (a: number, b: number) => void;
-  readonly forest_component_peak_mass: (a: number, b: number) => void;
-  readonly forest_candidates: (a: number) => number;
-  readonly forest_weights: (a: number, b: number) => void;
-  readonly forest_cut_used: (a: number) => number;
-  readonly forest_isolated: (a: number) => number;
-  readonly forest_edge_count: (a: number) => number;
-  readonly forest_component_count: (a: number) => number;
-  readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
   readonly __wbg_persistenceanalysis_free: (a: number) => void;
   readonly persistenceanalysis_births: (a: number, b: number) => void;
   readonly persistenceanalysis_deaths: (a: number, b: number) => void;
@@ -695,23 +730,26 @@ export interface InitOutput {
   readonly persistenceclassification_kept_integrated_mass: (a: number, b: number) => void;
   readonly persistenceclassification_kept_centroid_x: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_births: (a: number, b: number) => void;
-  readonly __wbg_trimresult_free: (a: number) => void;
-  readonly trimresult_points_x: (a: number, b: number) => void;
-  readonly trimresult_points_y: (a: number, b: number) => void;
-  readonly trimresult_kept_indices: (a: number, b: number) => void;
-  readonly trimresult_total_count: (a: number) => number;
-  readonly __wbg_trimhistogram_free: (a: number) => void;
-  readonly trimhistogram_centres: (a: number, b: number) => void;
-  readonly trimhistogram_counts: (a: number, b: number) => void;
-  readonly trimhistogram_min: (a: number) => number;
-  readonly trimhistogram_max: (a: number) => number;
-  readonly trimhistogram_dropped: (a: number) => number;
-  readonly trim_guess: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
-  readonly trim_apply: (a: number, b: number, c: number, d: number, e: number) => number;
-  readonly trim_histogram: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
-  readonly trimresult_low_bound: (a: number) => number;
-  readonly trimresult_high_bound: (a: number) => number;
-  readonly trimresult_kept_count: (a: number) => number;
+  readonly __wbg_forest_free: (a: number) => void;
+  readonly forest_edge_u: (a: number, b: number) => void;
+  readonly forest_edge_v: (a: number, b: number) => void;
+  readonly forest_edge_weight: (a: number, b: number) => void;
+  readonly forest_edge_standard: (a: number, b: number) => void;
+  readonly forest_degree: (a: number, b: number) => void;
+  readonly forest_component_of: (a: number, b: number) => void;
+  readonly forest_component_root: (a: number, b: number) => void;
+  readonly forest_component_size: (a: number, b: number) => void;
+  readonly forest_component_max_intensity: (a: number, b: number) => void;
+  readonly forest_component_weight: (a: number, b: number) => void;
+  readonly forest_component_root_mass: (a: number, b: number) => void;
+  readonly forest_component_peak_mass: (a: number, b: number) => void;
+  readonly forest_candidates: (a: number) => number;
+  readonly forest_weights: (a: number, b: number) => void;
+  readonly forest_cut_used: (a: number) => number;
+  readonly forest_isolated: (a: number) => number;
+  readonly forest_edge_count: (a: number) => number;
+  readonly forest_component_count: (a: number) => number;
+  readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
   readonly __wbg_radiodecision_free: (a: number) => void;
   readonly radiodecision_points_x: (a: number, b: number) => void;
   readonly radiodecision_points_y: (a: number, b: number) => void;
@@ -723,17 +761,10 @@ export interface InitOutput {
   readonly radiodecision_threshold_ppm: (a: number) => number;
   readonly anti_radio_guess_z: (a: number, b: number, c: number, d: number, e: number) => number;
   readonly anti_radio_filter: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
+  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
   readonly barycentric_project: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly barycentric_project_f64: (a: number, b: number, c: number, d: number, e: number) => void;
-  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
-  readonly compute: (a: number, b: number) => number;
-  readonly add: (a: number, b: number) => number;
-  readonly arrust: (a: number, b: number, c: number) => void;
-  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
-  readonly bench: (a: number) => number;
-  readonly sieve: (a: number) => void;
-  readonly zeros_matrix: (a: number, b: number) => void;
-  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly kmeans_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;

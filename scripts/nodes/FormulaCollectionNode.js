@@ -1207,7 +1207,16 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             enabled:false,
             nClusters:2,
             mode:"kmeans", // "kmeans" or "spectral"
-            pcaComponents:0, // 0 = auto (use all features), else number of PCs
+            /* PCA runs by DEFAULT: standardising each feature (centring and
+               dividing by its spread) equalises the SCALES, but three
+               correlated features are still one direction repeated — the
+               distance between two points is then the distance along that
+               dominant direction, which for m/z, intensity and error is the
+               detector, not the chemistry. PCA is the step that DECORRELATES
+               them, so it is on unless the user says otherwise. `0` keeps every
+               component (a pure rotation — full decorrelation, no variance
+               lost); a positive number keeps that many, which also denoises. */
+            pcaComponents:0, // 0 = all components (decorrelate), else keep N PCs
             sigma:0, // for spectral clustering
             kNeighbors:10, // for spectral clustering
             maxIter:100, // for k-means
@@ -1363,11 +1372,16 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             const anchor=svg.select(".anchor")
             if(anchor.empty()) return
             const clust=this.parameters.clustering
-            /* THE MARKERS LIVE IN THE POINT MODES ONLY. Van Krevelen and
-               barycentric put ratios on the axes, where a mean m/z has no
-               meaning and the marker would land wherever the numbers fell. */
-            const mode=this.parameters.graphMode
-            if(mode!=="error"&&mode!=="intensity") return
+            /* CLUSTER MEANS ARE DRAWN IN EVERY MODE, as a SQUARE. A cluster is
+               computed almost independently of what is drawn — the point cloud
+               below is the selected graph type (error, intensity, van Krevelen
+               or barycentric), coloured by the clusters, and the means are
+               squares so a mean is never mistaken for a point. A targets-source
+               cluster only has an m/z and an intensity/error to place, so on a
+               van Krevelen or barycentric axis those means fall off the data
+               (clusterCenterXY returns NaN) and are simply not drawn there —
+               which is correct, not a bug: run the clustering on the graph
+               traces to get means that sit on a ratio plot. */
             if(!clust.enabled||!clust.results||!clust.results.centers) return
             const nClusters=clust.results.nClusters
             const pairs=[]
@@ -1391,12 +1405,25 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                     const g=d3.select(this)
                     const color=self.getClusterColor(d.index,nClusters)
                     g.selectAll("*").remove()
-                    g.append("circle").attr("r",12).attr("fill","none").attr("stroke",color).attr("stroke-width",3).attr("opacity",0.6)
-                    g.append("circle").attr("r",6).attr("fill",color).attr("stroke","white").attr("stroke-width",2)
+                    /* THE SQUARE: a mean, not a measurement. Square outline in the
+                       cluster colour, the index inside, so it never reads as a
+                       point of the cloud beside it. */
+                    g.append("rect")
+                        .attr("x",-11).attr("y",-11)
+                        .attr("width",22).attr("height",22)
+                        .attr("fill","none")
+                        .attr("stroke",color)
+                        .attr("stroke-width",3)
+                        .attr("opacity",0.9)
+                    g.append("rect")
+                        .attr("x",-7).attr("y",-7)
+                        .attr("width",14).attr("height",14)
+                        .attr("fill",color)
+                        .attr("stroke","white")
+                        .attr("stroke-width",2)
                     g.append("text")
                         .attr("text-anchor","middle")
                         .attr("dominant-baseline","central")
-                        .attr("dy","-0.5em")
                         .attr("font-size","11px")
                         .attr("font-weight","bold")
                         .attr("fill","white")
@@ -1955,6 +1982,17 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
 
         const isBarycentric=mode==="barycentric"
 
+        /* THE CLUSTER RESULTS, READ ONCE FOR EVERY MODE. Clustering on the
+           "graph" data source decorrelates and partitions WHATEVER is on
+           screen — which in van Krevelen is one point per formula and in
+           barycentric is one point per formula projected on the unit circle.
+           The partition lives in `results.clusteredTraces`, and each mode below
+           draws it the same way the error/intensity mode already does: coloured
+           per cluster instead of one flat collection colour. Reading `results`
+           here, before the mode branch, is what lets the three modes share it. */
+        const clust=this.parameters.clustering??null
+        const results=clust&&clust.enabled&&clust.results?clust.results:null
+
         if(isBarycentric){
             /* BARYCENTRIC: one point per FORMULA, projected onto unit circle poles.
                Uses Rust kernel if available, falls back to JS. */
@@ -1988,6 +2026,15 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
 
                     for(const collection of this.collections){
                         if(!this.collectionState(collection.name).inGraphs) continue
+                        /* WHETHER THIS COLLECTION WAS CLUSTERED ON ITS PLOTTED
+                           POINTS (dataSource "graph"). When it was, the barycentric
+                           x/y per formula still have to be computed — the POLE
+                           positions come from the same projection — but the
+                           points themselves are drawn from the pre-coloured
+                           `clusteredTraces` instead of one flat collection colour.
+                           The flag selects which block runs AFTER the projection;
+                           it never skips the projection, or the poles vanish. */
+                        const clustered=!!(results&&results.dataSource==="graph"&&results.graphMode===mode&&results.collectionName===collection.name&&results.clusteredTraces)
                         const compositions=[]
                         const validEntries=[]
                         for(const entry of collection.entries){
@@ -2053,24 +2100,35 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
 
                         const x=new Float64Array(xs)
                         const y=new Float64Array(ys)
-                        traces.push(new XYTrace({
-                            id:`${collection.name}:barycentric`,
-                            title:`${collection.name} — barycentric (${xs.length})`,
-                            wave:Wave.fromCoordinates(
-                                x,
-                                y,
-                                {collection:collection.name, quantity:"barycentric"},
-                                ["Rx","Ry"]
-                            ),
-                            options:{
-                                color:traceColor(this.collections.indexOf(collection)),
-                                mode:"points",
-                                marker:{shape:"circle",size:4},
-                                layer:"gl"
+                        if(clustered){
+                            /* CLUSTERED: draw the pre-coloured per-cluster traces
+                               built by computeClustering from these very points,
+                               not the flat collection trace. */
+                            for(const trace of results.clusteredTraces){
+                                traces.push(trace)
+                                drawn+=trace.pointCount
                             }
-                        }))
-                        drawn+=xs.length
-                        eligible+=xs.length
+                            eligible+=results.nPoints
+                        }else{
+                            traces.push(new XYTrace({
+                                id:`${collection.name}:barycentric`,
+                                title:`${collection.name} — barycentric (${xs.length})`,
+                                wave:Wave.fromCoordinates(
+                                    x,
+                                    y,
+                                    {collection:collection.name, quantity:"barycentric"},
+                                    ["Rx","Ry"]
+                                ),
+                                options:{
+                                    color:traceColor(this.collections.indexOf(collection)),
+                                    mode:"points",
+                                    marker:{shape:"circle",size:4},
+                                    layer:"gl"
+                                }
+                            }))
+                            drawn+=xs.length
+                            eligible+=xs.length
+                        }
                     }
                     /* POLES AS A TRACE: the overlay labels are SVG, invisible to
                        dataBounds/autoDomain — without this the wheel zoom-out and
@@ -2120,6 +2178,21 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 const evalY=FormulaCollectionNode.compileVkFormula(yFormula,table)
                 for(const collection of this.collections){
                     if(!this.collectionState(collection.name).inGraphs) continue
+                    /* CLUSTERED VAN KREVELEN: same rule as barycentric — a
+                       partition computed on the plotted ratios (dataSource
+                       "graph") for THIS collection arrives as pre-coloured
+                       clustered traces; draw those and skip the flat pass. The
+                       collection centroid below is then not added, so the vk
+                       centroid ring does not sit on a point cloud that has been
+                       recoloured by cluster. */
+                    if(results&&results.dataSource==="graph"&&results.graphMode===mode&&results.collectionName===collection.name&&results.clusteredTraces){
+                        for(const trace of results.clusteredTraces){
+                            traces.push(trace)
+                            drawn+=trace.pointCount
+                        }
+                        eligible+=results.nPoints
+                        continue
+                    }
                     const xs=[]
                     const ys=[]
                     for(const entry of collection.entries){
@@ -2161,18 +2234,10 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             }
         }else{
             /* ERROR or INTENSITY: one point per MEASURED TARGET. */
-            //optional, because a stand-in (and an old session) may carry no
-            //clustering block at all: absent must mean "no colours", not a throw
-            const clust=this.parameters.clustering??null
-            /* THE RESULTS BELONG TO ONE COLLECTION. Without the name check,
-               every other collection on screen would wear the colours of a
-               clustering it was never part of — indexed from zero, so
-               silently and always wrongly. */
-            const results=clust&&clust.enabled&&clust.results?clust.results:null
             for(const collection of this.collections){
                 if(!this.collectionState(collection.name).inGraphs) continue
                 // If clustering was done on graph traces, use the pre-clustered traces
-                if(results&&results.dataSource==="graph"&&results.collectionName===collection.name&&results.clusteredTraces){
+                if(results&&results.dataSource==="graph"&&results.graphMode===mode&&results.collectionName===collection.name&&results.clusteredTraces){
                     for(const trace of results.clusteredTraces){
                         traces.push(trace)
                         drawn+=trace.pointCount
@@ -2304,12 +2369,32 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             this.graph.parameters.axis.bottom.autoLabel=false
             this.graph.parameters.axis.left.label=yAxisLabel
             this.graph.parameters.axis.left.autoLabel=false
+            /* RETURN THE FRAME TO THE DATA. Van Krevelen carries no fixed box of
+               its own, but it may be arriving FROM barycentric, which locked the
+               axes to [-1.1,1.1] with autoDomain off. Left as they are, ratios
+               outside that box (an H/C of 2, an O/C of 0.5 on a big molecule)
+               would fall off a view that no longer matches them. Re-arming
+               autoDomain on both axes lets the plot fit what is drawn. */
+            this.graph.parameters.axis.bottom.autoDomain=true
+            this.graph.parameters.axis.left.autoDomain=true
+            this.graph.parameters.axis.bottom.domain=null
+            this.graph.parameters.axis.left.domain=null
         }else{
             this.graph.parameters.axis.left.scale=(!byError&&this.parameters.logY)?"log":"linear"
             this.graph.parameters.axis.bottom.label="Measured m/z"
             this.graph.parameters.axis.bottom.autoLabel=false
             this.graph.parameters.axis.left.label=byError?"Error (ppm)":"Intensity"
             this.graph.parameters.axis.left.autoLabel=false
+            /* THE RETURN FROM BARYCENTRIC IS EXACT, and this is where it was
+               broken. Barycentric pins both axes to [-1.1,1.1] with autoDomain
+               OFF; switching back to Error or Intensity did not undo that, so
+               m/z in the hundreds and errors in ppm were framed against a
+               one-unit box and vanished off-screen. autoDomain back on and the
+               fixed domain dropped, the plot refits the measured points. */
+            this.graph.parameters.axis.bottom.autoDomain=true
+            this.graph.parameters.axis.left.autoDomain=true
+            this.graph.parameters.axis.bottom.domain=null
+            this.graph.parameters.axis.left.domain=null
         }
         this.graph.drawGraph()
         if(this.graphReadout){
@@ -2654,6 +2739,17 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.syncCurrentCollection()
         this.publishOutput()
         this.renderAll()
+        /* REFRESH THE CLUSTERING PANEL NOW THAT A COLLECTION EXISTS. The panel
+           was first built at registration, before any resolve, when
+           `currentCollection` was still null — so its enable checkbox was drawn
+           disabled and labelled "select a collection first". Nothing re-rendered
+           it after the first resolve, so that stale state survived even once a
+           collection was on screen and selected. Re-rendering reads the live
+           `currentCollection` and rebuilds the controls from the clustering
+           parameters (the single source of truth), so the checkbox turns live the
+           moment there is something to cluster — no forced click. renderAll
+           itself does not cover this panel, hence the explicit call. */
+        this.renderClusteringOptions()
         this.refreshGraph()
         this.setStatus(this.collections.length?"resolved":"floating")
     }
@@ -3101,6 +3197,16 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.viewToggle?.paint()
         if(this.sortSelect) this.sortSelect.value=this.parameters.sort
         if(this.filterInput) this.filterInput.value=this.parameters.filter
+        /* SELECT THE FIRST COLLECTION BY DEFAULT, and do it on the restore path
+           too — not only after the resolve that follows. A restored session whose
+           saved `current` name has gone away (a parent dropped, a local collection
+           renamed) would otherwise leave NO row highlighted until the next resolve
+           lands, which reads as "nothing is selected". `syncCurrentCollection`
+           falls back to collections[0] for a name that no longer exists, so the
+           first collection on screen is the one shown — no dark pattern, no forced
+           click. On a fresh restore `this.collections` is still empty and this is
+           a harmless no-op; the resolve that follows fills them and selects. */
+        if(this.collections.length) this.syncCurrentCollection()
         this.renderCollections()
         this.renderRows()
         this.renderSelection()
@@ -3124,7 +3230,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.destination?.syncInputs(this).then(()=>this.startResolve())
     }
 
-    setGraphMode(mode){
+    async setGraphMode(mode){
         /* LE MODE EST UN CHOIX DE LECTURE, pas un filtre: changer de mode ne
            touche à rien d'autre — ni les collections cochées, ni les filtres, ni
            les notes. Le dire ici évite le glissement bien connu qui consiste à
@@ -3135,7 +3241,62 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         /* LE PANNEAU SE REFAIT, parce que les contrôles dépendent du mode:
            Lin/Log seulement en intensité, scale/offset seulement en van Krevelen. */
         this.renderGraphOptions()
-        this.refreshGraph()
+        /* THE TRACES MUST EXIST BEFORE ANYTHING READS THEM, and refreshGraph is
+           async — in barycentric and van Krevelen it awaits the projection
+           kernel before it calls setTraces. computeClustering re-clusters by
+           reading graph.traces, so if the two ran at once it would read the
+           PREVIOUS mode's points, tag them with the new mode, and draw one
+           mode's cloud on another's axes (or nothing at all, off the unit
+           circle). AWAIT the redraw first; the graph is the selected mode, then
+           the clustering follows the points now actually on screen. */
+        await this.refreshGraph()
+        /* A CLUSTERING DONE ON THE PLOTTED POINTS belongs to the mode it was
+           run in: its clustered traces carry that mode's coordinates (m/z vs
+           error, O/C vs H/C, or the barycentric projection). Left as they are,
+           switching the mode would draw one mode's points on another mode's
+           axes. So changing the view RE-RUNS the partition on the new points —
+           the graph is always the selected mode, the clustering follows the data
+           it is pointed at, and the colouring stays true to what is on screen.
+
+           NO RESULTS REQUIRED, and that is the whole point: guarded on
+           `clust.results`, the FIRST arrival in a mode (error or intensity ->
+           barycentric, with clustering already on) drew the mode flat and
+           uncoloured, because there was nothing to refresh yet. The run had to
+           be started, not re-started. */
+        const clust=this.parameters.clustering
+        if(clust?.enabled&&clust.dataSource==="graph"){
+            this.computeClustering()
+        }
+    }
+    async applyVkFormulas(){
+        /* READ THE TWO AXIS FIELDS, redraw, and re-cluster on the new ratios.
+           Changing O/C to H/C moves EVERY van Krevelen point, so a partition
+           computed on the old coordinates is stale: without the re-cluster the
+           colouring (and the cluster means) still described the previous axes,
+           and only a round-trip to another mode would have refreshed them. */
+        this.parameters.vkXFormula=this.vkXFormula.value
+        this.parameters.vkYFormula=this.vkYFormula.value
+        this.origin?.saveSessionSoon?.()
+        const clust=this.parameters.clustering
+        const reclustering=clust?.enabled&&clust.dataSource==="graph"
+        /* A GRAPH-SOURCE PARTITION IS VALID ONLY FOR THE COORDINATES IT WAS
+           COMPUTED ON. Changing O/C to H/C moves every van Krevelen point, so
+           the cached clusteredTraces describe the OLD axes — and because the
+           mode is still "vankrevelen", refreshGraph would happily REPLAY them
+           and the new formula would never reach the diagram (this is why it
+           worked with clustering off and not on). Drop the stale result before
+           the redraw so refreshGraph recomputes from the new formulas, then
+           re-cluster those fresh points below. */
+        if(reclustering) clust.results=null
+        /* AWAIT THE REDRAW FIRST, for the same reason as setGraphMode: the
+           re-cluster below reads the plotted points, and it must read the ones
+           computed from the NEW formulas, not the old traces still on the graph. */
+        await this.refreshGraph()
+        /* NO RESULTS REQUIRED, for the same reason as in setGraphMode: the very
+           first partition of the new ratios has to be STARTED, not refreshed. */
+        if(reclustering){
+            this.computeClustering()
+        }
     }
     renderGraphOptions(){
         if(!this.graphOptions) return
@@ -3159,26 +3320,14 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             title:"What one point of the central graph says: error in ppm, signal intensity, van Krevelen ratios (O/C vs H/C), or barycentric projection of elemental compositions"
         })
         /* VAN KREVELEN CONTROLS: custom X and Y axis formulas.
-           User writes expressions using element symbols, e.g., "O/C", "1+C+N/2-H/2". */
-        const scheduleVkRefresh=()=>{
-            //`input` fires on every keystroke: debounce the recompute, or each
-            //letter rebuilds every trace. The trailing `change` (blur/Enter)
-            //flushes immediately so the axis labels never lag the field.
-            clearTimeout(this.vkRefreshTimer)
-            this.vkRefreshTimer=setTimeout(()=>{
-                this.parameters.vkXFormula=this.vkXFormula.value
-                this.parameters.vkYFormula=this.vkYFormula.value
-                this.origin?.saveSessionSoon?.()
-                this.refreshGraph()
-            },350)
-        }
-        const flushVkRefresh=()=>{
-            clearTimeout(this.vkRefreshTimer)
-            this.parameters.vkXFormula=this.vkXFormula.value
-            this.parameters.vkYFormula=this.vkYFormula.value
-            this.origin?.saveSessionSoon?.()
-            this.refreshGraph()
-        }
+           User writes expressions using element symbols, e.g., "O/C", "1+C+N/2-H/2".
+           The graph recomputes on COMMIT only — blur (leaving the field) and
+           Enter — not on every keystroke. A half-typed expression like "O/" is
+           not a valid ratio, and re-plotting it on each character would flash a
+           broken diagram mid-typing; waiting for the commit reads the field once,
+           when it holds a complete formula. `change` fires on both, so one
+           handler covers blur and Enter alike. */
+        const commitVkRefresh=()=>this.applyVkFormulas()
         this.vkXFormula=CE("input",{
             type:"text",
             value:this.parameters.vkXFormula,
@@ -3186,8 +3335,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             title:"X-axis formula using element symbols (C, H, O, N, S, P, etc.), DBE, Mass and comparisons (==, !=, <, <=, >, >=). Example: O/C or DBE==1",
             style:{width:"100%",minWidth:"0",boxSizing:"border-box",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
         },[])
-        this.vkXFormula.addEventListener("input",scheduleVkRefresh)
-        this.vkXFormula.addEventListener("change",flushVkRefresh)
+        this.vkXFormula.addEventListener("change",commitVkRefresh)
         this.vkYFormula=CE("input",{
             type:"text",
             value:this.parameters.vkYFormula,
@@ -3195,8 +3343,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             title:"Y-axis formula using element symbols (C, H, O, N, S, P, etc.), DBE, Mass and comparisons (==, !=, <, <=, >, >=). Example: H/C or DBE==1",
             style:{width:"100%",minWidth:"0",boxSizing:"border-box",padding:"2px 4px",fontFamily:"monospace",fontSize:"0.9em"}
         },[])
-        this.vkYFormula.addEventListener("input",scheduleVkRefresh)
-        this.vkYFormula.addEventListener("change",flushVkRefresh)
+        this.vkYFormula.addEventListener("change",commitVkRefresh)
         this.vkReadout=CE("span",{
             className:"pp-readout",
             title:"Points drawn / points eligible",
@@ -3309,6 +3456,12 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         },[])
         this.clustModeSelect.appendChild(new Option("K-means","kmeans"))
         this.clustModeSelect.appendChild(new Option("Spectral Partitioning","spectral"))
+        /* SET THE VALUE AFTER THE OPTIONS EXIST. `CE` applies `.value` while the
+           select is still empty — and `.value` on a select with no options does
+           nothing — so the rebuilt control always fell back to its FIRST option
+           and "Spectral Partitioning" appeared to snap back to "K-means" the
+           instant it was chosen, even though `clust.mode` was stored correctly. */
+        this.clustModeSelect.value=clust.mode
         this.clustModeSelect.addEventListener("change",()=>{
             clust.mode=this.clustModeSelect.value
             this.origin?.saveSessionSoon?.()
@@ -3323,24 +3476,30 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         },[])
         this.clustDataSourceSelect.appendChild(new Option("Targets (3D: mz,intensity,error)","targets"))
         this.clustDataSourceSelect.appendChild(new Option("Graph traces (2D: current x,y)","graph"))
+        /* SAME BUG, SAME FIX: set the value once the options are in place, or the
+           rebuilt control shows its first entry ("Targets") no matter what was
+           stored, and the source selector looks like it refuses to move. */
+        this.clustDataSourceSelect.value=clust.dataSource
         this.clustDataSourceSelect.addEventListener("change",()=>{
             clust.dataSource=this.clustDataSourceSelect.value
             this.origin?.saveSessionSoon?.()
             this.renderClusteringOptions()
             if(clust.enabled) this.computeClustering()
         })
-        /* PCA components input (0 = auto) */
+        /* PCA components input. `0` (the default) decorrelates and keeps every
+           component; a positive number reduces to that many; `-1` turns PCA
+           off entirely and clusters on the standardised features as they are. */
         this.clustPcaComponents=CE("input",{
             type:"number",
-            min:0,
+            min:-1,
             max:50,
             value:clust.pcaComponents,
-            title:"PCA components for decorrelation (0 = auto, use all features)",
+            title:"PCA for decorrelation: 0 = keep all components (default), N>0 = keep N components (also denoises), -1 = PCA off",
             style:{width:"60px",padding:"2px 4px",fontSize:"0.9em"}
         },[])
         this.clustPcaComponents.addEventListener("change",()=>{
             const v=parseInt(this.clustPcaComponents.value,10)
-            if(Number.isFinite(v)&&v>=0) clust.pcaComponents=v
+            if(Number.isFinite(v)&&v>=-1) clust.pcaComponents=v
             this.origin?.saveSessionSoon?.()
             if(clust.enabled) this.computeClustering()
         })
@@ -3506,9 +3665,8 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
     }
     getClusterColor(index,total){
         // Use the same color palette as traces
-        const hues=[0,60,120,180,240,300,30,90,150,210,270,330]
-        const hue=hues[index%hues.length]
-        return `hsl(${hue},70%,45%)`
+        const palette=["#e74c3c","#3498db","#2ecc71","#f39c12","#9b59b6","#1abc9c","#e67e22","#16a085"]
+        return palette[index%palette.length]
     }
     /* THE CENTER OF A CLUSTER, IN THE COORDINATES ON SCREEN. The x is always
        the mean m/z of the cluster's points; the y is the mean error in
@@ -3516,10 +3674,26 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
        (x,y) pair would answer to the wrong axis the moment the mode
        changed — which is how a marker ended up drawn in mid-air. */
     clusterCenterXY(index){
-        const centers=this.parameters.clustering?.results?.centers
+        const clust=this.parameters.clustering
+        const results=clust?.results
+        const centers=results?.centers
         if(!centers||!centers.mz) return [NaN,NaN]
-        const vertical=this.parameters.graphMode==="intensity"?centers.intensity:centers.errorPpm
-        return [centers.mz[index],vertical?vertical[index]:NaN]
+        /* A GRAPH-SOURCE CLUSTER WAS COMPUTED FROM THE POINTS ON SCREEN, so its
+           centre is the mean of those plotted coordinates: mean x sits in
+           centers.mz, mean y in centers.intensity, in whatever units the current
+           mode draws. That pair is correct in EVERY mode — error, intensity, van
+           Krevelen or barycentric — because it is literally the centroid of what
+           is being drawn. */
+        if(results.dataSource==="graph"){
+            return [centers.mz[index], centers.intensity?centers.intensity[index]:NaN]
+        }
+        /* A TARGETS-SOURCE CLUSTER carries a real m/z and a real error/intensity.
+           Those only line up with the POINT modes, where a point IS a target; on
+           a van Krevelen or barycentric axis a mean m/z has no position, so no
+           marker is drawn there. */
+        const mode=this.parameters.graphMode
+        const vertical=mode==="intensity"?centers.intensity:centers.errorPpm
+        return [centers.mz[index], vertical?vertical[index]:NaN]
     }
     selectClusterInList(clusterIndex){
         // Highlight/select formulas belonging to this cluster in the left list
@@ -3656,16 +3830,19 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 for(let j=0;j<n_features;j++) stds[j]=Math.sqrt(stds[j]/(n_samples-1))||1
                 for(let i=0;i<points.length;i++) scaled[i]=(points[i]-means[i%n_features])/stds[i%n_features]
             }
-            // Step 1: PCA (optional, for decorrelation)
+            // Step 1: PCA — decorrelates the features. ON by default (`0` keeps
+            // every component, a pure rotation that removes the correlation the
+            // standardisation leaves behind; `-1` turns it off). A positive
+            // number keeps that many components and denoises as it reduces.
             let projected=null
             let useData=scaled
             let useFeatures=n_features
-            if(clust.pcaComponents>0){
+            if(clust.pcaComponents>=0){
                 const pcaResult=await computePool.run("pca",{
                     data:scaled,
                     n_samples,
                     n_features,
-                    n_components:Math.min(clust.pcaComponents,n_features)
+                    n_components:clust.pcaComponents>0?Math.min(clust.pcaComponents,n_features):n_features
                 })
                 if(pcaResult.projected&&pcaResult.projected.length>0){
                     projected=pcaResult.projected
@@ -3812,6 +3989,15 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 pcaComponents:clust.pcaComponents,
                 mode:clust.mode,
                 dataSource:clust.dataSource,
+                /* THE MODE THE CLUSTERED TRACES WERE BUILT IN. A graph-source
+                   partition is made of the coordinates the selected graph mode
+                   plotted (m/z vs error, O/C vs H/C, or the barycentric
+                   projection). The traces are only reused while that is still
+                   the mode on screen; switch the mode and refreshGraph falls
+                   back to the flat traces of the NEW mode, which is what the
+                   re-run then clusters. Without this tag a mode switch would
+                   paint one mode's points onto another's axes. */
+                graphMode:this.parameters.graphMode,
                 clusteredTraces:clusteredTraces,
                 labels:clust.dataSource==="graph"?(clust.results?.labels??["x","y"]):undefined
             }

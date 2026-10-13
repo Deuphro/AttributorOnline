@@ -1171,14 +1171,15 @@ console.log("le graphe: l'ERREUR en fonction de la masse mesurée, par défaut")
    the node module and called against a stand-in `this` carrying a fake graph — the
    real method, and no DOM needed: everything it touches is `setTraces`, the axis
    parameters and `drawGraph`. */
-/* The end anchor is the NEXT METHOD, publishOutput. It used to be a comment —
-   "What this node publishes" — which sat after two `static` helpers
-   (compileVkFormula, barycentricProjectJS) rather than immediately after the
-   method. Those statics landed inside the slice, and `new Function` rejected the
-   class syntax with "Unexpected identifier 'static'": the anchor was never wrong
-   about the reader, it was just cutting the block at the wrong place. */
+/* The end anchor is whatever DECLARATION follows the method. It was a comment
+   — "What this node publishes" — then publishOutput, and it has to be read
+   again every time a helper lands between the two: three statics (dbeOfFormula,
+   compileVkFormula, barycentricProjectJS) now sit there, and anchoring on
+   publishOutput pulled them into `new Function`, which answered "Unexpected
+   identifier 'static'". The anchor is never about the reader: it is the first
+   line after refreshGraph ends, and today that line is `static dbeOfFormula`. */
 const graphStart=source.indexOf("    async refreshGraph(){")
-const graphEnd=source.indexOf("    publishOutput(){",graphStart)
+const graphEnd=source.indexOf("    static dbeOfFormula(",graphStart)
 if(graphStart<0||graphEnd<graphStart){
     console.error("refreshGraph could not be located in FormulaCollectionNode.js - the test cannot run")
     process.exit(1)

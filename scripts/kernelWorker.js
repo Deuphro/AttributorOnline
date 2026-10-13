@@ -486,6 +486,99 @@ const kernels={
             return calibrationApply2DJS(x,y,coeffs,mode)
         }
     },
+    /* --- clustering: PCA, k-means, spectral partitioning -------------------
+       Three kernels, one contract: flat numbers in, NAMED Float64Arrays out.
+       The Rust path is authoritative when the pkg build carries it — a stale
+       build has no such export, `typeof` says so, and the JS fallback answers
+       instead, exactly like every other kernel in this map. The unpack below
+       mirrors the flat layouts documented in pca.rs / kmeans.rs / spectral.rs. */
+    async pca({data,n_samples,n_features,n_components}){
+        try{
+            await ensureWasm()
+            if(typeof rust.pca_project!=="function"){
+                throw new Error("rust pca_project is missing (stale pkg build?)")
+            }
+            const flat=rust.pca_project(Float64Array.from(data??[]),n_samples,n_features,n_components)
+            /* [projected (n_samples*n_components), components (n_features*n_components),
+               explainedVariance (n_components), means (n_features)] */
+            const projectedEnd=n_samples*n_components
+            const componentsEnd=projectedEnd+n_features*n_components
+            const varianceEnd=componentsEnd+n_components
+            if(flat.length!==varianceEnd+n_features){
+                throw new Error(`pca_project returned ${flat.length} values, expected ${varianceEnd+n_features}`)
+            }
+            //slice, not subarray: a copy owns its buffer, which is what the
+            //transfer list below is allowed to hand over
+            return {
+                projected:flat.slice(0,projectedEnd),
+                components:flat.slice(projectedEnd,componentsEnd),
+                explainedVariance:flat.slice(componentsEnd,varianceEnd),
+                means:flat.slice(varianceEnd)
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust PCA unavailable, JS fallback:",err)
+            return pcaJS(data,n_samples,n_features,n_components)
+        }
+    },
+    async kmeans({data,n_samples,n_features,n_clusters,max_iter,seed}){
+        try{
+            await ensureWasm()
+            if(typeof rust.kmeans_cluster!=="function"){
+                throw new Error("rust kmeans_cluster is missing (stale pkg build?)")
+            }
+            const flat=rust.kmeans_cluster(
+                Float64Array.from(data??[]),n_samples,n_features,n_clusters,
+                max_iter??100,BigInt(Math.floor(seed??42))
+            )
+            /* [assignments (n_samples), centroids, clusterMeans, clusterVars
+               (each n_clusters*n_features), counts (n_clusters)] */
+            const stats=n_clusters*n_features
+            const centroidsEnd=n_samples+stats
+            const meansEnd=centroidsEnd+stats
+            const varsEnd=meansEnd+stats
+            if(flat.length!==varsEnd+n_clusters){
+                throw new Error(`kmeans_cluster returned ${flat.length} values, expected ${varsEnd+n_clusters}`)
+            }
+            return {
+                assignments:flat.slice(0,n_samples),
+                centroids:flat.slice(n_samples,centroidsEnd),
+                clusterMeans:flat.slice(centroidsEnd,meansEnd),
+                clusterVars:flat.slice(meansEnd,varsEnd),
+                counts:flat.slice(varsEnd)
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust k-means unavailable, JS fallback:",err)
+            return kmeansJS(data,n_samples,n_features,n_clusters,max_iter??100,seed??42)
+        }
+    },
+    async spectral({data,n_samples,n_features,n_clusters,sigma,k_neighbors}){
+        try{
+            await ensureWasm()
+            if(typeof rust.spectral_cluster!=="function"){
+                throw new Error("rust spectral_cluster is missing (stale pkg build?)")
+            }
+            const flat=rust.spectral_cluster(
+                Float64Array.from(data??[]),n_samples,n_features,n_clusters,
+                sigma??0,k_neighbors??10
+            )
+            /* [assignments (n_samples), embedding (n_samples*n_clusters),
+               centers (n_clusters*n_features), counts (n_clusters)] */
+            const embeddingEnd=n_samples+n_samples*n_clusters
+            const centersEnd=embeddingEnd+n_clusters*n_features
+            if(flat.length!==centersEnd+n_clusters){
+                throw new Error(`spectral_cluster returned ${flat.length} values, expected ${centersEnd+n_clusters}`)
+            }
+            return {
+                assignments:flat.slice(0,n_samples),
+                embedding:flat.slice(n_samples,embeddingEnd),
+                centers:flat.slice(embeddingEnd,centersEnd),
+                counts:flat.slice(centersEnd)
+            }
+        }catch(err){
+            console.warn("[kernelWorker] rust spectral unavailable, JS fallback:",err)
+            return spectralJS(data,n_samples,n_features,n_clusters,sigma??0,k_neighbors??10)
+        }
+    },
     async parseThermoRaw({data,options={}}){
         let result
         try{
@@ -1258,6 +1351,419 @@ function gaussianElimination2DJS(a,b,k){
 function parseThermoRawJS(data){
     console.warn("Thermo .raw parsing requires WASM build with thermorawfile crate")
     return {spectra:[],file_version:0,scan_count:0}
+}
+
+//JS fallback for PCA - simplified power iteration
+function pcaJS(data,n_samples,n_features,n_components){
+    if(!n_samples||!n_features||!n_components||n_components>n_features||!data||data.length!==n_samples*n_features){
+        return {projected:new Float64Array(0),components:new Float64Array(0),explainedVariance:new Float64Array(0),means:new Float64Array(0)}
+    }
+    // Center data
+    const means=new Float64Array(n_features)
+    for(let i=0;i<n_samples;i++){
+        for(let j=0;j<n_features;j++) means[j]+=data[i*n_features+j]
+    }
+    for(let j=0;j<n_features;j++) means[j]/=n_samples
+    const centered=new Float64Array(n_samples*n_features)
+    for(let i=0;i<n_samples;i++){
+        for(let j=0;j<n_features;j++) centered[i*n_features+j]=data[i*n_features+j]-means[j]
+    }
+    // Covariance
+    const cov=new Float64Array(n_features*n_features)
+    for(let i=0;i<n_features;i++){
+        for(let j=0;j<n_features;j++){
+            let sum=0
+            for(let k=0;k<n_samples;k++) sum+=centered[k*n_features+i]*centered[k*n_features+j]
+            cov[i*n_features+j]=sum/(n_samples-1)
+        }
+    }
+    //Power iteration, step for step with the solver in pca.rs — same starting
+    //vector, same convergence test — so both answer the same way when the pkg
+    //build carries the Rust and when it does not
+    const components=new Float64Array(n_features*n_components)
+    const explainedVariance=new Float64Array(n_components)
+    let a=cov.slice()
+    for(let c=0;c<n_components;c++){
+        let v=new Float64Array(n_features).fill(0).map((_,i)=>Math.abs(Math.sin(i*0.123+c*0.456))+0.1)
+        let norm=Math.sqrt(v.reduce((s,x)=>s+x*x,0))
+        v=v.map(x=>x/norm)
+        let lambda=0
+        for(let iter=0;iter<100;iter++){
+            const av=new Float64Array(n_features)
+            for(let i=0;i<n_features;i++){
+                let sum=0
+                for(let j=0;j<n_features;j++) sum+=a[i*n_features+j]*v[j]
+                av[i]=sum
+            }
+            const newLambda=v.reduce((s,x,i)=>s+x*av[i],0)
+            norm=Math.sqrt(av.reduce((s,x)=>s+x*x,0))
+            if(norm===0) break
+            av.forEach((x,i)=>av[i]=x/norm)
+            const diff=av.reduce((s,x,i)=>s+Math.abs(x-v[i]),0)
+            v=av
+            //against the PREVIOUS lambda: `Math.abs(lambda-lambda)` was always
+            //zero, so the loop stopped as soon as one step moved less than
+            //1e-10, which is not convergence, it is one quiet iteration
+            if(Math.abs(newLambda-lambda)<1e-10&&diff<1e-10){ lambda=newLambda; break }
+            lambda=newLambda
+        }
+        explainedVariance[c]=lambda
+        for(let i=0;i<n_features;i++) components[i*n_components+c]=v[i]
+        // Deflate
+        for(let i=0;i<n_features;i++) for(let j=0;j<n_features;j++) a[i*n_features+j]-=lambda*v[i]*v[j]
+    }
+    // Project
+    const projected=new Float64Array(n_samples*n_components)
+    for(let i=0;i<n_samples;i++){
+        for(let c=0;c<n_components;c++){
+            let val=0
+            for(let j=0;j<n_features;j++) val+=centered[i*n_features+j]*components[j*n_components+c]
+            projected[i*n_components+c]=val
+        }
+    }
+    return {projected,components,explainedVariance,means}
+}
+
+//JS fallback for K-means
+function kmeansJS(data,n_samples,n_features,n_clusters,max_iter,seed){
+    if(!n_samples||!n_features||!n_clusters||n_clusters>n_samples||!data||data.length!==n_samples*n_features){
+        return {assignments:new Float64Array(0),centroids:new Float64Array(0),clusterMeans:new Float64Array(0),clusterVars:new Float64Array(0),counts:new Float64Array(0)}
+    }
+    //seed.wrapping_add(1) in kmeans.rs: both RNGs open on the same state, so
+    //the same seed picks the same first centroid on either side
+    let state=BigInt(seed??42)+1n
+    function rand(){
+        //mod 2^64 after every step, because the u64 in kmeans.rs wraps there
+        //and the stream is only the same stream if this one wraps too
+        state=(state*6364136223846793005n+1442695040888963407n)&0xFFFFFFFFFFFFFFFFn
+        return Number(state>>11n)/9007199254740992
+    }
+    function randInt(max){ return Math.floor(rand()*max) }
+    // K-means++ init
+    const centroids=new Float64Array(n_clusters*n_features)
+    const first=randInt(n_samples)
+    for(let j=0;j<n_features;j++) centroids[j]=data[first*n_features+j]
+    for(let c=1;c<n_clusters;c++){
+        const dists=new Float64Array(n_samples).fill(Infinity)
+        for(let i=0;i<n_samples;i++){
+            for(let pc=0;pc<c;pc++){
+                let d=0
+                for(let j=0;j<n_features;j++){ const diff=data[i*n_features+j]-centroids[pc*n_features+j]; d+=diff*diff }
+                if(d<dists[i]) dists[i]=d
+            }
+        }
+        const sum=dists.reduce((s,x)=>s+x,0)
+        let r=rand()*sum, chosen=0
+        for(let i=0;i<n_samples;i++){ r-=dists[i]; if(r<=0){ chosen=i; break } }
+        for(let j=0;j<n_features;j++) centroids[c*n_features+j]=data[chosen*n_features+j]
+    }
+    const assignments=new Uint32Array(n_samples)
+    for(let iter=0;iter<max_iter;iter++){
+        let changed=false
+        for(let i=0;i<n_samples;i++){
+            let best=0,bestD=Infinity
+            for(let c=0;c<n_clusters;c++){
+                let d=0
+                for(let j=0;j<n_features;j++){ const diff=data[i*n_features+j]-centroids[c*n_features+j]; d+=diff*diff }
+                if(d<bestD){ bestD=d; best=c }
+            }
+            if(assignments[i]!==best){ assignments[i]=best; changed=true }
+        }
+        if(!changed) break
+        const counts=new Uint32Array(n_clusters)
+        const newCentroids=new Float64Array(n_clusters*n_features)
+        for(let i=0;i<n_samples;i++){
+            const c=assignments[i]
+            counts[c]++
+            for(let j=0;j<n_features;j++) newCentroids[c*n_features+j]+=data[i*n_features+j]
+        }
+        for(let c=0;c<n_clusters;c++){
+            if(counts[c]>0){
+                for(let j=0;j<n_features;j++) centroids[c*n_features+j]=newCentroids[c*n_features+j]/counts[c]
+            }else{
+                const idx=randInt(n_samples)
+                for(let j=0;j<n_features;j++) centroids[c*n_features+j]=data[idx*n_features+j]
+            }
+        }
+    }
+    // Stats
+    const counts=new Uint32Array(n_clusters)
+    const clusterMeans=new Float64Array(n_clusters*n_features)
+    const clusterVars=new Float64Array(n_clusters*n_features)
+    for(let i=0;i<n_samples;i++){
+        const c=assignments[i]
+        counts[c]++
+        for(let j=0;j<n_features;j++) clusterMeans[c*n_features+j]+=data[i*n_features+j]
+    }
+    for(let c=0;c<n_clusters;c++) if(counts[c]>0) for(let j=0;j<n_features;j++) clusterMeans[c*n_features+j]/=counts[c]
+    for(let i=0;i<n_samples;i++){
+        const c=assignments[i]
+        for(let j=0;j<n_features;j++){ const diff=data[i*n_features+j]-clusterMeans[c*n_features+j]; clusterVars[c*n_features+j]+=diff*diff }
+    }
+    for(let c=0;c<n_clusters;c++) if(counts[c]>1) for(let j=0;j<n_features;j++) clusterVars[c*n_features+j]/=(counts[c]-1)
+    return {
+        assignments:Float64Array.from(assignments),
+        centroids,clusterMeans,clusterVars,
+        counts:Float64Array.from(counts)
+    }
+}
+
+//JS spectral partitioning, mirroring spectral.rs: an RBF affinity (k-NN above
+//500 points), the normalized affinity M = D^(-1/2) A D^(-1/2), the n_clusters
+//LARGEST eigenvectors of M — which are the SMALLEST eigenvectors of the
+//Laplacian L = I - M, and those are the vectors a partition is read from —
+//then row-normalization and k-means in that embedding. Running k-means on the
+//raw features, as this used to, answers a different question under this name.
+function spectralJS(data,n_samples,n_features,n_clusters,sigma,k_neighbors){
+    if(!n_samples||!n_features||!n_clusters||n_clusters>n_samples||!data||data.length!==n_samples*n_features){
+        return {assignments:new Float64Array(0),embedding:new Float64Array(0),centers:new Float64Array(0),counts:new Float64Array(0)}
+    }
+    const useKnn=n_samples>500
+    const sigma2=(sigma??0)>0?(sigma??0)*(sigma??0):estimateSigmaJS(data,n_samples,n_features)
+    const inv2sigma2=1/(2*sigma2)
+    /* SPARSE FROM HERE (CSR), step for step with spectral.rs: rows of
+       (column, weight) pairs instead of an n×n matrix — 191 MiB and one
+       n² multiply per power-iteration step at n = 5000, which is what made
+       this kernel take minutes while k-means took milliseconds. The k-NN
+       selection is a quickselect under the total order (distance², index):
+       the k smallest are a unique SET, so it cannot disagree with Rust's
+       select_nth_unstable_by about membership, only about the order it
+       leaves behind — and every row is sorted below anyway. */
+    const rows=[]
+    for(let i=0;i<n_samples;i++) rows.push([])
+    if(useKnn){
+        const k=Math.max(1,Math.min(k_neighbors??10,n_samples-1))
+        for(let i=0;i<n_samples;i++){
+            const d2=new Float64Array(n_samples-1)
+            const idx=new Int32Array(n_samples-1)
+            let m=0
+            for(let j=0;j<n_samples;j++){
+                if(i===j) continue
+                let d=0
+                for(let f=0;f<n_features;f++){ const diff=data[i*n_features+f]-data[j*n_features+f]; d+=diff*diff }
+                d2[m]=d; idx[m]=j; m++
+            }
+            const take=m>k?k:m
+            if(m>k) quickselectPairs(d2,idx,k)
+            for(let t=0;t<take;t++){
+                const val=Math.exp(-d2[t]*inv2sigma2)
+                rows[i].push([idx[t],val])
+                //the reverse edge in the same move: a k-NN graph is not
+                //symmetric on its own, and the affinity is read both ways
+                rows[idx[t]].push([i,val])
+            }
+        }
+    }else{
+        for(let i=0;i<n_samples;i++){
+            rows[i].push([i,1])
+            for(let j=i+1;j<n_samples;j++){
+                let d=0
+                for(let f=0;f<n_features;f++){ const diff=data[i*n_features+f]-data[j*n_features+f]; d+=diff*diff }
+                const val=Math.exp(-d*inv2sigma2)
+                rows[i].push([j,val])
+                rows[j].push([i,val])
+            }
+        }
+    }
+    /* Rows sorted by column and free of duplicates — a mutual k-NN pair is
+       pushed from both ends with the same weight — so the CSR order, and
+       with it every sum below, is the same on both sides of the fence. */
+    const rowPtr=[0]
+    const cols=[]
+    const vals=[]
+    const degree=new Float64Array(n_samples)
+    for(let i=0;i<n_samples;i++){
+        const row=rows[i]
+        row.sort((a,b)=>a[0]-b[0])
+        let write=0
+        for(let t=0;t<row.length;t++){
+            if(t>0&&row[t][0]===row[write-1][0]) continue
+            row[write]=row[t]; write++
+        }
+        row.length=write
+        let sum=0
+        for(const entry of row) sum+=entry[1]
+        degree[i]=Math.max(sum,1e-10)
+    }
+    /* Normalized affinity M = D^(-1/2) A D^(-1/2), normalized in place as
+       the CSR is flattened. L = I - M: the largest eigenvalues of M carry
+       the smallest of the Laplacian, which is what a partition reads. */
+    for(let i=0;i<n_samples;i++){
+        const di=1/Math.sqrt(degree[i])
+        for(const [j,w] of rows[i]){
+            const dj=1/Math.sqrt(degree[j])
+            cols.push(j)
+            vals.push(w*di*dj)
+        }
+        rowPtr.push(vals.length)
+    }
+    //Orthogonalized power iteration for the LARGEST eigenvectors of M, step
+    //for step with eigendecomposition_sparse in spectral.rs — the rank-1
+    //deflations are applied to y on the way out, not baked into a matrix
+    const embedding=new Float64Array(n_samples*n_clusters)
+    const eigenvalues=new Float64Array(n_clusters)
+    for(let comp=0;comp<n_clusters;comp++){
+        let v=new Float64Array(n_samples)
+        for(let i=0;i<n_samples;i++) v[i]=Math.sin((i+comp*10)*0.12345)+0.5
+        for(let prev=0;prev<comp;prev++){
+            let dot=0
+            for(let i=0;i<n_samples;i++) dot+=v[i]*embedding[i*n_clusters+prev]
+            for(let i=0;i<n_samples;i++) v[i]-=dot*embedding[i*n_clusters+prev]
+        }
+        let norm=Math.sqrt(v.reduce((s,x)=>s+x*x,0))
+        if(norm>0) for(let i=0;i<n_samples;i++) v[i]/=norm
+        let lambda=0
+        for(let iter=0;iter<200;iter++){
+            //y = (M - sum_c lambda_c v_c v_c^T) * v, without the matrix
+            const av=new Float64Array(n_samples)
+            for(let i=0;i<n_samples;i++){
+                let sum=0
+                for(let idx=rowPtr[i];idx<rowPtr[i+1];idx++) sum+=vals[idx]*v[cols[idx]]
+                av[i]=sum
+            }
+            for(let c=0;c<comp;c++){
+                let dot=0
+                for(let i=0;i<n_samples;i++) dot+=embedding[i*n_clusters+c]*v[i]
+                const lc=eigenvalues[c]
+                for(let i=0;i<n_samples;i++) av[i]-=lc*embedding[i*n_clusters+c]*dot
+            }
+            const newLambda=v.reduce((s,x,i)=>s+x*av[i],0)
+            norm=Math.sqrt(av.reduce((s,x)=>s+x*x,0))
+            if(norm>0) for(let i=0;i<n_samples;i++) av[i]/=norm
+            for(let prev=0;prev<comp;prev++){
+                let dot=0
+                for(let i=0;i<n_samples;i++) dot+=av[i]*embedding[i*n_clusters+prev]
+                for(let i=0;i<n_samples;i++) av[i]-=dot*embedding[i*n_clusters+prev]
+            }
+            norm=Math.sqrt(av.reduce((s,x)=>s+x*x,0))
+            if(norm>0) for(let i=0;i<n_samples;i++) av[i]/=norm
+            const diff=av.reduce((s,x,i)=>s+Math.abs(x-v[i]),0)
+            v=av
+            if(Math.abs(newLambda-lambda)<1e-10&&diff<1e-10){ lambda=newLambda; break }
+            lambda=newLambda
+        }
+        eigenvalues[comp]=lambda
+        for(let i=0;i<n_samples;i++) embedding[i*n_clusters+comp]=v[i]
+    }
+    //Row-normalize the embedding: only the DIRECTION of a row says which side
+    //of the cut the point is on (Ng-Jordan-Weiss)
+    for(let i=0;i<n_samples;i++){
+        let sum=0
+        for(let c=0;c<n_clusters;c++) sum+=embedding[i*n_clusters+c]**2
+        const norm=Math.sqrt(sum)
+        if(norm>0) for(let c=0;c<n_clusters;c++) embedding[i*n_clusters+c]/=norm
+    }
+    const assignments=kmeansOnEmbeddingJS(embedding,n_samples,n_clusters)
+    const counts=new Uint32Array(n_clusters)
+    const centers=new Float64Array(n_clusters*n_features)
+    for(let i=0;i<n_samples;i++){
+        const c=assignments[i]
+        counts[c]++
+        for(let f=0;f<n_features;f++) centers[c*n_features+f]+=data[i*n_features+f]
+    }
+    for(let c=0;c<n_clusters;c++){
+        if(counts[c]>0){
+            for(let f=0;f<n_features;f++) centers[c*n_features+f]/=counts[c]
+        }else{
+            for(let f=0;f<n_features;f++) centers[c*n_features+f]=NaN
+        }
+    }
+    return {
+        assignments:Float64Array.from(assignments),
+        embedding,
+        centers,
+        counts:Float64Array.from(counts)
+    }
+}
+//k-means over the spectral embedding, mirroring kmeans_on_embedding in
+//spectral.rs: evenly spaced starting centroids and no random draw anywhere,
+//so the embedding alone decides the partition
+function kmeansOnEmbeddingJS(embedding,n_samples,n_clusters){
+    const n_features=n_clusters
+    const assignments=new Uint32Array(n_samples)
+    const centroids=new Float64Array(n_clusters*n_features)
+    for(let c=0;c<n_clusters;c++){
+        const idx=Math.min(Math.floor(c*n_samples/n_clusters),n_samples-1)
+        for(let f=0;f<n_features;f++) centroids[c*n_features+f]=embedding[idx*n_features+f]
+    }
+    for(let iter=0;iter<100;iter++){
+        let changed=false
+        for(let i=0;i<n_samples;i++){
+            let best=0,bestDist=Infinity
+            for(let c=0;c<n_clusters;c++){
+                let dist=0
+                for(let f=0;f<n_features;f++){
+                    const diff=embedding[i*n_features+f]-centroids[c*n_features+f]
+                    dist+=diff*diff
+                }
+                if(dist<bestDist){ bestDist=dist; best=c }
+            }
+            if(assignments[i]!==best){ assignments[i]=best; changed=true }
+        }
+        if(!changed) break
+        const counts=new Uint32Array(n_clusters)
+        const sums=new Float64Array(n_clusters*n_features)
+        for(let i=0;i<n_samples;i++){
+            const c=assignments[i]
+            counts[c]++
+            for(let f=0;f<n_features;f++) sums[c*n_features+f]+=embedding[i*n_features+f]
+        }
+        for(let c=0;c<n_clusters;c++){
+            if(counts[c]>0){
+                for(let f=0;f<n_features;f++) centroids[c*n_features+f]=sums[c*n_features+f]/counts[c]
+            }
+        }
+    }
+    return assignments
+}
+//In-place quickselect on parallel (distance², index) arrays: afterwards,
+//positions 0..kth-1 hold the kth smallest under the total order (distance²,
+//index) — a set no tie can make ambiguous, since the index breaks it — and
+//position kth holds the kth itself. Median-of-three pivoting keeps input
+//that arrives in index order from degenerating into O(n²).
+function quickselectPairs(d2,idx,kth){
+    const less=(a,b)=>d2[a]<d2[b]||(d2[a]===d2[b]&&idx[a]<idx[b])
+    const swap=(a,b)=>{
+        let t=d2[a]; d2[a]=d2[b]; d2[b]=t
+        t=idx[a]; idx[a]=idx[b]; idx[b]=t
+    }
+    let lo=0,hi=d2.length-1
+    while(lo<hi){
+        const mid=(lo+hi)>>1
+        if(less(mid,lo)) swap(mid,lo)
+        if(less(hi,mid)) swap(hi,mid)
+        if(less(mid,lo)) swap(mid,lo)
+        swap(mid,hi) //the median of three, parked at hi
+        let store=lo
+        for(let i=lo;i<hi;i++){
+            if(less(i,hi)){ swap(store,i); store++ }
+        }
+        swap(store,hi)
+        if(store===kth) return
+        if(store<kth) lo=store+1
+        else hi=store-1
+    }
+}
+//Sigma estimate, mirroring estimate_sigma in spectral.rs: the median over a
+//100-point sample of the distance to each point's fifth nearest neighbour
+function estimateSigmaJS(data,n_samples,n_features){
+    const allDists=[]
+    const sampleSize=Math.min(n_samples,100)
+    for(let i=0;i<sampleSize;i++){
+        const dists=[]
+        for(let j=0;j<n_samples;j++){
+            if(i===j) continue
+            let d=0
+            for(let f=0;f<n_features;f++){ const diff=data[i*n_features+f]-data[j*n_features+f]; d+=diff*diff }
+            dists.push(Math.sqrt(d))
+        }
+        dists.sort((a,b)=>a-b)
+        if(dists.length>=5) allDists.push(dists[4])
+        else if(dists.length) allDists.push(dists[Math.floor(dists.length/2)])
+    }
+    if(!allDists.length) return 1
+    allDists.sort((a,b)=>a-b)
+    return Math.max(allDists[Math.floor(allDists.length/2)],1e-6)
 }
 
 function computePersistentHomology0D_JS(data,mode="sublevel"){

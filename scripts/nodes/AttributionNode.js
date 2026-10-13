@@ -92,7 +92,7 @@ export class AttributionNode extends NodeWithAccordion{
            confident answer the data does not support; three shows the ambiguity
            without burying the reader. The window in ppm still decides WHO is a
            candidate, and this decides how many of them are shown. */
-        this.parameters.bestMatches=3
+        this.parameters.bestMatches=1
         /* The match window, in ppm. It is BOTH an admissibility filter and a
            displayed measurement: a formula further off than this is not
            proposed at all, because a reader cannot act on a 4 000 ppm error, and

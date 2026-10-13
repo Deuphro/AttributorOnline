@@ -6,7 +6,10 @@ mod barycentric;
 mod calibration;
 mod fkmd;
 mod forest;
+mod kmeans;
+mod pca;
 mod persistence;
+mod spectral;
 mod thermo;
 mod trim;
 pub use antiradio::{anti_radio_filter, anti_radio_guess_z, RadioDecision};
@@ -29,6 +32,9 @@ pub use persistence::{
 pub use thermo::parse_thermo_raw;
 pub use trim::{trim_apply, trim_guess, trim_histogram, TrimHistogram, TrimResult};
 pub use barycentric::{barycentric_project, barycentric_project_f64};
+pub use pca::pca_project;
+pub use kmeans::kmeans_cluster;
+pub use spectral::spectral_cluster;
 
 #[wasm_bindgen]
 pub fn compute(a: i32, b: i32) -> i32 {
