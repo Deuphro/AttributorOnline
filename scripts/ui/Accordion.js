@@ -289,6 +289,15 @@ this.DOMelt={
         }
         const panel=this.DOMelt.container.parentElement
         const wasFolded=this.parameters.folded
+        /* REMEMBER HOW THIS PANEL WAS SIZED BEFORE IT LEFT. `popOut` forces
+           "viewport" to fit the dialog, and `dockBack` used to force "content"
+           on the way back — which threw away the panel's own sizing. A plot
+           panel docked in "viewport" came back "content": height auto, overflow
+           visible, and a minmax(0,1fr) row with nothing to bound it, so it grew
+           without limit. Stash the pre-popout mode and height and put them back
+           on return, and a panel comes home exactly as it was. */
+        this._prePopoutSizing=this.parameters.sizing
+        this._prePopoutViewportHeight=this.parameters.viewportHeight
         if(wasFolded){
             this.unfold()
         }
@@ -335,7 +344,19 @@ this.DOMelt={
         panel.appendChild(this.DOMelt.container)
         this.destination=panel
         this.refreshReorderGrip()
-        this.setSizingMode("content")
+        /* COME HOME THE WAY IT LEFT. Restore the sizing the panel had before it
+           was popped out (stashed in `popOut`), instead of forcing "content":
+           a plot panel docked in "viewport" must return to "viewport", or the
+           content box goes to height auto / overflow visible and the plot's
+           minmax(0,1fr) row — now unbounded — grows without limit. Fall back to
+           "content" only when there is nothing stashed. */
+        if(this._prePopoutSizing==="viewport"){
+            this.setSizingMode("viewport",{height:Number.isFinite(this._prePopoutViewportHeight)?this._prePopoutViewportHeight:460})
+        }else{
+            this.setSizingMode("content")
+        }
+        this._prePopoutSizing=null
+        this._prePopoutViewportHeight=null
         this.origin.saveSessionSoon?.()
     }
     suicide(){
