@@ -702,7 +702,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.accordionRight.setSizingMode("content")
         stylize(content,{
             display:"grid",
-            "grid-template-rows":"minmax(0, 1fr) auto",
+            "grid-template-rows":"minmax(0, 1fr) auto auto",
             minHeight:"0",
             height:"100%",
             overflow:"hidden",
@@ -713,8 +713,10 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             style:{overflow:"auto",minHeight:"0",display:"grid",gap:"2px",alignContent:"start",fontSize:"0.95em"}
         },[])
         this.graphOptions=CE("div",{style:{borderTop:"1px solid var(--border)",paddingTop:"3px"}},[])
-        content.append(this.detail,this.graphOptions)
+        this.clusteringOptions=CE("div",{style:{borderTop:"1px solid var(--border)",paddingTop:"3px"}},[])
+        content.append(this.detail,this.graphOptions,this.clusteringOptions)
         this.renderGraphOptions()
+        this.renderClusteringOptions()
     }
     renderDiagnostics(){
         if(!this.diagnosticsBand) return
@@ -929,11 +931,16 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.selectedEntry=null
         this.collectionState(name).open=true
         this.syncCurrentCollection()
+        /* Clear clustering results when switching collections — they're collection-specific */
+        if(this.parameters.clustering.enabled){
+            this.parameters.clustering.results=null
+        }
         this.origin?.saveSessionSoon?.()
         this.renderAll()
         //belt and braces: the list measures its box at paint time, and a paint
         //that happened before the panel settled would leave it stale
         this.list?.paintLater()
+        this.renderClusteringOptions()
         return true
     }
     buildCollectionRow(collection){
@@ -1195,6 +1202,19 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
            with it. They are rebuilt at every resolve, which is why a local
            collection can be added to while a parent one cannot. */
         this.parameters.localCollections=[]
+        /* CLUSTERING PARAMETERS */
+        this.parameters.clustering={
+            enabled:false,
+            nClusters:2,
+            mode:"kmeans", // "kmeans" or "spectral"
+            pcaComponents:0, // 0 = auto (use all features), else number of PCs
+            sigma:0, // for spectral clustering
+            kNeighbors:10, // for spectral clustering
+            maxIter:100, // for k-means
+            seed:42, // for reproducibility
+            results:null, // cached clustering results per collection
+            dataSource:"targets" // "targets" = 3D from entries, "graph" = 2D from plotted traces
+        }
         //runtime only, rebuilt by every resolve
         this.collections=[]
         this.diagnostics=[]
@@ -1268,12 +1288,13 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         channel.register(`${registrationName}:detail`,this.accordionRight,`${label} (detail)`)
         this.setupLeftPanel()
         this.setupRightPanel()
-        /* Wrap graph.drawGraph so van Krevelen centroids and barycentric poles redraw on every zoom/pan. */
+        /* Wrap graph.drawGraph so van Krevelen centroids, barycentric poles, and cluster centroids redraw on every zoom/pan. */
         const origDrawGraph=this.graph.drawGraph.bind(this.graph)
         this.graph.drawGraph=()=>{
             origDrawGraph()
             this.drawVkCentroids()
             this.drawBarycentricPoles()
+            this.drawClusterCentroids()
         }
         this.drawVkCentroids=function(){
             const svg=this.graph.graphSVG
@@ -1332,6 +1353,63 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                         .text(d=>d?.element?.symbol??String(d?.element??""))
                 })
             poleGroup.exit().remove()
+        }.bind(this)
+        this.drawClusterCentroids=function(){
+            const svg=this.graph.graphSVG
+            if(!svg) return
+            let xScale,yScale
+            try{ ({xScale,yScale}=this.graph.plotScales()) }catch{ return }
+            if(!xScale||!yScale) return
+            const anchor=svg.select(".anchor")
+            if(anchor.empty()) return
+            const clust=this.parameters.clustering
+            /* THE MARKERS LIVE IN THE POINT MODES ONLY. Van Krevelen and
+               barycentric put ratios on the axes, where a mean m/z has no
+               meaning and the marker would land wherever the numbers fell. */
+            const mode=this.parameters.graphMode
+            if(mode!=="error"&&mode!=="intensity") return
+            if(!clust.enabled||!clust.results||!clust.results.centers) return
+            const nClusters=clust.results.nClusters
+            const pairs=[]
+            for(let i=0;i<nClusters;i++){
+                const [x,y]=this.clusterCenterXY(i)
+                if(Number.isFinite(x)&&Number.isFinite(y)){
+                    pairs.push({x,y,index:i})
+                }
+            }
+            if(!pairs.length) return
+            const self=this
+            const centroidGroup=anchor.selectAll("g.cluster-centroid")
+                .data(pairs,d=>d.index)
+            const enter=centroidGroup.enter()
+                .append("g")
+                .attr("class","cluster-centroid")
+                .style("cursor","pointer")
+            enter.merge(centroidGroup)
+                .attr("transform",d=>`translate(${xScale(d.x)},${yScale(d.y)})`)
+                .each(function(d){
+                    const g=d3.select(this)
+                    const color=self.getClusterColor(d.index,nClusters)
+                    g.selectAll("*").remove()
+                    g.append("circle").attr("r",12).attr("fill","none").attr("stroke",color).attr("stroke-width",3).attr("opacity",0.6)
+                    g.append("circle").attr("r",6).attr("fill",color).attr("stroke","white").attr("stroke-width",2)
+                    g.append("text")
+                        .attr("text-anchor","middle")
+                        .attr("dominant-baseline","central")
+                        .attr("dy","-0.5em")
+                        .attr("font-size","11px")
+                        .attr("font-weight","bold")
+                        .attr("fill","white")
+                        .attr("stroke","black")
+                        .attr("stroke-width","0.5")
+                        .attr("paint-order","stroke fill")
+                        .text(d.index+1)
+                })
+                .on("click",(event,d)=>{
+                    event.stopPropagation()
+                    self.selectClusterInList(d.index)
+                })
+            centroidGroup.exit().remove()
         }.bind(this)
     }
     renderAll(){
@@ -2083,11 +2161,37 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             }
         }else{
             /* ERROR or INTENSITY: one point per MEASURED TARGET. */
+            //optional, because a stand-in (and an old session) may carry no
+            //clustering block at all: absent must mean "no colours", not a throw
+            const clust=this.parameters.clustering??null
+            /* THE RESULTS BELONG TO ONE COLLECTION. Without the name check,
+               every other collection on screen would wear the colours of a
+               clustering it was never part of — indexed from zero, so
+               silently and always wrongly. */
+            const results=clust&&clust.enabled&&clust.results?clust.results:null
             for(const collection of this.collections){
                 if(!this.collectionState(collection.name).inGraphs) continue
+                // If clustering was done on graph traces, use the pre-clustered traces
+                if(results&&results.dataSource==="graph"&&results.collectionName===collection.name&&results.clusteredTraces){
+                    for(const trace of results.clusteredTraces){
+                        traces.push(trace)
+                        drawn+=trace.pointCount
+                    }
+                    eligible+=results.nPoints
+                    continue
+                }
+                const scoped=results&&results.collectionName===collection.name&&results.pointKeys
+                    ?new Map(results.pointKeys.map((key,i)=>[key,results.assignments[i]]))
+                    :null
+                const fallbackColor=traceColor(this.collections.indexOf(collection))
                 const points=[]
-                for(const entry of collection.entries){
-                    for(const target of entry.targets){
+                const pointColors=[]
+                const pointAssignments=[]
+                for(let entryIdx=0;entryIdx<collection.entries.length;entryIdx++){
+                    const entry=collection.entries[entryIdx]
+                    const targets=entry.targets??[]
+                    for(let targetIdx=0;targetIdx<targets.length;targetIdx++){
+                        const target=targets[targetIdx]
                         if(!Number.isFinite(target.mz)) continue
                         if(byError){
                             if(!Number.isFinite(target.errorPpm)) continue
@@ -2096,36 +2200,88 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                             if(!Number.isFinite(target.intensity)) continue
                             points.push([target.mz,target.intensity])
                         }
+                        //by KEY, not by position: this list holds fewer points
+                        //than were clustered whenever a target lacks the other
+                        //measurement, and a shifted index colours the wrong
+                        //points with a straight face
+                        const assign=scoped?scoped.get(`${entryIdx}#${targetIdx}`):undefined
+                        if(assign!==undefined){
+                            pointAssignments.push(assign)
+                            pointColors.push(this.getClusterColor(assign,results.nClusters))
+                        }else{
+                            pointAssignments.push(-1)
+                            pointColors.push(fallbackColor)
+                        }
                     }
                 }
+                const hasClustering=scoped!=null
                 if(!points.length) continue
                 eligible+=points.length
                 points.sort((a,b)=>a[0]-b[0])
+                // Reorder colors and assignments to match sorted points
+                const sortedIndices=points.map((_,i)=>i).sort((a,b)=>points[a][0]-points[b][0])
                 const x=new Float64Array(points.length)
                 const y=new Float64Array(points.length)
+                const colors=new Array(points.length)
                 for(let i=0;i<points.length;i++){
-                    x[i]=points[i][0]
-                    y[i]=points[i][1]
+                    const src=sortedIndices[i]
+                    x[i]=points[src][0]
+                    y[i]=points[src][1]
+                    colors[i]=pointColors[src]
                 }
-                traces.push(new XYTrace({
-                    id:`${collection.name}:${byError?"error":"sticks"}`,
-                    title:byError
-                        ?`${collection.name} — error (${points.length})`
-                        :`${collection.name} (${points.length})`,
-                    wave:Wave.fromCoordinates(
-                        x,
-                        y,
-                        {collection:collection.name, quantity:byError?"errorPpm":"intensity"},
-                        ["m/z",byError?"error (ppm)":"intensity"]
-                    ),
-                    options:{
-                        color:traceColor(this.collections.indexOf(collection)),
-                        mode:byError?"points":"sticks-to-zero",
-                        marker:{shape:"circle",size:3},
-                        layer:"gl"
+                if(hasClustering&&pointColors.some(c=>c!==fallbackColor)){
+                    // Split into per-cluster traces for proper coloring
+                    const clusters=new Map()
+                    for(let i=0;i<points.length;i++){
+                        const assign=pointAssignments[sortedIndices[i]]
+                        if(!clusters.has(assign)) clusters.set(assign,{xs:[],ys:[]})
+                        clusters.get(assign).xs.push(x[i])
+                        clusters.get(assign).ys.push(y[i])
                     }
-                }))
-                drawn+=points.length
+                    for(const [assign,{xs,ys}] of clusters){
+                        if(xs.length===0) continue
+                        const color=assign>=0?this.getClusterColor(assign,results.nClusters):fallbackColor
+                        const cx=new Float64Array(xs)
+                        const cy=new Float64Array(ys)
+                        traces.push(new XYTrace({
+                            id:`${collection.name}:cluster${assign}:${byError?"error":"sticks"}`,
+                            title:`${collection.name} — cluster ${assign>=0?assign+1:"unassigned"} (${xs.length})`,
+                            wave:Wave.fromCoordinates(
+                                cx,
+                                cy,
+                                {collection:collection.name, quantity:byError?"errorPpm":"intensity", cluster:assign},
+                                ["m/z",byError?"error (ppm)":"intensity"]
+                            ),
+                            options:{
+                                color,
+                                mode:byError?"points":"sticks-to-zero",
+                                marker:{shape:"circle",size:3},
+                                layer:"gl"
+                            }
+                        }))
+                        drawn+=xs.length
+                    }
+                }else{
+                    traces.push(new XYTrace({
+                        id:`${collection.name}:${byError?"error":"sticks"}`,
+                        title:byError
+                            ?`${collection.name} — error (${points.length})`
+                            :`${collection.name} (${points.length})`,
+                        wave:Wave.fromCoordinates(
+                            x,
+                            y,
+                            {collection:collection.name, quantity:byError?"errorPpm":"intensity"},
+                            ["m/z",byError?"error (ppm)":"intensity"]
+                        ),
+                        options:{
+                            color:traceColor(this.collections.indexOf(collection)),
+                            mode:byError?"points":"sticks-to-zero",
+                            marker:{shape:"circle",size:3},
+                            layer:"gl"
+                        }
+                    }))
+                    drawn+=points.length
+                }
             }
         }
         this.graph.setTraces(traces)
@@ -2869,7 +3025,19 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             localCollections:DC(this.parameters.localCollections),
             //van Krevelen custom axis formulas
             vkXFormula:this.parameters.vkXFormula,
-            vkYFormula:this.parameters.vkYFormula
+            vkYFormula:this.parameters.vkYFormula,
+            //Clustering parameters
+            clustering:this.parameters.clustering?{
+                enabled:this.parameters.clustering.enabled,
+                nClusters:this.parameters.clustering.nClusters,
+                mode:this.parameters.clustering.mode,
+                pcaComponents:this.parameters.clustering.pcaComponents,
+                sigma:this.parameters.clustering.sigma,
+                kNeighbors:this.parameters.clustering.kNeighbors,
+                maxIter:this.parameters.clustering.maxIter,
+                seed:this.parameters.clustering.seed,
+                dataSource:this.parameters.clustering.dataSource
+            }:null
         }
     }
     restoreState(state){
@@ -2914,6 +3082,19 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         /* Van Krevelen parameters. */
         if(typeof state.vkXFormula==="string") this.parameters.vkXFormula=state.vkXFormula
         if(typeof state.vkYFormula==="string") this.parameters.vkYFormula=state.vkYFormula
+        /* Clustering parameters. */
+        if(state.clustering&&typeof state.clustering==="object"){
+            const c=state.clustering
+            if(typeof c.enabled==="boolean") this.parameters.clustering.enabled=c.enabled
+            if(Number.isFinite(c.nClusters)&&c.nClusters>=2) this.parameters.clustering.nClusters=c.nClusters
+            if(["kmeans","spectral"].includes(c.mode)) this.parameters.clustering.mode=c.mode
+            if(Number.isFinite(c.pcaComponents)&&c.pcaComponents>=0) this.parameters.clustering.pcaComponents=c.pcaComponents
+            if(Number.isFinite(c.sigma)&&c.sigma>=0) this.parameters.clustering.sigma=c.sigma
+            if(Number.isFinite(c.kNeighbors)&&c.kNeighbors>=1) this.parameters.clustering.kNeighbors=c.kNeighbors
+            if(Number.isFinite(c.maxIter)&&c.maxIter>=10) this.parameters.clustering.maxIter=c.maxIter
+            if(Number.isFinite(c.seed)&&c.seed>=0) this.parameters.clustering.seed=c.seed
+            if(["targets","graph"].includes(c.dataSource)) this.parameters.clustering.dataSource=c.dataSource
+        }
         /* The widgets only exist once the node has been REGISTERED, and a
            restore happens after — but a headless restore must not throw on a
            node that never opened a panel, so every repaint is guarded. */
@@ -2924,6 +3105,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.renderRows()
         this.renderSelection()
         this.renderGraphOptions()
+        this.renderClusteringOptions()
     }
     restoreAfterImport(){
         super.restoreAfterImport()
@@ -3079,6 +3261,685 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             row,
             this.vkRow
         )
+    }
+    renderClusteringOptions(){
+        if(!this.clusteringOptions) return
+        this.clusteringOptions.replaceChildren()
+        const clust=this.parameters.clustering
+        const hasCurrent=this.currentCollection!=null
+        /* Enable checkbox */
+        this.clustEnableToggle=CE("input",{
+            type:"checkbox",
+            checked:clust.enabled,
+            title:"Enable clustering on the current collection's points"
+        },[])
+        this.clustEnableToggle.addEventListener("change",()=>{
+            clust.enabled=this.clustEnableToggle.checked
+            this.origin?.saveSessionSoon?.()
+            this.renderClusteringOptions()
+            if(clust.enabled) this.computeClustering()
+            else this.clearClustering()
+        })
+        const enableRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr)",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        enableRow.append(
+            this.clustEnableToggle,
+            CE("span",{style:{fontWeight:"500"}},[hasCurrent?"Clustering":"Clustering (select a collection first)"])
+        )
+        if(!hasCurrent) this.clustEnableToggle.disabled=true
+        /* Number of clusters input */
+        this.clustNClusters=CE("input",{
+            type:"number",
+            min:2,
+            max:20,
+            value:clust.nClusters,
+            title:"Number of clusters (classes) to find",
+            style:{width:"60px",padding:"2px 4px",fontSize:"0.9em"}
+        },[])
+        this.clustNClusters.addEventListener("change",()=>{
+            const v=parseInt(this.clustNClusters.value,10)
+            if(Number.isFinite(v)&&v>=2) clust.nClusters=v
+            this.origin?.saveSessionSoon?.()
+            if(clust.enabled) this.computeClustering()
+        })
+        /* Clustering mode selector */
+        this.clustModeSelect=CE("select",{
+            value:clust.mode,
+            title:"Clustering algorithm: K-means (centroid-based) or Spectral Partitioning (graph-based)",
+            style:{padding:"2px 4px",fontSize:"0.9em",minWidth:"0"}
+        },[])
+        this.clustModeSelect.appendChild(new Option("K-means","kmeans"))
+        this.clustModeSelect.appendChild(new Option("Spectral Partitioning","spectral"))
+        this.clustModeSelect.addEventListener("change",()=>{
+            clust.mode=this.clustModeSelect.value
+            this.origin?.saveSessionSoon?.()
+            this.renderClusteringOptions()
+            if(clust.enabled) this.computeClustering()
+        })
+        /* Data source selector: 3D from targets or 2D from graph traces */
+        this.clustDataSourceSelect=CE("select",{
+            value:clust.dataSource,
+            title:"Data source for clustering: 3D [mz,intensity,error] from targets, or 2D [x,y] from plotted graph traces",
+            style:{padding:"2px 4px",fontSize:"0.9em",minWidth:"0"}
+        },[])
+        this.clustDataSourceSelect.appendChild(new Option("Targets (3D: mz,intensity,error)","targets"))
+        this.clustDataSourceSelect.appendChild(new Option("Graph traces (2D: current x,y)","graph"))
+        this.clustDataSourceSelect.addEventListener("change",()=>{
+            clust.dataSource=this.clustDataSourceSelect.value
+            this.origin?.saveSessionSoon?.()
+            this.renderClusteringOptions()
+            if(clust.enabled) this.computeClustering()
+        })
+        /* PCA components input (0 = auto) */
+        this.clustPcaComponents=CE("input",{
+            type:"number",
+            min:0,
+            max:50,
+            value:clust.pcaComponents,
+            title:"PCA components for decorrelation (0 = auto, use all features)",
+            style:{width:"60px",padding:"2px 4px",fontSize:"0.9em"}
+        },[])
+        this.clustPcaComponents.addEventListener("change",()=>{
+            const v=parseInt(this.clustPcaComponents.value,10)
+            if(Number.isFinite(v)&&v>=0) clust.pcaComponents=v
+            this.origin?.saveSessionSoon?.()
+            if(clust.enabled) this.computeClustering()
+        })
+        /* Spectral-specific: sigma */
+        this.clustSigma=CE("input",{
+            type:"number",
+            min:0,
+            step:0.1,
+            value:clust.sigma,
+            title:"Sigma for RBF kernel (0 = auto-estimate from data)",
+            style:{width:"70px",padding:"2px 4px",fontSize:"0.9em"}
+        },[])
+        this.clustSigma.addEventListener("change",()=>{
+            const v=parseFloat(this.clustSigma.value)
+            if(Number.isFinite(v)&&v>=0) clust.sigma=v
+            this.origin?.saveSessionSoon?.()
+            if(clust.enabled&&clust.mode==="spectral") this.computeClustering()
+        })
+        /* Spectral-specific: k-neighbors */
+        this.clustKNeighbors=CE("input",{
+            type:"number",
+            min:1,
+            max:50,
+            value:clust.kNeighbors,
+            title:"Number of neighbors for k-NN graph (spectral clustering only)",
+            style:{width:"60px",padding:"2px 4px",fontSize:"0.9em"}
+        },[])
+        this.clustKNeighbors.addEventListener("change",()=>{
+            const v=parseInt(this.clustKNeighbors.value,10)
+            if(Number.isFinite(v)&&v>=1) clust.kNeighbors=v
+            this.origin?.saveSessionSoon?.()
+            if(clust.enabled&&clust.mode==="spectral") this.computeClustering()
+        })
+        /* K-means specific: max iterations */
+        this.clustMaxIter=CE("input",{
+            type:"number",
+            min:10,
+            max:1000,
+            value:clust.maxIter,
+            title:"Maximum iterations for K-means",
+            style:{width:"70px",padding:"2px 4px",fontSize:"0.9em"}
+        },[])
+        this.clustMaxIter.addEventListener("change",()=>{
+            const v=parseInt(this.clustMaxIter.value,10)
+            if(Number.isFinite(v)&&v>=10) clust.maxIter=v
+            this.origin?.saveSessionSoon?.()
+            if(clust.enabled&&clust.mode==="kmeans") this.computeClustering()
+        })
+        /* Seed for reproducibility */
+        this.clustSeed=CE("input",{
+            type:"number",
+            min:0,
+            max:2147483647,
+            value:clust.seed,
+            title:"Random seed for reproducibility",
+            style:{width:"80px",padding:"2px 4px",fontSize:"0.9em"}
+        },[])
+        this.clustSeed.addEventListener("change",()=>{
+            const v=parseInt(this.clustSeed.value,10)
+            if(Number.isFinite(v)&&v>=0) clust.seed=v
+            this.origin?.saveSessionSoon?.()
+            if(clust.enabled) this.computeClustering()
+        })
+        /* Run button */
+        this.clustRunBtn=CE("button",{
+            type:"button",
+            title:"Run clustering on the current collection",
+            style:{padding:"2px 8px",cursor:"pointer",fontSize:"0.9em",justifySelf:"start"}
+        },["Run Clustering"])
+        this.clustRunBtn.addEventListener("click",()=>this.computeClustering())
+        if(!hasCurrent) this.clustRunBtn.disabled=true
+        /* Status readout */
+        this.clustReadout=CE("span",{
+            className:"pp-readout",
+            style:{justifySelf:"end",fontSize:"0.85em"}
+        },[clust.results?`${clust.results.nClusters} clusters, ${clust.results.nPoints} points`:""])
+        /* Build rows */
+        const modeRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        modeRow.append(
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Mode:"]),this.clustModeSelect]),
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Source:"]),this.clustDataSourceSelect]),
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Clusters:"]),this.clustNClusters]),
+            this.clustReadout
+        )
+        const pcaRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        pcaRow.append(
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["PCA comps:"]),this.clustPcaComponents]),
+            this.clustRunBtn
+        )
+        const spectralRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr)",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        spectralRow.append(
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Sigma:"]),this.clustSigma]),
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["k-NN:"]),this.clustKNeighbors])
+        )
+        if(clust.mode!=="spectral") spectralRow.style.display="none"
+        const kmeansRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr)",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        kmeansRow.append(
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Max iter:"]),this.clustMaxIter]),
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Seed:"]),this.clustSeed])
+        )
+        if(clust.mode!=="kmeans") kmeansRow.style.display="none"
+        /* Cluster manager list */
+        this.clustManager=CE("div",{
+            style:{marginTop:"6px",maxHeight:"150px",overflow:"auto",border:"1px solid var(--border)",borderRadius:"3px",padding:"4px",fontSize:"0.85em",display:"none"}
+        },[])
+        this.clusteringOptions.append(
+            CE("div",{className:"pp-caption"},["Clustering"]),
+            enableRow,
+            modeRow,
+            pcaRow,
+            spectralRow,
+            kmeansRow,
+            this.clustManager
+        )
+        if(clust.enabled&&clust.results) this.updateClusterManager()
+    }
+    updateClusterManager(){
+        if(!this.clustManager) return
+        const clust=this.parameters.clustering
+        const results=clust.results
+        this.clustManager.replaceChildren()
+        /* NO RESULTS, NO MANAGER. Returning early used to leave the rows of
+           the previous run on screen after the toggle cleared the results —
+           a list of clusters that no longer exist. */
+        if(!clust.enabled||!results){
+            this.clustManager.style.display="none"
+            return
+        }
+        this.clustManager.style.display="block"
+        this.clustManager.append(CE("div",{style:{fontWeight:"600",marginBottom:"2px",borderBottom:"1px solid var(--border)",paddingBottom:"2px"}},["Cluster Manager"]))
+        for(let c=0;c<results.nClusters;c++){
+            const count=results.counts[c]
+            const [cx,cy]=this.clusterCenterXY(c)
+            const color=this.getClusterColor(c,results.nClusters)
+            const row=CE("div",{
+                style:{
+                    display:"flex",alignItems:"center",gap:"4px",
+                    padding:"2px 4px",marginBottom:"2px",
+                    background:color+"20",border:"1px solid "+color+"60",borderRadius:"3px",
+                    cursor:"pointer",transition:"background 0.1s"
+                },
+                title:`Cluster ${c+1}: ${count} points (click to select the first formula of the cluster)\nCenter: (${Number.isFinite(cx)?cx.toFixed(3):"?"}, ${Number.isFinite(cy)?cy.toFixed(3):"?"})`
+            },[])
+            const swatch=CE("div",{style:{width:"12px",height:"12px",borderRadius:"50%",background:color,flex:"none",border:"1px solid #fff"}},[])
+            const label=CE("span",{style:{flex:"1",minWidth:"0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, [`Cluster ${c+1} (${count} pts)`])
+            const centerText=CE("span",{style:{opacity:"0.7",fontFamily:"monospace",fontSize:"0.8em",flex:"none"}}, [`(${Number.isFinite(cx)?cx.toFixed(2):"?"}, ${Number.isFinite(cy)?cy.toFixed(2):"?"})`])
+            row.append(swatch,label,centerText)
+            row.addEventListener("mouseenter",()=>row.style.background=color+"40")
+            row.addEventListener("mouseleave",()=>row.style.background=color+"20")
+            row.addEventListener("click",()=>this.selectClusterInList(c))
+            this.clustManager.append(row)
+        }
+        /* Partition button */
+        if(results.nClusters>0){
+            const partitionBtn=CE("button",{
+                type:"button",
+                style:{marginTop:"6px",width:"100%",padding:"4px 8px",cursor:"pointer",fontSize:"0.85em",background:"var(--accent)",color:"var(--accent-text)",border:"none",borderRadius:"3px"},
+                title:"Split the current collection into sub-collections, one per cluster"
+            },["Partition into Sub-collections"])
+            partitionBtn.addEventListener("click",()=>this.partitionCollectionByClusters())
+            this.clustManager.append(partitionBtn)
+        }
+    }
+    getClusterColor(index,total){
+        // Use the same color palette as traces
+        const hues=[0,60,120,180,240,300,30,90,150,210,270,330]
+        const hue=hues[index%hues.length]
+        return `hsl(${hue},70%,45%)`
+    }
+    /* THE CENTER OF A CLUSTER, IN THE COORDINATES ON SCREEN. The x is always
+       the mean m/z of the cluster's points; the y is the mean error in
+       "error" mode and the mean intensity in "intensity" mode. One fixed
+       (x,y) pair would answer to the wrong axis the moment the mode
+       changed — which is how a marker ended up drawn in mid-air. */
+    clusterCenterXY(index){
+        const centers=this.parameters.clustering?.results?.centers
+        if(!centers||!centers.mz) return [NaN,NaN]
+        const vertical=this.parameters.graphMode==="intensity"?centers.intensity:centers.errorPpm
+        return [centers.mz[index],vertical?vertical[index]:NaN]
+    }
+    selectClusterInList(clusterIndex){
+        // Highlight/select formulas belonging to this cluster in the left list
+        const clust=this.parameters.clustering
+        if(!clust.results||!this.currentCollection) return
+        const results=clust.results
+        if(results.collectionName&&results.collectionName!==this.currentCollection.name) return
+        const entries=this.currentCollection.entries
+        /* BY ENTRY, NOT BY POINT. A cluster holds POINTS — one per measured
+           target — and the i-th point is not the i-th formula: an entry owns
+           several targets or none at all, so indexing entries with an
+           assignment count selected whatever happened to sit at that row.
+           entryAssignments is the cluster of each FORMULA (the cluster of its
+           first measured target), which is what a row in the list is. */
+        const entryAssignments=results.entryAssignments??[]
+        const keysInCluster=new Set()
+        for(let i=0;i<entryAssignments.length&&i<entries.length;i++){
+            if(entryAssignments[i]===clusterIndex) keysInCluster.add(entries[i].key)
+        }
+        // Select first formula in this cluster
+        for(const entry of entries){
+            if(keysInCluster.has(entry.key)){
+                this.parameters.selection=entry.key
+                this.selectedEntry=entry
+                this.origin?.saveSessionSoon?.()
+                this.renderRows()
+                this.renderSelection()
+                this.refreshGraph() // Will color points by cluster
+                break
+            }
+        }
+    }
+    async computeClustering(){
+        /* ONE RUN AT A TIME, and only the LAST request matters. Eight
+           controls and the button call this with no debounce, and the pool
+           is FIFO: a burst of changes used to queue the whole pipeline once
+           per change, one behind the other — and while a spectral run sat
+           in the queue, every later task, PCA and k-means included, waited
+           behind it. A request that arrives mid-run is remembered and run
+           once, when the current one lands, with the parameters as they
+           stand by then. */
+        if(this.clusteringBusy){
+            this.clusteringPending=true
+            return
+        }
+        const clust=this.parameters.clustering
+        if(!this.currentCollection) return
+        const collection=this.currentCollection
+        let points, pointKeys, entryIndices, n_features
+        if(clust.dataSource==="graph"){
+            const extracted=this.extractPointsFromGraphTraces(collection.name)
+            points=extracted.points
+            pointKeys=extracted.pointKeys
+            entryIndices=extracted.entryIndices
+            n_features=extracted.n_features
+            // For graph source, store the trace-to-cluster mapping directly
+            clust.results={
+                ...clust.results,
+                pointKeys,
+                assignments:null, // Will be filled after clustering
+                collectionName:collection.name,
+                dataSource:"graph"
+            }
+        }else{
+            //Gather the POINTS, and remember WHICH target each one is. A point
+            //here is a target carrying all three measurements; the graph draws a
+            //target that has the m/z and whichever quantity is on screen, so the
+            //POSITION of a point in this list cannot be trusted to match its
+            //position in the graph's — the key is what makes them agree.
+            //Filter targets the SAME WAY the current graph mode does, so the
+            //keys match exactly what refreshGraph will plot.
+            const mode=this.parameters.graphMode
+            const needIntensity=mode==="intensity"
+            const needError=mode==="error"||mode===FormulaCollectionNode.GRAPH_MODE_DEFAULT
+            points=[]
+            pointKeys=[]
+            entryIndices=[]
+            for(let i=0;i<collection.entries.length;i++){
+                const entry=collection.entries[i]
+                const targets=entry.targets??[]
+                for(let t=0;t<targets.length;t++){
+                    const target=targets[t]
+                    if(!Number.isFinite(target.mz)) continue
+                    if(needIntensity&&!Number.isFinite(target.intensity)) continue
+                    if(needError&&!Number.isFinite(target.errorPpm)) continue
+                    // Feature vector: [mz, intensity, errorPpm] (use 0 for missing)
+                    const mz=target.mz
+                    const intensity=Number.isFinite(target.intensity)?target.intensity:0
+                    const errorPpm=Number.isFinite(target.errorPpm)?target.errorPpm:0
+                    points.push(mz,intensity,errorPpm)
+                    entryIndices.push(i)
+                    pointKeys.push(`${i}#${t}`)
+                }
+            }
+            n_features=3
+        }
+        if(points.length<clust.nClusters*n_features){
+            if(this.clustReadout){
+                this.clustReadout.textContent=`Need at least ${clust.nClusters*n_features} points`
+                this.clustReadout.style.color="var(--warn)"
+            }
+            return
+        }
+        const n_samples=points.length/n_features
+        if(this.clustReadout){
+            this.clustReadout.textContent="Computing..."
+            this.clustReadout.style.color="var(--accent)"
+        }
+        this.clusteringBusy=true
+        if(this.clustRunBtn) this.clustRunBtn.disabled=true
+        try{
+            /* THREE SCALES, ONE DISTANCE. m/z is hundreds, the intensity is
+               millions and the error is a few ppm: measured as they stand the
+               distance between two points IS the distance between their
+               intensities, and the clusters report on the detector rather than
+               on the chemistry. Each feature is centred and divided by its own
+               spread first — the standardisation every distance-based method
+               assumes, and what makes the optional PCA below a decorrelation
+               rather than a rescaling of whatever happens to be largest. */
+            const scaled=new Float64Array(points.length)
+            {
+                const means=new Float64Array(n_features)
+                const stds=new Float64Array(n_features)
+                for(let i=0;i<n_samples;i++) for(let j=0;j<n_features;j++) means[j]+=points[i*n_features+j]
+                for(let j=0;j<n_features;j++) means[j]/=n_samples
+                for(let i=0;i<n_samples;i++){
+                    for(let j=0;j<n_features;j++){
+                        const d=points[i*n_features+j]-means[j]
+                        stds[j]+=d*d
+                    }
+                }
+                //n-1, as the covariance in pca.rs uses it; a constant feature
+                //has no spread to divide by and stays a constant (as 1)
+                for(let j=0;j<n_features;j++) stds[j]=Math.sqrt(stds[j]/(n_samples-1))||1
+                for(let i=0;i<points.length;i++) scaled[i]=(points[i]-means[i%n_features])/stds[i%n_features]
+            }
+            // Step 1: PCA (optional, for decorrelation)
+            let projected=null
+            let useData=scaled
+            let useFeatures=n_features
+            if(clust.pcaComponents>0){
+                const pcaResult=await computePool.run("pca",{
+                    data:scaled,
+                    n_samples,
+                    n_features,
+                    n_components:Math.min(clust.pcaComponents,n_features)
+                })
+                if(pcaResult.projected&&pcaResult.projected.length>0){
+                    projected=pcaResult.projected
+                    useData=Array.from(projected)
+                    useFeatures=pcaResult.projected.length/n_samples
+                }
+            }
+            // Step 2: Clustering
+            let result
+            if(clust.mode==="kmeans"){
+                result=await computePool.run("kmeans",{
+                    data:useData,
+                    n_samples,
+                    n_features:useFeatures,
+                    n_clusters:clust.nClusters,
+                    max_iter:clust.maxIter,
+                    seed:clust.seed
+                })
+            }else{
+                result=await computePool.run("spectral",{
+                    data:useData,
+                    n_samples,
+                    n_features:useFeatures,
+                    n_clusters:clust.nClusters,
+                    sigma:clust.sigma,
+                    k_neighbors:clust.kNeighbors
+                })
+            }
+            if(!result||!result.assignments||result.assignments.length!==n_samples){
+                throw new Error("Clustering returned invalid result")
+            }
+            // Cluster counts - needed for both data sources
+            const counts=new Uint32Array(clust.nClusters)
+            // For graph data source: create clustered traces directly from the trace points
+            let clusteredTraces=null
+            if(clust.dataSource==="graph"){
+                // Build traces split by cluster using the extracted trace points
+                const tracePointsByCluster=new Map()
+                for(let i=0;i<result.assignments.length;i++){
+                    const assign=result.assignments[i]
+                    if(!tracePointsByCluster.has(assign)) tracePointsByCluster.set(assign,{xs:[],ys:[]})
+                    tracePointsByCluster.get(assign).xs.push(points[i*n_features])
+                    tracePointsByCluster.get(assign).ys.push(points[i*n_features+1])
+                }
+                clusteredTraces=[]
+                const graphCounts=new Uint32Array(clust.nClusters)
+                for(const [assign,{xs,ys}] of tracePointsByCluster){
+                    if(xs.length===0) continue
+                    graphCounts[assign]=xs.length
+                    counts[assign]=xs.length
+                    const color=this.getClusterColor(assign,clust.nClusters)
+                    const cx=new Float64Array(xs)
+                    const cy=new Float64Array(ys)
+                    clusteredTraces.push(new XYTrace({
+                        id:`${collection.name}:cluster${assign}:graph`,
+                        title:`${collection.name} — cluster ${assign+1} (${xs.length})`,
+                        wave:Wave.fromCoordinates(
+                            cx,
+                            cy,
+                            {collection:collection.name, cluster:assign},
+                            clust.results.labels??["x","y"]
+                        ),
+                        options:{
+                            color,
+                            mode:"points",
+                            marker:{shape:"circle",size:3},
+                            layer:"gl"
+                        }
+                    }))
+                }
+                // Use graph counts for the cluster manager
+                counts.set(graphCounts)
+            }
+            // Map assignments back to entries (for targets data source)
+            const entryAssignments=new Array(collection.entries.length).fill(-1)
+            const entryCounts=new Array(collection.entries.length).fill(0)
+            for(let i=0;i<entryIndices.length;i++){
+                const entryIdx=entryIndices[i]
+                const assign=result.assignments[i]
+                if(entryAssignments[entryIdx]===-1) entryAssignments[entryIdx]=assign
+                entryCounts[entryIdx]++
+            }
+            // Compute cluster centers in the units the graph can show
+            const centers={
+                mz:new Float64Array(clust.nClusters).fill(NaN),
+                errorPpm:new Float64Array(clust.nClusters).fill(NaN),
+                intensity:new Float64Array(clust.nClusters).fill(NaN)
+            }
+            const sums={
+                mz:new Float64Array(clust.nClusters),
+                errorPpm:new Float64Array(clust.nClusters),
+                intensity:new Float64Array(clust.nClusters)
+            }
+            /* THE CENTERS ARE OF THE POINTS, not of the entries: the mean
+               intensity of an entry's targets is a different number from the
+               entry's own intensity, and a center whose y is an intensity
+               drawn against an error axis sits anywhere. One center per
+               cluster per quantity — the drawing picks the pair the mode on
+               screen shows (clusterCenterXY). */
+            for(let i=0;i<entryIndices.length;i++){
+                const assign=result.assignments[i]
+                if(assign<0||assign>=clust.nClusters) continue
+                // Graph traces were already counted when their clustered traces
+                // were built from the trace points, so their counts are already
+                // right there and must not be added to again.
+                if(clust.dataSource!=="graph") counts[assign]++
+                // For graph source, entryIndices[i] is -1, so use the point index directly
+                const pointIdx=i
+                if(clust.dataSource==="graph"){
+                    // Graph traces carry only an x and a y (no error width), so
+                    // the cluster's m/z is the mean x and its vertical centre is
+                    // the mean y of its trace points.
+                    sums.mz[assign]+=points[pointIdx*n_features]
+                    sums.intensity[assign]+=points[pointIdx*n_features+1]
+                }else{
+                    sums.mz[assign]+=points[pointIdx*n_features]
+                    sums.intensity[assign]+=points[pointIdx*n_features+1]
+                    sums.errorPpm[assign]+=points[pointIdx*n_features+2]
+                }
+            }
+            // For graph source, the trace's second axis is the plotted quantity
+            // (intensity or error), so its mean is the cluster's vertical
+            // centre regardless of the mode on screen: reuse the intensity
+            // mean for the error coordinate instead of averaging an absent
+            // error width (which is what the old out-of-bounds read did).
+            for(let c=0;c<clust.nClusters;c++){
+                if(counts[c]>0){
+                    centers.mz[c]=sums.mz[c]/counts[c]
+                    centers.intensity[c]=sums.intensity[c]/counts[c]
+                    centers.errorPpm[c]=clust.dataSource==="graph"?centers.intensity[c]:sums.errorPpm[c]/counts[c]
+                }
+            }
+            clust.results={
+                collectionName:collection.name,
+                nClusters:clust.nClusters,
+                nPoints:n_samples,
+                assignments:Array.from(result.assignments),
+                pointKeys,
+                entryAssignments,
+                entryCounts,
+                centers,
+                counts:Array.from(counts),
+                projected:projected?Array.from(projected):null,
+                pcaComponents:clust.pcaComponents,
+                mode:clust.mode,
+                dataSource:clust.dataSource,
+                clusteredTraces:clusteredTraces,
+                labels:clust.dataSource==="graph"?(clust.results?.labels??["x","y"]):undefined
+            }
+            if(this.clustReadout){
+                this.clustReadout.textContent=`${clust.nClusters} clusters, ${n_samples} points`
+                this.clustReadout.style.color=""
+            }
+            this.updateClusterManager()
+            this.refreshGraph() // Recolor points by cluster
+        }catch(err){
+            console.error("[FormulaCollectionNode] Clustering failed:",err)
+            if(this.clustReadout){
+                this.clustReadout.textContent=`Error: ${err.message}`
+                this.clustReadout.style.color="var(--error)"
+            }
+        }finally{
+            if(this.clustRunBtn) this.clustRunBtn.disabled=false
+            this.clusteringBusy=false
+            if(this.clusteringPending){
+                this.clusteringPending=false
+                this.computeClustering()
+            }
+        }
+    }
+    clearClustering(){
+        this.parameters.clustering.results=null
+        this.clustReadout.textContent=""
+        this.updateClusterManager()
+        this.refreshGraph()
+    }
+    async partitionCollectionByClusters(){
+        const clust=this.parameters.clustering
+        if(!clust.results||!this.currentCollection) return
+        const results=clust.results
+        const collection=this.currentCollection
+        if(results.collectionName&&results.collectionName!==collection.name) return
+        if(results.dataSource==="graph"){
+            this.origin?.notice?.("Not available","Partitioning requires 'Targets' data source (3D). Switch data source and re-run clustering.")
+            return
+        }
+        const assignments=results.entryAssignments
+        /* ONE RESOLVE FOR THE WHOLE PARTITION. Each sub-collection used to be
+           created on its own and WITHOUT being awaited, so all of them raced
+           for whichever collection happened to be current when their formulas
+           landed — every cluster ended up inside the last one — and each
+           formula paid a full resolve of its own. The groups are built first,
+           the local collections are registered in one pass over
+           parameters.localCollections (the same array createCollection
+           writes), and the node resolves once at the end. */
+        const groups=[]
+        for(let c=0;c<results.nClusters;c++){
+            const texts=[]
+            for(let i=0;i<assignments.length&&i<collection.entries.length;i++){
+                if(assignments[i]!==c) continue
+                const entry=collection.entries[i]
+                //the notation, not the key: a group adduct's key does not
+                //read back to the same formula (see localFormula)
+                const text=entry.notation??entry.key
+                if(text&&!texts.includes(text)) texts.push(text)
+            }
+            if(texts.length) groups.push({name:`${collection.name} - Cluster ${c+1}`,texts})
+        }
+        if(!groups.length){
+            this.origin?.notice?.("No formulas to partition","No formulas assigned to clusters (check clustering ran on 'Targets' source).")
+            return
+        }
+        const created=[]
+        for(const group of groups){
+            if(this.parameters.localCollections.some(local=>local.name===group.name)){
+                this.origin?.notice?.("Name already used",`"${group.name}" already exists here.`)
+                continue
+            }
+            const local={name:group.name,keys:[]}
+            const problems=[]
+            for(const text of group.texts){
+                //read BEFORE stored, exactly like the add field: a spelling
+                //that does not parse would come back as a diagnostic on every
+                //single resolve, forever
+                if(this.localFormula(text,group.name,problems)&&!local.keys.includes(text)){
+                    local.keys.push(text)
+                }
+            }
+            if(!local.keys.length) continue
+            this.parameters.localCollections.push(local)
+            created.push({name:group.name,count:local.keys.length})
+        }
+        if(!created.length) return
+        this.parameters.selection=null
+        this.origin?.saveSessionSoon?.()
+        await this.startResolve()
+        this.resolveChildren()
+        this.origin?.notice?.(
+            "Partitioned",
+            `Created ${created.length} sub-collections from "${collection.name}": `+
+            created.map(c=>`${c.name} (${c.count})`).join(", ")
+        )
+    }
+    /* EXTRACT 2D POINTS FROM THE GRAPH TRACES of the given collection.
+       Returns {points, pointKeys, entryIndices, n_features, labels}.
+       Uses the currently displayed traces (what the user sees). */
+    extractPointsFromGraphTraces(collectionName){
+        const points=[]
+        const pointKeys=[]
+        const entryIndices=[]
+        let n_features=2
+        let xLabel="x", yLabel="y"
+        if(!this.graph||!this.graph.traces) return {points,pointKeys,entryIndices,n_features,labels:[xLabel,yLabel]}
+        for(const trace of this.graph.traces){
+            if(!trace.wave||!trace.wave.core) continue
+            const wave=trace.wave
+            const count=wave.dims[0]
+            const core=wave.core
+            xLabel=wave.labels?.[0]??"x"
+            yLabel=wave.labels?.[1]??"y"
+            // Match trace to collection by name in trace.id or metadata
+            const traceColl=trace.id?.split(":")[0]??trace.title?.split(" — ")[0]??trace.title
+            if(traceColl!==collectionName) continue
+            for(let i=0;i<count;i++){
+                const x=core[i]
+                const y=core[count+i]
+                if(!Number.isFinite(x)||!Number.isFinite(y)) continue
+                points.push(x,y)
+                pointKeys.push(`${traceColl}#${i}`)
+                // We don't have entry index from graph traces, use -1
+                entryIndices.push(-1)
+            }
+        }
+        return {points,pointKeys,entryIndices,n_features,labels:[xLabel,yLabel]}
     }
     suicide(options={}){
         /* The scroll list holds a ResizeObserver and a pool of rows: without
