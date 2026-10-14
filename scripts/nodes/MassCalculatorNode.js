@@ -575,7 +575,7 @@ export class MassCalculatorNode extends Node{
                 .attr("y",glowTop)
                 .attr("width",barWidth*3)
                 .attr("height",Math.max(1,glowBottom-glowTop))
-                .attr("fill","#7dffa8")
+                .attr("fill","#40e0d0")
                 .attr("stroke","none")
                 .attr("opacity","0.55")
                 .attr("filter",`url(#${blurId})`)
