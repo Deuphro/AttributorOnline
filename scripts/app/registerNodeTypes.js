@@ -6,6 +6,7 @@ import {
     DelimitedTextNode,
     FKMDNode,
     FormulaCollectionNode,
+    MassCalculatorNode,
     NodeWithAccordionGraph,
     NodeWithRightAccordionGraph,
     PeakPickingNode,
@@ -33,7 +34,8 @@ export function registerNodeTypes(){
         FormulaCollectionNode,
         AttributionNode,
         ChatNode,
-        CalibrationNode
+        CalibrationNode,
+        MassCalculatorNode
     })
     for(const NodeType of [
         DelimitedTextNode,
@@ -45,7 +47,8 @@ export function registerNodeTypes(){
         ChatNode,
         FormulaCollectionNode,
         AttributionNode,
-        CalibrationNode
+        CalibrationNode,
+        MassCalculatorNode
     ]){
         SELF_SHAPED_NODES.add(NodeType)
     }

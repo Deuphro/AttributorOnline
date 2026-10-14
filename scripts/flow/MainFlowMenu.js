@@ -7,6 +7,7 @@ import {
     DelimitedTextNode,
     FKMDNode,
     FormulaCollectionNode,
+    MassCalculatorNode,
     NodeWithAccordionGraph,
     NodeWithRightAccordionGraph,
     PeakPickingNode,
@@ -81,6 +82,10 @@ export class MainFlowMenu extends Menu{
                         }
                         case "chat": {
                             node = new ChatNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
+                            break
+                        }
+                        case "massCalculator": {
+                            node = new MassCalculatorNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
                             break
                         }
                         case "formulaCollection": {

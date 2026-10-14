@@ -109,7 +109,8 @@ const defaultMenu={
             }
         },
         "Tools":{
-            "Chat":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Chat',type:'chat'}}}))}
+            "Chat":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Chat',type:'chat'}}}))},
+            "Mass Calculator":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Mass Calculator',type:'massCalculator'}}}))}
         },
     }
 }
