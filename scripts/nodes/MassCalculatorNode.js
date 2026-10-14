@@ -570,12 +570,23 @@ export class MassCalculatorNode extends Node{
                 filter.append("feGaussianBlur")
                     .attr("stdDeviation","2.2")
             }
+            const glowGradId=`masscalc-glow-gradient-${graph.graphSVG.attr("id")}`
+            let glowGrad=glowDefs.select(`#${glowGradId}`)
+            if(glowGrad.empty()){
+                glowGrad=glowDefs.append("linearGradient")
+                    .attr("id",glowGradId)
+                    .attr("x1","0%").attr("x2","0%")
+                    .attr("y1","0%").attr("y2","100%")
+                glowGrad.append("stop").attr("offset","0%").attr("stop-color","#40e0d0").attr("stop-opacity","1")
+                glowGrad.append("stop").attr("offset","60%").attr("stop-color","#40e0d0").attr("stop-opacity","0.6")
+                glowGrad.append("stop").attr("offset","100%").attr("stop-color","#40e0d0").attr("stop-opacity","0")
+            }
             glowLayer.append("rect")
                 .attr("x",glowX-barWidth*1.5)
                 .attr("y",glowTop)
                 .attr("width",barWidth*3)
                 .attr("height",Math.max(1,glowBottom-glowTop))
-                .attr("fill","#40e0d0")
+                .attr("fill",`url(#${glowGradId})`)
                 .attr("stroke","none")
                 .attr("opacity","0.55")
                 .attr("filter",`url(#${blurId})`)
