@@ -140,6 +140,13 @@ export class MassCalculatorNode extends Node{
             this.parameters.formula=""
             this.parameters.charge=0
             this.currentStoich=null
+            //reset the widgets too: `parameters` alone leaves the typed
+            //formula and charge on screen, out of sync with the cleared state
+            if(this.formulaInput) this.formulaInput.value=""
+            if(this.chargeInput) this.chargeInput.value=0
+            //the spectrum has to be wiped BY HAND: with currentStoich null,
+            //updatePlot returns early and would leave the old peaks standing
+            this.clearPlot()
             this.updateAll()
         })
 
@@ -326,7 +333,7 @@ export class MassCalculatorNode extends Node{
     buildPlotArea(){
         const wrap=CE("div",{style:{display:"grid",gridTemplateRows:"minmax(0,1fr)",gap:"4px",minHeight:"0"}},[])
 
-        this.plotContainer=CE("div",{style:{width:"100%",height:"100%",minHeight:"0",overflow:"hidden"}},[])
+        this.plotContainer=CE("div",{style:{width:"100%",height:"100%",minHeight:"0",overflow:"hidden",position:"relative"}},[])
         wrap.appendChild(this.plotContainer)
 
         this._resizeObserver=new ResizeObserver(()=>{
@@ -508,6 +515,31 @@ export class MassCalculatorNode extends Node{
         }
     }
 
+    /* CLEAR THE SPECTRE: with currentStoich null, updatePlot returns early,
+       so it can never wipe the peaks on its own — the old spectrum would
+       outlive the formula that made it. The .anchor group is built once and
+       survives drawGraph, so the peak/glow layers are removed by hand and the
+       traces are emptied before the redraw. pendingBars goes first so the
+       redraw hook (which repaints from pendingBars) does not bring them back. */
+    clearPlot(){
+        this.pendingTrace=null
+        this.pendingBars=null
+        this.hidePeakTip()
+        if(!this.plot){
+            //no plot yet: wipe the placeholder text ("No isotopologues…")
+            if(this.plotContainer) this.plotContainer.textContent=""
+            return
+        }
+        const anchor=this.plot.graphSVG?.select(".anchor")
+        if(anchor&&!anchor.empty()){
+            anchor.select(".masscalc-bars").remove()
+            anchor.select(".masscalc-glow").remove()
+            anchor.select(".masscalc-hits").remove()
+        }
+        this.plot.setTraces([])
+        this.plot.drawGraph()
+    }
+
     /* Peak bars: narrow vertical bars drawn inside the .anchor group — same
        coordinates as the points (plotScales are graphzone-local, the anchor
        carries the margin translate). Gradient in objectBoundingBox so each
@@ -519,12 +551,24 @@ export class MassCalculatorNode extends Node{
         if(!graph?.graphSVG) return
         const zone=graph.graphzone
         if(!(zone.width>0&&zone.height>0)) return
+        //a repaint swaps the hovered column for a fresh one without firing
+        //pointerleave (the old node is simply detached): hide the tip here or
+        //it would linger showing a peak that no longer exists
+        this.hidePeakTip()
         const {xScale,yScale}=graph.plotScales()
         const anchor=graph.graphSVG.select(".anchor")
         if(anchor.empty()) return
         let barLayer=anchor.select(".masscalc-bars")
         if(barLayer.empty()) barLayer=anchor.append("g").attr("class","masscalc-bars")
         barLayer.selectAll("*").remove()
+        // hover layer: the painted bars are only 3px wide — impossible to aim
+        // at — so invisible wider rects sit ON TOP of them and drive a
+        // .pick-tip tooltip (see showPeakTip). The layer is appended, hence
+        // last, and wiped on every repaint like the bars, since .anchor
+        // persists across drawGraph.
+        let hitLayer=anchor.select(".masscalc-hits")
+        if(hitLayer.empty()) hitLayer=anchor.append("g").attr("class","masscalc-hits")
+        hitLayer.selectAll("*").remove()
         // <defs> must be appended (not selected-into-existence): d3's append
         // on an empty selection creates nothing, leaving fill="url(#...)"
         // dangling — SVG then refuses to paint the rect at all.
@@ -555,6 +599,7 @@ export class MassCalculatorNode extends Node{
         let glowTop=Infinity
         let glowBottom=-Infinity
         let glowX=0
+        const hits=[]
         for(const iso of isotopologues){
             if(iso.logProbability<-20) continue
             const rel=Math.exp(iso.logProbability)/maxProb
@@ -563,6 +608,7 @@ export class MassCalculatorNode extends Node{
             const pyBase=yScale(0)
             if(!Number.isFinite(px)||!Number.isFinite(pyTop)||!Number.isFinite(pyBase)) continue
             if(px<0||px>zone.width) continue
+            hits.push({px,pyTop,pyBase,iso,rel})
             if(rel>=0.99){
                 glowTop=Math.min(glowTop,Math.min(pyTop,pyBase))
                 glowBottom=Math.max(glowBottom,Math.max(pyTop,pyBase))
@@ -613,6 +659,103 @@ export class MassCalculatorNode extends Node{
                 .attr("opacity","0.55")
                 .attr("filter",`url(#${blurId})`)
         }
+        /* Hover columns: the painted bars are 3px wide — impossible to aim at.
+           Each peak gets an invisible full-height column instead, so the whole
+           vertical line over a peak is hittable. Its width is capped by the
+           gap to the nearest neighbour (hits are sorted by x for this), so two
+           close isotopologues share the space without fighting over the
+           cursor: the tooltip always describes exactly one peak. */
+        const HIT_MAX_WIDTH=16
+        const ordered=[...hits].sort((a,b)=>a.px-b.px)
+        for(let i=0;i<ordered.length;i++){
+            const hit=ordered[i]
+            const gapPrev=i>0?hit.px-ordered[i-1].px:Infinity
+            const gapNext=i<ordered.length-1?ordered[i+1].px-hit.px:Infinity
+            const width=Math.max(barWidth,Math.min(HIT_MAX_WIDTH,Math.min(gapPrev,gapNext)))
+            hitLayer.append("rect")
+                .attr("class","peak-hit")
+                .attr("x",hit.px-width/2)
+                .attr("y",0)
+                .attr("width",width)
+                .attr("height",zone.height)
+                .attr("fill","transparent")
+                .attr("pointer-events","all")
+                .on("pointerenter",(event)=>this.showPeakTip(hit,event))
+                .on("pointermove",(event)=>this.positionPeakTip(event))
+                .on("pointerleave",()=>this.hidePeakTip())
+        }
+    }
+
+    /* The tooltip follows the .pick-tip pattern already used by the WebGL
+       plot's pick overlay (a styled HTML div, not SVG text, so a long isotopic
+       formula wraps instead of overflowing). One instance is reused and it
+       lives in plotContainer — NOT in the SVG — so a repaint never detaches it.
+
+       pointer-events:none is essential: with the default `auto`, parking the
+       cursor over the tip would fire pointerleave on the hover column beneath
+       it, which hides the tip, which re-exposes the column — an endless flicker. */
+    ensurePeakTip(){
+        if(this._peakTip) return this._peakTip
+        this._peakTip=CE("div",{className:"pick-tip"},[])
+        this._peakTip.style.display="none"
+        this._peakTip.style.pointerEvents="none"
+        this.plotContainer.appendChild(this._peakTip)
+        return this._peakTip
+    }
+
+    showPeakTip(hit,event){
+        const tip=this.ensurePeakTip()
+        const iso=hit.iso
+        tip.replaceChildren()
+        const head=CE("div",{className:"pick-head"},[])
+        const swatch=CE("span",{className:"pick-swatch"},[])
+        stylize(swatch,{background:"#2ecc71"})
+        head.appendChild(swatch)
+        // the isotopic FORMULA: `notation` writes every mass number that is not
+        // the default isotope, so a 13C peak reads "13C C5 H12 O6" while the
+        // all-12C peak reads "C6 H12 O6" — exactly the composition at a glance
+        const title=CE("span",{className:"pick-title"},[iso.notation||iso.key])
+        // let a long formula wrap rather than be clipped by the nowrap default
+        stylize(title,{whiteSpace:"normal",overflow:"visible"})
+        head.appendChild(title)
+        tip.appendChild(head)
+        const charge=iso.charge||0
+        const rows=[
+            ["m/z",iso.mz.toFixed(5)],
+            ["Mass",iso.ionMass.toFixed(5)],
+            ["Abundance",(hit.rel*100).toFixed(2)+" %"]
+        ]
+        if(charge!==0) rows.push(["Charge",`${charge>0?"+":""}${charge}`])
+        for(const [key,value] of rows){
+            const row=CE("div",{className:"pick-row"},[])
+            row.appendChild(CE("span",{className:"pick-key"},[key]))
+            row.appendChild(CE("span",{className:"pick-val"},[value]))
+            tip.appendChild(row)
+        }
+        tip.style.display="block"
+        this.positionPeakTip(event)
+    }
+
+    //place the tip near the cursor, flipping it left/above when it would run
+    //past the plot edge. Measured AFTER it is shown, so the first placement is
+    //already correct (no first-frame jump).
+    positionPeakTip(event){
+        const tip=this._peakTip
+        if(!tip||tip.style.display==="none") return
+        const host=this.plotContainer.getBoundingClientRect()
+        const gap=14
+        let x=event.clientX-host.left+gap
+        let y=event.clientY-host.top+gap
+        const w=tip.offsetWidth
+        const h=tip.offsetHeight
+        if(x+w>host.width) x=event.clientX-host.left-w-gap
+        if(y+h>host.height) y=event.clientY-host.top-h-gap
+        tip.style.left=`${Math.max(0,x)}px`
+        tip.style.top=`${Math.max(0,y)}px`
+    }
+
+    hidePeakTip(){
+        if(this._peakTip) this._peakTip.style.display="none"
     }
 
     serializeState(){
