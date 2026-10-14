@@ -2,8 +2,8 @@ import {Node} from "../core/index.js"
 import {Dialog} from "../ui/Dialog.js"
 import {Plot2D} from "../ui/Plot2D.js"
 import {Formula,Stoichiometry,loadTable} from "../chemistry.js"
+import {Wave,XYTrace} from "../formats.js"
 import {CE,stylize} from "../util.js"
-import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 
 export class MassCalculatorNode extends Node{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -12,8 +12,6 @@ export class MassCalculatorNode extends Node{
         this.parameters.formula=""
         this.parameters.charge=0
         this.parameters.ratio=0.01
-        this.parameters.mzWindow={mz:null,ppm:5}
-        this.parameters.showLabels=true
         this.dialog=null
         this.plot=null
         this.tablePromise=null
@@ -71,11 +69,10 @@ export class MassCalculatorNode extends Node{
     }
 
     buildCenterArea(){
-        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"auto 1fr",gap:"8px",height:"100%",minHeight:"0"}},[])
+        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"max-content minmax(0, 1fr)",gap:"8px",height:"100%",minHeight:"0",minWidth:"0",overflow:"auto"}},[])
         const periodicTable=this.buildPeriodicTable()
         const plotArea=this.buildPlotArea()
-        stylize(periodicTable,{height:"100%",minHeight:"0",overflow:"auto"})
-        stylize(plotArea,{height:"100%",minHeight:"0"})
+        stylize(plotArea,{height:"100%",minHeight:"0",minWidth:"0"})
         wrap.append(periodicTable,plotArea)
         return wrap
     }
@@ -141,59 +138,115 @@ export class MassCalculatorNode extends Node{
     }
 
     buildPeriodicTable(){
-        const wrap=CE("div",{style:{display:"flex",flexDirection:"column",overflow:"auto",minHeight:"0"}},[])
-        const table=CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(18, 1fr)",gap:"2px"}},[])
+        const wrap=CE("div",{style:{display:"block",height:"100%",minHeight:"0",overflow:"visible"}},[])
+        const table=CE("div",{style:{
+            display:"grid",
+            gridTemplateColumns:"repeat(18, 30px)",
+            gridAutoRows:"30px",
+            gap:"3px",
+            alignContent:"start",
+            justifyContent:"start",
+            width:"max-content"
+        }},[])
 
-        const periods=this.getPeriodLayout()
-
-        for(const period of periods){
-            for(const z of period){
-                if(z===null){
-                    table.appendChild(CE("div",{style:{visibility:"hidden"}},[]))
-                }else{
-                    const el=this.elements.find(e=>e.Z===z)
-                    if(el){
-                        table.appendChild(this.buildElementButton(el))
-                    }else{
-                        table.appendChild(CE("div",{style:{visibility:"hidden"}},[]))
-                    }
-                }
-            }
+        const sorted=[...this.elements].sort((a,b)=>a.Z-b.Z)
+        for(const el of sorted){
+            const pos=this.tablePosition(el.Z)
+            if(!pos) continue
+            const btn=this.buildElementButton(el)
+            btn.style.gridRow=`${pos[0]}`
+            btn.style.gridColumn=`${pos[1]}`
+            btn.dataset.group=String(pos[1])
+            table.appendChild(btn)
         }
 
         wrap.appendChild(table)
         return wrap
     }
 
-    getPeriodLayout(){
-        return [
-            [1,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,2],
-            [3,4,null,null,null,null,null,null,null,null,null,null,null,5,6,7,8,10],
-            [11,12,null,null,null,null,null,null,null,null,null,null,null,13,14,15,16,18],
-            [19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36],
-            [37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54],
-            [55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86],
-            [87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118]
-        ]
+    /* Display position [row, col] in a 9-row grid (7 periods + 2 f-block rows).
+       Computed from Z alone (elements.json carries no group/period field),
+       so F/Ne land in columns 17/18 — never wrapped to the left. */
+    tablePosition(Z){
+        if(Z===1) return [1,1]
+        if(Z===2) return [1,18]
+        if(Z>=3&&Z<=10) return [2,Z<=4?Z-2:Z+8]
+        if(Z>=11&&Z<=18) return [3,Z<=12?Z-10:Z]
+        if(Z>=19&&Z<=36) return [4,Z-18]
+        if(Z>=37&&Z<=54) return [5,Z-36]
+        if(Z===55||Z===56) return [6,Z-54]
+        if(Z>=57&&Z<=71) return [8,Z-57+3]
+        if(Z>=72&&Z<=86) return [6,Z-68]
+        if(Z===87||Z===88) return [7,Z-86]
+        if(Z>=89&&Z<=103) return [9,Z-89+3]
+        if(Z>=104&&Z<=118) return [7,Z-100]
+        return null
+    }
+
+    categoryFor(Z){
+        if(Z===1||(Z>=5&&Z<=8)||Z===14||Z===15||Z===16||Z===33||Z===34||Z===51||Z===52) return "nonmetal"
+        if([9,17,35,53,85,117].includes(Z)) return "halogen"
+        if([2,10,18,36,54,86,118].includes(Z)) return "noble"
+        if([3,11,19,37,55,87].includes(Z)) return "alkali"
+        if([4,12,20,38,56,88].includes(Z)) return "alkaline"
+        if(Z>=57&&Z<=71) return "lanthanide"
+        if(Z>=89&&Z<=103) return "actinide"
+        if((Z>=21&&Z<=30)||(Z>=39&&Z<=48)||(Z>=72&&Z<=80)||(Z>=104&&Z<=112)) return "transition"
+        return "post-transition"
+    }
+
+    categoryColor(cat){
+        switch(cat){
+            case "alkali": return "rgba(255,120,120,0.12)"
+            case "alkaline": return "rgba(255,180,100,0.12)"
+            case "transition": return "rgba(255,220,120,0.10)"
+            case "post-transition": return "rgba(160,200,255,0.10)"
+            case "nonmetal": return "rgba(120,220,150,0.12)"
+            case "halogen": return "rgba(150,220,255,0.14)"
+            case "noble": return "rgba(190,150,255,0.14)"
+            case "lanthanide": return "rgba(255,160,220,0.10)"
+            case "actinide": return "rgba(255,140,180,0.12)"
+            default: return "var(--surface)"
+        }
+    }
+
+    categoryAccent(cat){
+        switch(cat){
+            case "alkali": return "#e74c3c"
+            case "alkaline": return "#e67e22"
+            case "transition": return "#f1c40f"
+            case "post-transition": return "#5dade2"
+            case "nonmetal": return "#2ecc71"
+            case "halogen": return "#3498db"
+            case "noble": return "#9b59b6"
+            case "lanthanide": return "#e84393"
+            case "actinide": return "#d63031"
+            default: return "var(--border)"
+        }
     }
 
     buildElementButton(element){
         const count=this.currentStoich?.counts?.get(element)||0
         const isIon=this.currentStoich?.ionisation?.some(t=>t.group?.has(element))||false
+        const cat=this.categoryFor(element.Z)
 
         const btn=CE("button",{
             type:"button",
             title:`${element.name} (${element.symbol}) - Z=${element.Z}\nLeft click: add\nRight click: remove\nCount: ${count}${isIon?" (in ion group)":""}`,
             style:{
                 padding:"0",
-                fontSize:"0.7em",
-                aspectRatio:"1",
-                minWidth:"32px",
-                maxWidth:"32px",
-                minHeight:"32px",
-                maxHeight:"32px",
-                background:count>0?isIon?"rgba(255,100,100,0.3)":"rgba(100,200,100,0.3)":"var(--surface)",
-                border:"1px solid var(--border)",
+                fontSize:"0.95em",
+                fontWeight:"700",
+                width:"30px",
+                height:"30px",
+                minWidth:"30px",
+                minHeight:"30px",
+                maxWidth:"30px",
+                maxHeight:"30px",
+                boxSizing:"border-box",
+                background:count>0?isIon?"rgba(255,100,100,0.3)":"rgba(100,200,100,0.3)":this.categoryColor(cat),
+                border:count>0?"1px solid var(--accent)":"1px solid var(--border)",
+                borderLeft:`3px solid ${this.categoryAccent(cat)}`,
                 borderRadius:"3px",
                 color:count>0?isIon?"#ff8888":"#88ff88":"var(--text)",
                 whiteSpace:"nowrap",
@@ -249,40 +302,7 @@ export class MassCalculatorNode extends Node{
     }
 
     buildPlotArea(){
-        const wrap=CE("div",{style:{display:"grid",gridTemplateRows:"auto minmax(0,1fr)",gap:"4px",minHeight:"0"}},[])
-        const controls=CE("div",{style:{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}},[])
-
-        const mzLabel=CE("label",{style:{fontSize:"0.8em",color:"var(--text-muted)"}},["m/z center"])
-        this.mzCenterInput=CE("input",{type:"number",step:"any",style:{width:"80px"},placeholder:"auto"},[])
-        this.mzCenterInput.addEventListener("change",()=>{
-            const val=parseFloat(this.mzCenterInput.value)
-            this.parameters.mzWindow.mz=Number.isFinite(val)?val:null
-            this.updatePlot()
-        })
-
-        const ppmLabel=CE("label",{style:{fontSize:"0.8em",color:"var(--text-muted)"}},["±ppm"])
-        this.ppmInput=CE("input",{type:"number",value:5,min:0.1,max:100,step:0.1,style:{width:"50px"}},[])
-        this.ppmInput.addEventListener("change",()=>{
-            this.parameters.mzWindow.ppm=parseFloat(this.ppmInput.value)||5
-            this.updatePlot()
-        })
-
-        const showAllBtn=CE("button",{type:"button",style:{fontSize:"0.75em",padding:"2px 6px"}},["Show All"])
-        showAllBtn.addEventListener("click",()=>{
-            this.parameters.mzWindow.mz=null
-            this.mzCenterInput.value=""
-            this.updatePlot()
-        })
-
-        const peakLabelsCheckbox=CE("input",{type:"checkbox",id:"peakLabels",checked:true},[])
-        peakLabelsCheckbox.addEventListener("change",()=>{
-            this.parameters.showLabels=peakLabelsCheckbox.checked
-            this.updatePlot()
-        })
-        const peakLabelsLabel=CE("label",{htmlFor:"peakLabels",style:{fontSize:"0.75em",cursor:"pointer"}},["Labels"])
-
-        controls.append(mzLabel,this.mzCenterInput,ppmLabel,this.ppmInput,showAllBtn,peakLabelsCheckbox,peakLabelsLabel)
-        wrap.appendChild(controls)
+        const wrap=CE("div",{style:{display:"grid",gridTemplateRows:"minmax(0,1fr)",gap:"4px",minHeight:"0"}},[])
 
         this.plotContainer=CE("div",{style:{width:"100%",height:"100%",minHeight:"0",overflow:"hidden"}},[])
         wrap.appendChild(this.plotContainer)
@@ -324,9 +344,9 @@ export class MassCalculatorNode extends Node{
         }
         try{
             const table=await this.ensureTable()
-            const parsed=Formula.parse(this.parameters.formula,{table})
+            const parsed=Formula.parse(this.parameters.formula,table)
             if(parsed){
-                this.currentStoich=parsed.root
+                this.currentStoich=parsed
                 if(this.parameters.charge!==0){
                     this.currentStoich=new Stoichiometry({
                         composition:this.currentStoich.composition,
@@ -396,13 +416,17 @@ export class MassCalculatorNode extends Node{
         try{
             const isotopologues=[...this.currentStoich.isotopologues({
                 ratio:this.parameters.ratio,
-                within:this.parameters.mzWindow.mz?{...this.parameters.mzWindow}:null,
                 limit:200
             })]
 
             if(isotopologues.length===0){
                 this.plotContainer.textContent="No isotopologues in range"
-                if(this.plot) this.plot.container.textContent=""
+                this.pendingTrace=null
+                this.pendingBars=null
+                if(this.plot){
+                    this.plot.setTraces([])
+                    this.plot.drawGraph()
+                }
                 return
             }
 
@@ -411,36 +435,50 @@ export class MassCalculatorNode extends Node{
             const maxProb=Math.max(...probs)
             const normalized=probs.map(p=>p/maxProb)
 
-            const trace={
-                x:masses,
-                y:normalized,
-                mode:"markers",
-                marker:{size:6,color:"var(--accent)"},
-                name:"Isotopic distribution"
-            }
+            const wave=Wave.fromCoordinates(
+                new Float64Array(masses),
+                new Float64Array(normalized),
+                {title:"Isotopic distribution"},
+                ["m/z","Relative abundance"]
+            )
+            const trace=new XYTrace({
+                id:"masscalc:isotopic-distribution",
+                title:"Isotopic distribution",
+                wave,
+                options:{
+                    color:"#2ecc71",
+                    mode:"points",
+                    marker:{shape:"circle",size:0},
+                    line:{size:0}
+                }
+            })
 
-            if(this.plot){
-                this.plot.data=[trace]
-                this.plot.drawGraph()
-            }else if(this.plotContainer.clientWidth>0 && this.plotContainer.clientHeight>0){
-                this.plot=new Plot2D([trace],"Isotopic Distribution",this.origin,this.plotContainer)
-            }else{
-                // Container not ready yet, clear and wait for resize
-                this.plotContainer.textContent=""
-                return
+            if(!this.plot){
+                if(!(this.plotContainer.clientWidth>0&&this.plotContainer.clientHeight>0)){
+                    // Container not ready yet, clear and wait for resize
+                    this.plotContainer.textContent=""
+                    this.pendingTrace=trace
+                    this.pendingBars=isotopologues
+                    return
+                }
+                this.plot=new Plot2D([],"Isotopic Distribution",this.origin,this.plotContainer)
+                const origDrawGraph=this.plot.drawGraph.bind(this.plot)
+                const self=this
+                this.plot.drawGraph=function(...args){
+                    const out=origDrawGraph(...args)
+                    if(self.pendingBars) self.drawPeakBars(self.pendingBars)
+                    return out
+                }
             }
+            this.pendingTrace=trace
+            this.pendingBars=isotopologues
+            this.plot.setTraces([trace])
+            this.plot.syncAxisLabels()
 
-            if(this.parameters.mzWindow.mz){
-                const {mz,ppm}=this.parameters.mzWindow
-                const half=mz*ppm*1e-6
-                this.plot.parameters.axis.bottom.domain=[mz-half,mz+half]
-                this.plot.parameters.axis.bottom.autoDomain=false
-                this.plot.drawGraph()
-            }
-
-            if(this.parameters.showLabels && this.plot && this.plot.svg){
-                this.addPeakLabels(isotopologues)
-            }
+            this.plot.parameters.axis.bottom.autoDomain=true
+            this.plot.parameters.axis.left.autoDomain=true
+            this.plot.drawGraph()
+            this.drawPeakBars(isotopologues)
 
         }catch(err){
             console.error("Plot update error:",err)
@@ -448,44 +486,58 @@ export class MassCalculatorNode extends Node{
         }
     }
 
-    addPeakLabels(isotopologues){
+    /* Peak bars: narrow vertical bars drawn as an SVG overlay on top of the
+       Plot2D graph — white at the top, green at 75% height, fading to fully
+       transparent at the baseline. Re-painted after every drawGraph via the
+       hook installed in updatePlot, so zoom/pan/resize keep them. */
+    drawPeakBars(isotopologues){
         if(!this.plot?.svg) return
         const svg=this.plot.svg
-        svg.selectAll(".peak-label").remove()
+        svg.selectAll(".peak-bar").remove()
+        const defs=svg.select("defs")
+        const defsSel=defs.empty()?svg.insert("defs",":first-child"):defs
+        defsSel.selectAll("[id^='masscalc-peak-gradient']").remove()
+        const gid=`masscalc-peak-gradient-${Plot2D.instanceCounter}`
+        const gradient=defsSel.append("linearGradient")
+            .attr("id",gid)
+            .attr("gradientUnits","userSpaceOnUse")
+            .attr("x1",0)
+        gradient.append("stop").attr("offset","0%").attr("stop-color","#ffffff")
+        gradient.append("stop").attr("offset","75%").attr("stop-color","#2ecc71")
+        gradient.append("stop").attr("offset","100%").attr("stop-color","#2ecc71").attr("stop-opacity","0")
 
         const gz=this.plot.graphzone
         const margins=this.plot.parameters.margins
-        const xScale=d3.scaleLinear()
-            .domain(this.plot.parameters.axis.bottom.domain)
-            .range([margins.left, gz.width+margins.left])
-        const yScale=d3.scaleLinear()
-            .domain(this.plot.parameters.axis.left.domain)
-            .range([gz.height+margins.top, margins.top])
-
+        const {xScale,yScale}=this.plot.plotScales()
+        const maxProb=Math.exp(isotopologues[0].logProbability)
+        const barWidth=3
         for(const iso of isotopologues){
             if(iso.logProbability<-20) continue
+            const rel=Math.exp(iso.logProbability)/maxProb
             const x=xScale(iso.mz)
-            const y=yScale(Math.exp(iso.logProbability)/Math.exp(isotopologues[0].logProbability))
-            if(x<margins.left||x>gz.width+margins.left||y<margins.top||y>gz.height+margins.top) continue
-
-            svg.append("text")
-                .attr("class","peak-label")
-                .attr("x",x)
-                .attr("y",y-4)
-                .attr("text-anchor","middle")
-                .attr("font-size","8px")
-                .attr("fill","var(--text-muted)")
-                .text(iso.notation)
+            const yTop=yScale(rel)
+            const yBase=yScale(0)
+            const px=x+margins.left
+            const pyTop=yTop+margins.top
+            const pyBase=yBase+margins.top
+            if(px<margins.left||px>gz.width+margins.left) continue
+            if(pyTop<margins.top||pyBase>gz.height+margins.top) continue
+            svg.append("rect")
+                .attr("class","peak-bar")
+                .attr("x",px-barWidth/2)
+                .attr("y",pyTop)
+                .attr("width",barWidth)
+                .attr("height",Math.max(1,pyBase-pyTop))
+                .attr("fill",`url(#${gid})`)
         }
+        gradient.attr("y1",margins.top).attr("y2",gz.height+margins.top)
     }
 
     serializeState(){
         return {
             formula:this.parameters.formula,
             charge:this.parameters.charge,
-            ratio:this.parameters.ratio,
-            mzWindow:this.parameters.mzWindow,
-            showLabels:this.parameters.showLabels
+            ratio:this.parameters.ratio
         }
     }
 
@@ -494,8 +546,6 @@ export class MassCalculatorNode extends Node{
         this.parameters.formula=state.formula||""
         this.parameters.charge=state.charge||0
         this.parameters.ratio=state.ratio??0.01
-        this.parameters.mzWindow=state.mzWindow||{mz:null,ppm:5}
-        this.parameters.showLabels=state.showLabels??true
         if(this.dialog){
             this.render()
         }
