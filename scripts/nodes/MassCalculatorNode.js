@@ -515,13 +515,24 @@ export class MassCalculatorNode extends Node{
                 .attr("id",gradId)
                 .attr("x1","0%").attr("x2","0%")
                 .attr("y1","0%").attr("y2","100%")
-            gradient.append("stop").attr("offset","0%").attr("stop-color","#ffffff")
-            gradient.append("stop").attr("offset","75%").attr("stop-color","#2ecc71")
+            // hot white tip: two white stops to push the white further down,
+            // then green, then fully transparent at the baseline
+            gradient.append("stop").attr("offset","0%").attr("stop-color","#ffffff").attr("stop-opacity","1")
+            gradient.append("stop").attr("offset","45%").attr("stop-color","#eafff3").attr("stop-opacity","1")
+            gradient.append("stop").attr("offset","75%").attr("stop-color","#2ecc71").attr("stop-opacity","1")
             gradient.append("stop").attr("offset","100%").attr("stop-color","#2ecc71").attr("stop-opacity","0")
         }
+        // soft vertical glow behind the bars: same x span as the tallest bar,
+        // blurred white-green, fading down — painted first so bars sit on top
+        let glowLayer=anchor.select(".masscalc-glow")
+        if(glowLayer.empty()) glowLayer=anchor.insert("g",".masscalc-bars").attr("class","masscalc-glow")
+        glowLayer.selectAll("*").remove()
 
         const maxProb=Math.exp(isotopologues[0].logProbability)
         const barWidth=3
+        let glowTop=Infinity
+        let glowBottom=-Infinity
+        let glowX=0
         for(const iso of isotopologues){
             if(iso.logProbability<-20) continue
             const rel=Math.exp(iso.logProbability)/maxProb
@@ -530,6 +541,11 @@ export class MassCalculatorNode extends Node{
             const pyBase=yScale(0)
             if(!Number.isFinite(px)||!Number.isFinite(pyTop)||!Number.isFinite(pyBase)) continue
             if(px<0||px>zone.width) continue
+            if(rel>=0.99){
+                glowTop=Math.min(glowTop,Math.min(pyTop,pyBase))
+                glowBottom=Math.max(glowBottom,Math.max(pyTop,pyBase))
+                glowX=px
+            }
             barLayer.append("rect")
                 .attr("class","peak-bar")
                 .attr("x",px-barWidth/2)
@@ -537,6 +553,32 @@ export class MassCalculatorNode extends Node{
                 .attr("width",barWidth)
                 .attr("height",Math.max(1,Math.abs(pyBase-pyTop)))
                 .attr("fill",`url(#${gradId})`)
+                .attr("stroke","none")
+        }
+        // the glow: a wider blurred copy of the tallest bar's span, so the
+        // white tip blooms instead of ending on a hard pixel edge
+        if(Number.isFinite(glowTop)&&Number.isFinite(glowBottom)&&glowBottom>glowTop){
+            let glowDefs=anchor.select("defs")
+            if(glowDefs.empty()) glowDefs=anchor.append("defs")
+            const blurId=`masscalc-glow-blur-${graph.graphSVG.attr("id")}`
+            let filter=glowDefs.select(`#${blurId}`)
+            if(filter.empty()){
+                filter=glowDefs.append("filter")
+                    .attr("id",blurId)
+                    .attr("x","-80%").attr("y","-20%")
+                    .attr("width","260%").attr("height","140%")
+                filter.append("feGaussianBlur")
+                    .attr("stdDeviation","2.2")
+            }
+            glowLayer.append("rect")
+                .attr("x",glowX-barWidth*1.5)
+                .attr("y",glowTop)
+                .attr("width",barWidth*3)
+                .attr("height",Math.max(1,glowBottom-glowTop))
+                .attr("fill",`url(#${gradId})`)
+                .attr("stroke","none")
+                .attr("opacity","0.55")
+                .attr("filter",`url(#${blurId})`)
         }
     }
 
