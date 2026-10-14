@@ -486,51 +486,58 @@ export class MassCalculatorNode extends Node{
         }
     }
 
-    /* Peak bars: narrow vertical bars drawn as an SVG overlay on top of the
-       Plot2D graph — white at the top, green at 75% height, fading to fully
-       transparent at the baseline. Re-painted after every drawGraph via the
-       hook installed in updatePlot, so zoom/pan/resize keep them. */
+    /* Peak bars: narrow vertical bars drawn inside the .anchor group — same
+       coordinates as the points (plotScales are graphzone-local, the anchor
+       carries the margin translate). Gradient in objectBoundingBox so each
+       bar runs its own ramp: white at the tip, green at 75%, transparent at
+       the baseline. Re-painted after every drawGraph via the hook installed
+       in updatePlot, so zoom/pan/resize keep them. */
     drawPeakBars(isotopologues){
-        if(!this.plot?.svg) return
-        const svg=this.plot.svg
-        svg.selectAll(".peak-bar").remove()
-        const defs=svg.select("defs")
-        const defsSel=defs.empty()?svg.insert("defs",":first-child"):defs
-        defsSel.selectAll("[id^='masscalc-peak-gradient']").remove()
-        const gid=`masscalc-peak-gradient-${Plot2D.instanceCounter}`
-        const gradient=defsSel.append("linearGradient")
-            .attr("id",gid)
-            .attr("gradientUnits","userSpaceOnUse")
-            .attr("x1",0)
-        gradient.append("stop").attr("offset","0%").attr("stop-color","#ffffff")
-        gradient.append("stop").attr("offset","75%").attr("stop-color","#2ecc71")
-        gradient.append("stop").attr("offset","100%").attr("stop-color","#2ecc71").attr("stop-opacity","0")
+        const graph=this.plot
+        if(!graph?.graphSVG) return
+        const zone=graph.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        const {xScale,yScale}=graph.plotScales()
+        const anchor=graph.graphSVG.select(".anchor")
+        if(anchor.empty()) return
+        let barLayer=anchor.select(".masscalc-bars")
+        if(barLayer.empty()) barLayer=anchor.append("g").attr("class","masscalc-bars")
+        barLayer.selectAll("*").remove()
+        // <defs> must be appended (not selected-into-existence): d3's append
+        // on an empty selection creates nothing, leaving fill="url(#...)"
+        // dangling — SVG then refuses to paint the rect at all.
+        let defs=anchor.select("defs")
+        if(defs.empty()) defs=anchor.append("defs")
+        const gradId=`masscalc-peak-gradient-${graph.graphSVG.attr("id")}`
+        let gradient=defs.select(`#${gradId}`)
+        if(gradient.empty()){
+            gradient=defs.append("linearGradient")
+                .attr("id",gradId)
+                .attr("x1","0%").attr("x2","0%")
+                .attr("y1","0%").attr("y2","100%")
+            gradient.append("stop").attr("offset","0%").attr("stop-color","#ffffff")
+            gradient.append("stop").attr("offset","75%").attr("stop-color","#2ecc71")
+            gradient.append("stop").attr("offset","100%").attr("stop-color","#2ecc71").attr("stop-opacity","0")
+        }
 
-        const gz=this.plot.graphzone
-        const margins=this.plot.parameters.margins
-        const {xScale,yScale}=this.plot.plotScales()
         const maxProb=Math.exp(isotopologues[0].logProbability)
         const barWidth=3
         for(const iso of isotopologues){
             if(iso.logProbability<-20) continue
             const rel=Math.exp(iso.logProbability)/maxProb
-            const x=xScale(iso.mz)
-            const yTop=yScale(rel)
-            const yBase=yScale(0)
-            const px=x+margins.left
-            const pyTop=yTop+margins.top
-            const pyBase=yBase+margins.top
-            if(px<margins.left||px>gz.width+margins.left) continue
-            if(pyTop<margins.top||pyBase>gz.height+margins.top) continue
-            svg.append("rect")
+            const px=xScale(iso.mz)
+            const pyTop=yScale(rel)
+            const pyBase=yScale(0)
+            if(!Number.isFinite(px)||!Number.isFinite(pyTop)||!Number.isFinite(pyBase)) continue
+            if(px<0||px>zone.width) continue
+            barLayer.append("rect")
                 .attr("class","peak-bar")
                 .attr("x",px-barWidth/2)
-                .attr("y",pyTop)
+                .attr("y",Math.min(pyTop,pyBase))
                 .attr("width",barWidth)
-                .attr("height",Math.max(1,pyBase-pyTop))
-                .attr("fill",`url(#${gid})`)
+                .attr("height",Math.max(1,Math.abs(pyBase-pyTop)))
+                .attr("fill",`url(#${gradId})`)
         }
-        gradient.attr("y1",margins.top).attr("y2",gz.height+margins.top)
     }
 
     serializeState(){
