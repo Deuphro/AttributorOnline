@@ -52,6 +52,7 @@ export class MassCalculatorNode extends Node{
         content.replaceChildren()
         stylize(content,{
             display:"grid",
+            "grid-template-rows":"minmax(0,1fr) auto",
             height:"100%",
             minHeight:"0",
             overflow:"hidden",
@@ -60,21 +61,22 @@ export class MassCalculatorNode extends Node{
         })
 
         const centerWrap=this.buildCenterArea()
+        const infoBar=this.buildInfoBar()
 
-        content.append(centerWrap)
+        content.append(centerWrap,infoBar)
         this.updateAll()
     }
 
     /* Left stack: inputs on one row (formula input capped so the row never
-       exceeds the 591px table), table below, readout at the bottom. The
-       plot fills the right column from the very top of the window. */
+       exceeds the 591px table), table below. The plot fills the right column
+       from the very top of the window; the readout sits as its own full-width
+       row at the bottom of the dialog. */
     buildCenterArea(){
         const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"max-content minmax(0, 1fr)",gap:"8px",height:"100%",minHeight:"0",minWidth:"0",overflow:"auto"}},[])
-        const leftCol=CE("div",{style:{display:"grid",gridTemplateRows:"auto minmax(0,1fr) auto",gap:"4px",height:"100%",minHeight:"0",minWidth:"0",maxWidth:"591px"}},[])
+        const leftCol=CE("div",{style:{display:"grid",gridTemplateRows:"auto minmax(0,1fr)",gap:"4px",height:"100%",minHeight:"0",minWidth:"0",maxWidth:"591px"}},[])
         const formulaBar=this.buildFormulaBar()
         const periodicTable=this.buildPeriodicTable()
-        const infoBar=this.buildInfoBar()
-        leftCol.append(formulaBar,periodicTable,infoBar)
+        leftCol.append(formulaBar,periodicTable)
         const plotArea=this.buildPlotArea()
         stylize(plotArea,{height:"100%",minHeight:"0",minWidth:"0"})
         wrap.append(leftCol,plotArea)
@@ -324,7 +326,7 @@ export class MassCalculatorNode extends Node{
     }
 
     buildInfoBar(){
-        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"auto auto",gap:"2px 12px",fontSize:"0.85em",maxWidth:"591px"}},[])
+        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:"4px",fontSize:"0.85em"}},[])
 
         this.monoMassEl=CE("div",{style:{color:"var(--accent)"}},["Mono: —"])
         this.avgMassEl=CE("div",{style:{color:"var(--text)"}},["Avg: —"])
