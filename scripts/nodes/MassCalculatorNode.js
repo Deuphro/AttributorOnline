@@ -52,7 +52,6 @@ export class MassCalculatorNode extends Node{
         content.replaceChildren()
         stylize(content,{
             display:"grid",
-            "grid-template-rows":"minmax(0,1fr) auto",
             height:"100%",
             minHeight:"0",
             overflow:"hidden",
@@ -61,22 +60,27 @@ export class MassCalculatorNode extends Node{
         })
 
         const centerWrap=this.buildCenterArea()
-        const infoBar=this.buildInfoBar()
 
-        content.append(centerWrap,infoBar)
+        content.append(centerWrap)
         this.updateAll()
     }
 
     /* Left stack: inputs on one row (formula input capped so the row never
-       exceeds the 591px table), table below. The plot fills the right column
-       from the very top of the window; the readout sits as its own full-width
-       row at the bottom of the dialog. */
+       exceeds the 591px table), table in the middle, readout at the bottom —
+       all three fit the table width, so the plot keeps the full window
+       height on the right, down to the very bottom. */
     buildCenterArea(){
         const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"max-content minmax(0, 1fr)",gap:"8px",height:"100%",minHeight:"0",minWidth:"0",overflow:"auto"}},[])
-        const leftCol=CE("div",{style:{display:"grid",gridTemplateRows:"auto minmax(0,1fr)",gap:"4px",height:"100%",minHeight:"0",minWidth:"0",maxWidth:"591px"}},[])
+        /* Rows are auto/minmax(0,1fr)/auto: the middle one — the table — is
+           the only one allowed to shrink, and its OWN wrap scrolls (see
+           buildPeriodicTable), so the inputs and the readout never leave
+           the screen. The wrap's overflow is a horizontal fallback only:
+           children are exactly 100% tall, so it never scrolls vertically. */
+        const leftCol=CE("div",{style:{display:"grid",gridTemplateRows:"auto minmax(0,1fr) auto",gap:"4px",height:"100%",minHeight:"0",minWidth:"0",width:"610px"}},[])
         const formulaBar=this.buildFormulaBar()
         const periodicTable=this.buildPeriodicTable()
-        leftCol.append(formulaBar,periodicTable)
+        const infoBar=this.buildInfoBar()
+        leftCol.append(formulaBar,periodicTable,infoBar)
         const plotArea=this.buildPlotArea()
         stylize(plotArea,{height:"100%",minHeight:"0",minWidth:"0"})
         wrap.append(leftCol,plotArea)
@@ -144,7 +148,19 @@ export class MassCalculatorNode extends Node{
     }
 
     buildPeriodicTable(){
-        const wrap=CE("div",{style:{display:"block",height:"100%",minHeight:"0",overflow:"visible"}},[])
+        /* The scroll lives HERE, inside the table box: the column's other
+           rows (inputs, readout) stay pinned while the table alone scrolls
+           vertically when the dialog is short.
+
+           The table is 591px of content (18*30 + 17*3). Its column is 610px
+           wide (see leftCol in buildCenterArea), leaving ~19px of slack —
+           just enough for the vertical scrollbar to sit without eating into
+           the 591px, which would otherwise push the grid past the box and
+           resurrect the phantom horizontal scrollbar this project already
+           killed once. overflowX is hidden on purpose: if the dialog is
+           truly too narrow, the PARENT center area scrolls sideways (as it
+           did before), so the table never owns a horizontal scrollbar. */
+        const wrap=CE("div",{style:{display:"block",height:"100%",minHeight:"0",overflowY:"auto",overflowX:"hidden"}},[])
         const table=CE("div",{style:{
             display:"grid",
             gridTemplateColumns:"repeat(18, 30px)",
