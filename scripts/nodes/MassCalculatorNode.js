@@ -52,7 +52,6 @@ export class MassCalculatorNode extends Node{
         content.replaceChildren()
         stylize(content,{
             display:"grid",
-            "grid-template-rows":"auto 1fr auto",
             height:"100%",
             minHeight:"0",
             overflow:"hidden",
@@ -60,25 +59,33 @@ export class MassCalculatorNode extends Node{
             gap:"4px"
         })
 
-        const formulaBar=this.buildFormulaBar()
         const centerWrap=this.buildCenterArea()
-        const infoBar=this.buildInfoBar()
 
-        content.append(formulaBar,centerWrap,infoBar)
+        content.append(centerWrap)
         this.updateAll()
     }
 
+    /* Left column: formula inputs on top, periodic table in the middle,
+       Mono/Avg/m/z readout at the bottom. The plot alone fills the right
+       column at full height. */
     buildCenterArea(){
         const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"max-content minmax(0, 1fr)",gap:"8px",height:"100%",minHeight:"0",minWidth:"0",overflow:"auto"}},[])
+        const leftCol=CE("div",{style:{display:"grid",gridTemplateRows:"auto minmax(0,1fr) auto",gap:"4px",height:"100%",minHeight:"0",minWidth:"0"}},[])
+        const formulaBar=this.buildFormulaBar()
         const periodicTable=this.buildPeriodicTable()
+        const infoBar=this.buildInfoBar()
+        leftCol.append(formulaBar,periodicTable,infoBar)
         const plotArea=this.buildPlotArea()
         stylize(plotArea,{height:"100%",minHeight:"0",minWidth:"0"})
-        wrap.append(periodicTable,plotArea)
+        wrap.append(leftCol,plotArea)
         return wrap
     }
 
+    /* Inputs stacked in two compact rows so they fit the narrow left column
+       (table is 591px wide): formula full-width on row 1, charge/threshold/
+       clear on row 2. */
     buildFormulaBar(){
-        const wrap=CE("div",{style:{display:"grid",gap:"4px","grid-template-columns":"auto 1fr auto auto auto 1fr",alignItems:"center"}},[])
+        const wrap=CE("div",{style:{display:"grid",gap:"4px",alignItems:"center"}},[])
 
         const formulaLabel=CE("label",{style:{fontSize:"0.85em",color:"var(--text-muted)"}},["Formula"])
         this.formulaInput=CE("input",{
@@ -133,7 +140,11 @@ export class MassCalculatorNode extends Node{
             this.updateAll()
         })
 
-        wrap.append(formulaLabel,this.formulaInput,chargeLabel,this.chargeInput,ratioLabel,this.ratioInput,clearBtn)
+        const formulaRow=CE("div",{style:{display:"grid",gap:"4px",gridTemplateColumns:"auto minmax(0,1fr)",alignItems:"center"}},[])
+        formulaRow.append(formulaLabel,this.formulaInput)
+        const paramsRow=CE("div",{style:{display:"grid",gap:"4px",gridTemplateColumns:"auto auto auto auto auto 1fr",alignItems:"center"}},[])
+        paramsRow.append(chargeLabel,this.chargeInput,ratioLabel,this.ratioInput,clearBtn)
+        wrap.append(formulaRow,paramsRow)
         return wrap
     }
 
@@ -320,7 +331,7 @@ export class MassCalculatorNode extends Node{
     }
 
     buildInfoBar(){
-        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:"4px",fontSize:"0.85em"}},[])
+        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"auto auto",gap:"2px 12px",fontSize:"0.85em"}},[])
 
         this.monoMassEl=CE("div",{style:{color:"var(--accent)"}},["Mono: —"])
         this.avgMassEl=CE("div",{style:{color:"var(--text)"}},["Avg: —"])
