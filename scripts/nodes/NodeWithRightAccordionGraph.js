@@ -8,6 +8,29 @@ export class NodeWithRightAccordionGraph extends Node{
     constructor(title,inputs,outputs,origin,destinationFlow,position={x:180,y:10}){
         super(title,inputs,outputs,origin,destinationFlow,position)
     }
+    /* THE PLOT A SUBCLASS GETS, AND WHY IT IS A METHOD.
+
+       A WebGL context is a BROWSER-WIDE resource, and browsers cap it — at
+       16 in Chrome, after which the OLDEST LIVE context is dropped, not the
+       one that asked for the seventeenth. "Oldest live" means a context
+       belonging to a node the user is still looking at, so exceeding the cap
+       does not degrade the new plot, it destroys an unrelated one. That is
+       the `WebGL context was lost` that a session with a dozen plots hits.
+
+       So a subclass that does not want a Plot2DWebGL must be able to say so
+       BEFORE the context is created, and there is no constructor hook for
+       that: `registered()` runs long after the subclass constructor. Creating
+       the plot and disposing it a moment later — which is what a subclass
+       used to do, since nothing else was available — burns a context anyway,
+       and the browser may not have reclaimed it before the real one is
+       requested. Two allocations where the node needs one is exactly how the
+       cap is reached early.
+
+       Hence this method: the subclass declares its plot, and the base builds
+       exactly one. Override it and no 2D context is ever created here. */
+    createGraph(dialog,label){
+        return new Plot2DWebGL([],`${label} graph`,this.origin,dialog.DOMelt.content)
+    }
     registered(e){
         const {channel, registrationName, label, caster} = e.detail.msg
         if(caster !== this || this.accordion){
@@ -31,7 +54,9 @@ export class NodeWithRightAccordionGraph extends Node{
             height:"100%"
         })
         channel.register(`${registrationName}:graph`,this.graphDialog,`${label} graph`)
-        this.graph=new Plot2DWebGL([],`${label} graph`,this.origin,this.graphDialog.DOMelt.content)
+        //createGraph may return null: a node whose view needs no context of
+        //its own is a legitimate case, not a failure to report
+        this.graph=this.createGraph(this.graphDialog,label)
     }
     serializeState(){
         if(!this.graph){

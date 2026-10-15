@@ -7,6 +7,7 @@ import {
     DelimitedTextNode,
     FKMDNode,
     FormulaCollectionNode,
+    HoughTransformNode,
     MassCalculatorNode,
     NodeWithAccordionGraph,
     NodeWithRightAccordionGraph,
@@ -86,6 +87,10 @@ export class MainFlowMenu extends Menu{
                         }
                         case "massCalculator": {
                             node = new MassCalculatorNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
+                            break
+                        }
+                        case "houghTransform": {
+                            node = new HoughTransformNode(title, origin, origin.channel.get("mainFlow"), {x:180,y:10})
                             break
                         }
                         case "formulaCollection": {

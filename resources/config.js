@@ -45,6 +45,9 @@ const defaultMenu={
             //Calibration: fits error surface from FormulaCollection errorPpm (m/z × intensity)
             //Applies correction to XY spectra. Uses pre-computed errors from AttributionNode.
             "Calibration":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Calibration',type:'calibration'}}}))},
+            //Hough Transform: accumulates every pair of peaks into a
+            //(slope, intercept) surface. Multiplexed input, one grid output.
+            "Hough Transform":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Hough Transform',type:'houghTransform'}}}))},
         },
         "Display":{
             "Simple XY plot":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY plot',type:'simpleXYPlot'}}}))},

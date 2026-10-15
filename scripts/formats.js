@@ -725,6 +725,62 @@ class XYTrace extends Trace{
     }
 }
 
+/* ---------------------------------------------------------------------
+   The 3D trace pair. They sit next to XYTrace on purpose: a plot owns a
+   LIST of traces and a caller never asked whether the data was a curve or a
+   field, so the shape lives in the trace, never in the plot.
+
+   Both take their data as a Wave with dims [nx, ny, 3] — the grid layout
+   the Rust kernels already produce and the one HoughTransformNode builds.
+   SurfaceTrace reads the third column as HEIGHT on a rectilinear grid;
+   Scatter3DTrace reads the same columns as POINTS and ignores the grid.
+   Same carrier, two readings, and the plot does not care which it got.
+   --------------------------------------------------------------------- */
+
+class SurfaceTrace extends Trace{
+    constructor({id,title="Surface",wave,options={}}={}){
+        super({id,title,options})
+        if(!(wave instanceof Wave)||wave.degree!==3||wave.dims[2]!==3){
+            throw new TypeError("SurfaceTrace requires a Wave with dimensions [nx, ny, 3]")
+        }
+        this.wave=wave
+        this.options={
+            colormap:"viridis",
+            //the height range, mapped onto [-height, +height] about the box
+            //centre. null means "use the data range", which is what makes a
+            //surface comparable between two runs.
+            heightRange:null,
+            height:0.5,
+            ...options
+        }
+    }
+    get gridSize(){
+        return {nx:this.wave.dims[0],ny:this.wave.dims[1]}
+    }
+}
+
+class Scatter3DTrace extends Trace{
+    constructor({id,title="Scatter",wave,options={}}={}){
+        super({id,title,options})
+        if(!(wave instanceof Wave)||wave.degree!==3||wave.dims[2]!==3){
+            throw new TypeError("Scatter3DTrace requires a Wave with dimensions [nx, ny, 3]")
+        }
+        this.wave=wave
+        this.options={
+            size:3,
+            color:"#88ccff",
+            opacity:1,
+            //a grid wave usually holds far more cells than there are visible
+            //marks; a stride keeps the cloud readable without resampling
+            stride:1,
+            ...options
+        }
+    }
+    get pointCount(){
+        return this.wave.dims[0]*this.wave.dims[1]
+    }
+}
+
 function serializeFormatValue(value){
     if(value instanceof Wave){
         return {
@@ -744,6 +800,17 @@ function serializeFormatValue(value){
             wave:serializeFormatValue(value.wave)
         }
     }
+    for(const GridTrace of [SurfaceTrace,Scatter3DTrace]){
+        if(value instanceof GridTrace){
+            return {
+                kind:GridTrace.name,
+                id:value.id,
+                title:value.title,
+                options:value.options,
+                wave:serializeFormatValue(value.wave)
+            }
+        }
+    }
     if(value instanceof Trace){
         return {kind:"Trace",id:value.id,title:value.title,options:value.options}
     }
@@ -761,10 +828,15 @@ function recreateFormatValue(value){
     if(value?.kind==="XYTrace"){
         return new XYTrace({...value,wave:recreateFormatValue(value.wave)})
     }
+    for(const GridTrace of [SurfaceTrace,Scatter3DTrace]){
+        if(value?.kind===GridTrace.name){
+            return new GridTrace({...value,wave:recreateFormatValue(value.wave)})
+        }
+    }
     if(value?.kind==="Trace"){
         return new Trace(value)
     }
     throw new TypeError("Unsupported serialized format value")
 }
 
-export {Data,Vector,Wave,Trace,XYTrace,serializeFormatValue,recreateFormatValue}
+export {Data,Vector,Wave,Trace,XYTrace,SurfaceTrace,Scatter3DTrace,serializeFormatValue,recreateFormatValue}
