@@ -693,30 +693,70 @@ class Stoichiometry{
         }
         const perElementMin=elements.map((el,i)=>lightestMass(el,this.counts.get(el)))
         const perElementMax=elements.map((el,i)=>heaviestIsotope(el,this.counts.get(el)))
+        /* LE VERROU ÉCRIT — un isotope choisi à la main n'est plus écrasé.
+
+           Un élément est ÉCRIT dès qu'il porte un A qui n'est pas celui que la
+           règle choisirait (`pickA`): c'est le cas d'un « 13C » dans une
+           composition. Pour ces éléments, le SEUIL est forcé à 0: un seuil
+           non nul couperait l'état qui reproduit la composition écrite (le
+           ¹³C est rare, sa multinomiale chute vite sous le plancher), et le
+           germe tomberait alors sur une liste qui ne contient plus la valeur
+           épinglée. Les autres éléments gardent `ratioFor`/`ratio`, donc le
+           comportement par défaut est strictement inchangé. */
+        const rule=this.rule??"mostProbable"
+        const written=new Map()
+        for(const element of elements){
+            const byA=this.composition.get(element)
+            for(const [A] of byA){
+                if(A!==element.pickA(rule)){ written.set(element,true); break }
+            }
+        }
         const lists=elements.map((element,i)=>
             Stoichiometry.isotopicCompositions(
                 element,this.counts.get(element),
-                /* LE SEUIL, PAR ÉLÉMENT — `ratioFor` l'emporte sur `ratio`.
-
-                   Un seuil UNIQUE s'applique à tous les éléments d'un coup, donc
-                   verrouiller le carbone d'un « 13C2H4 » verrouillait aussi
-                   les hydrogènes: le groupe rendait alors ses cinq deutériums
-                   même à ratio 1, ce qui est le défaut exact reproché au
-                   `ratio` global. Un seuil qui n'appartient qu'à un élément se
-                   dit donc par une Map<Element, ratio>; les autres gardent le
-                   leur. `null` = le seuil global, donc le comportement par
-                   défaut est strictement inchangé. */
-                ratioFor?.get(element)??ratio,
+                /* LE SEUIL, PAR ÉLÉMENT — `ratioFor` l'emporte sur `ratio`,
+                   sauf pour un élément ÉCRIT, forcé à 0 (voir `written` plus
+                   haut). Un seuil UNIQUE s'applique à tous les éléments d'un
+                   coup, donc verrouiller le carbone d'un « 13C2H4 » verrouillait
+                   aussi les hydrogènes: le groupe rendait alors ses cinq
+                   deutériums même à ratio 1. Un seuil qui n'appartient qu'à un
+                   élément se dit donc par une Map<Element, ratio>; les autres
+                   gardent le leur. `null` = le seuil global, donc le
+                   comportement par défaut est strictement inchangé. */
+                written.has(element)?0:(ratioFor?.get(element)??ratio),
                 within,scale,[
                     perElementMin.reduce((a,v,j)=>j===i?a:a+v,0),
                     perElementMax.reduce((a,v,j)=>j===i?a:a+v,0)
                 ]))
         if(lists.some(list=>list.length===0)) return
-        /* Le germe est le vecteur d'indices TOUS À ZÉRO: chaque élément à son
-           isotope le plus probable. Un germe choisi ailleurs couperait la
-           chaîne — tout état du top-k a un parent mieux classé, donc il doit
-           être atteignable en remontant depuis le sommet. */
-        const ranks=elements.map(()=>0)
+        /* LE GERME REPRODUIT LA COMPOSITION ÉCRITE, pas le tout-au-plus-probable.
+
+           Pour un élément NON écrit, la composition est `{pickA: n}`, donc
+           l'état qui la reproduit EST l'indice 0 — le germe d'autrefois. Mais
+           pour un carbone épinglé en ¹³C, l'indice 0 (tout en ¹²C) ÉCRASE le
+           pin: le premier pic rendu pèse moins lourd que `mass()`, et
+           l'enveloppe ment sur la formule affichée. On place donc le germe sur
+           l'état dont les comptes PAR ISOTOPE sont exactement ceux de la
+           composition, et la marche (qui n'incrémente que des indices) ne
+           peut que s'enrichir au-delà — jamais retirer le ¹³C épinglé. Le
+           premier pic coïncide alors avec `mass()`.
+
+           Un germe hors zéro reste atteignable: tout état exploré a un parent
+           mieux classé dans l'ordre du tas, et on part précisément de l'état
+           que l'utilisateur a écrit. */
+        const ranks=elements.map((element,i)=>{
+            if(!written.has(element)) return 0
+            const byA=this.composition.get(element)
+            const slotOf=new Map(element.isotopes.map((iso,slot)=>[iso.A,slot]))
+            const target=new Array(element.isotopes.length).fill(0)
+            for(const [A,count] of byA){
+                const slot=slotOf.get(A)
+                if(slot!==undefined) target[slot]=count
+            }
+            const index=lists[i].findIndex(
+                state=>state.counts.every((c,slot)=>c===target[slot]))
+            return index>=0?index:0
+        })
         const totalLogP=(candidate)=>candidate.reduce(
             (a,index,i)=>a+lists[i][index].logProbability,0)
         const totalMass=(candidate)=>candidate.reduce(

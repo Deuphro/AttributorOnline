@@ -1,7 +1,7 @@
 import {Node} from "../core/index.js"
 import {Dialog} from "../ui/Dialog.js"
 import {Plot2D} from "../ui/Plot2D.js"
-import {Formula,Stoichiometry,loadTable} from "../chemistry.js"
+import {Formula,Stoichiometry,loadTable,positiveMassConjugate} from "../chemistry.js"
 import {Wave,XYTrace} from "../formats.js"
 import {CE,stylize} from "../util.js"
 
@@ -18,6 +18,25 @@ export class MassCalculatorNode extends Node{
         this.elements=[]
         this.currentStoich=null
         this.elementButtons=new Map()
+        this.isotopeBand=null
+        this.isotopeBandElement=null
+        this._hoveredBtn=null
+        this._isoModifierInstalled=false
+    }
+
+    /* Un seul observateur keydown global, installé une fois: si le pointeur est
+       sur un élément et que Ctrl/Alt/Meta vient d'être pressé, on ouvre la
+       bande. Cela complète `mouseenter`, qui ne re-déclenche pas quand le
+       modificateur arrive APRÈS le survol. */
+    installModifierWatcher(){
+        if(this._isoModifierInstalled) return
+        this._isoModifierInstalled=true
+        globalThis.addEventListener("keydown",(e)=>{
+            if(!e.ctrlKey&&!e.altKey&&!e.metaKey) return
+            if(!this._hoveredBtn) return
+            if(this.isotopeBandElement===this._hoveredBtn.element) return
+            this.openIsotopeBand(this._hoveredBtn.element,this._hoveredBtn.anchor)
+        },true)
     }
 
     async ensureTable(){
@@ -261,7 +280,7 @@ export class MassCalculatorNode extends Node{
 
         const btn=CE("button",{
             type:"button",
-            title:`${element.name} (${element.symbol}) - Z=${element.Z}\nLeft click: add\nRight click: remove\nCount: ${count}${isIon?" (in ion group)":""}`,
+            title:`${element.name} (${element.symbol}) - Z=${element.Z}\nLeft click: add\nRight click: remove\nCtrl+hover: per-isotope ±1\nCount: ${count}${isIon?" (in ion group)":""}`,
             style:{
                 padding:"0",
                 fontSize:"0.95em",
@@ -273,11 +292,12 @@ export class MassCalculatorNode extends Node{
                 maxWidth:"30px",
                 maxHeight:"30px",
                 boxSizing:"border-box",
-                background:count>0?isIon?"rgba(255,100,100,0.3)":"rgba(100,200,100,0.3)":this.categoryColor(cat),
+                background:count>0?isIon?"rgba(255,100,100,0.3)":"rgba(100,200,100,0.3)"
+                    :count<0?"rgba(255,140,140,0.25)":this.categoryColor(cat),
                 border:count>0?"1px solid var(--accent)":"1px solid var(--border)",
                 borderLeft:`3px solid ${this.categoryAccent(cat)}`,
                 borderRadius:"3px",
-                color:count>0?isIon?"#ff8888":"#88ff88":"var(--text)",
+                color:count>0?isIon?"#ff8888":"#88ff88":count<0?"#ff9999":"var(--text)",
                 whiteSpace:"nowrap",
                 cursor:"pointer",
                 display:"flex",
@@ -285,7 +305,7 @@ export class MassCalculatorNode extends Node{
                 justifyContent:"center",
                 lineHeight:"1"
             }
-        },[`${element.symbol}${count>0?count:""}`])
+        },[`${element.symbol}${count!==0?count:""}`])
 
         btn.addEventListener("click",(e)=>{
             e.preventDefault()
@@ -295,6 +315,20 @@ export class MassCalculatorNode extends Node{
             e.preventDefault()
             this.modifyElement(element,-1)
         })
+        /* Le MODIFICATEUR + survol ouvre la bande d'isotopes ronds. Sans
+           modificateur, le survol ne fait rien — l'ajout d'un atome reste un
+           simple clic. On mémorise le bouton survolé ET on ouvre si le
+           modificateur est déjà là; `installModifierWatcher` couvre l'autre
+           ordre (Ctrl pressé APRÈS être arrivé sur le bouton), que `mouseenter`
+           seul ne rattraperait pas. */
+        btn.addEventListener("mouseenter",(e)=>{
+            this._hoveredBtn={element,anchor:btn}
+            if(e.ctrlKey||e.altKey||e.metaKey) this.openIsotopeBand(element,btn)
+        })
+        btn.addEventListener("mouseleave",()=>{
+            if(this._hoveredBtn?.anchor===btn) this._hoveredBtn=null
+        })
+        this.installModifierWatcher()
         this.elementButtons.set(element.symbol,btn)
         return btn
     }
@@ -304,21 +338,63 @@ export class MassCalculatorNode extends Node{
         if(!this.currentStoich){
             this.currentStoich=new Stoichiometry({composition:new Map(),table})
         }
-        const currentCount=this.currentStoich.counts.get(element)||0
-        const newCount=Math.max(0,currentCount+delta)
+        /* Le clic NU opère sur l'ISOTOPE DE LA RÈGLE (pickA), jamais sur un
+           isotope épinglé: enlever du carbone ne doit pas toucher le ¹³C écrit
+           à la main. On cible donc `A`, et on recopie le byA courant à la
+           place de l'écraser (l'ancien `new Map([[A,newCount]])` détruisait les
+           isotopes épinglés du même élément). CLAMP à 0 sur la cible: un clic
+           droit sur un élément nu ne descend jamais sous zéro, donc jamais de
+           conjuguée qui flippe le signe sous le doigt. Les comptes négatifs ne
+           viennent que des boutons isotopes explicites (`modifyIsotope`). */
+        const rule=this.currentStoich.rule||"mostProbable"
+        const A=element.pickA(rule)
+        const currentByA=this.currentStoich.composition.get(element)
+        const currentTarget=currentByA?.get(A)||0
+        const newTarget=currentTarget+delta
+        if(newTarget<0) return   //clamp à 0: on refuse, on ne force pas
 
         const newComposition=new Map(this.currentStoich.composition)
-        if(newCount>0){
-            const rule=this.currentStoich.rule||"mostProbable"
-            const A=element.pickA(rule)
-            const byA=new Map([[A,newCount]])
-            newComposition.set(element,byA)
-        }else{
-            newComposition.delete(element)
-        }
+        const byA=new Map(currentByA||[])
+        if(newTarget>0) byA.set(A,newTarget)
+        else byA.delete(A)
+        if(byA.size) newComposition.set(element,byA)
+        else newComposition.delete(element)
 
+        this.commitComposition(newComposition,table)
+    }
+
+    /* Le chemin EXPLICITE: ±1 sur un A choisi à la main, SANS clamp. C'est le
+       seul endroit où un compte peut passer sous zéro (ex. ¹³C−1 avec du ¹²C
+       restant → masse positive, pas de flip). La conjuguée s'applique ensuite
+       comme partout: si la masse totale bascule négative, le signe retourne. */
+    modifyIsotope(element,A,delta){
+        this.ensureTable().then(table=>{
+            if(!this.currentStoich){
+                this.currentStoich=new Stoichiometry({composition:new Map(),table})
+            }
+            const currentByA=this.currentStoich.composition.get(element)
+            const currentCount=currentByA?.get(A)||0
+            const newCount=currentCount+delta
+
+            const newComposition=new Map(this.currentStoich.composition)
+            const byA=new Map(currentByA||[])
+            if(newCount!==0) byA.set(A,newCount)
+            else byA.delete(A)
+            if(byA.size) newComposition.set(element,byA)
+            else newComposition.delete(element)
+
+            this.commitComposition(newComposition,table)
+        })
+    }
+
+    /* La conjuguée est appliquée ICI, à chaque écriture de composition, que
+       l'elle vienne de la frappe (`updateFromFormula` passe par `Formula.parse`,
+       déjà conjugué) ou d'un clic. Un seul point d'injection pour « la
+       conjuguaison partout, même au clic ». */
+    commitComposition(newComposition,table){
+        const conjugated=positiveMassConjugate(newComposition)
         this.currentStoich=new Stoichiometry({
-            composition:newComposition,
+            composition:conjugated,
             ionisation:this.currentStoich.ionisation,
             charge:this.currentStoich.charge,
             rule:this.currentStoich.rule,
@@ -328,6 +404,148 @@ export class MassCalculatorNode extends Node{
         this.parameters.formula=this.currentStoich.toString()
         if(this.formulaInput) this.formulaInput.value=this.parameters.formula
         this.updateAll()
+        /* La bande d'isotopes reste ouverte mais doit suivre les nouveaux
+           comptes. On la rafraîchit ICI, après l'écriture — les clics des
+           ronds appellent `modifyIsotope`, ASYNCHRONE (`ensureTable().then`),
+           donc un refresh appeler synchrone après le clic lisait l'ANCIENNE
+           composition et ne changeait rien. C'est le seul endroit où
+           `currentStoich` est garanti à jour. */
+        if(this.isotopeBandElement) this.refreshIsotopeBand(this.isotopeBandElement)
+    }
+
+    /* LA BANDE D'ISOTOPES — un rang de boutons ronds ancré sous un élément.
+
+       Elle ne s'ouvre qu'au survol AVEC le modificateur enfoncé (voir
+       `buildElementButton`), et se referme sur: fuite du modificateur, sortie
+       du pointeur hors bouton+bande, Escape, ou clic extérieur. C'est le même
+       cycle de vie que le menu `.fc-menu` de FormulaCollectionNode, transposé
+       à une bande horizontale. Chaque rond ±1 sur SON isotope — clic gauche
+       ajoute, clic droit retire — et c'est le SEUL chemin vers un compte
+       négatif (pas de clamp ici). */
+    openIsotopeBand(element,anchor){
+        if(this.isotopeBandElement===element) return   //déjà ouverte pour lui
+        this.closeIsotopeBand()
+        this.isotopeBandElement=element
+
+        const count=this.currentStoich?.counts?.get(element)||0
+        const byA=this.currentStoich?.composition?.get(element)
+        const band=CE("div",{className:"iso-band"},[])
+        for(const isotope of element.isotopes){
+            const A=isotope.A
+            const here=byA?.get(A)||0
+            const abundance=isotope.abundance
+            const pct=abundance==null?"100":(abundance*100).toFixed(2)
+            const round=CE("button",{
+                type:"button",
+                className:"iso-band-round",
+                title:`${element.symbol} A=${A} — ${isotope.mass.toFixed(6)} u\nAbundance: ${pct}%\nCurrent: ${here}\nLeft click: +1, Right click: −1`,
+                //le fond marque la présence de CET isotope, distinct du total
+                style:{
+                    background:here>0?"rgba(100,200,100,0.35)"
+                        :here<0?"rgba(255,140,140,0.35)"
+                        :"var(--surface)",
+                    color:here>0?"#88ff88":here<0?"#ff8888":"var(--text)"
+                }
+            },[String(A)])
+            round.addEventListener("click",(e)=>{
+                e.preventDefault()
+                this.modifyIsotope(element,A,1)
+            })
+            round.addEventListener("contextmenu",(e)=>{
+                e.preventDefault()
+                this.modifyIsotope(element,A,-1)
+            })
+            band.appendChild(round)
+        }
+        document.body.appendChild(band)
+        this.isotopeBand=band
+
+        /* ancre SOUS le bouton, SANS JEU — 1px de recouvrement, jamais
+           d'écart. Le moindre trou laissait le pointeur sur un élément
+           intermédiaire (le conteneur de la table), dont le pointerout
+           fermait la bande avant qu'on l'atteigne. Le recouvrement garantit
+           une transition directe bouton→bande, quel que soit le chemin. */
+        const box=anchor.getBoundingClientRect()
+        const width=band.getBoundingClientRect().width
+        band.style.left=`${Math.max(4,Math.min(box.left,window.innerWidth-width-4))}px`
+        band.style.top=`${Math.max(0,box.bottom-1)}px`
+
+        /* Survol de la bande: on le sait pour ne pas la tuer au relâchement
+           du modificateur une fois qu'on y est descendu. */
+        this._bandHovered=false
+        band.addEventListener("mouseenter",()=>{ this._bandHovered=true })
+        band.addEventListener("mouseleave",()=>{ this._bandHovered=false })
+
+        /* La bande survit à ses propres clics: on ne la referme pas sur un
+           clic DANS la bande (sinon le premier ±1 la tuerait). Seul un clic
+           en dehors la ferme. Le pointeur qui quitte bouton+bande la referme
+           aussi — et le relâchement du modificateur, pour qu'un survol sans
+           Ctrl ne la laisse pas traîner. */
+        this._isoCloser=(event)=>{
+            if(!band.contains(event.target)&&event.target!==anchor) this.closeIsotopeBand()
+        }
+        this._isoPointerOut=(event)=>{
+            /* La DESTINATION compte, pas la source: `relatedTarget` est
+               l'élément sur lequel le pointeur ARRIVE. anchor→bande et
+               bande→anchor sont des transitions légitimes et doivent
+               survivre; fermer sur `event.target` (l'élément QUITTÉ) tuait
+               la bande dès que le chemin passait par un voisin — exactement
+               ce qui se produit en descendant vers les ronds. relatedTarget
+               null = pointeur hors fenêtre → on ferme. */
+            const to=event.relatedTarget
+            if(!to||(!band.contains(to)&&!anchor.contains(to)))
+                this.closeIsotopeBand()
+        }
+        this._isoEscape=(event)=>{
+            if(event.key==="Escape"){ event.stopPropagation(); this.closeIsotopeBand() }
+        }
+        this._isoKeyUp=(event)=>{
+            if(event.ctrlKey||event.altKey||event.metaKey) return
+            /* Modificateur relâché MAIS le pointeur est sur la bande ou sur
+               le bouton ancre: la bande reste ouverte (sinon elle mourrait
+               pile au moment où l'on descend vers elle, entre le survol et
+               le clic). Si le pointeur est ailleurs, le pointerout l'a déjà
+               fermée — ceci n'est qu'un filet de sécurité. */
+            if(this._bandHovered||this._hoveredBtn?.anchor===anchor) return
+            this.closeIsotopeBand()
+        }
+        setTimeout(()=>{
+            globalThis.addEventListener("mousedown",this._isoCloser,true)
+            globalThis.addEventListener("pointerout",this._isoPointerOut,true)
+            globalThis.addEventListener("keydown",this._isoEscape,true)
+            globalThis.addEventListener("keyup",this._isoKeyUp,true)
+        },0)
+    }
+
+    /* Après un ±1, la bande reste ouverte mais son contenu change (les fonds
+       marquent les nouveaux comptes). On reconstruit sans refermer/rouvrir le
+       cycle de vie — juste les ronds. Appelé par `commitComposition`, où la
+       composition est garantie à jour. */
+    refreshIsotopeBand(element){
+        if(this.isotopeBandElement!==element||!this.isotopeBand) return
+        const byA=this.currentStoich?.composition?.get(element)
+        const rounds=this.isotopeBand.querySelectorAll(".iso-band-round")
+        element.isotopes.forEach((isotope,i)=>{
+            const here=byA?.get(isotope.A)||0
+            const round=rounds[i]
+            if(!round) return
+            round.style.background=here>0?"rgba(100,200,100,0.35)"
+                :here<0?"rgba(255,140,140,0.35)"
+                :"var(--surface)"
+            round.style.color=here>0?"#88ff88":here<0?"#ff8888":"var(--text)"
+        })
+    }
+
+    closeIsotopeBand(){
+        if(!this.isotopeBand) { this.isotopeBandElement=null; return }
+        this.isotopeBand.remove()
+        this.isotopeBand=null
+        this.isotopeBandElement=null
+        this._bandHovered=false
+        globalThis.removeEventListener("mousedown",this._isoCloser,true)
+        globalThis.removeEventListener("pointerout",this._isoPointerOut,true)
+        globalThis.removeEventListener("keydown",this._isoEscape,true)
+        globalThis.removeEventListener("keyup",this._isoKeyUp,true)
     }
 
     buildPlotArea(){
@@ -404,12 +622,18 @@ export class MassCalculatorNode extends Node{
         for(const [symbol,btn] of this.elementButtons){
             const el=this.elements.find(e=>e.symbol===symbol)
             if(el){
+                /* Le compte affiché est le NET (le getter `counts` somme les
+                   isotope-comptes, y compris négatifs). On l'écrit dès qu'il
+                   diffère de zéro, donc un ¹³C−1 avec du ¹²C restant reste
+                   lisible. Le survol + Ctrl ouvre la bande des isotopes. */
                 const count=this.currentStoich?.counts?.get(el)||0
                 const isIon=this.currentStoich?.ionisation?.some(t=>t.group?.has(el))||false
-                btn.textContent=`${el.symbol}${count>0?count:""}`
-                btn.style.background=count>0?isIon?"rgba(255,100,100,0.3)":"rgba(100,200,100,0.3)":"var(--surface)"
-                btn.style.color=count>0?isIon?"#ff8888":"#88ff88":"var(--text)"
-                btn.title=`${el.name} (${el.symbol}) - Z=${el.Z}\nLeft click: add\nRight click: remove\nCount: ${count}${isIon?" (in ion group)":""}`
+                btn.textContent=`${el.symbol}${count!==0?count:""}`
+                btn.style.background=count>0?isIon?"rgba(255,100,100,0.3)":"rgba(100,200,100,0.3)"
+                    :count<0?"rgba(255,140,140,0.25)":"var(--surface)"
+                btn.style.color=count>0?isIon?"#ff8888":"#88ff88"
+                    :count<0?"#ff9999":"var(--text)"
+                btn.title=`${el.name} (${el.symbol}) - Z=${el.Z}\nLeft click: add\nRight click: remove\nCtrl+hover: per-isotope ±1\nCount: ${count}${isIon?" (in ion group)":""}`
             }
         }
     }
@@ -442,6 +666,30 @@ export class MassCalculatorNode extends Node{
     updatePlot(){
         if(!this.currentStoich||!this.plotContainer) return
 
+        /* GARDE COMPTE NÉGATIF — miroir exact de `attribution.js`.
+
+           Une composition à compte négatif (un « ¹³C−1 » posé à la main, une
+           substitution) n'a pas d'enveloppe: `isotopologues` ne saurait pas la
+           lire, et tenter l'énumération la rendrait fausse en silence. On
+           montre la masse seule (déjà affichée par `updateInfo`) plutôt qu'une
+           enveloppe qui mentirait. Le négatif n'est pas une erreur — c'est une
+           composition signée. */
+        const hasNegativeCount=[...this.currentStoich.composition.values()]
+            .some(byA=>[...byA.values()].some(count=>count<0))
+        if(hasNegativeCount){
+            /* NETTOYAGE PAR clearPlot + MESSAGE DÉDIÉ — jamais `textContent`
+               sur plotContainer: textContent supprime TOUS les enfants, y
+               compris le div de Plot2D, alors que `this.plot` reste truthy.
+               Au retour en composo positive, le rendu partait alors dans un
+               conteneur détaché (clientWidth 0 → drawGraph sort en silence)
+               et le message restait: l'enveloppe ne revenait plus. clearPlot
+               retire aussi les barres orphelines que setTraces seul laissait
+               dans le groupe .anchor. */
+            this.clearPlot()
+            this.plotNotice("Envelope suppressed: negative counts (mass only)")
+            return
+        }
+
         try{
             const isotopologues=[...this.currentStoich.isotopologues({
                 ratio:this.parameters.ratio,
@@ -449,13 +697,9 @@ export class MassCalculatorNode extends Node{
             })]
 
             if(isotopologues.length===0){
-                this.plotContainer.textContent="No isotopologues in range"
-                this.pendingTrace=null
-                this.pendingBars=null
-                if(this.plot){
-                    this.plot.setTraces([])
-                    this.plot.drawGraph()
-                }
+                //même mécanisme que le garde négatif: DOM du plot intact
+                this.clearPlot()
+                this.plotNotice("No isotopologues in range")
                 return
             }
 
@@ -485,7 +729,7 @@ export class MassCalculatorNode extends Node{
             if(!this.plot){
                 if(!(this.plotContainer.clientWidth>0&&this.plotContainer.clientHeight>0)){
                     // Container not ready yet, clear and wait for resize
-                    this.plotContainer.textContent=""
+                    this.plotNotice(null)
                     this.pendingTrace=trace
                     this.pendingBars=isotopologues
                     return
@@ -508,10 +752,14 @@ export class MassCalculatorNode extends Node{
             this.plot.parameters.axis.left.autoDomain=true
             this.plot.drawGraph()
             this.drawPeakBars(isotopologues)
+            //L'ENVELOPPE EST REVENUE: masque le message d'un état précédent
+            this.plotNotice(null)
 
         }catch(err){
             console.error("Plot update error:",err)
-            this.plotContainer.textContent="Error generating plot"
+            this.pendingTrace=null
+            this.pendingBars=null
+            this.plotNotice("Error generating plot")
         }
     }
 
@@ -525,11 +773,8 @@ export class MassCalculatorNode extends Node{
         this.pendingTrace=null
         this.pendingBars=null
         this.hidePeakTip()
-        if(!this.plot){
-            //no plot yet: wipe the placeholder text ("No isotopologues…")
-            if(this.plotContainer) this.plotContainer.textContent=""
-            return
-        }
+        this.plotNotice(null)
+        if(!this.plot) return
         const anchor=this.plot.graphSVG?.select(".anchor")
         if(anchor&&!anchor.empty()){
             anchor.select(".masscalc-bars").remove()
@@ -538,6 +783,41 @@ export class MassCalculatorNode extends Node{
         }
         this.plot.setTraces([])
         this.plot.drawGraph()
+    }
+
+    /* MESSAGE SUR LE CONTOUR DU PLOT — élément DÉDIÉ, affiché/masqué.
+
+       Jamais `plotContainer.textContent = …`: textContent détacherait le div
+       de Plot2D et le tooltip tout en laissant `this.plot` truthy, et le
+       prochain rendu dessinerait dans un document orphelin — l'enveloppe ne
+       revenait plus après un état négatif. Un élément persistant rend le
+       message bidirectionnel: on l'affiche en état « masqué », on le
+       recouvre dès que l'enveloppe est de nouveau calculable. */
+    plotNotice(text){
+        if(!text){
+            if(this._plotNotice) this._plotNotice.style.display="none"
+            return
+        }
+        if(!this.plotContainer) return
+        if(!this._plotNotice){
+            this._plotNotice=CE("div",{className:"plot-notice"},[])
+            stylize(this._plotNotice,{
+                position:"absolute",
+                inset:"0",
+                display:"flex",
+                alignItems:"center",
+                justifyContent:"center",
+                textAlign:"center",
+                fontSize:"0.9em",
+                fontStyle:"italic",
+                color:"var(--text-muted)",
+                pointerEvents:"none",
+                zIndex:"5"
+            })
+            this.plotContainer.appendChild(this._plotNotice)
+        }
+        this._plotNotice.textContent=text
+        this._plotNotice.style.display="flex"
     }
 
     /* Peak bars: narrow vertical bars drawn inside the .anchor group — same
@@ -679,6 +959,10 @@ export class MassCalculatorNode extends Node{
                 .attr("width",width)
                 .attr("height",zone.height)
                 .attr("fill","transparent")
+                // .anchor sets a stroke (main.css) and stroke INHERITS in SVG —
+                // without this the invisible column paints a grey outline over
+                // the gradient. fill="transparent" alone does not stop it.
+                .attr("stroke","none")
                 .attr("pointer-events","all")
                 .on("pointerenter",(event)=>this.showPeakTip(hit,event))
                 .on("pointermove",(event)=>this.positionPeakTip(event))
