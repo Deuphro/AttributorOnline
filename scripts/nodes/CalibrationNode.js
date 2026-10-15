@@ -1,10 +1,10 @@
 import {NodeWithAccordion} from "../core/index.js"
 import {Plot2DWebGL} from "../ui/Plot2DWebGL.js"
-import {Wave,XYTrace} from "../formats.js"
+import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
+import {Wave,XYTrace,SurfaceTrace} from "../formats.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
-import * as THREE from "https://unpkg.com/three@0.160.1/build/three.module.js"
 
 export class CalibrationNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -27,7 +27,9 @@ export class CalibrationNode extends NodeWithAccordion{
         this.multiplexCount=0
         this.skippedInputs=0
         this.multiplexTotals=null
-        this._surfaceMesh=null
+        this.surfaceBuilt=false
+        this.surfacePlot=null
+        this.surfaceHost=null
 
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input 0: FormulaCollection(s) — reference formulas with errorPpm from attribution</title>'
@@ -108,131 +110,6 @@ export class CalibrationNode extends NodeWithAccordion{
                             collections.push(value)
 }
 
-class SimpleOrbitControls{
-    constructor(camera,domElement){
-        this.camera=camera
-        this.domElement=domElement
-        this.target=new THREE.Vector3(0,0,0)
-        this.enableDamping=false
-        this.dampingFactor=0.05
-        this.rotateSpeed=1.0
-        this.zoomSpeed=1.0
-        this.panSpeed=1.0
-        this.minDistance=0.1
-        this.maxDistance=Infinity
-        this._state=0
-        this._spherical=new THREE.Spherical()
-        this._sphericalDelta=new THREE.Spherical()
-        this._scale=1
-        this._panOffset=new THREE.Vector3()
-        this._rotateStart=new THREE.Vector2()
-        this._rotateEnd=new THREE.Vector2()
-        this._zoomStart=new THREE.Vector2()
-        this._zoomEnd=new THREE.Vector2()
-        this._panStart=new THREE.Vector2()
-        this._panEnd=new THREE.Vector2()
-
-        /* LES ÉCOUTEURS SONT NOMMÉS, et c'est la seule chose qui rende `dispose()`
-       possible. `.bind(this)` À CHAQUE APPEL produisait une fonction NEUVE: le
-       `removeEventListener` de `dispose()` retirait donc une adresse qui n'était
-       jamais celle de l'écouteur posé — un nettoyage silencieusement inopérant.
-       On pose une fois, on mémorise, on retire la même référence. */
-this._bound={
-    pointerdown:e=>this._onPointerDown(e),
-    pointermove:e=>this._onPointerMove(e),
-    pointerup:e=>this._onPointerUp(e),
-    wheel:e=>this._onWheel(e),
-    contextmenu:e=>e.preventDefault()
-}
-this.domElement.addEventListener('pointerdown',this._bound.pointerdown)
-this.domElement.addEventListener('pointermove',this._bound.pointermove)
-this.domElement.addEventListener('pointerup',this._bound.pointerup)
-this.domElement.addEventListener('wheel',this._bound.wheel)
-this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
-    }
-
-    update(){
-        if(this.enableDamping){
-            this._spherical.theta+=this._sphericalDelta.theta*this.dampingFactor
-            this._spherical.phi+=this._sphericalDelta.phi*this.dampingFactor
-            this._sphericalDelta.theta*=1-this.dampingFactor
-            this._sphericalDelta.phi*=1-this.dampingFactor
-            this._scale+= (this._scale-1)*this.dampingFactor
-            this._panOffset.multiplyScalar(1-this.dampingFactor)
-        }else{
-            this._sphericalDelta.set(0,0,0)
-            this._scale=1
-            this._panOffset.set(0,0,0)
-        }
-        const offset=new THREE.Vector3().subVectors(this.camera.position,this.target)
-        offset.applyQuaternion(this._getRotationQuaternion())
-        offset.multiplyScalar(this._scale)
-        offset.add(this._panOffset)
-        this.camera.position.copy(this.target).add(offset)
-        this.camera.lookAt(this.target)
-    }
-
-    _getRotationQuaternion(){
-        const quat=new THREE.Quaternion().setFromEuler(new THREE.Euler(0,0,0,'YXZ'))
-        const q=new THREE.Quaternion()
-        q.setFromAxisAngle(new THREE.Vector3(0,1,0),this._spherical.theta)
-        quat.multiply(q)
-        q.setFromAxisAngle(new THREE.Vector3(1,0,0),this._spherical.phi)
-        quat.multiply(q)
-        return quat
-    }
-
-    _onPointerDown(event){
-        if(event.button===0){
-            this._state=1
-            this._rotateStart.set(event.clientX,event.clientY)
-        }else if(event.button===2){
-            this._state=2
-            this._panStart.set(event.clientX,event.clientY)
-        }
-        this.domElement.setPointerCapture(event.pointerId)
-    }
-
-    _onPointerMove(event){
-        if(this._state===1){
-            this._rotateEnd.set(event.clientX,event.clientY)
-            const delta=new THREE.Vector2().subVectors(this._rotateEnd,this._rotateStart).multiplyScalar(this.rotateSpeed*0.005)
-            this._sphericalDelta.theta-=delta.x
-            this._sphericalDelta.phi-=delta.y
-            this._rotateStart.copy(this._rotateEnd)
-        }else if(this._state===2){
-            this._panEnd.set(event.clientX,event.clientY)
-            const delta=new THREE.Vector2().subVectors(this._panEnd,this._panStart).multiplyScalar(this.panSpeed*0.002)
-            this._panOffset.x-=delta.x
-            this._panOffset.y+=delta.y
-            this._panStart.copy(this._panEnd)
-        }
-    }
-
-    _onPointerUp(event){
-        this._state=0
-        this.domElement.releasePointerCapture(event.pointerId)
-    }
-
-    _onWheel(event){
-        event.preventDefault()
-        const scale=event.deltaY>0?1.1:0.9
-        this._scale*=scale
-    }
-
-    dispose(){
-        const b=this._bound
-        if(!b) return
-        this.domElement.removeEventListener('pointerdown',b.pointerdown)
-        this.domElement.removeEventListener('pointermove',b.pointermove)
-        this.domElement.removeEventListener('pointerup',b.pointerup)
-        this.domElement.removeEventListener('wheel',b.wheel)
-        //le contextmenu n'était retiré par AUCUN chemin: sans ce listener, un
-        //clic droit sur une surface 3D supprimée ouvrait encore le menu système
-        this.domElement.removeEventListener('contextmenu',b.contextmenu)
-        this._bound=null
-    }
-}
                     }
                 }
             }
@@ -255,6 +132,13 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
         content.replaceChildren()
         stylize(content,{
             display:"grid",
+            /* FIVE rows for FOUR children, on purpose. `auto auto` are the mode
+               and display sections, `minmax(0, 1fr)` is the graph, and the last
+               `auto` is the row BOTH graph containers share: the 2D box and the
+               3D box are siblings that alternate on display:none, so exactly
+               one of them is ever laid out. An unnamed auto row would place the
+               3D box into the 1fr row, and the two graphs would fight over the
+               same space — one of them collapsing to nothing. */
             "grid-template-rows":"auto auto minmax(0, 1fr) auto",
             minHeight:"0",
             height:"100%",
@@ -329,8 +213,25 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
             className:"calibration-graph-container",
             style:{position:"relative",width:"100%",height:"100%",minHeight:"200px",overflow:"hidden"}
         },[])
+        /* The 3D view: a SIBLING of the 2D one, in its own container, not a
+           mode of the same plot. They show different things — measured points
+           with residuals, against a sampled error field — and they need
+           different containers, different plots and different teardown. The
+           plot itself is built LAZILY in update3DSurface(), so this box only
+           declares where it will go. */
+        this.surfaceHost=CE("div",{
+            className:"calibration-graph-container",
+            style:{
+                position:"relative",
+                width:"100%",
+                height:"100%",
+                minHeight:"200px",
+                overflow:"hidden",
+                display:"none"
+            }
+        },[])
 
-        content.append(modeSection,displaySection,graphContainer)
+        content.append(modeSection,displaySection,graphContainer,this.surfaceHost)
 
         this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer)
         this.graph.parameters.axis.bottom.label="m/z"
@@ -339,6 +240,7 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
         this.graph.parameters.axis.left.autoLabel=false
         this.graph.parameters.axis.left.scale="linear"
         this.graph.parameters.axis.bottom.scale="linear"
+        this.surfaceBuilt=false
 
         const origDrawGraph=this.graph.drawGraph.bind(this.graph)
         this.graph.drawGraph=()=>{
@@ -360,7 +262,12 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
         },[])
         input.addEventListener("change",()=>{
             this.parameters[param]=input.checked
+            //the checkbox may drive either plot, so BOTH are asked rather than
+            //the one this listener happened to be built for
             this.graph?.drawGraph()
+            if(param==="show3DSurface"){
+                this.update3DSurface()
+            }
         })
         wrap.append(input,CE("span",{},label))
         return {wrap,input}
@@ -693,164 +600,132 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
         }
     }
 
+    /* -----------------------------------------------------------------
+       The 3D error surface.
+
+       WHAT THIS WAS: about 150 lines of hand-rolled mesh and camera-swapping
+       inside the node, and none of it had ever run. It called `errorColor()`
+       and `add3DAxes()`, neither of which exists anywhere in the repository,
+       and it read `this.graph.glLayer` while this class extends
+       NodeWithAccordion — whose `graph` is a Plot2DWebGL created in the
+       INSPECTOR, not in a dialog. The first missing function threw, behind a
+       reachability guard that silently returned before reaching it. So the
+       checkbox did nothing, and nothing said why.
+
+       WHAT IT IS: a Plot3DWebGL of its own, in its own container, switched by
+       the same checkbox. Three lessons are baked into that:
+
+         • the 3D view is a TRACE TYPE on a real plot, not a set of private
+           meshes a node pokes into somebody else's scene;
+         • `errorColor` became the plot's `colormap`, which is where a colormap
+           belongs — it is a rendering choice, and it now works for the Hough
+           surface and every future surface for free;
+         • no camera is swapped and no loop is started here. OrbitPanControls
+           and the render-on-demand loop belong to the plot, which is why this
+           node has nothing to restore on teardown but one `dispose()`.
+
+       The plot is built LAZILY and only once. A WebGL context is a
+       browser-wide resource capped at 16 in Chrome, past which the browser
+       drops the OLDEST LIVE one — belonging to a plot the user is still
+       looking at. Three of the six calibration modes (linear/quadratic/cubic
+       1D) have no (m/z, intensity) surface to show, so building this for them
+       would spend a context on a permanently hidden, permanently empty plot.
+
+       Unchecking empties it but KEEPS it: ticking and unticking is a gesture
+       the user does by reflex, and rebuilding a context each time would make
+       it stutter. The context is released in suicide(), the only moment the
+       node is certain never to be asked again.
+       ----------------------------------------------------------------- */
     update3DSurface(){
-        if(!this.parameters.show3DSurface || !this.calibrationResult || !this.calibrationResult.is2D){
-            this.clear3DSurface()
+        const wanted=!!this.parameters.show3DSurface&&!!this.calibrationResult?.is2D
+        if(this.surfaceHost) this.surfaceHost.style.display=wanted?"block":"none"
+        if(!wanted){
+            this.surfacePlot?.setTraces([])
             return
         }
-        if(!this.graph.glLayer){
-            return
+        if(!this.surfaceBuilt){
+            this.surfaceBuilt=true
+            this.surfacePlot=new Plot3DWebGL([],`${this.title} surface`,this.origin,this.surfaceHost)
+            this.surfacePlot.axisLabels={x:"m/z",y:"intensity",z:"error (ppm)"}
         }
-        const c=this.calibrationResult
-        const refPoints=c.refPoints
-        if(!refPoints || !refPoints.length){
-            this.clear3DSurface()
-            return
+        if(!this.surfacePlot) return
+        const wave=this.buildErrorSurfaceWave()
+        if(!wave) return
+        this.surfacePlot.setTraces([
+            new SurfaceTrace({
+                id:"error-surface",
+                title:"Error surface",
+                wave,
+                options:{
+                    colormap:"coolwarm",
+                    height:0.5,
+                    //anchored to the data, so two calibrations are comparable by
+                    //eye; errorSurfaceRange() supplies the floor
+                    heightRange:this.errorSurfaceRange(wave)
+                }
+            })
+        ])
+    }
+    /* The (m/z, intensity) grid the fitted polynomial is sampled on, in the
+       [nx, ny, 3] layout every grid wave in the project uses. The domain is
+       the span of the REFERENCE points, padded: sampling exactly to the
+       extremes would put the whole surface on the box boundary and the
+       interesting middle in a single cell. */
+    buildErrorSurfaceWave(nx=40,ny=32){
+        const refs=this.calibrationResult?.refPoints
+        if(!refs||!refs.length) return null
+        let mzMin=Infinity,mzMax=-Infinity
+        let inMin=Infinity,inMax=-Infinity
+        for(const p of refs){
+            if(!Number.isFinite(p?.measuredMz)||!Number.isFinite(p?.intensity)) continue
+            if(p.measuredMz<mzMin) mzMin=p.measuredMz
+            if(p.measuredMz>mzMax) mzMax=p.measuredMz
+            if(p.intensity<inMin) inMin=p.intensity
+            if(p.intensity>inMax) inMax=p.intensity
         }
-
-        const mzMin=Math.min(...refPoints.map(p=>p.measuredMz))
-        const mzMax=Math.max(...refPoints.map(p=>p.measuredMz))
-        const intMin=Math.min(...refPoints.map(p=>p.intensity))
-        const intMax=Math.max(...refPoints.map(p=>p.intensity))
-
-        const nx=50, ny=40
-        const positions=new Float32Array(nx*ny*3)
-        const colors=new Float32Array(nx*ny*3)
-        const indices=[]
-        let idx=0
-
-        for(let ix=0;ix<nx;ix++){
-            const mz=mzMin+(mzMax-mzMin)*ix/(nx-1)
-            for(let iy=0;iy<ny;iy++){
-                const intensity=intMin+(intMax-intMin)*iy/(ny-1)
-                const error=this.evalErrorSurface(mz,intensity)
-                const x=((mz-mzMin)/(mzMax-mzMin))*2-1
-                const y=((intensity-intMin)/(intMax-intMin))*2-1
-                const z=(error/20)*0.5
-                positions[idx*3]=x
-                positions[idx*3+1]=y
-                positions[idx*3+2]=z
-                const t=Math.min(1,Math.max(0,(error+20)/40))
-                const color=this.errorColor(t)
-                colors[idx*3]=color[0]
-                colors[idx*3+1]=color[1]
-                colors[idx*3+2]=color[2]
-                idx++
+        if(!(Number.isFinite(mzMin)&&Number.isFinite(inMin))) return null
+        //a flat axis has zero extent; a zero pad would leave the domain at one
+        //value and d3/the box would divide by it
+        const padMz=(mzMax-mzMin)*0.08||Math.abs(mzMin)*0.01||1
+        const padIn=(inMax-inMin)*0.08||Math.abs(inMin)*0.01||1
+        mzMin-=padMz; mzMax+=padMz
+        inMin-=padIn; inMax+=padIn
+        const wave=new Wave(nx,ny,3)
+        wave.labels=Wave.normalizeLabels(["m/z","intensity","error (ppm)"])
+        for(let iy=0;iy<ny;iy++){
+            const intensity=inMin+(inMax-inMin)*iy/(ny-1)
+            for(let ix=0;ix<nx;ix++){
+                const mz=mzMin+(mzMax-mzMin)*ix/(nx-1)
+                wave.core[wave.index(ix,iy,0)]=mz
+                wave.core[wave.index(ix,iy,1)]=intensity
+                wave.core[wave.index(ix,iy,2)]=this.evalErrorSurface(mz,intensity)
             }
         }
-
-        for(let ix=0;ix<nx-1;ix++){
-            for(let iy=0;iy<ny-1;iy++){
-                const a=ix*ny+iy
-                const b=ix*ny+iy+1
-                const c2=(ix+1)*ny+iy
-                const d=(ix+1)*ny+iy+1
-                indices.push(a,b,c2, b,c2,d)
+        wave.metadata={title:"Calibration error surface",source:"fitted polynomial",nx,ny}
+        wave.touch()
+        this.errorSurfaceDomain={mzMin,mzMax,inMin,inMax}
+        return wave
+    }
+    /* The ppm span of the surface, so the colormap is anchored to the data.
+       The floor matters: a perfect fit makes every error equal, and a range of
+       zero would divide the whole normalisation by nothing. */
+    errorSurfaceRange(wave){
+        let lo=Infinity
+        let hi=-Infinity
+        const [nx,ny]=wave.dims
+        for(let iy=0;iy<ny;iy++){
+            for(let ix=0;ix<nx;ix++){
+                const z=wave.core[wave.index(ix,iy,2)]
+                if(!Number.isFinite(z)) continue
+                if(z<lo) lo=z
+                if(z>hi) hi=z
             }
         }
-
-        const geometry=new THREE.BufferGeometry()
-        geometry.setAttribute('position',new THREE.BufferAttribute(positions,3))
-        geometry.setAttribute('color',new THREE.BufferAttribute(colors,3))
-        geometry.setIndex(indices)
-        geometry.computeVertexNormals()
-
-        const material=new THREE.MeshPhongMaterial({
-            vertexColors:true,
-            side:THREE.DoubleSide,
-            transparent:true,
-            opacity:0.8,
-            shininess:30
-        })
-
-        if(this._surfaceMesh){
-            this.graph.glLayer.scene.remove(this._surfaceMesh)
-            this._surfaceMesh.geometry.dispose()
-            this._surfaceMesh.material.dispose()
-        }
-
-        this._surfaceMesh=new THREE.Mesh(geometry,material)
-        this.graph.glLayer.scene.add(this._surfaceMesh)
-
-        this.add3DAxes(mzMin,mzMax,intMin,intMax)
-        this.setup3DCamera()
+        if(!Number.isFinite(lo)||!Number.isFinite(hi)) return [0,1]
+        if(!(hi>lo)) hi=lo+1
+        return [lo,hi]
     }
 
-    setup3DCamera(){
-        if(!this.graph.glLayer) return
-        const layer=this.graph.glLayer
-        layer.canvas.style.pointerEvents="auto"
-        if(!this._perspectiveCamera){
-            this._perspectiveCamera=new THREE.PerspectiveCamera(45,layer.canvas.width/layer.canvas.height,0.1,100)
-            this._perspectiveCamera.position.set(2.5,2.5,2.5)
-            this._perspectiveCamera.lookAt(0,0,0)
-            this._perspectiveCamera.updateProjectionMatrix()
-        }else{
-            this._perspectiveCamera.aspect=layer.canvas.width/layer.canvas.height
-            this._perspectiveCamera.updateProjectionMatrix()
-        }
-        this._originalCamera=layer.camera
-        layer.camera=this._perspectiveCamera
-        if(!this._orbitControls){
-            this._orbitControls=new SimpleOrbitControls(this._perspectiveCamera,layer.canvas)
-            this._orbitControls.enableDamping=true
-            this._orbitControls.dampingFactor=0.05
-            this._orbitControls.target.set(0,0,0)
-        }
-        this._animate3D()
-    }
-
-    /* UNE SEULE CHAÎNE D'ANIMATION, garantie ici et non par l'appelant.
-       `_animationFrame` ne portait que le DERNIER identifiant demandé, donc un
-       second `setup3DCamera` — deux bascules 3D rapprochées — démarrait une
-       seconde boucle indépendante que `restore2DCamera` ne pouvait pas annuler:
-       `cancelAnimationFrame` ne visait qu'une des deux, et l'autre rendait
-       `renderer.render` pour toujours, sur un renderer peut-être déjà détruit.
-       Annuler systématiquement l'image en attente avant d'en demander une
-       autre rend la boucle unique QUOI QU'IL ARRIVE au nombre d'appels. */
-    _animate3D(){
-        if(!this.parameters.show3DSurface || !this.graph.glLayer){
-            this.restore2DCamera()
-            return
-        }
-        if(this._animationFrame){
-            cancelAnimationFrame(this._animationFrame)
-            this._animationFrame=null
-        }
-        if(this._orbitControls) this._orbitControls.update()
-        this.graph.glLayer.renderer.render(this.graph.glLayer.scene,this.graph.glLayer.camera)
-        this._animationFrame=requestAnimationFrame(()=>this._animate3D())
-    }
-
-    restore2DCamera(){
-        if(this._animationFrame){
-            cancelAnimationFrame(this._animationFrame)
-            this._animationFrame=null
-        }
-        if(this._orbitControls){
-            this._orbitControls.dispose()
-            this._orbitControls=null
-        }
-        if(this._originalCamera && this.graph.glLayer){
-            this.graph.glLayer.camera=this._originalCamera
-            this.graph.glLayer.canvas.style.pointerEvents="none"
-            this._originalCamera=null
-        }
-    }
-
-    clear3DSurface(){
-        this.restore2DCamera()
-        if(this._surfaceMesh){
-            this.graph.glLayer?.scene.remove(this._surfaceMesh)
-            this._surfaceMesh.geometry.dispose()
-            this._surfaceMesh.material.dispose()
-            this._surfaceMesh=null
-        }
-        if(this._axisGroup){
-            this.graph.glLayer?.scene.remove(this._axisGroup)
-            this._axisGroup=null
-        }
-    }
 
     updateUI(){
         if(this.calibrationResult){
@@ -1100,7 +975,11 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
             calibrationCoeffs:this.parameters.calibrationCoeffs,
             useCollectionErrors:this.parameters.useCollectionErrors,
             show3DSurface:this.parameters.show3DSurface,
-            status:this.status
+            status:this.status,
+            /* the 3D camera. Orbiting to a readable angle and then reloading the
+               session to find it reset would be the kind of small betrayal
+               that makes people distrust a reload. */
+            surfacePlot:this.surfacePlot?.serializeState?.()??null
         }
     }
 
@@ -1113,6 +992,21 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
         if(this.modeSelect) this.modeSelect.value=this.parameters.calibrationMode
         if(this.useCollectionErrorsCheckbox) this.useCollectionErrorsCheckbox.input.checked=this.parameters.useCollectionErrors
         if(this.show3DSurfaceCheckbox) this.show3DSurfaceCheckbox.input.checked=this.parameters.show3DSurface
+        /* The camera is applied from restoreAfterImport, not here: framing needs
+           the box, and the box only exists once there is something in the
+           scene — which means after the first resolve. Applying it now would
+           frame an empty plot and then be overwritten by that first framing. */
+        this._restoredSurfaceCamera=state.surfacePlot?.camera??null
+    }
+    restoreAfterImport(){
+        super.restoreAfterImport?.()
+        this.updateCalibrationPlot()
+        this.update3DSurface()
+        const camera=this._restoredSurfaceCamera
+        if(camera&&this.surfacePlot){
+            this.surfacePlot.restoreState({camera})
+            this._restoredSurfaceCamera=null
+        }
     }
 
     /* Le CONTEXTE WEBGL, libéré avec le nœud — même raison et même surcharge que
@@ -1122,18 +1016,16 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
        OpenGL vivant — et, à 16 contextes, le navigateur en sacrifiait un autre,
        celui d'un nœud encore affiché.
 
-       La surface 3D et ses contrôles sont libérés aussi : la géométrie et le
-       matériau sont des ressources GPU, exactement comme les tampons du tracé 2D,
-       et une orbite.camera encore active reprogrammerait un renderer mort. */
+       La vue 3D est libérée aussi, et c'est désormais TOUT ce qu'il y a à
+       faire: le plot possède son contexte, ses tampons, son overlay et sa
+       boucle de rendu, donc un seul `dispose()` suffit. L'ancien code annulait
+       ici un `_animationFrame`, disposait des contrôles et vidait une géométrie
+       à la main — parce que la vue était un ensemble de maillages privés que
+       ce nœud avait construits lui-même. Ce n'est plus le cas, et ce code
+       disparaît avec. */
     suicide(options={}){
         this.graph?.dispose?.()
-        if(this._animationFrame!==null&&this._animationFrame!==undefined){
-            cancelAnimationFrame(this._animationFrame)
-            this._animationFrame=null
-        }
-        this._orbitControls?.dispose?.()
-        this._surfaceMesh?.geometry?.dispose?.()
-        this._surfaceMesh?.material?.dispose?.()
+        this.surfacePlot?.dispose?.()
         super.suicide(options)
     }
 }

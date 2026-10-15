@@ -74,7 +74,16 @@ export class GLSceneLayer{
         //A PERSPECTIVE camera, and there is nothing to swap it with: the layer
         //is born 3D. Plot2DWebGL has to replace glLayer.camera and its own
         //glCamera alias to get any depth at all; here there is no 2D mode.
-        this.camera=new THREE.PerspectiveCamera(45,1,depth/100,depth)
+        //
+        //NEAR AND FAR ARE A PLACEHOLDER, not a budget. The scene's scale is
+        //unknown here — a Hough surface on [-1,1]^2 and a calibration surface
+        //over m/z in the hundreds differ by three orders of magnitude — so they
+        //are set from the framing distance by `setDepthRange()` and owned by
+        //whoever frames the scene. A fixed near=depth/100 clipped a unit-sized
+        //surface whole: it sat inside the near plane, drew nothing at all, and
+        //only became visible once the camera was dragged far enough back to
+        //clear it — small and long after the user had stopped expecting it.
+        this.camera=new THREE.PerspectiveCamera(45,1,0.01,100)
         this.camera.position.set(3,2.4,3)
         this.camera.lookAt(0,0,0)
         this.camera.updateProjectionMatrix()
@@ -133,6 +142,31 @@ export class GLSceneLayer{
     }
     render(){
         this.renderer.render(this.scene,this.camera)
+    }
+    /* THE DEPTH RANGE FOLLOWS THE FRAMING DISTANCE, never a constant.
+
+       `near` has to sit closer to the camera than the nearest vertex and no
+       closer, and `far` further than the scene. Neither is knowable before
+       something is framed, and both are wrong by a factor of ~5 for any scene
+       that is not the size the constants were written for — which is every
+       scene: 1 unit for a Hough grid, hundreds for an m/z surface.
+
+       A near plane too far away does not warn: it clips, silently, and the
+       object simply is not there. That is the whole failure mode.
+
+       The ratios are chosen so the scene is comfortably inside at any framing
+       distance: near at 1 % of it, far at 100×. Zooming out moves BOTH planes,
+       so a distant view stays correct instead of eventually losing its far
+       plane. */
+    setDepthRange(distance){
+        if(!(distance>0)) return false
+        const near=Math.max(1e-6,distance*0.01)
+        const far=Math.max(near*1000,distance*100)
+        if(this.camera.near===near&&this.camera.far===far) return false
+        this.camera.near=near
+        this.camera.far=far
+        this.camera.updateProjectionMatrix()
+        return true
     }
 
     /* Register an object the layer created on the caller's behalf, so

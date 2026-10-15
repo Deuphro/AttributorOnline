@@ -59,17 +59,21 @@ const COLORMAPS={
    address that was never registered — a cleanup silently inoperative, which
    is the whole family of bug this note exists to prevent. */
 class OrbitPanControls{
-    constructor(camera,domElement,{onChange=null}={}){
+    constructor(camera,domElement,{onChange=null,onDistance=null}={}){
         this.camera=camera
         this.domElement=domElement
         this.target=new THREE.Vector3(0,0,0)
         this.onChange=onChange
+        this.onDistance=onDistance
+        /* Provisional, and overwritten by frame() before anything is ever
+           drawn. They exist so a camera restored from a session — where frame()
+           has not run yet — is still clamped to something sane instead of
+           drifting to infinity. */
         this.minDistance=0.6
         this.maxDistance=80
         this.rotateSpeed=0.008
         this.zoomSpeed=0.0016
         this.panSpeed=0.0022
-        this.damping=0.12
         this._mode=0            // 0 idle, 1 orbit, 2 pan
         this._theta=Math.PI/4
         this._phi=Math.PI/3
@@ -121,6 +125,18 @@ class OrbitPanControls{
             this._panOffset.addScaledVector(right,-dx*scale)
             this._panOffset.addScaledVector(up,dy*scale)
         }
+        /* THE MISSING update(). This is what made a left-drag do nothing at
+           all: the deltas piled up here, and nothing consumed them, because
+           update() was only reached from the wheel and from frame(). The
+           symptom was peculiar enough to be worth writing down — the wheel
+           appeared to ZOOM *and to ROTATE*, because the single update() it
+           triggered finally applied a large accumulated delta, 12 % of it,
+           while also changing the distance. "The drag does nothing but the
+           wheel spins it" is not a shape of bug anyone would guess at.
+
+           Every gesture therefore ends in update(), not every FRAME: the plot
+           renders on demand, and there is no loop here to coast on. */
+        this.update()
     }
     _onPointerUp(e){
         this._mode=0
@@ -133,39 +149,52 @@ class OrbitPanControls{
         const notches=-e.deltaY*(e.deltaMode===1?16:1)
         this._scale*=Math.exp(notches*this.zoomSpeed)
         this.update()
-        this.onChange?.()
     }
+    /* NO DAMPING, ON PURPOSE.
+
+       Damping means applying a FRACTION of the accumulated delta per update()
+       and keeping the rest for the next one — which only works if update() runs
+       on every frame until the deltas decay to zero. That is a continuous loop
+       burning a frame per plot forever, and this plot is explicitly
+       render-on-demand: an idle surface should cost nothing.
+
+       So the delta is applied in full, per gesture event, and zeroed. Direct
+       manipulation with no lag is also the better feel here; damping mostly
+       matters when a camera is chasing a moving target, and nothing here does. */
     update(){
-        if(this.damping>0){
-            this._theta+=this._deltaTheta*this.damping
-            this._phi+=this._deltaPhi*this.damping
-            this._deltaTheta*=1-this.damping
-            this._deltaPhi*=1-this.damping
-            this._distance*=1+(this._scale-1)*this.damping
-            this._scale=1+(this._scale-1)*(1-this.damping)
-            this._panOffset.multiplyScalar(1-this.damping)
-        }else{
-            this._theta+=this._deltaTheta
-            this._phi+=this._deltaPhi
-            this._deltaTheta=0
-            this._deltaPhi=0
-            this._scale=1
-            this._distance*=this._scale
-            this._scale=1
-        }
+        this._theta+=this._deltaTheta
+        this._phi+=this._deltaPhi
+        this._deltaTheta=0
+        this._deltaPhi=0
+        this._distance*=this._scale
+        this._scale=1
         this._phi=Math.max(0.02,Math.min(Math.PI-0.02,this._phi))
         this._distance=Math.max(this.minDistance,Math.min(this.maxDistance,this._distance))
         this._spherical.set(this._distance,this._phi,this._theta)
         this.camera.position.setFromSpherical(this._spherical).add(this.target).add(this._panOffset)
         this.camera.lookAt(this.target.clone().add(this._panOffset))
         this.camera.updateMatrixWorld()
+        /* The depth range belongs to the distance, or the near plane eats the
+           scene. It used to be a constant sized for a 2000-unit budget, which
+           clipped a unit-sized surface whole — and a fixed far plane loses the
+           scene just as silently once the camera backs off far enough. */
+        this.onDistance?.(this._distance)
         this.onChange?.()
     }
     /* Re-frame on the given box, keeping the current viewing angles. Used on
-       first draw and by the double-click reset. */
+       first draw and by the double-click reset.
+
+       THE ZOOM LIMITS ARE SET FROM THE BOX, not left absolute. `maxDistance`
+       used to be 80 — a number that happens to suit a [-1,1] Hough grid and
+       is nowhere near enough for a calibration surface over m/z in the
+       hundreds, where frame() asks for size*1.6 and got silently clamped to
+       80. The result is the same bug at the other end: the scene framed at a
+       fraction of its own size, so it comes out a speck. */
     frame(box,{resetAngles=false}={}){
         this.target.set((box.xMin+box.xMax)/2,(box.yMin+box.yMax)/2,(box.zMin+box.zMax)/2)
         const size=Math.max(box.xMax-box.xMin,box.yMax-box.yMin,box.zMax-box.zMin,1e-6)
+        this.minDistance=size*0.15
+        this.maxDistance=size*40
         this._distance=size*1.6
         this._panOffset.set(0,0,0)
         this._scale=1
@@ -241,10 +270,10 @@ export class Plot3DWebGL{
         this._dataRevision=0
         this._frame=null
         this._resizeFrame=null
+        this._overlayFrame=null
         this._pickFrame=null
         this._pickEvent=null
         this._hover=null
-        this._hidden=[]
         this.container=CE("div",{className:"plot3d container",pilot:this},[])
         stylize(this.container,{position:"relative",width:"100%",height:"100%",zIndex:"0"})
         this.destination.appendChild(this.container)
@@ -323,7 +352,19 @@ export class Plot3DWebGL{
         //them would tear down and rebuild the same listeners for nothing
         if(!this.controls&&this.glLayer){
             this.controls=new OrbitPanControls(this.glCamera,this.container,{
-                onChange:()=>this.requestFrame()
+                /* BOTH layers, and that is the whole point. The box, the edges
+                   and the ticks live in the SVG overlay, in WORLD coordinates;
+                   `project()` runs them through the camera, so they rotate with
+                   the scene — but only if the overlay is redrawn. Asking for a
+                   WebGL frame alone left the box frozen in the middle of an
+                   orbiting surface, which reads as "the drag does nothing". */
+                onChange:()=>{
+                    this.requestFrame()
+                    this.requestOverlay()
+                },
+                //the depth range is the layer's business; the controls only
+                //know how far away the camera is
+                onDistance:distance=>this.glLayer?.setDepthRange(distance)
             })
         }
         this._onDblClick=()=>{
@@ -592,6 +633,16 @@ export class Plot3DWebGL{
             this.drawFrame()
         })
     }
+    /* The front layer redraws on its own schedule, and coalesced: an orbit
+       fires onChange on every pointermove, and rebuilding the twelve edges and
+       the three sets of ticks per event is wasted work on a drag. */
+    requestOverlay(){
+        if(this._overlayFrame!==null&&this._overlayFrame!==undefined) return
+        this._overlayFrame=requestAnimationFrame(()=>{
+            this._overlayFrame=null
+            this.drawOverlay()
+        })
+    }
     drawFrame(){
         if(!this.glLayer) return
         this.glLayer.render()
@@ -609,10 +660,25 @@ export class Plot3DWebGL{
         this.requestFrame()
     }
     syncViewport(){
-        const width=Math.max(1,this.container.clientWidth)
-        const height=Math.max(1,this.container.clientHeight)
-        if(this.glLayer.width===width&&this.glLayer.height===height) return
+        /* A container that is `display:none` has no box: clientWidth and
+           clientHeight are 0, and `Math.max(1, …)` would silently freeze the
+           viewport at 1x1. It would STAY frozen, because a ResizeObserver does
+           not fire when an element starts being displayed — only when an
+           observed element changes size, and a hidden one is not observed at
+           all. The plot would therefore come back at one pixel and stay there
+           until the window itself was resized.
+
+           So a collapsed container is left alone: the size stays whatever it
+           was, and whoever un-hides the container must call drawGraph() after
+           the fact. CalibrationNode does exactly that — its 3D box is a hidden
+           sibling of its 2D box, and update3DSurface() shows it before it
+           plots. */
+        const width=this.container.clientWidth
+        const height=this.container.clientHeight
+        if(!(width>0&&height>0)) return false
+        if(this.glLayer.width===width&&this.glLayer.height===height) return false
         this.glLayer.setViewport(width,height)
+        return true
     }
     handleResize(){
         //coalesced: a drag-resize must not redraw once per intermediate size
@@ -639,6 +705,10 @@ export class Plot3DWebGL{
     drawOverlay(){
         const svg=this.overlay
         if(!svg) return
+        //nothing to project onto while the container has no box: an empty viewBox
+        //would be replaced by one pixel wide, and the next real draw would
+        //correct it anyway
+        if(!(this.container.clientWidth>0&&this.container.clientHeight>0)) return
         const width=this.container.clientWidth
         const height=this.container.clientHeight
         svg.setAttribute("viewBox",`0 0 ${width} ${height}`)
@@ -810,13 +880,23 @@ export class Plot3DWebGL{
             const grid=object.userData?.grid
             let label=object.userData?.traceId??""
             if(grid&&Number.isInteger(hit.faceIndex)){
-                //the face index names the cell, so the grid coordinates come
-                //back without a nearest-point search
-                const cell=hit.faceIndex
+                /* A CELL, not a face — and that halving is the whole fix.
+                   buildSurface emits TWO triangles per grid cell, so faceIndex
+                   runs over 2*(nx-1)*(ny-1) while cells run over (nx-1)*(ny-1).
+                   Reading a face index as a cell therefore walked iy up to
+                   twice the last row, and `getZ()` past the end of the
+                   attribute returned undefined: "can't access property
+                   'toPrecision', z is undefined", thrown from a rAF callback
+                   where the stack points nowhere near the arithmetic.
+
+                   And it only showed on SOME cells, which is why it looked
+                   arbitrary: the first triangle of each cell landed in range. */
+                const cell=Math.floor(hit.faceIndex/2)
                 const ix=cell%(grid.nx-1)
                 const iy=Math.floor(cell/(grid.nx-1))
-                const z=object.geometry.attributes.position.getZ(iy*grid.nx+ix)
-                label=`z ${z.toPrecision(4)}`
+                const index=iy*grid.nx+ix
+                const z=Number.isInteger(index)?object.geometry.attributes.position.getZ(index):NaN
+                label=Number.isFinite(z)?`z ${z.toPrecision(4)}`:""
                 this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,label}
             }else{
                 this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,
@@ -869,6 +949,48 @@ export class Plot3DWebGL{
             bounds:this.bounds
         }
     }
+    /* A ONE-LINE ANSWER TO "why is it black?". Every field here is one whose
+       value silently produces a black surface when it is wrong — no lights in
+       the scene, vertexColors off, a degenerate bounding sphere, a camera
+       outside its own far plane — and none of them throws. Read in a console
+       next to a surface that renders black, this names the cause in one run
+       instead of one guess per round trip. */
+    diagnose(){
+        const layer=this.glLayer
+        const objects=layer?layer.content.children:[]
+        const camera=this.glCamera
+        const lights=[]
+        layer?.scene?.traverse(node=>{
+            if(node.isLight) lights.push(`${node.type}@${node.intensity}`)
+        })
+        return {
+            canvas:`${layer?.canvas?.width}x${layer?.canvas?.height}`,
+            clientBox:`${this.container.clientWidth}x${this.container.clientHeight}`,
+            objectsInScene:objects.length,
+            lightsInScene:lights,
+            camera:camera?`${camera.type} near=${camera.near} far=${camera.far} pos=${camera.position.toArray().map(v=>v.toFixed(2))}`:"none",
+            traces:objects.map(o=>{
+                const geometry=o.geometry
+                const position=geometry?.getAttribute?.("position")
+                const color=geometry?.getAttribute?.("color")
+                const first=position?Array.from(position.array.slice(0,3)).map(v=>+v.toFixed(3)):null
+                const firstColor=color?Array.from(color.array.slice(0,3)).map(v=>+v.toFixed(3)):null
+                return {
+                    type:o.type,
+                    visible:o.visible,
+                    material:o.material?.type,
+                    vertexColors:o.material?.vertexColors,
+                    side:o.material?.side,
+                    opacity:o.material?.opacity,
+                    hasIndex:!!geometry?.getIndex,
+                    vertices:position?.count??0,
+                    firstPosition:first,
+                    firstColor:firstColor,
+                    sphere:geometry?.boundingSphere?geometry.boundingSphere.radius:"not computed"
+                }
+            })
+        }
+    }
 
     dispose(){
         if(this.container&&this.container.handleResize===this._resizeHook){
@@ -880,11 +1002,12 @@ export class Plot3DWebGL{
         this.container.removeEventListener("mouseleave",this._onLeave)
         this.controls?.dispose()
         this.controls=null
-        for(const frame of [this._frame,this._resizeFrame,this._pickFrame]){
+        for(const frame of [this._frame,this._resizeFrame,this._overlayFrame,this._pickFrame]){
             if(frame!==null&&frame!==undefined) cancelAnimationFrame(frame)
         }
         this._frame=null
         this._resizeFrame=null
+        this._overlayFrame=null
         this._pickFrame=null
         this._pickEvent=null
         this._hover=null

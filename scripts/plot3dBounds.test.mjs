@@ -29,27 +29,71 @@ const test=(name,fn)=>{
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value") }
 
-/* The functions as they are written, recovered from the source. Reproducing
-   them here by hand would test the copy, not the file — so the body is read
-   out and evaluated.
+/* THE EXTRACTOR. Everything below it is a use.
 
-   `after` skips the helper classes above the plot: "dispose()" appears in
-   OrbitPanControls first, and a search that stopped there would test the
-   controls' teardown while claiming to test the plot's. */
-function methodBody(name,after=0){
-    const start=source.indexOf(`    ${name}(`,after)
-    ok(start>=0,`${name}() not found in Plot3DWebGL.js`)
-    const open=source.indexOf("{",start)
+   Three ways this went wrong before it worked, all of them failures that read
+   like product bugs rather than harness bugs, which is why they are recorded:
+
+     1. the body started after the FIRST "{" — and `suicide(options={})` has a
+        brace in its default value, so the extracted body was EMPTY and every
+        check inside it failed for no reason at all;
+     2. comments were counted as code — a `{height:460}` inside a comment closed
+        a brace that never opened, and the walk stopped mid-comment;
+     3. a CRLF checkout left a stray \r on the sliced body's first line, which
+        failed every anchored check inside it.
+
+   So: normalise the line endings, skip the signature, and blank the comments
+   before walking. */
+function extractBody(text,name,after=0){
+    const clean0=text.replace(/\r\n/g,"\n")
+    const start=clean0.indexOf(`    ${name}(`,after)
+    ok(start>=0,`${name}() not found`)
+    /* Find the ")" that closes the SIGNATURE — the first one not nested in a
+       default value. A plain indexOf(")") is not enough: `f(cb = () => 0)` has
+       one inside, and so does any default holding an object literal. Counting
+       parenthesis depth from the "(" is the only version that survives both,
+       and `computeBounds()` — no parameters at all — is the case that proves
+       it: indexOf(")") lands on the empty call's own parenthesis, and the
+       first "{" after it belongs to whatever code follows the method. */
+    const openParen=clean0.indexOf("(",start)
+    let parens=0
+    let closeParen=-1
+    for(let k=openParen;k<clean0.length;k++){
+        const c=clean0[k]
+        if(c==="(") parens++
+        else if(c===")"){
+            parens--
+            if(parens===0){ closeParen=k; break }
+        }
+    }
+    ok(closeParen>openParen,`${name}( has no closing parenthesis in its signature`)
+    const open=clean0.indexOf("{",closeParen)
+    ok(open>=0,`${name}() has no opening brace after its signature`)
+    const clean=clean0.slice(open).replace(/\/\*[\s\S]*?\*\//g,m=>" ".repeat(m.length))
     let depth=0
-    for(let k=open;k<source.length;k++){
-        if(source[k]==="{") depth++
-        else if(source[k]==="}"){
+    for(let k=0;k<clean.length;k++){
+        if(clean[k]==="{") depth++
+        else if(clean[k]==="}"){
             depth--
-            if(depth===0) return source.slice(open+1,k)
+            /* `k` is the index OF the closing brace within `clean`, and `open` is
+               the index OF the opening one within the same string. The body is
+               everything strictly BETWEEN them: `open+1` … `open+k`, and
+               `open+1+k` would swallow the brace and produce a fragment that
+               fails to compile with "Unexpected token '}'" — which reads as a
+               broken method rather than as an off-by-one in the extractor. */
+            if(depth===0) return clean0.slice(open+1,open+k)
         }
     }
     throw new Error(`unbalanced braces in ${name}()`)
 }
+
+/* `after` skips the helper classes above the plot: "dispose()" appears in
+   OrbitPanControls first, and a search that stopped there would test the
+   controls' teardown while claiming to test the plot's. */
+const methodBody=(name,after=0)=>extractBody(source,name,after)
+
+/* The same, on a file this test does not own. */
+const methodBodyOf=(text,name,after=0)=>extractBody(text,name,after)
 
 /* computeBounds closes over SurfaceTrace and Scatter3DTrace, so both names
    are supplied: that IS the dispatch under test. They are plain constructor
@@ -230,6 +274,7 @@ test("every DOM listener is named, so dispose() can remove it",()=>{
 
 /* Everything past the plot class declaration. */
 const PLOT_BODY=source.slice(source.indexOf("export class Plot3DWebGL"))
+const PLOT_AT=source.indexOf("export class Plot3DWebGL")
 
 test("dispose() cancels every frame it scheduled",()=>{
     /* The frames are held in an ARRAY and cancelled in a loop, so this checks
@@ -308,6 +353,72 @@ test("a node whose view is 3D never opens a 2D context",()=>{
         "HoughTransformNode must not import or construct Plot2DWebGL")
     ok(!/\.dispose\(\)[\s\S]{0,80}new Plot3DWebGL/.test(houghCode),
         "HoughTransformNode must not create a plot only to dispose it")
+})
+
+test("a hidden container does not freeze the viewport at one pixel",()=>{
+    /* CalibrationNode's 3D box is a `display:none` sibling of its 2D box, and
+       a hidden element has clientWidth/clientHeight of 0. `Math.max(1, …)`
+       turned that into a 1x1 viewport — and it STAYS 1x1, because a
+       ResizeObserver does not fire when an element starts being displayed: a
+       hidden element is not observed at all. The surface would come back at one
+       pixel and stay there until the window itself was resized. */
+    const body=methodBody("syncViewport",source.indexOf("export class Plot3DWebGL"))
+    ok(/if\(!\(width>0&&height>0\)\) return false/.test(body),
+        "syncViewport() must refuse to resize a container that has no box")
+    /* The two other Math.max(1, …) in this file clamp a trace STRIDE, which is
+       a count and has no zero case worth skipping. Only the size clamp is the
+       bug, so only it is forbidden here. */
+    const code=body.replace(/\/\*[\s\S]*?\*\//g,"").replace(/^\s*\/\/.*$/gm,"")
+    ok(!/Math\.max\(1,/.test(code),
+        "and must not clamp a zero size to 1, which is what froze the viewport")
+
+    const overlay=methodBody("drawOverlay",source.indexOf("export class Plot3DWebGL"))
+    ok(overlay.indexOf("clientWidth>0")<overlay.length,
+        "drawOverlay() must not project onto a container with no box")
+})
+
+test("the 3D surface is built lazily, and only in a 2D mode",()=>{
+    const calib=readFileSync(join(here,"nodes/CalibrationNode.js"),"utf8")
+    //the CODE, not the prose: the header of update3DSurface() explains at
+    //length which two functions the old dead code called, and that account is
+    //worth keeping
+    const code=calib.replace(/\/\*[\s\S]*?\*\//g,"").replace(/^\s*\/\/.*$/gm,"")
+    const body=methodBodyOf(calib,"update3DSurface")
+    ok(/show3DSurface/.test(body)&&/\.is2D/.test(body),
+        "the surface belongs to the 2D modes only")
+    ok(/surfaceBuilt/.test(body),
+        "the plot must be built on first use: a context spent on a permanently empty plot is a context the browser may sacrifice elsewhere")
+    /* There are two setTraces() calls: the empty one on the "not wanted" branch,
+       which runs BEFORE the lazy build and must, and the real one after. Only
+       the second is the ordering that matters. */
+    const build=body.indexOf("new Plot3DWebGL")
+    const clear=body.indexOf("setTraces([])")
+    const push=body.lastIndexOf(".setTraces(")
+    ok(clear>=0&&clear<build,
+        "the empty setTraces([]) on the not-wanted branch must come before the build")
+    ok(build>0&&push>build,
+        `the real traces must be pushed AFTER the plot exists (build=${build}, push=${push})`)
+    ok(!/errorColor|add3DAxes/.test(code),
+        "the two functions the old dead 3D code called, which exist nowhere in the repository")
+})
+
+test("CalibrationNode holds no private 3D GPU state any more",()=>{
+    /* The view is a plot now, so the node has nothing to tear down but one
+       dispose() call. Hand-rolled meshes in a node are what made that teardown
+       grow a cancelAnimationFrame, a controls dispose and a geometry dispose. */
+    const calib=readFileSync(join(here,"nodes/CalibrationNode.js"),"utf8")
+    const code=calib.replace(/\/\*[\s\S]*?\*\//g,"").replace(/^\s*\/\/.*$/gm,"")
+    ok(!/_surfaceMesh|_axisGroup|_orbitControls|_perspectiveCamera|_originalCamera/.test(code),
+        "CalibrationNode still carries private 3D state")
+    ok(!/THREE\./.test(code),"CalibrationNode still reaches for THREE directly")
+    ok(!/cancelAnimationFrame/.test(code),
+        "CalibrationNode still owns an animation frame: the plot's loop is the only one there should be")
+    const suicide=methodBodyOf(calib,"suicide")
+    /* `.includes`, not a regex: `surfacePlot?.dispose()` has a `?` in it, and a
+       regex reads that as "zero or one s", so the anchor silently stopped
+       matching the one line it was written to protect. */
+    ok(suicide.includes("surfacePlot?.dispose?.()"),
+        `suicide() must release the 3D plot: NodeWithAccordion only frees the accordion (got ${JSON.stringify(suicide.slice(-90))})`)
 })
 
 console.log(`\n${passed} passed, ${failures.length} failed`)
