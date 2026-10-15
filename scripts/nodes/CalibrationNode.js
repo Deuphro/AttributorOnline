@@ -44,13 +44,67 @@ export class CalibrationNode extends NodeWithAccordion{
         this.setupAccordionUI()
     }
 
+    /* DEUX FORMES ACCUEILLIES, ET LA SECONDE EST CELLE QUI CIRCULE.
+
+       FormulaCollectionNode ne publie plus des instances de `FormulaCollection`
+       depuis le commit de clustering (fec4697): `publishOutput()` pousse un
+       littéral `{name, formulas}`, où chaque formule est un objet PLAT
+       (key, notation, mz, mass, charge, molecule, errorPpm, intensity, note,
+       targets[]). Ce n'est donc plus `instanceof FormulaCollection`, ni même
+       `constructor.name === "FormulaCollection"` — un littéral a toujours
+       `constructor.name === "Object"`.
+
+       Ce test échouait donc en silence: `collections` restait vide, et
+       startResolve() partait sur son chemin « pas de collection » en
+       laissant le nœud floating, sans lever ni logger quoi que ce soit. C'est
+       la rupture qui a cassé Calibration, et elle est dans les DONNÉES, pas
+       dans ce nœud.
+
+       `acceptsCollection` distingue les deux formes par ce qu'elles ont, pas
+       par leur classe: une instance a `entries`, un littéral a `formulas`. */
+    acceptsCollection(value){
+        if(!value||typeof value!=="object") return false
+        if(Array.isArray(value.entries)) return true
+        return Array.isArray(value.formulas)
+    }
+    /* Ce que ce nœud consomme d'UNE formule, quelle que soit sa forme.
+
+       Une entrée d'instance porte un `formula` (le m/z VRAI) et un `target`
+       (le m/z mesuré, déjà choisi par `nearestTarget`). La forme plate porte
+       `mz` et `targets[]`, et aucun des deux: la cible la plus proche est donc
+       choisie ICI, car la publication plate a déjà jeté la valeur unique par
+       colonne que `match()` calculait.
+
+       `entry.errorPpm` de la forme plate EST déjà cette erreur de cible la
+       plus proche : elle est donc préférée au recalcul, et le recalcul ne sert
+       que d'entrée de secours pour une entrée dont l'erreur n'a jamais été
+       remplie. */
+    referenceOf(value){
+        //une entrée d'instance: elle porte déjà les deux côtés
+        if(value.formula){
+            return {trueMz:value.formula.mz,measuredMz:value.target?.mz,
+                intensity:value.target?.intensity,errorPpm:value.errorPpm}
+        }
+        const target=(value.targets??[]).reduce((best,current)=>{
+            if(!Number.isFinite(current?.mz)) return best
+            if(!best) return current
+            const distance=Math.abs(current.mz-value.mz)
+            return distance<Math.abs(best.mz-value.mz)?current:best
+        },null)
+        return {
+            trueMz:value.mz,
+            measuredMz:target?.mz,
+            intensity:target?.intensity,
+            errorPpm:Number.isFinite(value.errorPpm)?value.errorPpm:target?.errorPpm
+        }
+    }
     collectFormulaCollections(){
         const collections=[]
         if(this.inputs[0] instanceof Map){
             for(const values of this.inputs[0].values()){
                 for(const linkOutputs of values instanceof Array?values:[values]){
                     for(const value of linkOutputs instanceof Array?linkOutputs:[linkOutputs]){
-                        if(value && value.constructor?.name==="FormulaCollection"){
+                        if(this.acceptsCollection(value)){
                             collections.push(value)
 }
 
@@ -403,26 +457,29 @@ this.domElement.addEventListener('contextmenu',this._bound.contextmenu)
 
     extractReferencePoints(formulaCollection,x,y){
         const points=[]
-        if(!formulaCollection || !formulaCollection.entries) return points
+        if(!formulaCollection) return points
+        /* BOTH SHAPES AGAIN. An instance exposes `entries`, the flat published
+           form exposes `formulas`; before the clustering change only the first
+           existed, and this loop simply found nothing in the second — the same
+           silent-failure mode as collectFormulaCollections(). */
+        const rows=Array.isArray(formulaCollection.entries)
+            ?formulaCollection.entries
+            :(formulaCollection.formulas??[])
 
         if(this.parameters.useCollectionErrors){
-            for(const entry of formulaCollection.entries){
-                if(!entry.formula || !Number.isFinite(entry.formula.mz)) continue
-                if(!Number.isFinite(entry.errorPpm)) continue
-                if(!entry.target || !Number.isFinite(entry.target.mz)) continue
-                if(!Number.isFinite(entry.target.intensity)) continue
-
-                const trueMz=entry.formula.mz
-                const measuredMz=entry.target.mz
-                const intensity=entry.target.intensity
-                const errorPpm=entry.errorPpm
-
+            for(const row of rows){
+                const {trueMz,measuredMz,intensity,errorPpm}=this.referenceOf(row)
+                if(!Number.isFinite(trueMz)) continue
+                if(!Number.isFinite(errorPpm)) continue
+                if(!Number.isFinite(measuredMz)) continue
+                if(!Number.isFinite(intensity)) continue
                 points.push({trueMz,measuredMz,intensity,errorPpm})
             }
         }else{
-            for(const entry of formulaCollection.entries){
-                if(!entry.formula || !Number.isFinite(entry.formula.mz)) continue
-                const targetMz=entry.formula.mz
+            for(const row of rows){
+                const {trueMz}=this.referenceOf(row)
+                if(!Number.isFinite(trueMz)) continue
+                const targetMz=trueMz
                 let bestIdx=-1
                 let bestDist=Infinity
                 for(let i=0;i<x.length;i++){
