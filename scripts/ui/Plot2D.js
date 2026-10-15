@@ -849,6 +849,26 @@ export class Plot2D{
             } else if (this.parameters.axis[axis].orientation=="vertical"){
                 range=[this.parameters.axis[axis].range[0]*this.graphzone.height,this.parameters.axis[axis].range[1]*this.graphzone.height]
             }
+            /* A null domain means "not computed yet": several nodes park it
+               that way while re-arming autoDomain (FormulaCollectionNode.js:2380,
+               on the way back from barycentric), and they expect drawGraph to
+               replace it before the scale is built.
+
+               When there ARE bounds, autoDomain() below overwrites it and this
+               never runs. When there are NONE — no trace, an empty selection,
+               a resolve that found nothing — autoDomain() returns without
+               writing, and the null survived to d3: `.domain(null)` throws
+               "can't access property Symbol.iterator, items is null" from
+               deep inside continuous.js, which names neither the node nor the
+               line that parked it.
+
+               So the null is resolved HERE, at the one place that knows the
+               meaning. The default [0,1] is the plot's own empty-view domain
+               (defaultAxes), so an empty plot looks exactly as it did before
+               anything set the field to null. */
+            if(this.parameters.axis[axis].domain==null){
+                this.parameters.axis[axis].domain=[0,1]
+            }
             const source=this.axisSource(axis)
             scale=(source.scale==="log"?d3.scaleLog():d3.scaleLinear())
                 .domain(source.domain)
