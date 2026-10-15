@@ -7,7 +7,7 @@ import {Wave,XYTrace} from "../formats.js"
 import {Formula,FormulaCollection,positiveMassConjugate} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,createAnimatedLayout,advanceLayout,finalizeAnimatedLayout,applyGridLayout,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,finalizeAnimatedLayout,applyGridLayout,createAnimatedLayoutWorker,advanceLayoutWorker,stopLayoutWorker,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 
@@ -293,8 +293,12 @@ export class AttributionForestMethods{
    réseaux différents pour un même « Grow network », et la comparaison d'un
    run à l'autre — le seul usage de ce graphique — deviendrait impossible.
 
-   AFFICHE SEULEMENT LES ARBRES SÉLECTIONNÉS, côte à côte en force-directed.
-   Supporte deux modes: statique (layoutForests complet) ou animé (requestAnimationFrame). */
+AFFICHE SEULEMENT LES ARBRES SÉLECTIONNÉS, côte à côte en force-directed.
+    Supporte deux modes: statique (layoutForests complet) ou animé (worker).
+    AUCUN `await` ICI, ET C'EST VOLONTAIRE: en mode animé la fonction retourne
+    une PROMESSE de layout (initialisation des sessions dans le worker), en
+    mode statique elle retourne le layout — les deux passent par `await` chez
+    son seul appelant (`renderForestPlot`), et le corps reste synchrone. */
 forestOverviewLayout({animate=false}={}){
         const box=this.forestPlotBox
         if(!box) return null
@@ -323,54 +327,82 @@ forestOverviewLayout({animate=false}={}){
             &&cached.key.height===cacheKey.height
             &&cached.key.animate===cacheKey.animate
             &&cached.key.tune===cacheKey.tune){
-            return cached.layout
+            /* LE PENDING COMPTE AUSSI: le mode animé attend le worker, et un
+               second rendu pendant cette attente doit RÉCLAMER ce MÊME layout
+               en cours, pas ouvrir une seconde paire de sessions par arbre. */
+            return cached.layout??cached.pending??null
+        }
+        /* LES ÉTATS DE L'ANCIEN LAYOUT, ET ILS DOIVENT ÊTRE LIBÉRÉS: chacun
+           non réutilisé porte une session dans le worker. `stopLayoutWorker`
+           répond à la promesse éventuellement en vol avant de supprimer la
+           session — jamais de promesse abandonnée. */
+        const previous=cached?.layout?.animatedStates
+        const release=(reused)=>{
+            if(!Array.isArray(previous)) return
+            for(const state of previous){
+                if(reused&&reused.has(state)) continue
+                stopLayoutWorker(state)
+            }
         }
         if(animate){
-            /* MODE ANIMÉ, SANS REDÉMARRAGE (option A): les états existants sont
-               réutilisés par rang — un arbre déjà stabilisé garde ses positions
-               et son momentum, seul un rang NOUVEAU repart du cercle. Un batch
-               ou un réglage FR neuf invalide tout: comparer des layouts issus
-               de deux calculs différents serait mentir. */
-            const previous=this.forestLayoutOf?.layout?.animatedStates
+            /* MODE ANIMÉ WORKER: chaque graphe reçoit sa SESSION dans le
+               worker; les états existants sont réutilisés par rang. */
             const previousByRank=new Map()
             if(Array.isArray(previous)
-                &&this.forestLayoutOf?.key?.batch===batch
-                &&this.forestLayoutOf?.key?.tune===tuneKey){
+                &&cached?.key?.batch===batch
+                &&cached?.key?.tune===tuneKey){
                 for(const state of previous){
-                    if(state?.graph && Number.isInteger(state.graph.rank)) previousByRank.set(state.graph.rank,state)
+                    if(state?.graph&&Number.isInteger(state.graph.rank)) previousByRank.set(state.graph.rank,state)
                 }
             }
-            /* On repart du layout courant pour que les arbres déjà affichés
-               gardent leurs positions le temps que le nouveau converge. */
-            const animatedStates=selectedGraphs.map(graph=>{
-                const kept=previousByRank.get(graph.rank)
-                if(kept) return kept
-                return createAnimatedLayout(graph,tune)
+            /* LE CACHE EST POSÉ AVANT TOUTE ATTENTE: `init` est asynchrone, et
+               deux rendus qui se chevauchent doivent lire la MÊME entrée. */
+            const entry={key:cacheKey,layout:null,pending:null}
+            this.forestLayoutOf=entry
+            entry.pending=Promise.all(selectedGraphs.map(graph=>
+                previousByRank.get(graph.rank)??createAnimatedLayoutWorker(graph,tune)
+            )).then(animatedStates=>{
+                /* LE CACHE A PU CHANGER PENDANT L'ATTENTE: ce layout n'est plus
+                   demandé — on rend les sessions qu'on vient d'ouvrir, sans
+                   toucher à celles réutilisées (l'entrée suivante en hérite). */
+                if(this.forestLayoutOf!==entry){
+                    const inherited=new Set(Array.isArray(previous)?previous:[])
+                    for(const state of animatedStates) if(!inherited.has(state)) stopLayoutWorker(state)
+                    return null
+                }
+                release(new Set(animatedStates))
+                /* Finalise chaque état initial et applique la grille pour le premier rendu. */
+                const placed=animatedStates.map(s=>finalizeAnimatedLayout({positions:s.positions,ideal:s.params?.ideal??tune.ideal,count:s.graph.vertices.length,graph:s.graph}))
+                const gridded=applyGridLayout(placed,{width,height})
+                const layout={
+                    width,height,
+                    groups:gridded.groups,
+                    animatedStates,
+                    animating:true,
+                    totalIterations:tune.iterations
+                }
+                entry.layout=layout
+                return layout
             })
-            /* Finalise chaque état initial et applique la grille pour le premier rendu. */
-            const placed=animatedStates.map(finalizeAnimatedLayout)
-            const gridded=applyGridLayout(placed,{width,height})
-            const layout={
-                width,height,
-                groups:gridded.groups,
-                animatedStates,
-                animating:true,
-                totalIterations:tune.iterations
-            }
-            this.forestLayoutOf={key:cacheKey,layout}
-            return layout
+            /* UN REJET NE DOIT PAS EMMPOISONNER LE CACHE: la prochaine
+               tentative doit repartir de zéro, pas réclamer le même mort. */
+            entry.pending.catch(()=>{
+                if(this.forestLayoutOf===entry) this.forestLayoutOf=null
+            })
+            return entry.pending
         }
         /* MODE STATIQUE (par défaut): layoutForests complet. */
+        release(null)
         const layout=layoutForests(selectedGraphs,{width,height})
         this.forestLayoutOf={key:cacheKey,layout}
         return layout
     }
 
     /* AVANCE L'ANIMATION D'UNE FRAME et met à jour le plot.
-       BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
-       `advanceLayout` peut marquer `done` (convergence), on l'ignore: on
-       continue d'avancer, le momentum fait osciller autour de l'équilibre. */
-    advanceForestAnimation(){
+BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
+        `advanceLayoutWorker` peut marquer `done` (convergence), on l'ignore: on
+        continue d'avancer, le momentum fait osciller autour de l'équilibre. */
+    async advanceForestAnimation(){
         const cached=this.forestLayoutOf
         if(!cached||!cached.layout?.animatedStates) return true
         const layout=cached.layout
@@ -382,12 +414,13 @@ forestOverviewLayout({animate=false}={}){
         const finished=[]
         for(let i=0;i<layout.animatedStates.length;i++){
             const state=layout.animatedStates[i]
-            /* Relance si le plafond est atteint: `iteration` repart, `velo`
-               garde son élan — pas de saut, juste une oscillation continue. */
-            if(state.iteration>=state.totalIterations) state.iteration=0
+            /* LA SESSION DÉTIENT `iteration` ET DONC LA TEMPÉRATURE: la remise
+               à zéro au plafond (« le graphe respire ») appartient au worker,
+               à chaque `resume`. Ici on ne fait que relancer — c'est
+               `state.done=false` qui autorise l'avancée suivante. */
             state.done=false
-            advanceLayout(state,stepsPerFrame)
-            finished.push(finalizeAnimatedLayout(state))
+            await advanceLayoutWorker(state, stepsPerFrame)
+            finished.push(finalizeAnimatedLayout({positions:state.positions, ideal:state.params?.ideal??FOREST_LAYOUT_DEFAULTS.ideal, count:state.graph.vertices.length, graph:state.graph}))
         }
         /* `placed` RESTE du même type: `applyGridLayout` ne lit que des entrées
            `{graph,positions,minX,minY,w,h}` — jamais des groupes grillés. */
@@ -459,13 +492,16 @@ forestOverviewLayout({animate=false}={}){
        ferait un graphique qui ne ressemble à rien du reste de l'application. */
     static FOREST_FORMULA_COLOURS=["#78b4ff","#aef22e","#ffb02e","#ff6363","#c58cff"]
 
-    renderForestPlot(){
+    /* `await`, CAR LE MODE ANIMÉ PASSE PAR LE WORKER: `forestOverviewLayout`
+       retourne alors une PROMESSE de layout. Sans cet appel asynchrone on
+       dessinerait la promesse elle-même (`layout.groups` inexistant). */
+    async renderForestPlot(){
         const plot=this.forestPlot
         if(!plot) return
         /* RÉUTILISE LE CACHE: invalider ici repartirait du cercle à chaque
            frame — `forestOverviewLayout` recrée seulement si batch, sélection
            ou taille ont changé. */
-        const layout=this.forestOverviewLayout({animate:true})
+        const layout=await this.forestOverviewLayout({animate:true})
         if(!layout){
             this.stopForestAnimation()
             plot.traces=[]
@@ -492,8 +528,9 @@ forestOverviewLayout({animate=false}={}){
             plot?.graphSVG?.select(".forest-root-links").selectAll("*").remove()
             return
         }
+        const batch=this.forestGraphs?.[0]
+        if(!batch?.graphs?.length) return
         this.forestLayout=layout
-        const batch=this.forestGraphs[0]
         /* LA POSITION DE CHAQUE SOMMET, DANS UN INDEX UNIQUE. Le noyau numérote
            les pics par rang dans l'ordre trié, et la mise en page ne connaît que
            des positions: c'est le seul endroit où les deux mondes se rencontrent,
@@ -2334,14 +2371,15 @@ forestOverviewLayout({animate=false}={}){
        comparant les deux. */
     /* DÉMARRE LA BOUCLE D'ANIMATION SI NÉCESSAIRE. */
     startForestAnimation(){
-        /* `!= null` couvre `undefined`: sans init explicite le premier appel
-           voyait `undefined !== null` et sortait sans jamais boucler. */
         if(this.forestAnimationFrame!=null) return
-        const tick=()=>{
-            /* Le garde a déjà réservé la frame: ne pas remettre `null` ici,
-               sinon un `stop` entre deux frames n'annule plus rien et deux
-               `start` concurrents bouclent en double. */
-            const done=this.advanceForestAnimation()
+        /* UN JETON PAR BOUCLE: le tick EST async (il ATTEND le worker), donc
+           il peut se réveiller APRÈS un `stop` — ou après un `start` plus
+           récent. Sans jeton, ce réveil remettrait un rAF: boucle relancée en
+           double, deux avancées par frame. */
+        const token=++this.forestAnimationToken
+        const tick=async ()=>{
+            const done=await this.advanceForestAnimation()
+            if(token!==this.forestAnimationToken) return
             if(!done){
                 this.forestAnimationFrame=requestAnimationFrame(tick)
             }else{
@@ -2353,16 +2391,24 @@ forestOverviewLayout({animate=false}={}){
 
     /* ARRÊTE LA BOUCLE D'ANIMATION. */
     stopForestAnimation(){
+        /* LE JETON AVANT TOUT: le tick en vol doit voir le changement quand
+           il se réveille, sinon son `requestAnimationFrame` final relance ce
+           qu'on vient d'arrêter. */
+        this.forestAnimationToken++
         if(this.forestAnimationFrame!=null){
             cancelAnimationFrame(this.forestAnimationFrame)
             this.forestAnimationFrame=null
         }
+        /* LES SESSIONS DU WORKER SURVIVENT, ET C'EST VOLONTAIRE: le worker
+           est TIRÉ — il ne calcule que sur `resume`, donc une animation
+           arrêtée ne consomme rien, et les positions déjà calculées sont
+           reprises au prochain démarrage au lieu de repartir du cercle. */
     }
 
-    renderForestOverview(){
+    async renderForestOverview(){
         if(!this.forestPlot) return
         this.renderForestRecap()
-        this.renderForestPlot()
+        await this.renderForestPlot()
         /* Force animation check on UPDATED layout (renderForestPlot creates new animated layout). */
         const cached=this.forestLayoutOf
         if(cached?.layout?.animating){
@@ -2370,7 +2416,7 @@ forestOverviewLayout({animate=false}={}){
         }else{
             /* Fallback: si on a des graphes sélectionnés mais pas d'animation, forcer le mode animé. */
             if(this.forestSelected.size>0 && this.forestPlotBox){
-                this.renderForestPlot()  // recrée le layout animé
+                await this.renderForestPlot()  // recrée le layout animé
                 const cached2=this.forestLayoutOf
                 if(cached2?.layout?.animating){
                     this.startForestAnimation()

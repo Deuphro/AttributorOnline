@@ -82,6 +82,8 @@ const FOREST_LAYOUT_MAX_ROUNDS=1200
 const FOREST_LAYOUT_MIN_ROUNDS=60
 const FOREST_LAYOUT_BUDGET_MS=1500
 /* LE NOMBRE DE TOURS, pour un groupe — et il ne dépend que du GROUPE. */
+/* NOTE: ce plafond n'appartient qu'au MODE STATIQUE (`layoutGroup`): le
+   mode animé plafonne sur `iterations` (voir `forest-worker.js`). */
 function layoutRoundsFor(count,links){
     const weight=count+(links??0)
     if(!(weight>0)) return FOREST_LAYOUT_MIN_ROUNDS
@@ -113,7 +115,7 @@ const FOREST_TEMPERATURE_HALF_LIFE=60
    niveau d'un arbre, la racine étant la seule à n'en recevoir aucune. C'est ce
    qui tient la racine en bas — voir `depthBiasOf`. */
 const FOREST_DEPTH_FLOOR=0.25
-const FOREST_VISCOSITY=FOREST_LAYOUT_DEFAULTS.viscosity
+export const FOREST_VISCOSITY=FOREST_LAYOUT_DEFAULTS.viscosity
 /* LE CRITÈRE DE CONVERGENCE, et il est RELATIF à `k`.
 
    On déclare l'arrêt quand le déplacement du sommet le plus rapide est inférieur
@@ -127,7 +129,7 @@ const FOREST_VISCOSITY=FOREST_LAYOUT_DEFAULTS.viscosity
    rend deux rendus du même réseau strictement identiques. Le budget de temps
    reste une sécurité pour les groupes giants, où il peut encore trancher —
    mais il n'est plus l'arrêt normal. */
-const FOREST_SETTLE_RATIO=1e-4
+export const FOREST_SETTLE_RATIO=1e-4
 
 /* LE PRNG, À GRAINE. `Math.random()` rendrait le même réseau différent à chaque
    rendu, et le test « the layout is DETERMINISTIC » existe précisément pour que
@@ -160,7 +162,7 @@ function layoutSeed(graph,count){
    reste de la physique. Après normalisation, `massBias[i] > 0` veut dire « plus
    lourd que le milieu du groupe », quelle que soit l'unité. Un seul sommet
    aberrant tire donc le milieu, mais pas l'échelle. */
-function massBiasOf(vertices){
+export function massBiasOf(vertices){
     const n=vertices?.length??0
     const bias=new Float64Array(n)
     if(!n) return bias
@@ -227,7 +229,7 @@ function massBiasOf(vertices){
 
    La valeur est POSITIVE: elle vaut 0 à la racine et ~1 au sommet le plus
    profond. La force pousse donc vers le DEHORS, radialement. */
-function depthBiasOf(vertices,links,rootIndex){
+export function depthBiasOf(vertices,links,rootIndex){
     const n=vertices?.length??0
     const bias=new Float64Array(n)
     if(!n) return bias
@@ -293,7 +295,7 @@ function depthBiasOf(vertices,links,rootIndex){
     }
     return bias
 }
-function errorBiasOf(vertices,links){
+export function errorBiasOf(vertices,links){
     const n=vertices?.length??0
     const bias=new Float64Array(n)
     if(!n) return bias
@@ -332,7 +334,7 @@ function errorBiasOf(vertices,links){
     }
     return bias
 }
-function defectBiasOf(vertices){
+export function defectBiasOf(vertices){
     const n=vertices?.length??0
     const bias=new Float64Array(n)
     for(let i=0;i<n;i++){
@@ -341,7 +343,7 @@ function defectBiasOf(vertices){
     }
     return bias
 }
-function layoutTemperature(round,from,to){
+export function layoutTemperature(round,from,to){
     if(!Number.isFinite(from)) return to
     if(round<=0) return from
     return to+(from-to)*Math.pow(0.5,round/FOREST_TEMPERATURE_HALF_LIFE)
@@ -1254,6 +1256,150 @@ export function forestGraph(components,{masses=[],intensities=[]}={}){
     })
 }
 
+/* LE LAYOUT ANIMÉ PASSE PAR LE WORKER, mais le CONTRAT EST CELUI DE
+   `createAnimatedLayout` / `advanceLayout`: mêmes champs d'état, même
+   résultat final — seul `frStep` change de thread.
+
+   LE WORKER EST TIRÉ, JAMAIS POUSSÉ: il ne calcule que sur la réponse à un
+   `resume` (N pas), puis il renvoie les positions. La boucle rAF du nœud
+   reste maîtresse du rythme: `stop` n'a aucun calcul d'arrière-plan à
+   annuler, et une session qui ne reçoit rien ne coûte rien.
+
+   UNE SESSION PAR ARBRE, identifiée par `initId`: plusieurs arbres
+   affichés cohabitent dans le même worker. Et CHAQUE demande reçoit une
+   réponse — une promesse sans réponse figerait la boucle d'animation pour
+   toujours, et c'est le défaut le plus silencieux qu'un worker puisse
+   avoir. */
+let forestWorker = null
+const workerCallbacks = new Map()
+let workerInitId = 0
+
+function getForestWorker() {
+    if (!forestWorker) {
+        forestWorker = new Worker(new URL("./forest-worker.js", import.meta.url), {type: "module"})
+        forestWorker.onmessage = (e) => {
+            const {type, initId, ...data} = e.data
+            if (type !== "positions" && type !== "done") return
+            /* LA DÉCONNEXION EST ICI, UNE SEULE FOIS: le callback peut aussi
+               être déconnecté par `stop` (libération d'un état obsolète), et
+               une réponse trop tardive ne doit alors plus rien toucher. */
+            const cb = workerCallbacks.get(initId)
+            if (!cb) return
+            workerCallbacks.delete(initId)
+            cb(data)
+        }
+        forestWorker.onerror = (err) => {
+            console.error('[forest] worker error:', err)
+            const message = err?.message ?? String(err)
+            for (const cb of workerCallbacks.values()) cb({done: true, error: message})
+            workerCallbacks.clear()
+        }
+    }
+    return forestWorker
+}
+
+/* LIBÈRE LA PROMESSE EN ATTENTE D'UNE SESSION: `stop` peut arriver au milieu
+   d'une frame en cours (changement de sélection), et la promesse abandonnée
+   est exactement celle que le tick attend. Sans positions dans la réponse,
+   l'état garde les dernières connues — il n'avance plus, il ne régresse pas. */
+function flushWorkerCallback(initId, data) {
+    const cb = workerCallbacks.get(initId)
+    if (!cb) return
+    workerCallbacks.delete(initId)
+    cb(data)
+}
+
+export function createAnimatedLayoutWorker(graph, options = {}) {
+    const worker = getForestWorker()
+    const initId = ++workerInitId
+    const params = {
+        iterations: options.iterations ?? FOREST_LAYOUT_DEFAULTS.iterations,
+        ideal: options.ideal ?? FOREST_LAYOUT_DEFAULTS.ideal,
+        repulsion: options.repulsion ?? FOREST_LAYOUT_DEFAULTS.repulsion,
+        restBase: options.restBase ?? FOREST_LAYOUT_DEFAULTS.restBase,
+        restSpan: options.restSpan ?? FOREST_LAYOUT_DEFAULTS.restSpan,
+        tempStart: options.tempStart ?? FOREST_LAYOUT_DEFAULTS.tempStart,
+        tempEnd: options.tempEnd ?? FOREST_LAYOUT_DEFAULTS.tempEnd,
+        fac: options.fac ?? FOREST_LAYOUT_DEFAULTS.fac,
+        viscosity: options.viscosity ?? FOREST_LAYOUT_DEFAULTS.viscosity,
+        springExponent: options.springExponent ?? FOREST_LAYOUT_DEFAULTS.springExponent,
+        massForce: options.massForce ?? FOREST_LAYOUT_DEFAULTS.massForce,
+        defectForce: options.defectForce ?? FOREST_LAYOUT_DEFAULTS.defectForce,
+        errorForce: options.errorForce ?? FOREST_LAYOUT_DEFAULTS.errorForce,
+        depthForce: options.depthForce ?? FOREST_LAYOUT_DEFAULTS.depthForce
+    }
+    return new Promise((resolve, reject) => {
+        workerCallbacks.set(initId, (data) => {
+            if (data.error) return reject(new Error(data.error))
+            resolve({
+                positions: data.positions,
+                iteration: data.iteration ?? 0,
+                maxSpeed: data.maxSpeed ?? 0,
+                done: !!data.done,
+                totalIterations: data.totalIterations ?? params.iterations,
+                graph,
+                params,
+                workerInitId: initId
+            })
+        })
+        worker.postMessage({type: 'init', initId, graph, params})
+    })
+}
+
+export function advanceLayoutWorker(state, steps = 1) {
+    if (state.done) return Promise.resolve(true)
+    if (!Number.isInteger(state.workerInitId)) return Promise.resolve(true)
+    const worker = getForestWorker()
+    return new Promise((resolve) => {
+        workerCallbacks.set(state.workerInitId, (data) => {
+            if (data.error) {
+                /* UNE ERREUR ARRÊTE L'ANIMATION, elle ne la reboucle pas: sans
+                   ça, chaque frame re-posterait la même faute, pour toujours. */
+                console.error('[forest] worker advance error:', data.error)
+                state.done = true
+                return resolve(true)
+            }
+            if (data.positions) {
+                state.positions = data.positions
+                state.iteration = data.iteration ?? state.iteration
+                state.maxSpeed = data.maxSpeed
+                state.totalIterations = data.totalIterations ?? state.totalIterations
+            }
+            /* PAS DE POSITIONS = session libérée entre-temps: on garde les
+               dernières connues et on n'avance plus. */
+            state.done = data.positions ? !!data.done : true
+            resolve(state.done)
+        })
+        worker.postMessage({type: 'resume', initId: state.workerInitId, steps: Math.max(1, Math.trunc(steps) || 1)})
+    })
+}
+
+export function pauseLayoutWorker(state) {
+    if (!Number.isInteger(state.workerInitId)) return
+    flushWorkerCallback(state.workerInitId, {done: true})
+    getForestWorker().postMessage({type: 'pause', initId: state.workerInitId})
+    state.done = true
+}
+
+export function stopLayoutWorker(state) {
+    if (!Number.isInteger(state.workerInitId)) return
+    flushWorkerCallback(state.workerInitId, {done: true})
+    getForestWorker().postMessage({type: 'stop', initId: state.workerInitId})
+    state.done = true
+}
+
+export function terminateForestWorker() {
+    if (!forestWorker) return
+    /* LE WORKER MEURT AVEC SES SESSIONS, mais pas avec les promesses qui
+       l'attendaient: elles reçoivent une erreur, donc se ferment. L'identité
+       `workerInitId` n'est JAMAIS remise à zéro — un état orphelin survivant
+       réclamerait alors une session déjà refaite sous le même numéro. */
+    forestWorker.terminate()
+    forestWorker = null
+    for (const cb of workerCallbacks.values()) cb({done: true, error: 'forest worker terminated'})
+    workerCallbacks.clear()
+}
+
 
 /* LA RACINE D'UN GROUPE, et c'est le SEUL endroit du programme qui décide quel
    pic sert de point de départ à une attribution.
@@ -1495,7 +1641,7 @@ function gridProbe(cellX,cellY,mask,cx,cy){
    réseau s'afficherait différemment selon celui des deux qui est choisi. C'est
    donc une fonction, et non deux copies — d'autant que le rayon dépend du
    nombre de sommets (voir le commentaire dans `layoutGroup`). */
-function seedPositions(positions,graph,count,ideal,rootLocalIndex){
+export function seedPositions(positions,graph,count,ideal,rootLocalIndex){
     const seedRadius=Math.max(ideal,ideal*1.2*Math.sqrt(count/Math.PI))
     const rand=layoutRandom(layoutSeed(graph,count))
     for(let i=0;i<count;i++){
@@ -1507,7 +1653,7 @@ function seedPositions(positions,graph,count,ideal,rootLocalIndex){
     }
 }
 
-function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,restSpan=0,fac=null,rootLocalIndex=-1,temperature=Infinity,viscosity:viscosity_,springExponent=3,massBias=null,massForce=0,defectBias=null,defectForce=0,errorBias=null,errorForce=0,depthBias=null,depthForce=0}){
+export function frStep(positions,velo,graph,byIndex,{k,worst,repulsion=1,restBase=1,restSpan=0,fac=null,rootLocalIndex=-1,temperature=Infinity,viscosity:viscosity_,springExponent=3,massBias=null,massForce=0,defectBias=null,defectForce=0,errorBias=null,errorForce=0,depthBias=null,depthForce=0}){
     const count=positions.length/2
     /* GRILLE SPATIALE: portée 2k, comme avant — au-delà ils s'ignorent. */
     const cutoff=2*k

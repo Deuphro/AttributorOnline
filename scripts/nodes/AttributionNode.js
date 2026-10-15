@@ -7,7 +7,7 @@ import {Formula,Stoichiometry,FormulaCollection} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula,propagateForest} from "../attribution.js"
-import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,layoutForests,DEFAULT_LINK_TOLERANCE} from "../forest.js"
+import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,layoutForests,terminateForestWorker,DEFAULT_LINK_TOLERANCE} from "../forest.js"
 import {windowFor,wavesFromInput} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 import {AttributionForestMethods} from "./AttributionForestMethods.js"
@@ -153,6 +153,9 @@ export class AttributionNode extends NodeWithAccordion{
         this.forestGraphsOf=null
         this.forestLayoutOf=null
         this.forestAnimationFrame=null
+        /* LE JETON DE BOUCLE, un par `startForestAnimation`: le tick est async
+           et peut se réveiller après un stop — voir `startForestAnimation`. */
+        this.forestAnimationToken=0
         this.forestPlotLeft=0.10
         this.forestPlotRight=0.01
         this.forestColors={
@@ -2196,6 +2199,9 @@ export class AttributionNode extends NodeWithAccordion{
            muet, et que plus rien ne repeint. */
         this.forestDialog?.suicide()
         this.forestDialog=null
+        /* Arrête le worker de layout forestier si actif. */
+        this.stopForestAnimation()
+        terminateForestWorker()
         super.suicide(options)
     }
 
