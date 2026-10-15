@@ -1,7 +1,7 @@
 import {NodeWithAccordion} from "../core/index.js"
 import {Plot2DWebGL} from "../ui/Plot2DWebGL.js"
 import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
-import {Wave,XYTrace,SurfaceTrace} from "../formats.js"
+import {Wave,XYTrace,SurfaceTrace,Scatter3DTrace} from "../formats.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
@@ -205,7 +205,7 @@ export class CalibrationNode extends NodeWithAccordion{
         const displayRow=CE("div",{
             style:{display:"flex",gap:"8px",flexWrap:"wrap",fontSize:"0.85em"}
         },[])
-        this.show3DSurfaceCheckbox=this.makeCheckbox("show3DSurface","3D Surface",false)
+        this.show3DSurfaceCheckbox=this.makeCheckbox("show3DSurface","3D",false)
         this.show3DSurfaceCheckbox.wrap.style.display="none"
         displayRow.append(this.show3DSurfaceCheckbox.wrap)
         displaySection.append(displayRow)
@@ -659,7 +659,7 @@ export class CalibrationNode extends NodeWithAccordion{
         if(!this.surfacePlot) return
         const wave=this.buildErrorSurfaceWave()
         if(!wave) return
-        this.surfacePlot.setTraces([
+        const traces=[
             new SurfaceTrace({
                 id:"error-surface",
                 title:"Error surface",
@@ -672,7 +672,50 @@ export class CalibrationNode extends NodeWithAccordion{
                     heightRange:this.errorSurfaceRange(wave)
                 }
             })
-        ])
+        ]
+        /* The REFERENCE POINTS, in the same space as the surface, which is the
+           only way to read a fit in 3D: a surface on its own says nothing about
+           whether it passes through the data that produced it. Drawn at
+           (measured m/z, intensity, measured error), they sit on the surface
+           exactly when the calibration is right — and a residual cloud floating
+           above or under the sheet is the shape of a bad fit, visible at a
+           glance and impossible to see in the 2D residual trace alone. */
+        const points=this.buildReferencePointWave()
+        if(points){
+            traces.push(new Scatter3DTrace({
+                id:"reference-points",
+                title:"Reference points",
+                wave:points,
+                options:{size:4,color:"#ffffff",opacity:0.95}
+            }))
+        }
+        this.surfacePlot.setTraces(traces)
+    }
+    /* The reference points as a degenerate grid — one row — because that is the
+       carrier Plot3DWebGL already knows. Each point's z is its MEASURED error,
+       which is what the surface predicts, so the two are directly comparable.
+
+       A point with a non-finite coordinate is DROPPED rather than written as
+       zero: a (0, 0, 0) at the corner of a plot whose axes start at 100 m/z is a
+       spike pointing at nothing, and it would be read as a measurement. */
+    buildReferencePointWave(){
+        const refs=this.calibrationResult?.refPoints
+        if(!refs||!refs.length) return null
+        const usable=refs.filter(p=>Number.isFinite(p?.measuredMz)
+            &&Number.isFinite(p?.intensity)
+            &&Number.isFinite(p?.errorPpm))
+        if(!usable.length) return null
+        const wave=new Wave(usable.length,1,3)
+        wave.labels=Wave.normalizeLabels(["m/z","intensity","error (ppm)"])
+        for(let ix=0;ix<usable.length;ix++){
+            const p=usable[ix]
+            wave.core[wave.index(ix,0,0)]=p.measuredMz
+            wave.core[wave.index(ix,0,1)]=p.intensity
+            wave.core[wave.index(ix,0,2)]=p.errorPpm
+        }
+        wave.metadata={title:"Calibration reference points",source:"measured",count:usable.length}
+        wave.touch()
+        return wave
     }
     /* The (m/z, intensity) grid the fitted polynomial is sampled on, in the
        [nx, ny, 3] layout every grid wave in the project uses. The domain is

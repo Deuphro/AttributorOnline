@@ -15,6 +15,7 @@
         remapping belongs to SurfaceTrace alone.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
+import {methodBody as methodBodyOf} from "./sourceBody.mjs"
 import {fileURLToPath} from "url"
 import {dirname, join} from "path"
 
@@ -29,71 +30,6 @@ const test=(name,fn)=>{
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value") }
 
-/* THE EXTRACTOR. Everything below it is a use.
-
-   Three ways this went wrong before it worked, all of them failures that read
-   like product bugs rather than harness bugs, which is why they are recorded:
-
-     1. the body started after the FIRST "{" — and `suicide(options={})` has a
-        brace in its default value, so the extracted body was EMPTY and every
-        check inside it failed for no reason at all;
-     2. comments were counted as code — a `{height:460}` inside a comment closed
-        a brace that never opened, and the walk stopped mid-comment;
-     3. a CRLF checkout left a stray \r on the sliced body's first line, which
-        failed every anchored check inside it.
-
-   So: normalise the line endings, skip the signature, and blank the comments
-   before walking. */
-function extractBody(text,name,after=0){
-    const clean0=text.replace(/\r\n/g,"\n")
-    const start=clean0.indexOf(`    ${name}(`,after)
-    ok(start>=0,`${name}() not found`)
-    /* Find the ")" that closes the SIGNATURE — the first one not nested in a
-       default value. A plain indexOf(")") is not enough: `f(cb = () => 0)` has
-       one inside, and so does any default holding an object literal. Counting
-       parenthesis depth from the "(" is the only version that survives both,
-       and `computeBounds()` — no parameters at all — is the case that proves
-       it: indexOf(")") lands on the empty call's own parenthesis, and the
-       first "{" after it belongs to whatever code follows the method. */
-    const openParen=clean0.indexOf("(",start)
-    let parens=0
-    let closeParen=-1
-    for(let k=openParen;k<clean0.length;k++){
-        const c=clean0[k]
-        if(c==="(") parens++
-        else if(c===")"){
-            parens--
-            if(parens===0){ closeParen=k; break }
-        }
-    }
-    ok(closeParen>openParen,`${name}( has no closing parenthesis in its signature`)
-    const open=clean0.indexOf("{",closeParen)
-    ok(open>=0,`${name}() has no opening brace after its signature`)
-    const clean=clean0.slice(open).replace(/\/\*[\s\S]*?\*\//g,m=>" ".repeat(m.length))
-    let depth=0
-    for(let k=0;k<clean.length;k++){
-        if(clean[k]==="{") depth++
-        else if(clean[k]==="}"){
-            depth--
-            /* `k` is the index OF the closing brace within `clean`, and `open` is
-               the index OF the opening one within the same string. The body is
-               everything strictly BETWEEN them: `open+1` … `open+k`, and
-               `open+1+k` would swallow the brace and produce a fragment that
-               fails to compile with "Unexpected token '}'" — which reads as a
-               broken method rather than as an off-by-one in the extractor. */
-            if(depth===0) return clean0.slice(open+1,open+k)
-        }
-    }
-    throw new Error(`unbalanced braces in ${name}()`)
-}
-
-/* `after` skips the helper classes above the plot: "dispose()" appears in
-   OrbitPanControls first, and a search that stopped there would test the
-   controls' teardown while claiming to test the plot's. */
-const methodBody=(name,after=0)=>extractBody(source,name,after)
-
-/* The same, on a file this test does not own. */
-const methodBodyOf=(text,name,after=0)=>extractBody(text,name,after)
 
 /* computeBounds closes over SurfaceTrace and Scatter3DTrace, so both names
    are supplied: that IS the dispatch under test. They are plain constructor
@@ -125,7 +61,7 @@ for(let iy=0;iy<NY;iy++){
    are supplied: that IS the dispatch under test. */
 const makeBounds=new Function(
     "SurfaceTrace","Scatter3DTrace",
-    methodBody("computeBounds")
+    methodBodyOf(source,"computeBounds")
 )
 /* `.call` FIRST, arguments after: a function built by `new Function` and then
    invoked without `new` RUNS the body with `this = globalThis` instead of
@@ -201,7 +137,7 @@ test("an orbit does not invalidate the GPU signature",()=>{
        a surface. Every term it is built from has to be about the DATA or the
        STYLING — if a camera angle ever leaked in, every drag would reflow the
        buffers. */
-    const body=methodBody("traceSignature")
+    const body=methodBodyOf(source,"traceSignature")
     ok(!/this\.controls/.test(body)&&!/getAngles/.test(body),
         "traceSignature() reads the camera: an orbit would re-upload the buffers")
     ok(/revision/.test(body),"traceSignature() must watch wave.revision")
@@ -212,7 +148,7 @@ test("an orbit does not invalidate the GPU signature",()=>{
 test("the surface mesh is built with an index, not as loose triangles",()=>{
     /* A 600x600 grid is 359k cells; without the index that is 2.1M vertices
        and a position attribute three times too large. */
-    const body=methodBody("buildSurface")
+    const body=methodBodyOf(source,"buildSurface")
     ok(/setIndex/.test(body),"buildSurface() must call setIndex()")
     ok(/computeVertexNormals/.test(body),"buildSurface() must compute the normals, or it is unlit")
     ok(/userData\.traceId/.test(body),
@@ -220,7 +156,7 @@ test("the surface mesh is built with an index, not as loose triangles",()=>{
 })
 
 test("the scatter uses a draw range instead of copying the buffer",()=>{
-    const body=methodBody("buildScatter")
+    const body=methodBodyOf(source,"buildScatter")
     ok(/setDrawRange/.test(body),
         "buildScatter() must set a draw range rather than trimming the array")
 })
@@ -280,7 +216,7 @@ test("dispose() cancels every frame it scheduled",()=>{
     /* The frames are held in an ARRAY and cancelled in a loop, so this checks
        that each one is named there — a frame left in a pending state keeps a
        renderer alive after its node is gone. */
-    const body=methodBody("dispose",source.indexOf("export class Plot3DWebGL"))
+    const body=methodBodyOf(source,"dispose",source.indexOf("export class Plot3DWebGL"))
     ok(/cancelAnimationFrame/.test(body),"dispose() must cancel the frames")
     const loopAt=body.indexOf("for(const frame of")
     ok(loopAt>0,"dispose() must loop over the pending frames")
@@ -362,7 +298,7 @@ test("a hidden container does not freeze the viewport at one pixel",()=>{
        ResizeObserver does not fire when an element starts being displayed: a
        hidden element is not observed at all. The surface would come back at one
        pixel and stay there until the window itself was resized. */
-    const body=methodBody("syncViewport",source.indexOf("export class Plot3DWebGL"))
+    const body=methodBodyOf(source,"syncViewport",source.indexOf("export class Plot3DWebGL"))
     ok(/if\(!\(width>0&&height>0\)\) return false/.test(body),
         "syncViewport() must refuse to resize a container that has no box")
     /* The two other Math.max(1, …) in this file clamp a trace STRIDE, which is
@@ -372,7 +308,7 @@ test("a hidden container does not freeze the viewport at one pixel",()=>{
     ok(!/Math\.max\(1,/.test(code),
         "and must not clamp a zero size to 1, which is what froze the viewport")
 
-    const overlay=methodBody("drawOverlay",source.indexOf("export class Plot3DWebGL"))
+    const overlay=methodBodyOf(source,"drawOverlay",source.indexOf("export class Plot3DWebGL"))
     ok(overlay.indexOf("clientWidth>0")<overlay.length,
         "drawOverlay() must not project onto a container with no box")
 })

@@ -22,6 +22,7 @@
    what publishOutput() actually emits.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
+import {methodBody as extract,codeOnly} from "./sourceBody.mjs"
 import {fileURLToPath} from "url"
 import {dirname, join} from "path"
 
@@ -36,30 +37,14 @@ const test=(name,fn)=>{
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value") }
 
-/* The real body, recovered from the file. `collectFormulaCollections` holds a
-   class declaration in the middle of it (SimpleOrbitControls is nested inside
-   it in this version of the file), so the brace walk below stops at the first
-   balanced depth — which is exactly the end of that method. */
-function methodBody(name){
-    const start=source.indexOf(`    ${name}(`)
-    ok(start>=0,`${name}() not found in CalibrationNode.js`)
-    const open=source.indexOf("{",start)
-    let depth=0
-    for(let k=open;k<source.length;k++){
-        if(source[k]==="{") depth++
-        else if(source[k]==="}"){
-            depth--
-            if(depth===0) return source.slice(open+1,k)
-        }
-    }
-    throw new Error(`unbalanced braces in ${name}()`)
-}
+/* The shared extractor, see scripts/sourceBody.mjs for the four ways the
+   hand-rolled version of this was wrong. */
 
 /* `value` is the first PARAMETER of both helpers, and the body is evaluated
    without the signature — so it is supplied as a formal argument here, not as
    a property of `this`. */
-const accepts=new Function("value",methodBody("acceptsCollection"))
-const reference=new Function("value",methodBody("referenceOf"))
+const accepts=new Function("value",extract(source,"acceptsCollection"))
+const reference=new Function("value",extract(source,"referenceOf"))
 
 /* EXACTLY what FormulaCollectionNode.publishOutput() pushes: a literal, whose
    formulas are flat objects with `mz` and `targets[]` and NO `formula`, NO
@@ -121,9 +106,9 @@ test("an instance is still recognised",()=>{
 test("the shape is told apart by its fields, not by its class name",()=>{
     /* This is the exact check that failed silently: a literal's constructor is
        Object, so a name test can never match one. */
-    ok(!/constructor/.test(methodBody("acceptsCollection")),
+    ok(!/constructor/.test(extract(source,"acceptsCollection")),
         "acceptsCollection() must not test constructor.name: a plain object is always 'Object'")
-    ok(/entries/.test(methodBody("acceptsCollection"))&&/formulas/.test(methodBody("acceptsCollection")),
+    ok(/entries/.test(extract(source,"acceptsCollection"))&&/formulas/.test(extract(source,"acceptsCollection")),
         "acceptsCollection() must accept both `entries` and `formulas`")
 })
 
@@ -167,7 +152,7 @@ test("extractReferencePoints accepts BOTH shapes",()=>{
     /* The second break: even past the recognition, the loop read
        `entry.formula` / `entry.target`, which the flat form does not carry, so
        it would collect nothing — silently, again. */
-    const body=methodBody("extractReferencePoints")
+    const body=extract(source,"extractReferencePoints")
     ok(/formulaCollection\.formulas/.test(body),
         "extractReferencePoints() must read the `formulas` of the flat form")
     ok(!/entry\.formula\b/.test(body),
@@ -184,11 +169,54 @@ test("nothing left reads the old field names anywhere in the node",()=>{
 })
 
 test("useCollectionErrors=false still falls back to matching the wave itself",()=>{
-    const body=methodBody("extractReferencePoints")
+    const body=extract(source,"extractReferencePoints")
     ok(/useCollectionErrors/.test(body),
         "the two modes must both survive the shape change")
     ok(/bestDist<0\.5/.test(body),
         "the fallback still matches a formula to the nearest point of the wave")
+})
+
+test("the 3D view carries the reference points, so a fit can be judged",()=>{
+    /* A surface on its own says nothing about whether it passes through the
+       data that produced it. Drawn at (measured m/z, intensity, MEASURED error)
+       the points sit on the sheet exactly when the calibration is right, and a
+       residual cloud floating above or under it is the shape of a bad fit —
+       something the 2D residual trace does not show at a glance. */
+    const calib=readFileSync(join(here,"nodes/CalibrationNode.js"),"utf8")
+    const body=extract(calib,"update3DSurface")
+    ok(/new SurfaceTrace\(/.test(body),"the surface itself must still be there")
+    ok(/new Scatter3DTrace\(/.test(body),
+        "the reference points must be drawn with the surface, or the fit cannot be judged")
+    ok(/setTraces\(traces\)/.test(body),
+        "both must go in one setTraces(): two calls would make the second replace the first")
+
+    /* The z of a point is its MEASURED error, which is what the surface
+       predicts. Putting anything else there — the true m/z, the corrected one —
+       would compare two different quantities. */
+    const points=extract(calib,"buildReferencePointWave")
+    ok(/p\.errorPpm/.test(points),
+        "the point's z must be its measured errorPpm: that is the quantity the surface predicts")
+    ok(/p\.measuredMz/.test(points)&&/p\.intensity/.test(points),
+        "x and y must be the measured m/z and the intensity the error belongs to")
+})
+
+test("a reference point with a non-finite coordinate is dropped, not zeroed",()=>{
+    /* A (0, 0, 0) in a plot whose axes start at 100 m/z is a spike pointing at
+       nothing, and it reads as a measurement. The grid keeps a fixed row per
+       point, so the filter has to happen BEFORE the wave is sized. */
+    const calib=readFileSync(join(here,"nodes/CalibrationNode.js"),"utf8")
+    const points=extract(calib,"buildReferencePointWave")
+    ok(/\.filter\(/.test(points),"the points must be filtered for finiteness")
+    ok(points.indexOf("filter")<points.indexOf("new Wave("),
+        "the filter must run BEFORE the wave is sized, or the grid keeps holes")
+    ok(!/Number\.isFinite\(p\?\.measuredMz\)[\s\S]{0,80}\|\|/.test(points),
+        "and it must not fall back to a default coordinate")
+})
+
+test("the checkbox reads 3D",()=>{
+    const calib=readFileSync(join(here,"nodes/CalibrationNode.js"),"utf8")
+    ok(/makeCheckbox\("show3DSurface","3D"/.test(calib),
+        "the checkbox label is 3D")
 })
 
 console.log(`\n${passed} passed, ${failures.length} failed`)

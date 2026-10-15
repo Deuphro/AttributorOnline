@@ -288,14 +288,30 @@ export function surfaceMaterial({colors=false,shininess=24,specular=0x1a1a1a,opa
 }
 
 /* A scatter cloud: small, always lit, depth tested so a point behind the
-   surface is genuinely hidden by it. */
+   surface is genuinely hidden by it.
+
+   SIZE IN PIXELS, i.e. `sizeAttenuation:false`, and this was the single
+   worst default in this file.
+
+   With attenuation on, Three computes `gl_PointSize = size * (height/2) /
+   -mvPosition.z` — `size` is then a WORLD size, not a pixel count. At `size:4`
+   and three units away, on a 600 px tall canvas, that is 4 * 300 / 3, i.e.
+   **400 pixels per point**. A handful of reference points then drew a handful
+   of 400 px squares, and what came out was a white plane across the plot with
+   the surface behind it — which reads as a rendering fault rather than as a
+   unit error, and is exactly what the first screenshot showed.
+
+   Pixels also match the 2D layer, whose marker sizes are already pixels
+   (plot2d-gl.js MARKER_VERTEX_SHADER), so `size` means the same thing in both
+   plots — and a reference point stays the same size at every zoom, which is
+   what you want when the question is "does the surface pass through them". */
 export function scatterMaterial({size=3,colors=false,opacity=1}={}){
     return new THREE.PointsMaterial({
         size,
         vertexColors:colors,
         opacity,
         transparent:opacity<1,
-        sizeAttenuation:true,
+        sizeAttenuation:false,
         depthTest:true,
         depthWrite:opacity>=1
     })

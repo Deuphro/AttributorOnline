@@ -13,6 +13,7 @@
    cause is worse than none — it looks like an answer.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
+import {methodBody} from "./sourceBody.mjs"
 import {fileURLToPath} from "url"
 import {dirname, join} from "path"
 
@@ -27,68 +28,6 @@ const test=(name,fn)=>{
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value") }
 
-/* The same extractor, on a file this test does not own. Comments are blanked
-   before the brace walk (an object literal inside one closes a brace that never
-   opened), the body starts after the SIGNATURE rather than after the first "{"
-   (`suicide(options={})` has a brace in its default value), and CRLF is
-   normalised first so no slice starts on a stray \r. */
-function methodBodyOf(text,name){
-    const clean0=text.replace(/\r\n/g,"\n")
-    const start=clean0.indexOf(`    ${name}(`)
-    ok(start>=0,`${name}() not found`)
-    const openParen=clean0.indexOf("(",start)
-    let parens=0
-    let closeParen=-1
-    for(let k=openParen;k<clean0.length;k++){
-        if(clean0[k]==="(") parens++
-        else if(clean0[k]===")"){
-            parens--
-            if(parens===0){ closeParen=k; break }
-        }
-    }
-    ok(closeParen>openParen,`${name}( has no closing parenthesis in its signature`)
-    const open=clean0.indexOf("{",closeParen)
-    const clean=clean0.slice(open).replace(/\/\*[\s\S]*?\*\//g,m=>" ".repeat(m.length))
-    let depth=0
-    for(let k=0;k<clean.length;k++){
-        if(clean[k]==="{") depth++
-        else if(clean[k]==="}"){
-            depth--
-            if(depth===0) return clean0.slice(open+1,open+k)
-        }
-    }
-    throw new Error(`unbalanced braces in ${name}()`)
-}
-
-/* `after` skips the helper class above the plot: "update()" and "dispose()" both
-   appear in OrbitPanControls first, and a search that stopped there would test
-   the controls while claiming to test the plot. */
-function methodBody(name,after=0){
-    const text=source.replace(/\r\n/g,"\n")
-    const start=text.indexOf(`    ${name}(`,after)
-    ok(start>=0,`${name}() not found in Plot3DWebGL.js`)
-    const openParen=text.indexOf("(",start)
-    let parens=0
-    let closeParen=-1
-    for(let k=openParen;k<text.length;k++){
-        if(text[k]==="(") parens++
-        else if(text[k]===")"){
-            parens--
-            if(parens===0){ closeParen=k; break }
-        }
-    }
-    const open=text.indexOf("{",closeParen)
-    const clean=text.slice(open).replace(/\/\*[\s\S]*?\*\//g,m=>" ".repeat(m.length))
-    let depth=0
-    for(let k=0;k<clean.length;k++){
-        if(clean[k]==="{") depth++
-        else if(clean[k]==="}"){
-            depth--
-            if(depth===0) return text.slice(open+1,open+k)
-        }
-    }
-    throw new Error(`unbalanced braces in ${name}()`)
-}
 
 const body=source.slice(source.indexOf("    diagnose(){"))
 ok(body.length>0,"diagnose() not found in Plot3DWebGL.js")
@@ -207,7 +146,7 @@ test("CalibrationNode alternates BOTH boxes, not just the one being opened",()=>
        what was reported. A pair of views that alternate must alternate BOTH
        sides of the swap. */
     const calib=readFileSync(join(here,"nodes/CalibrationNode.js"),"utf8")
-    const body=methodBodyOf(calib,"update3DSurface")
+    const body=methodBody(calib,"update3DSurface")
     ok(/surfaceHost\.style\.display=wanted\?"block":"none"/.test(body),
         "the 3D box must follow the flag")
     ok(/graphContainer\.style\.display=wanted\?"none":"block"/.test(body),
@@ -229,11 +168,11 @@ test("each axis is mapped onto its own side of a CUBE",()=>{
        which is what makes this a mapping rather than a distortion of the data. */
     ok(/WORLD_MIN=-1/.test(source)&&/WORLD_MAX=1/.test(source),
         "the world frame must be a fixed cube: the data lives in units, the world does not")
-    const bounds=methodBody("computeBounds",source.indexOf("export class Plot3DWebGL"))
+    const bounds=methodBody(source,"computeBounds",source.indexOf("export class Plot3DWebGL"))
     ok(/_axisWorld/.test(bounds)&&/linear\(bounds\./.test(bounds),
         "computeBounds() must build one data->world mapper PER AXIS")
     for(const builder of ["buildSurface","buildScatter"]){
-        const body=methodBody(builder,source.indexOf("export class Plot3DWebGL"))
+        const body=methodBody(source,builder,source.indexOf("export class Plot3DWebGL"))
         ok(/world\.x\(/.test(body)&&/world\.y\(/.test(body),
             `${builder}() must map x and y through the per-axis mappers, or it draws in raw units`)
     }
@@ -243,6 +182,40 @@ test("each axis is mapped onto its own side of a CUBE",()=>{
     const ticks=source.slice(source.indexOf("    drawTicks(svg,bounds"))
     ok(/world\[axis\.key\]\(value\)/.test(ticks),
         "ticks must be POSITIONED in world units but LABELLED with the data value")
+})
+
+test("scatter point size is in PIXELS, not world units",()=>{
+    /* With sizeAttenuation on, Three computes
+       `gl_PointSize = size * (canvasHeight/2) / -mvPosition.z`: `size` is then
+       a WORLD size. At size 4, three units away, on a 600 px canvas, that is
+       4*300/3 = 400 PIXELS PER POINT — so a handful of reference points drew a
+       handful of 400 px squares, and the result was a white plane across the
+       plot with the surface behind it.
+
+       It reads as a rendering fault rather than as a unit error, which is why
+       it is worth a test. Pixels also match the 2D layer, whose marker sizes
+       are pixels, so `size` means the same thing in both plots. */
+    const gl=readFileSync(join(here,"plot3d-gl.js"),"utf8")
+    const scatter=gl.slice(gl.indexOf("export function scatterMaterial"))
+    ok(/sizeAttenuation:false/.test(scatter),
+        "scatterMaterial() must use sizeAttenuation:false, or `size` is a world size and the points are enormous")
+    ok(!/sizeAttenuation:true/.test(scatter),
+        "sizeAttenuation:true is the default that produced the white plane")
+})
+
+test("the three axes pick their edges without landing on each other",()=>{
+    /* Each axis choosing its own longest edge is not enough: two axes can each
+       own their longest edge and still project to the same patch of screen,
+       which prints two labels on top of each other — "m/z" and "error (ppm)"
+       were landing together at the top left. "Longest" says nothing about
+       separation, so the score has to know what the other axes already took. */
+    const ticks=source.slice(source.indexOf("    drawTicks(svg,bounds"))
+    ok(/const chosen=\[\]/.test(ticks),
+        "drawTicks() must remember where the axes already are")
+    ok(/crowding/.test(ticks),
+        "and must score a candidate against them: length alone cannot separate two labels")
+    ok(!/if\(!best\|\|length>best\.length\)/.test(ticks),
+        "it must not simply take the longest edge per axis")
 })
 
 test("the camera frames the CUBE, never the data extents",()=>{
@@ -308,7 +281,7 @@ test("a face index is halved before it is read as a grid cell",()=>{
        callback whose stack points nowhere near the arithmetic. It only
        happened on SOME cells, which is why it looked arbitrary: the first
        triangle of each cell landed in range. */
-    const build=methodBody("buildSurface",source.indexOf("export class Plot3DWebGL"))
+    const build=methodBody(source,"buildSurface",source.indexOf("export class Plot3DWebGL"))
     const triangles=(build.match(/indices\.push\(/g)||[]).length
     ok(triangles===1&&build.includes("a,c,b, b,c,d"),
         "buildSurface must emit exactly two triangles per cell, which is the premise of the halving")

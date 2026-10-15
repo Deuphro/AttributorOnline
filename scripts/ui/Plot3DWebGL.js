@@ -842,6 +842,17 @@ export class Plot3DWebGL{
             }
             return corner
         }
+        /* The edge an axis is drawn on, chosen against the edges the OTHER axes
+           already took. Choosing each axis' longest edge independently is what
+           produced two labels printed on top of each other: two axes can each
+           own their longest edge and those edges can still project to the same
+           patch of screen, because "longest" says nothing about separation.
+
+           So every axis offers its two candidates, and each one is scored on
+           length MINUS its distance to the axes already placed. A slightly
+           shorter edge that is clear of the others beats a long one that lands
+           on their labels. */
+        const chosen=[]
         for(const axis of axes){
             let best=null
             for(const at of [0,1]){
@@ -852,9 +863,17 @@ export class Plot3DWebGL{
                 const b=this.project(to.x,to.y,to.z)
                 if(a.behind||b.behind) continue
                 const length=Math.hypot(b.x-a.x,b.y-a.y)
-                if(!best||length>best.length) best={a,b,length,from,to}
+                if(!(length>0)) continue
+                const mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2}
+                let crowding=0
+                for(const taken of chosen){
+                    crowding=Math.max(crowding,1/Math.max(1,Math.hypot(mid.x-taken.x,mid.y-taken.y)))
+                }
+                const score=length/(1+crowding*length*0.05)
+                if(!best||score>best.score) best={a,b,length,from,to,mid,score}
             }
             if(!best||best.length<24) continue
+            chosen.push(best.mid)
             for(let k=0;k<=count;k++){
                 const t=k/count
                 //the LABEL reads in data units, the POSITION in world units
