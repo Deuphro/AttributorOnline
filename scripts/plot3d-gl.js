@@ -37,6 +37,9 @@ export const GL3D_DEFAULTS={
     //the cube the camera frames; also the near/far budget
     depth:2000,
     background:0x000000,
+    //0 = composite over the panel, exactly like GLTraceLayer; 1 = an opaque
+    //stage, which is only wanted when the surface must sit on a known colour
+    backgroundAlpha:0,
     //the light rig. Enough for a surface to read as a surface without the
     //plot having to know anything about lighting
     lights:{
@@ -49,7 +52,7 @@ export const GL3D_DEFAULTS={
 }
 
 export class GLSceneLayer{
-    constructor(canvas,{pixelRatioCap=2,depth=2000,background=0x000000,lights=GL3D_DEFAULTS.lights}={}){
+    constructor(canvas,{pixelRatioCap=2,depth=2000,background=0x000000,backgroundAlpha=0,lights=GL3D_DEFAULTS.lights}={}){
         this.canvas=canvas
         this.pixelRatioCap=Math.max(1,pixelRatioCap)
         this.pixelRatio=1
@@ -61,7 +64,17 @@ export class GLSceneLayer{
             alpha:true,
             powerPreference:"high-performance"
         })
-        this.renderer.setClearColor(background,1)
+        /* TRANSPARENT, like GLTraceLayer (plot2d-gl.js:425), and for the same
+           reason the 2D layer is: the canvas sits behind the D3/SVG overlay and
+           inside a themed panel, so it must composite over whatever that panel
+           is rather than paint its own rectangle. Opaque black here produced a
+           black box inside a grey application — a plot-shaped hole, and the
+           reason a surface could be "black on black" with nothing to compare
+           it against.
+
+           `background` stays configurable for the case where an opaque stage is
+           actually wanted, but its alpha is what the default follows. */
+        this.renderer.setClearColor(background,backgroundAlpha)
         this.renderer.autoClear=true
         this.renderer.outputColorSpace=THREE.SRGBColorSpace
         this.scene=new THREE.Scene()

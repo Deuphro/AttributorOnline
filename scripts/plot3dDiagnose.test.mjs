@@ -27,6 +27,39 @@ const test=(name,fn)=>{
 }
 const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value") }
 
+/* The same extractor, on a file this test does not own. Comments are blanked
+   before the brace walk (an object literal inside one closes a brace that never
+   opened), the body starts after the SIGNATURE rather than after the first "{"
+   (`suicide(options={})` has a brace in its default value), and CRLF is
+   normalised first so no slice starts on a stray \r. */
+function methodBodyOf(text,name){
+    const clean0=text.replace(/\r\n/g,"\n")
+    const start=clean0.indexOf(`    ${name}(`)
+    ok(start>=0,`${name}() not found`)
+    const openParen=clean0.indexOf("(",start)
+    let parens=0
+    let closeParen=-1
+    for(let k=openParen;k<clean0.length;k++){
+        if(clean0[k]==="(") parens++
+        else if(clean0[k]===")"){
+            parens--
+            if(parens===0){ closeParen=k; break }
+        }
+    }
+    ok(closeParen>openParen,`${name}( has no closing parenthesis in its signature`)
+    const open=clean0.indexOf("{",closeParen)
+    const clean=clean0.slice(open).replace(/\/\*[\s\S]*?\*\//g,m=>" ".repeat(m.length))
+    let depth=0
+    for(let k=0;k<clean.length;k++){
+        if(clean[k]==="{") depth++
+        else if(clean[k]==="}"){
+            depth--
+            if(depth===0) return clean0.slice(open+1,open+k)
+        }
+    }
+    throw new Error(`unbalanced braces in ${name}()`)
+}
+
 /* `after` skips the helper class above the plot: "update()" and "dispose()" both
    appear in OrbitPanControls first, and a search that stopped there would test
    the controls while claiming to test the plot. */
@@ -151,6 +184,86 @@ test("the zoom limits are relative to the framed box",()=>{
         "the limits must be set BEFORE the distance, or the very first frame is clamped by the old ones")
 })
 
+test("the canvas composites over the panel, it does not paint its own",()=>{
+    /* Opaque black here made a plot-shaped hole in a grey application — and it
+       is also why "noir sur fond noir" gave nothing to compare the surface
+       against. GLTraceLayer has been transparent all along (plot2d-gl.js:425)
+       for exactly this reason: the canvas sits behind the D3/SVG overlay inside
+       a themed panel. */
+    const gl=readFileSync(join(here,"plot3d-gl.js"),"utf8")
+    ok(/setClearColor\(background,\s*backgroundAlpha\)/.test(gl),
+        "the clear colour must be applied with its alpha, not forced opaque")
+    ok(/backgroundAlpha:0/.test(gl),
+        "the default alpha must be 0: transparent, like the 2D layer")
+    ok(/new GLSceneLayer\(canvas,[\s\S]{0,400}backgroundAlpha:this\.renderOptions\.backgroundAlpha/.test(source),
+        "and Plot3DWebGL must pass it through")
+})
+
+test("CalibrationNode alternates BOTH boxes, not just the one being opened",()=>{
+    /* The two containers are two grid rows: the 2D one holds `1fr`, the 3D one
+       an `auto` strip below it. Showing only the 3D left the 2D at full height
+       and crushed the 3D into the leftover — which does not read as "the 3D is
+       missing", it reads as "the 3D is one axis label wide", which is exactly
+       what was reported. A pair of views that alternate must alternate BOTH
+       sides of the swap. */
+    const calib=readFileSync(join(here,"nodes/CalibrationNode.js"),"utf8")
+    const body=methodBodyOf(calib,"update3DSurface")
+    ok(/surfaceHost\.style\.display=wanted\?"block":"none"/.test(body),
+        "the 3D box must follow the flag")
+    ok(/graphContainer\.style\.display=wanted\?"none":"block"/.test(body),
+        "and the 2D box must be hidden when the 3D is shown: one row is 1fr, the other an auto strip")
+    ok(/this\.graphContainer=CE\(/.test(calib),
+        "the 2D container must be kept on the instance, or the swap has nothing to toggle")
+})
+
+test("each axis is mapped onto its own side of a CUBE",()=>{
+    /* THE CAUSE of "one axis label and no surface" in CalibrationNode.
+       Its error surface runs over m/z in the hundreds and INTENSITY in the
+       millions, with an error in ppm barely a unit wide. In world units that
+       box is 100 x 1e7 x 1: the m/z and error edges project to a few pixels,
+       the per-axis guard drops them, and the surface degenerates to a sheet
+       seen edge-on. The guard only hid the symptom.
+
+       So the camera frames a cube and each axis is stretched onto its own
+       side. The LABELS keep data units — the reader still sees 104.3 and 4.2 —
+       which is what makes this a mapping rather than a distortion of the data. */
+    ok(/WORLD_MIN=-1/.test(source)&&/WORLD_MAX=1/.test(source),
+        "the world frame must be a fixed cube: the data lives in units, the world does not")
+    const bounds=methodBody("computeBounds",source.indexOf("export class Plot3DWebGL"))
+    ok(/_axisWorld/.test(bounds)&&/linear\(bounds\./.test(bounds),
+        "computeBounds() must build one data->world mapper PER AXIS")
+    for(const builder of ["buildSurface","buildScatter"]){
+        const body=methodBody(builder,source.indexOf("export class Plot3DWebGL"))
+        ok(/world\.x\(/.test(body)&&/world\.y\(/.test(body),
+            `${builder}() must map x and y through the per-axis mappers, or it draws in raw units`)
+    }
+    const box=source.slice(source.indexOf("    drawBox(svg,bounds"),source.indexOf("    drawTicks(svg,bounds"))
+    ok(/WORLD_MIN/.test(box)&&!/bounds\.xMin/.test(box),
+        "the box must be drawn on the cube, not on the raw data extents")
+    const ticks=source.slice(source.indexOf("    drawTicks(svg,bounds"))
+    ok(/world\[axis\.key\]\(value\)/.test(ticks),
+        "ticks must be POSITIONED in world units but LABELLED with the data value")
+})
+
+test("the camera frames the CUBE, never the data extents",()=>{
+    /* THE REGRESSION THIS CAUGHT. Framing on `this.bounds` was correct while
+       the world WAS the data, and broke the moment each axis was mapped onto
+       its own side of the cube: a calibration surface spans 1e7 in intensity,
+       so frame() placed the camera 1.6e7 units away from an object two units
+       across — which draws nothing at all. The per-axis mapping was half a
+       change; this was the other half, and it took a round trip to see. */
+    ok(/static WORLD_BOX=\{xMin:-1,xMax:1/.test(source),
+        "the framed box must be the world cube")
+    const frames=source.match(/controls\.frame\([^)]*\)/g)||[]
+    ok(frames.length===2,`expected two frame() calls, found ${frames.length}`)
+    for(const call of frames){
+        ok(/WORLD_BOX/.test(call),
+            `the camera must frame the cube, not the data bounds: ${call}`)
+        ok(!/this\.bounds/.test(call),
+            `frame() on this.bounds places the camera at the data scale: ${call}`)
+    }
+})
+
 test("a left-drag ends in update(), or it does nothing at all",()=>{
     /* THE BUG THIS CAUGHT. `_onPointerMove` accumulated the deltas and never
        consumed them: update() was reached only from the wheel and from frame().
@@ -202,8 +315,13 @@ test("a face index is halved before it is read as a grid cell",()=>{
     const pick=source.slice(source.indexOf("    requestPick(){"))
     ok(/Math\.floor\(hit\.faceIndex\/2\)/.test(pick),
         "requestPick() must divide the face index by two to get a cell")
-    ok(/Number\.isFinite\(z\)/.test(pick),
+    /* The guard, not the variable name: the crash WAS this call. `z` is no
+       longer the raw attribute — it is mapped back to data units first, so the
+       check has to sit on whatever reaches toPrecision(). */
+    ok(/Number\.isFinite\((dataZ|z)\)[^;]*toPrecision/.test(pick),
         "and must not call toPrecision() on a value it has not checked: the crash was exactly that")
+    ok(/dataZ/.test(pick),
+        "the tooltip must report DATA units: the buffer holds the world z, and a 12.5 ppm error labelled -0.42 is a lie")
 })
 
 test("the orbit must redraw BOTH layers",()=>{

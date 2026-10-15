@@ -27,6 +27,7 @@ export class CalibrationNode extends NodeWithAccordion{
         this.multiplexCount=0
         this.skippedInputs=0
         this.multiplexTotals=null
+        this.graphContainer=null
         this.surfaceBuilt=false
         this.surfacePlot=null
         this.surfaceHost=null
@@ -209,7 +210,7 @@ export class CalibrationNode extends NodeWithAccordion{
         displayRow.append(this.show3DSurfaceCheckbox.wrap)
         displaySection.append(displayRow)
 
-        const graphContainer=CE("div",{
+        this.graphContainer=CE("div",{
             className:"calibration-graph-container",
             style:{position:"relative",width:"100%",height:"100%",minHeight:"200px",overflow:"hidden"}
         },[])
@@ -231,9 +232,9 @@ export class CalibrationNode extends NodeWithAccordion{
             }
         },[])
 
-        content.append(modeSection,displaySection,graphContainer,this.surfaceHost)
+        content.append(modeSection,displaySection,this.graphContainer,this.surfaceHost)
 
-        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer)
+        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,this.graphContainer)
         this.graph.parameters.axis.bottom.label="m/z"
         this.graph.parameters.axis.bottom.autoLabel=false
         this.graph.parameters.axis.left.label="Error (ppm)"
@@ -638,7 +639,14 @@ export class CalibrationNode extends NodeWithAccordion{
        ----------------------------------------------------------------- */
     update3DSurface(){
         const wanted=!!this.parameters.show3DSurface&&!!this.calibrationResult?.is2D
+        /* BOTH BOXES TOGGLE, and that is the correction. They are two grid
+           rows: the 2D one holds `1fr`, the 3D one an `auto` line below it.
+           Showing the 3D alone left the 2D on screen at full height and crushed
+           the 3D into the leftover strip — which is not "the 3D is missing" but
+           "the 3D is one axis label wide". A pair of views that alternate must
+           alternate BOTH sides of the swap, not just the one being opened. */
         if(this.surfaceHost) this.surfaceHost.style.display=wanted?"block":"none"
+        if(this.graphContainer) this.graphContainer.style.display=wanted?"none":"block"
         if(!wanted){
             this.surfacePlot?.setTraces([])
             return

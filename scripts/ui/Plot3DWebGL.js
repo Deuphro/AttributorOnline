@@ -297,6 +297,7 @@ export class Plot3DWebGL{
                 pixelRatioCap:this.renderOptions.pixelRatioCap,
                 depth:this.renderOptions.depth,
                 background:this.renderOptions.background,
+                backgroundAlpha:this.renderOptions.backgroundAlpha,
                 lights:this.renderOptions.lights
             })
             this.glLayer.onContextRestored=()=>{
@@ -369,7 +370,7 @@ export class Plot3DWebGL{
         }
         this._onDblClick=()=>{
             if(!this.bounds||!this.controls) return
-            this.controls.frame(this.bounds,{resetAngles:true})
+            this.controls.frame(Plot3DWebGL.WORLD_BOX,{resetAngles:true})
             this.requestFrame()
             this.drawOverlay()
         }
@@ -454,8 +455,44 @@ export class Plot3DWebGL{
             if(traceZMax>zMax) zMax=traceZMax
         }
         if(!seen) return null
-        return {xMin,xMax,yMin,yMax,zMin,zMax}
+        const bounds={xMin,xMax,yMin,yMax,zMin,zMax}
+        /* DATA -> WORLD, ONE MAPPER PER AXIS.
+
+           The camera frames a CUBE, not the raw extents, and each axis is
+           mapped onto its own side of it. This is not a cosmetic choice: the
+           axes of a real surface have nothing in common — CalibrationNode's
+           error surface runs over m/z in the hundreds and INTENSITY in the
+           millions, with an error in ppm barely a unit wide. In world units
+           that box is 100 x 1e7 x 1, the m/z and error edges project to a few
+           pixels, and two of the three axes silently vanish from the overlay
+           while the surface degenerates to a sheet seen edge-on.
+
+           Which is exactly what was reported: one surviving axis label, no
+           surface. The per-axis guard below only hid the symptom; this is the
+           cause. Each axis is therefore stretched to [-1,1] and the TICKS keep
+           reporting the real values, so nothing is lost but the distortion. */
+        const linear=(lo,hi)=>{
+            const span=(hi-lo)||1
+            return value=>((value-lo)/span)*2-1
+        }
+        this._axisWorld={
+            x:linear(bounds.xMin,bounds.xMax),
+            y:linear(bounds.yMin,bounds.yMax),
+            z:linear(bounds.zMin,bounds.zMax)
+        }
+        return bounds
     }
+    /* The cube every 3D plot is drawn in. Fixed, because it is a FRAME of
+       reference, not a range: the data lives in units, the world does not. */
+    static WORLD_MIN=-1
+    static WORLD_MAX=1
+    /* WHAT THE CAMERA FRAMES. The CUBE, always — never the data extents.
+       Framing on the data worked while the world WAS the data, and broke the
+       moment each axis got mapped onto its own side: a calibration surface
+       spans 1e7 in intensity, so frame() placed the camera 1.6e7 units from an
+       object two units across, which is nothing at all on screen. The bounds
+       are for the TICKS now, not for the camera. */
+    static WORLD_BOX={xMin:-1,xMax:1,yMin:-1,yMax:1,zMin:-1,zMax:1}
 
     /* --- GPU upload -------------------------------------------------- */
     /* Cheap O(#traces) fingerprint. The buffers are only rebuilt when the
@@ -537,20 +574,30 @@ export class Plot3DWebGL{
         const height=Number.isFinite(trace.options?.height)?trace.options.height:0.5
         return {lo,hi,span,mid,height,normalise:z=>Math.min(1,Math.max(0,(z-lo)/span)),place:z=>((z-mid)/span)*height}
     }
+    /* The inverse of the height mapping for ONE trace, so a picked vertex can be
+       reported in data units. Without it the tooltip would quote the world
+       coordinate — a 12.5 ppm error labelled "-0.42". */
+    dataZOf(trace,worldZ){
+        const mapping=this.heightMapping(trace,this.bounds)
+        const height=mapping.height||1
+        if(!Number.isFinite(worldZ)) return NaN
+        return mapping.mid+(worldZ/height)*mapping.span
+    }
     buildSurface(trace,bounds){
         const wave=trace.wave
         const [nx,ny]=wave.dims
         const {normalise,place}=this.heightMapping(trace,bounds)
         const ramp=COLORMAPS[trace.options?.colormap]??COLORMAPS.viridis
+        const world=this.axisWorld()
         const positions=new Float32Array(nx*ny*3)
         const colors=new Float32Array(nx*ny*3)
         for(let iy=0;iy<ny;iy++){
             for(let ix=0;ix<nx;ix++){
                 const node=(iy*nx+ix)*3
                 const z=wave.core[wave.index(ix,iy,2)]
-                positions[node]=wave.core[wave.index(ix,iy,0)]
-                positions[node+1]=wave.core[wave.index(ix,iy,1)]
-                positions[node+2]=Number.isFinite(z)?place(z):0
+                positions[node]=world.x(wave.core[wave.index(ix,iy,0)])
+                positions[node+1]=world.y(wave.core[wave.index(ix,iy,1)])
+                positions[node+2]=world.z(Number.isFinite(z)?place(z):0)
                 const [r,g,b]=ramp(normalise(z))
                 colors[node]=r
                 colors[node+1]=g
@@ -588,6 +635,7 @@ export class Plot3DWebGL{
         const [nx,ny]=wave.dims
         const stride=Math.max(1,Math.trunc(trace.options?.stride??1))
         const count=Math.ceil(nx/stride)*Math.ceil(ny/stride)
+        const world=this.axisWorld()
         const positions=new Float32Array(count*3)
         let written=0
         for(let iy=0;iy<ny;iy+=stride){
@@ -596,9 +644,9 @@ export class Plot3DWebGL{
                 const y=wave.core[wave.index(ix,iy,1)]
                 const z=wave.core[wave.index(ix,iy,2)]
                 if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z)) continue
-                positions[written*3]=x
-                positions[written*3+1]=y
-                positions[written*3+2]=z
+                positions[written*3]=world.x(x)
+                positions[written*3+1]=world.y(y)
+                positions[written*3+2]=world.z(z)
                 written++
             }
         }
@@ -653,7 +701,7 @@ export class Plot3DWebGL{
         const firstDraw=!this._traces.length
         this.syncScene(this.bounds)
         if(firstDraw&&this.bounds&&this.controls){
-            this.controls.frame(this.bounds,{resetAngles:true})
+            this.controls.frame(Plot3DWebGL.WORLD_BOX,{resetAngles:true})
         }
         this.syncViewport()
         this.drawOverlay()
@@ -692,6 +740,15 @@ export class Plot3DWebGL{
     }
 
     /* --- the FRONT layer: box, edges, ticks -------------------------- */
+    /* The data -> world mappers, rebuilt with the bounds. Falls back to the
+       identity so a plot with no data yet still projects something sane. */
+    axisWorld(){
+        return this._axisWorld??{
+            x:value=>value,
+            y:value=>value,
+            z:value=>value
+        }
+    }
     project(x,y,z){
         const v=new THREE.Vector3(x,y,z).project(this.glCamera)
         return {
@@ -719,17 +776,19 @@ export class Plot3DWebGL{
         this.drawTicks(svg,bounds,width,height)
         this.drawHover(svg,width,height)
     }
+    /* The twelve edges of the CUBE, at the world corners. Not the data
+       corners: those would be 100 x 1e7 x 1 for a real error surface, and a
+       box that thin has no depth cues left to give. */
     drawBox(svg,bounds,width,height){
         const ns="http://www.w3.org/2000/svg"
         const group=document.createElementNS(ns,"g")
         group.setAttribute("class","gl3d-box")
-        //the twelve edges of the data box: without them a floating surface has
-        //nothing to be read against, and the depth cues have to come from the
-        //lighting alone
+        const lo=Plot3DWebGL.WORLD_MIN
+        const hi=Plot3DWebGL.WORLD_MAX
         const corners=[]
-        for(const x of [bounds.xMin,bounds.xMax]){
-            for(const y of [bounds.yMin,bounds.yMax]){
-                for(const z of [bounds.zMin,bounds.zMax]){
+        for(const x of [lo,hi]){
+            for(const y of [lo,hi]){
+                for(const z of [lo,hi]){
                     corners.push({x,y,z})
                 }
             }
@@ -745,7 +804,7 @@ export class Plot3DWebGL{
             const line=document.createElementNS(ns,"line")
             //the two edges that make the floor are dimmer, so the box reads as
             //a volume and not as a cage
-            const isFloor=corners[i].z===bounds.zMin&&corners[j].z===bounds.zMin
+            const isFloor=corners[i].z===Plot3DWebGL.WORLD_MIN&&corners[j].z===Plot3DWebGL.WORLD_MIN
             line.setAttribute("x1",a.x)
             line.setAttribute("y1",a.y)
             line.setAttribute("x2",b.x)
@@ -761,11 +820,15 @@ export class Plot3DWebGL{
        is drawn on the box edge along it that is currently the LONGEST on
        screen: pick the other two and, edge-on, the ticks pile up on a single
        pixel and the labels explode. */
+    /* Each axis is placed in WORLD space through its own mapper, but its LABELS
+       stay in data units — which is the whole point of mapping per axis: the
+       reader still sees 104.3 m/z and 4.2 ppm, while the cube is a cube. */
     drawTicks(svg,bounds,width,height){
         const ns="http://www.w3.org/2000/svg"
         const group=document.createElementNS(ns,"g")
         group.setAttribute("class","gl3d-ticks")
         const count=Math.max(2,Math.trunc(this.renderOptions.ticks??6))
+        const world=this.axisWorld()
         const axes=[
             {key:"x",label:this.axisLabels.x??"x",range:[bounds.xMin,bounds.xMax],free:["y","z"]},
             {key:"y",label:this.axisLabels.y??"y",range:[bounds.yMin,bounds.yMax],free:["x","z"]},
@@ -775,7 +838,7 @@ export class Plot3DWebGL{
             //the origin corner for this axis: min on the other two axes
             const corner={x:0,y:0,z:0}
             for(const key of axis.free){
-                corner[key]=at===0?bounds[`${key}Min`]:bounds[`${key}Max`]
+                corner[key]=at===0?Plot3DWebGL.WORLD_MIN:Plot3DWebGL.WORLD_MAX
             }
             return corner
         }
@@ -784,7 +847,7 @@ export class Plot3DWebGL{
             for(const at of [0,1]){
                 const from=pick(axis,at)
                 const to={...from}
-                to[axis.key]=axis.range[1]
+                to[axis.key]=Plot3DWebGL.WORLD_MAX
                 const a=this.project(from.x,from.y,from.z)
                 const b=this.project(to.x,to.y,to.z)
                 if(a.behind||b.behind) continue
@@ -794,9 +857,10 @@ export class Plot3DWebGL{
             if(!best||best.length<24) continue
             for(let k=0;k<=count;k++){
                 const t=k/count
+                //the LABEL reads in data units, the POSITION in world units
                 const value=axis.range[0]+(axis.range[1]-axis.range[0])*t
                 const corner={...best.from}
-                corner[axis.key]=value
+                corner[axis.key]=world[axis.key](value)
                 const p=this.project(corner.x,corner.y,corner.z)
                 if(p.behind) continue
                 const tick=document.createElementNS(ns,"line")
@@ -896,7 +960,12 @@ export class Plot3DWebGL{
                 const iy=Math.floor(cell/(grid.nx-1))
                 const index=iy*grid.nx+ix
                 const z=Number.isInteger(index)?object.geometry.attributes.position.getZ(index):NaN
-                label=Number.isFinite(z)?`z ${z.toPrecision(4)}`:""
+                /* The buffer holds the WORLD z — after the per-axis mapping —
+                   so reading it straight would label a 12.5 ppm error as
+                   "-0.42". The tooltip reports DATA units, like the ticks. */
+                const trace=this.visibleTraces.find(t=>t.id===object.userData?.traceId)
+                const dataZ=trace?this.dataZOf(trace,z):NaN
+                label=Number.isFinite(dataZ)?`z ${dataZ.toPrecision(4)}`:""
                 this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,label}
             }else{
                 this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,
