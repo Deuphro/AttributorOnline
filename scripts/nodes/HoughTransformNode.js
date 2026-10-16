@@ -3,6 +3,7 @@ import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
 import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
+import {computePool} from "../workerPool.js"
 
 /* =====================================================================
    HoughTransformNode — the Hough accumulator of (slope, intercept), as a
@@ -16,10 +17,13 @@ import {wavesFromInput} from "../utils/index.js"
        on [-1,1]^2, which is exactly what a Rust kernel would return and
        what a BufferGeometry wants.
 
-   STEP 1 IS A SCAFFOLD: the surface is SYNTHETIC (see `syntheticSurface`).
-   The ports, the Wave layout, the grid contract and the view are real; only
-   the accumulation is a placeholder, and only `syntheticSurface()` has to be
-   replaced when the Rust kernel lands.
+   THE ACCUMULATION IS THE KERNEL'S: `startResolve` flattens every accepted
+   XY wave into one [masses…, intensities…] core — the layout `houghPrepare`
+   splits in half — and runs `computePool.run("houghTransform", …)`. The
+   worker answers with the grid, the pair count and how many peaks were fed;
+   all three reach the readout and the metadata, so a refusal (<2 usable
+   peaks) is NAMED instead of passing for a flat "no relation found". The
+   grid sizes, the (slope, intercept) box and the view stay the node's.
 
    THE VIEW is a Plot3DWebGL — the 3D counterpart of Plot2DWebGL, built on
    GLSceneLayer. It used to hijack a Plot2DWebGL, and that cost four
@@ -32,34 +36,13 @@ import {wavesFromInput} from "../utils/index.js"
    pointer, there are no 2D margins, and the gestures live on the container.
    ===================================================================== */
 
-/* --- Synthetic stand-in for the accumulator -----------------------------
-   A Hough surface is a set of ridges along the lines the pairs of peaks
-   agree on, over a noise floor. This reproduces that topology — a floor,
-   four ridges of different width, amplitude and tilt, and a shallow bowl so
-   the floor is not a perfectly flat plane — so the mesh, the colormap and
-   the height mapping can be judged on something with the right SHAPE before
-   any real data exists.
-
-   Deterministic on purpose: (u,v) -> value, no random state, so the same
-   parameters always give the same picture. */
-const SYNTHETIC_RIDGES=[
-    //amplitude, half-width, tilt of the ridge in the (u,v) plane, offset
-    {amplitude:1.00, width:0.035, tilt: 0.10, offset:-0.45},
-    {amplitude:0.62, width:0.055, tilt:-0.55, offset: 0.30},
-    {amplitude:0.38, width:0.090, tilt: 0.00, offset: 0.05},
-    {amplitude:0.22, width:0.030, tilt: 1.20, offset: 0.70}
-]
-
-function syntheticSurface(u,v){
-    let value=0.015
-    for(const ridge of SYNTHETIC_RIDGES){
-        //distance from the point to the ridge line, in grid units
-        const d=(v-ridge.offset-ridge.tilt*u)/Math.sqrt(1+ridge.tilt*ridge.tilt)
-        value+=ridge.amplitude*Math.exp(-0.5*(d/ridge.width)**2)
-    }
-    value+=0.04*(u*u+v*v)
-    return value
-}
+/* THE (SLOPE, INTERCEPT) DOMAIN, kept in one place because three things must
+   agree on it: what the node asks the kernel for, what the axis labels claim —
+   the wave's x,y are NORMALISED: x IS the slope (its span is [-1,1] anyway),
+   y is intercept/6 — and what the metadata of the output wave records. This is
+   also the kernel default (worker: bounds ?? [-1,1,-6,6]), restated so the
+   node owns what it asks for rather than inheriting it. */
+const HOUGH_BOUNDS=[-1,1,-6,6]
 
 export class HoughTransformNode extends NodeWithRightAccordionGraph{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -75,6 +58,11 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.parameters.showScatter=false
         this.surface=null
         this.collectedWaves=[]
+        /* Monotonic ticket — FKMDNode's pattern: a resolve waiting on the
+           worker must not be overwritten by a newer one that started while it
+           was still in flight. */
+        this.resolveRun=0
+        this.kernelErrors=[]
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity), accumulated together</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
@@ -88,7 +76,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
        looking at. So one node, one context, from the start. */
     createGraph(dialog,label){
         const plot=new Plot3DWebGL([],`${label} surface`,this.origin,dialog.DOMelt.content)
-        plot.axisLabels={x:"slope",y:"intercept",z:"intensity"}
+        plot.axisLabels={x:`slope [${HOUGH_BOUNDS[0]}, ${HOUGH_BOUNDS[1]}]`,y:`intercept [${HOUGH_BOUNDS[2]}, ${HOUGH_BOUNDS[3]}]`,z:"intensity"}
         return plot
     }
     registered(e){
@@ -97,8 +85,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         }
         super.registered(e)
         this.setupUI()
-        //no kernel yet, so the synthetic surface is what a resolve produces:
-        //running it here means the view is never an empty grey box
+        //the first resolve runs the kernel on NO input at all: it publishes a
+        //zeroed grid whose readout names the refusal, so the view is never an
+        //empty grey box — and never a flat surface without saying why
         this.startResolve().then(()=>this.resolveChildren())
     }
 
@@ -177,8 +166,17 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const lines=[
             `grid ${nx} x ${ny} = ${nx*ny} nodes`,
             `z in [${this.surface.zMin.toFixed(4)}, ${this.surface.zMax.toFixed(4)}]`,
-            `inputs accumulated: ${this.collectedWaves.length}`
+            `inputs accumulated: ${this.collectedWaves.length}`,
+            `peaks fed: ${this.surface.prepared} of ${this.surface.points} points`,
+            `pairs used: ${this.surface.pairs}`,
+            `domain: slope [${this.surface.bounds[0]}, ${this.surface.bounds[1]}] intercept [${this.surface.bounds[2]}, ${this.surface.bounds[3]}]`
         ]
+        if(this.collectedWaves.length&&!this.kernelErrors.length&&this.surface.prepared<2){
+            lines.push("refused: fewer than 2 usable peaks — the zeros are the kernel's answer, not a relation")
+        }
+        for(const err of this.kernelErrors??[]){
+            lines.push(`kernel: ${err}`)
+        }
         if(this.skippedInputs){
             lines.push(`${this.skippedInputs} entrée(s) ignorée(s): pas une wave XY`)
         }
@@ -186,13 +184,65 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
     }
 
     /* --- resolve ------------------------------------------------------ */
+    /* THE KERNEL RUNS HERE, off the UI thread, and its answer may land after a
+       newer resolve has started: every await is followed by the ticket check,
+       so a stale reply is dropped instead of repainting an old grid over a new
+       one. `startResolve` never REJECTS — a kernel failure becomes a status
+       and a readout line, not an unhandled promise in somebody else's
+       `.then()`. */
     async startResolve(){
         this.collectInputWaves()
-        this.buildSurface()
+        const run=++this.resolveRun
+        this.kernelErrors=[]
+        let answer=null
+        if(this.collectedWaves.length){
+            const {nx,ny}=this.gridSize()
+            try{
+                answer=await computePool.run("houghTransform",{
+                    core:this.houghCore(),
+                    params:{nx,ny,keep:0,bounds:HOUGH_BOUNDS}
+                })
+            }catch(err){
+                if(run!==this.resolveRun) return
+                this.kernelErrors=[err.message??String(err)]
+            }
+        }
+        if(run!==this.resolveRun) return
+        this.buildSurface(answer)
         this.outputs[0]=[this.surfaceWave]
-        this.setStatus("resolved")
+        this.setStatus(this.kernelErrors.length?"error"
+            :this.collectedWaves.length?"resolved":"floating")
         this.applyTraces()
         this.renderReadout()
+    }
+    /* ONE FLAT [masses…, intensities…] CORE — the layout `houghPrepare` splits
+       in half. A single XY wave is already columnar that way, but concatenating
+       N wave cores would interleave the two planes, so the halves are rebuilt
+       per wave through `index()`, the only accessor the layout guarantees. */
+    houghCore(){
+        let total=0
+        for(const wave of this.collectedWaves) total+=Math.floor(wave.core.length/2)
+        const core=new Float64Array(total*2)
+        let offset=0
+        for(const wave of this.collectedWaves){
+            const n=Math.floor(wave.core.length/2)
+            for(let i=0;i<n;i++){
+                core[offset+i]=wave.core[wave.index(i,0)]
+                core[total+offset+i]=wave.core[wave.index(i,1)]
+            }
+            offset+=n
+        }
+        return core
+    }
+    /* THE GRID SIZE, clamped ONCE: the kernel returns a grid sized by the nx/ny
+       it was given, and buildSurface must slice it with the SAME numbers — two
+       independent clamps that ever disagree would turn into a wrong-length
+       grid (or worse, a silently transposed one). */
+    gridSize(){
+        return {
+            nx:Math.max(2,Math.trunc(this.parameters.gridX)||64),
+            ny:Math.max(2,Math.trunc(this.parameters.gridY)||48)
+        }
     }
     collectInputWaves(){
         const {waves,skipped}=wavesFromInput(this.inputs[0])
@@ -209,13 +259,22 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         return accepted
     }
     /* The grid, as a 3-column Wave: dims [gridX, gridY, 3], x and y on
-       [-1,1], z whatever the accumulator produced. This is the shape the Rust
-       kernel will return too. Built through the canonical `index()` helper so
-       the Wave owns the layout and the geometry is derived from it, never the
-       other way round. */
-    buildSurface(){
-        const nx=Math.max(2,Math.trunc(this.parameters.gridX)||64)
-        const ny=Math.max(2,Math.trunc(this.parameters.gridY)||48)
+       [-1,1], z whatever the kernel produced. Built through the canonical
+       `index()` helper so the Wave owns the layout and the geometry is derived
+       from it, never the other way round.
+
+       THE KERNEL ORDERS ITS GRID CELL(y)*nx+CELL(x) — slope across x,
+       intercept up y — which is this very loop: cell (ix,iy) reads
+       grid[iy*nx+ix]. A missing or wrong-length grid (<2 usable peaks, stale
+       wasm, a recorded failure) is written as zeros, and the metadata says
+       WHICH case it is: a flat surface must never pass for "no relation
+       found" without the readout naming the refusal. */
+    buildSurface(answer=null){
+        const {nx,ny}=this.gridSize()
+        const grid=answer?.grid
+        const usable=grid instanceof Float64Array&&grid.length===nx*ny
+        const prepared=Math.trunc(Number(answer?.prepared))||0
+        const pairs=Math.trunc(Number(answer?.count))||0
         const wave=new Wave(nx,ny,3)
         wave.labels=Wave.normalizeLabels(["slope","intercept","intensity"])
         let zMin=Infinity
@@ -224,7 +283,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             const v=(iy/(ny-1))*2-1
             for(let ix=0;ix<nx;ix++){
                 const u=(ix/(nx-1))*2-1
-                const z=syntheticSurface(u,v)
+                const z=usable?grid[iy*nx+ix]:0
                 if(z<zMin) zMin=z
                 if(z>zMax) zMax=z
                 wave.core[wave.index(ix,iy,0)]=u
@@ -241,11 +300,19 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             zMin,
             zMax,
             domain:"[-1,1]^2",
-            source:"synthetic (step 1 scaffold)",
+            bounds:[...HOUGH_BOUNDS],
+            source:usable?"kernel (computePool houghTransform)"
+                :this.kernelErrors.length?`kernel error: ${this.kernelErrors[0]}`
+                :answer?"kernel refused the inputs"
+                :"no kernel run (no usable input)",
+            prepared,
+            pairs,
             collected:this.collectedWaves.length
         }
         wave.touch()
-        this.surface={nx,ny,wave,zMin,zMax}
+        let points=0
+        for(const w of this.collectedWaves) points+=Math.floor(w.core.length/2)
+        this.surface={nx,ny,wave,zMin,zMax,prepared,pairs,points,bounds:HOUGH_BOUNDS}
         this.surfaceWave=wave
         return wave
     }

@@ -230,6 +230,70 @@ const kernels={
             return {core:fkmdJS(core,params?.mz??0)}
         }
     },
+    async houghTransform({core,params}){
+        /* One kernel, three steps, because they are three decisions and the
+           caller is allowed to see each: how many peaks survive (prepare), where
+           they vote (accumulate), and how the shape of the vote is estimated
+           (smooth). They are done here rather than in the node because the
+           preparation is O(n) sorting and the accumulation is O(n^2) — neither
+           belongs on the UI thread, and the fallback path must do the same work
+           in the same place or the two would drift. */
+        const nx=Math.max(2,Math.trunc(params?.nx??64))
+        const ny=Math.max(2,Math.trunc(params?.ny??48))
+        const keep=Math.max(0,Math.trunc(params?.keep??0))
+        const neighbours=Math.max(2,Math.trunc(params?.neighbours??12))
+        const bandwidth=Number.isFinite(params?.bandwidth)?params.bandwidth:2
+        const bounds=params?.bounds??[-1,1,-6,6]
+        const [slopeMin,slopeMax,interceptMin,interceptMax]=bounds
+        const flat=Float64Array.from(core??[])
+        try{
+            await ensureWasm()
+            if(typeof rust.hough_transform!=="function"){
+                throw new Error("rust hough_transform is missing (stale pkg build?)")
+            }
+            const prepared=toFloat64(rust.hough_prepare(flat,keep))
+            const count=prepared.length?prepared[prepared.length-1]:0
+            if(!count||count<2){
+                return {grid:new Float64Array(nx*ny),count:0,prepared:0,
+                    bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
+            }
+            const mass=prepared.slice(0,count)
+            const defect=prepared.slice(count,count*2)
+            const intensity=prepared.slice(count*2,count*3)
+            const grid=toFloat64(rust.hough_transform(
+                mass,defect,intensity,nx,ny,
+                slopeMin,slopeMax,interceptMin,interceptMax,
+                neighbours,bandwidth
+            ))
+            if(grid.length!==nx*ny+5){
+                throw new Error(`hough_transform returned ${grid.length} values, expected ${nx*ny+5}`)
+            }
+            //slice, not subarray: a copy owns its buffer, which is what the
+            //transfer list below is allowed to hand over. The pair count lives
+            //at the END of the grid (grid[nx*ny+4]) — indexing `prepared` there
+            //instead read a mass/defect/intensity value whenever the planes
+            //were longer than the grid, i.e. for every real peak count.
+            return {grid:grid.slice(0,nx*ny),count:grid[nx*ny+4]??0,prepared:count,
+                bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
+        }catch(err){
+            console.warn("[kernelWorker] rust hough unavailable, JS fallback:",err)
+            const prepared=houghPrepareJS(flat,keep)
+            const count=prepared.length?prepared[prepared.length-1]:0
+            if(!count||count<2){
+                return {grid:new Float64Array(nx*ny),count:0,prepared:0,
+                    bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
+            }
+            const grid=houghTransformJS(
+                prepared.slice(0,count),
+                prepared.slice(count,count*2),
+                prepared.slice(count*2,count*3),
+                nx,ny,slopeMin,slopeMax,interceptMin,interceptMax,
+                neighbours,bandwidth
+            )
+            return {grid,count:grid[nx*ny+4]??0,prepared:count,
+                bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
+        }
+    },
     async barycentric({compositions,n,k}){
         try{
             await ensureWasm()
@@ -727,6 +791,190 @@ function fkmdJS(core,mz){
 }
 function toFloat64(value){
     return value instanceof Float64Array?value:new Float64Array(value)
+}
+
+/* The JS twin of hough.rs. It exists for the same reason as every other one in
+   this file: a stale or failed wasm build must still resolve the flow, and two
+   implementations that disagree would be worse than one missing. The comments
+   below name the invariants that must hold on both sides. */
+
+//[mass, defect, intensity, ..., count] — sorted by mass, unusable points gone.
+function houghPrepareJS(core,keep){
+    const n=Math.floor((core?.length??0)/2)
+    if(n===0) return new Float64Array(0)
+    const rows=[]
+    for(let i=0;i<n;i++){
+        const mass=core[i]
+        const intensity=core[n+i]
+        if(!Number.isFinite(mass)||mass<=0||!Number.isFinite(intensity)) continue
+        rows.push([mass,mass-Math.round(mass),intensity])
+    }
+    rows.sort((a,b)=>a[0]-b[0])
+    const limit=keep>0?Math.min(keep,rows.length):rows.length
+    rows.length=limit
+    const out=new Float64Array(rows.length*3+1)
+    for(let i=0;i<rows.length;i++){
+        out[i]=rows[i][0]
+        out[rows.length+i]=rows[i][1]
+        out[rows.length*2+i]=rows[i][2]
+    }
+    out[rows.length*3]=rows.length
+    return out
+}
+
+/* Every pair votes, weighted by the cumulated intensity of its two points, and
+   the vote is BILINEAR: spread over four cells, never dropped in one. A single
+   bin is what made the legacy surface need its bounds hand-tuned. */
+function houghAccumulateJS(mass,defect,intensity,nx,ny,slopeMin,slopeMax,interceptMin,interceptMax){
+    const n=mass.length
+    if(n<2||nx<2||ny<2) return new Float64Array(0)
+    /* A SHORT PLANE READS AS NaN, not as an error: `defect[j]` past the end is
+       `undefined`, every pair is skipped, and the return is a ZEROED grid of
+       the right length — which the caller would read as "no relation found".
+       Rust refuses on this mismatch (hough.rs `defect.len() != n`); the twin
+       must refuse too, or the two implementations quietly disagree. */
+    if(defect.length!==n||intensity.length!==n) return new Float64Array(0)
+    if(!(slopeMax>slopeMin)||!(interceptMax>interceptMin)) return new Float64Array(0)
+    /* Rust rejects non-finite bounds as well (hough.rs); the guard above
+       catches NaN but not ±Infinity, whose span makes every cell coordinate
+       NaN — again a grid nothing lands in. */
+    if(!Number.isFinite(slopeMin)||!Number.isFinite(slopeMax)||!Number.isFinite(interceptMin)||!Number.isFinite(interceptMax)) return new Float64Array(0)
+    const grid=new Float64Array(nx*ny)
+    let used=0
+    const slopeSpan=slopeMax-slopeMin
+    const interceptSpan=interceptMax-interceptMin
+    for(let i=0;i<n;i++){
+        for(let j=i+1;j<n;j++){
+            const dm=mass[j]-mass[i]
+            if(dm===0||!Number.isFinite(dm)) continue
+            const dd=defect[j]-defect[i]
+            if(!Number.isFinite(dd)) continue
+            const slope=dd/dm
+            const intercept=defect[i]-slope*mass[i]
+            if(!Number.isFinite(slope)||!Number.isFinite(intercept)) continue
+            if(slope<slopeMin||slope>slopeMax||intercept<interceptMin||intercept>interceptMax) continue
+            const weight=intensity[i]+intensity[j]
+            if(!(weight>0)) continue
+            used++
+            const u=(slope-slopeMin)/slopeSpan*(nx-1)
+            const v=(intercept-interceptMin)/interceptSpan*(ny-1)
+            const u0=Math.min(Math.max(Math.floor(u),0),nx-2)
+            const v0=Math.min(Math.max(Math.floor(v),0),ny-2)
+            const fu=Math.min(Math.max(u-u0,0),1)
+            const fv=Math.min(Math.max(v-v0,0),1)
+            for(let di=0;di<2;di++){
+                const wi=di===0?1-fu:fu
+                if(wi<=0) continue
+                const cx=u0+di
+                for(let dj=0;dj<2;dj++){
+                    const wj=dj===0?1-fv:fv
+                    if(wj<=0) continue
+                    grid[(v0+dj)*nx+cx]+=weight*wi*wj
+                }
+            }
+        }
+    }
+    const out=new Float64Array(nx*ny+5)
+    out.set(grid,0)
+    out.set([slopeMin,slopeMax,interceptMin,interceptMax,used],nx*ny)
+    return out
+}
+
+/* The kernel shape is estimated FROM THE GRID, cell by cell: the k nearest
+   occupied neighbours give a local covariance, and each casts an elliptical
+   Gaussian vote. Over the PAIRS this question would be O(n^4) and impossible;
+   over a few thousand cells it is a scan. */
+function houghSmoothJS(grid,nx,ny,neighbours,bandwidth){
+    const cells=nx*ny
+    if(cells===0||grid.length<cells||nx<2||ny<2) return new Float64Array(0)
+    if(!(bandwidth>0)||!Number.isFinite(bandwidth)) return new Float64Array(0)
+    const k=Math.max(2,neighbours)
+    const source=grid.subarray?grid.subarray(0,cells):grid
+    const occupied=[]
+    for(let iy=0;iy<ny;iy++){
+        for(let ix=0;ix<nx;ix++){
+            const v=source[iy*nx+ix]
+            if(v!==0&&Number.isFinite(v)) occupied.push(ix,iy,v)
+        }
+    }
+    if(occupied.length===0) return Float64Array.from(source)
+    const bw2=bandwidth*bandwidth
+    const reach=Math.max(3,Math.floor(Math.sqrt(bw2*9)))
+    const out=new Float64Array(cells)
+    const near=[]
+    for(let iy=0;iy<ny;iy++){
+        for(let ix=0;ix<nx;ix++){
+            const own=source[iy*nx+ix]
+            near.length=0
+            const x0=Math.max(ix-reach,0),x1=Math.min(ix+reach,nx-1)
+            const y0=Math.max(iy-reach,0),y1=Math.min(iy+reach,ny-1)
+            for(let cy=y0;cy<=y1;cy++){
+                for(let cx=x0;cx<=x1;cx++){
+                    const v=source[cy*nx+cx]
+                    if(v===0||!Number.isFinite(v)) continue
+                    const dx=cx-ix,dy=cy-iy
+                    const d2=dx*dx+dy*dy
+                    if(d2<=bw2*9) near.push([d2,cy*nx+cx])
+                }
+            }
+            if(near.length<2){
+                out[iy*nx+ix]=own
+                continue
+            }
+            near.sort((a,b)=>a[0]-b[0])
+            const take=Math.max(2,Math.min(k,near.length))
+            let mx=0,my=0
+            for(let t=0;t<take;t++){
+                mx+=near[t][1]%nx
+                my+=Math.floor(near[t][1]/nx)
+            }
+            mx/=take;my/=take
+            let sxx=0,syy=0,sxy=0
+            for(let t=0;t<take;t++){
+                const dx=(near[t][1]%nx)-mx
+                const dy=Math.floor(near[t][1]/nx)-my
+                sxx+=dx*dx;syy+=dy*dy;sxy+=dx*dy
+            }
+            const denom=Math.max(take-1,1)
+            sxx=sxx/denom+bw2
+            syy=syy/denom+bw2
+            sxy/=denom
+            const det=sxx*syy-sxy*sxy
+            let ixx,iyy,ixy
+            if(det>1e-12){
+                ixx=syy/det;iyy=sxx/det;ixy=-sxy/det
+            }else{
+                ixx=1/bw2;iyy=1/bw2;ixy=0
+            }
+            let acc=0,total=0
+            for(let t=0;t<take;t++){
+                const v=source[near[t][1]]
+                const dx=(near[t][1]%nx)-ix
+                const dy=Math.floor(near[t][1]/nx)-iy
+                const q=ixx*dx*dx+2*ixy*dx*dy+iyy*dy*dy
+                if(q<0||!Number.isFinite(q)) continue
+                const w=Math.exp(-0.5*q)
+                if(!Number.isFinite(w)) continue
+                acc+=w*v
+                total+=w
+            }
+            out[iy*nx+ix]=total>0?acc/total:own
+        }
+    }
+    return out
+}
+
+function houghTransformJS(mass,defect,intensity,nx,ny,slopeMin,slopeMax,interceptMin,interceptMax,neighbours,bandwidth){
+    const accumulated=houghAccumulateJS(mass,defect,intensity,nx,ny,slopeMin,slopeMax,interceptMin,interceptMax)
+    const cells=nx*ny
+    if(accumulated.length<cells||cells===0) return accumulated
+    const smoothed=houghSmoothJS(accumulated,nx,ny,neighbours,bandwidth)
+    if(smoothed.length!==cells) return accumulated
+    const out=new Float64Array(cells+5)
+    out.set(smoothed,0)
+    //the domain and the pair count travel with the grid, from the accumulation
+    out.set(accumulated.subarray(cells,cells+5),cells)
+    return out
 }
 
 //Same semantics as barycentric.rs barycentric_project_f64: poles at

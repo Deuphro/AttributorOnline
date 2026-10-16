@@ -6,6 +6,7 @@ mod barycentric;
 mod calibration;
 mod fkmd;
 mod forest;
+mod hough;
 mod kmeans;
 mod pca;
 mod persistence;
@@ -35,6 +36,11 @@ pub use barycentric::{barycentric_project, barycentric_project_f64};
 pub use pca::pca_project;
 pub use kmeans::kmeans_cluster;
 pub use spectral::spectral_cluster;
+//the Hough accumulator of (slope, intercept), over the relations between pairs
+//of peaks. The kernel is not a fixed bin: each vote is spread, and the SHAPE
+//is estimated from the data — from the grid, because asking it of the pairs is
+//O(n^4) and asking it of a few thousand cells is not.
+pub use hough::{hough_accumulate, hough_prepare, hough_smooth, hough_transform};
 
 #[wasm_bindgen]
 pub fn compute(a: i32, b: i32) -> i32 {

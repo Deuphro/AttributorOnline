@@ -37,10 +37,29 @@ function blankComments(text){
 /* The body of `name`, WITHOUT its surrounding braces and without its
    signature's parameter list. `after` skips earlier matches: "update()" and
    "dispose()" both appear in a helper class above the plot, and a search that
-   stopped there would test the helper while claiming to test the plot. */
+   stopped there would test the helper while claiming to test the plot.
+
+   The name is matched at the START OF A LINE, not as a substring: the worker's
+   JS twins are module-level functions with no indentation, and a search for
+   "    name(" would miss every one of them. It is also why the name is anchored
+   — `dispose()` must not match `disposeState()`. */
 export function methodBody(text,name,after=0){
     const src=text.replace(/\r\n/g,"\n")
-    const start=src.indexOf(`    ${name}(`,after)
+    /* Two shapes, because the codebase has two: a class method is indented and
+       is found by name at the start of a line, and a module-level function has
+       no indentation and carries `function` in front. The fallback also skips a
+       prefix match — `dispose()` must not land on `disposeState()`. */
+    let start=src.search(new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?${name}\\s*\\(`,`m`))
+    if(start<0){
+        start=src.search(new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*\\(`,`m`))
+    }
+    if(start<0){
+        //a plain call or a member access: find it past `after`, on a word bound
+        const re=new RegExp(`\\b${name}\\s*\\(`,`g`)
+        re.lastIndex=Math.max(0,after)
+        const hit=re.exec(src)
+        start=hit?hit.index:-1
+    }
     if(start<0) throw new Error(`${name}() not found`)
     const openParen=src.indexOf("(",start)
     let depth=0
