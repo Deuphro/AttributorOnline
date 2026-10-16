@@ -72,129 +72,6 @@ export function crible_mixed_radix(item_masses: Float64Array, item_charges: Floa
 */
 export function crible_heap(item_masses: Float64Array, item_charges: Float64Array, caps: Uint32Array, max_mass: number, limit: number): Float64Array;
 /**
-* Parse a Thermo .raw file and return centroid peaks for each scan.
-* Returns flat arrays for easy WASM/JS interop.
-* @param {Uint8Array} data
-* @param {any} options
-* @returns {any}
-*/
-export function parse_thermo_raw(data: Uint8Array, options: any): any;
-/**
-* @param {Float64Array} data
-* @param {number} n_samples
-* @param {number} n_features
-* @param {number} n_components
-* @returns {Float64Array}
-*/
-export function pca_project(data: Float64Array, n_samples: number, n_features: number, n_components: number): Float64Array;
-/**
-* @param {number} a
-* @param {number} b
-* @returns {number}
-*/
-export function compute(a: number, b: number): number;
-/**
-* @param {number} a
-* @param {number} b
-* @returns {number}
-*/
-export function add(a: number, b: number): number;
-/**
-* @param {Float64Array} data
-*/
-export function arrust(data: Float64Array): void;
-/**
-* @param {Float64Array} data
-* @param {number} scalar
-*/
-export function add_scalar(data: Float64Array, scalar: number): void;
-/**
-* @param {bigint} n
-* @returns {bigint}
-*/
-export function bench(n: bigint): bigint;
-/**
-* @returns {string}
-*/
-export function sieve(): string;
-/**
-* @param {number} n
-* @returns {Int32Array}
-*/
-export function zeros_matrix(n: number): Int32Array;
-/**
-* Computes 0D persistent homology on a 1D sequence of values (Y values).
-* Supports sublevel (default) and superlevel set filtration.
-* Returns a flat, non-interleaved vector with four contiguous blocks:
-* [births..., deaths..., birth_indices..., death_indices...].
-* @param {Float64Array} data
-* @param {string} mode
-* @returns {Float64Array}
-*/
-export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
-/**
-* Where the SELECTED method wants the low cursor to sit, as a single number.
-*
-* Deliberately returns one f64 and allocates nothing: the shell only needs the
-* threshold, and the previous design had it call the full trim and throw away
-* every kept point but that number - three vectors built, three clones out of
-* wasm, megabytes through postMessage, all discarded.
-*
-* An unknown method name falls back to passthrough (an infinite low bound),
-* so a stale front end still resolves its flow.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {string} method
-* @param {number} k
-* @param {number} window
-* @param {number} threshold
-* @returns {number}
-*/
-export function trim_guess(core: Float64Array, stride: number, method: string, k: number, window: number, threshold: number): number;
-/**
-* Applies the two bounds and returns the surviving points. This is a pure
-* primitive: it knows NOTHING about methods, parameters or guesses. Where the
-* bounds come from is the shell's business (trim_guess, or the user dragging a
-* cursor), which is what keeps the two roles from getting confused.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {number} low_bound
-* @param {number} high_bound
-* @returns {TrimResult}
-*/
-export function trim_apply(core: Float64Array, stride: number, low_bound: number, high_bound: number): TrimResult;
-/**
-* Histogram of the wave values, in the same "binned value / count" shape the
-* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
-* "log" (evenly spaced DECADES, i.e. log10 of the value).
-*
-* A linear histogram of a spectrum spanning five orders of magnitude is
-* useless: every bar piles into the first one and the rest is empty. Binning
-* evenly in log10 gives one bar per decade fraction, which is what makes the
-* distribution readable.
-*
-* In log mode the bar CENTRES are geometric means, so that a log-scaled value
-* axis spaces the bars evenly on screen. Non-positive values have no log10 and
-* are left out of the log histogram; `dropped` reports how many, so the shell
-* can say so instead of silently showing a distribution that does not add up.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {number} bins
-* @param {string} scale
-* @returns {TrimHistogram}
-*/
-export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
-/**
-* @param {Float64Array} data
-* @param {number} n_samples
-* @param {number} n_features
-* @param {number} n_clusters
-* @param {number} sigma
-* @param {number} k_neighbors
-* @returns {Float64Array}
-*/
-export function spectral_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, sigma: number, k_neighbors: number): Float64Array;
-/**
 * Fits a polynomial calibration from reference points.
 *
 * `ref_x` are the measured m/z values (from the spectrum).
@@ -257,6 +134,81 @@ export function calibration_fit_2d(measured_mz: Float64Array, intensity: Float64
 */
 export function calibration_apply_2d(x: Float64Array, y: Float64Array, coeffs: Float64Array, mode: string): Float64Array;
 /**
+* Parse a Thermo .raw file and return centroid peaks for each scan.
+* Returns flat arrays for easy WASM/JS interop.
+* @param {Uint8Array} data
+* @param {any} options
+* @returns {any}
+*/
+export function parse_thermo_raw(data: Uint8Array, options: any): any;
+/**
+* Applies the F-KMD transform to a canonical core.
+*
+* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
+* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
+* without a second reshape.
+*
+* The output y is the DEFECT, and the input y (the intensities) is not carried
+* over: the caller asked for one value per point, and the defect is that value.
+* Intensities stay reachable on the input wave, which the caller still holds.
+* @param {Float64Array} core
+* @param {number} mz
+* @returns {Float64Array}
+*/
+export function fkmd(core: Float64Array, mz: number): Float64Array;
+/**
+* Where the SELECTED method wants the low cursor to sit, as a single number.
+*
+* Deliberately returns one f64 and allocates nothing: the shell only needs the
+* threshold, and the previous design had it call the full trim and throw away
+* every kept point but that number - three vectors built, three clones out of
+* wasm, megabytes through postMessage, all discarded.
+*
+* An unknown method name falls back to passthrough (an infinite low bound),
+* so a stale front end still resolves its flow.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {string} method
+* @param {number} k
+* @param {number} window
+* @param {number} threshold
+* @returns {number}
+*/
+export function trim_guess(core: Float64Array, stride: number, method: string, k: number, window: number, threshold: number): number;
+/**
+* Applies the two bounds and returns the surviving points. This is a pure
+* primitive: it knows NOTHING about methods, parameters or guesses. Where the
+* bounds come from is the shell's business (trim_guess, or the user dragging a
+* cursor), which is what keeps the two roles from getting confused.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} low_bound
+* @param {number} high_bound
+* @returns {TrimResult}
+*/
+export function trim_apply(core: Float64Array, stride: number, low_bound: number, high_bound: number): TrimResult;
+/**
+* Histogram of the wave values, in the same "binned value / count" shape the
+* trimmer frame already draws. `scale` is "linear" (evenly spaced values) or
+* "log" (evenly spaced DECADES, i.e. log10 of the value).
+*
+* A linear histogram of a spectrum spanning five orders of magnitude is
+* useless: every bar piles into the first one and the rest is empty. Binning
+* evenly in log10 gives one bar per decade fraction, which is what makes the
+* distribution readable.
+*
+* In log mode the bar CENTRES are geometric means, so that a log-scaled value
+* axis spaces the bars evenly on screen. Non-positive values have no log10 and
+* are left out of the log histogram; `dropped` reports how many, so the shell
+* can say so instead of silently showing a distribution that does not add up.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {number} bins
+* @param {string} scale
+* @returns {TrimHistogram}
+*/
+export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
+/**
 * Computes one H0 interval per input point. `core` is canonical:
 * [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
 * Superlevel activates points by decreasing Y; sublevel by increasing Y.
@@ -314,6 +266,103 @@ export function classify_persistence_0d(births: Float64Array, deaths: Float64Arr
 */
 export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number, limit: number): Forest;
 /**
+* @param {Uint32Array} compositions
+* @param {number} n_compositions
+* @param {number} k
+* @returns {Float64Array}
+*/
+export function barycentric_project(compositions: Uint32Array, n_compositions: number, k: number): Float64Array;
+/**
+* @param {Float64Array} compositions
+* @param {number} n_compositions
+* @param {number} k
+* @returns {Float64Array}
+*/
+export function barycentric_project_f64(compositions: Float64Array, n_compositions: number, k: number): Float64Array;
+/**
+* Accumulates every pair of peaks into a `nx` x `ny` grid of (slope, intercept),
+* spreading each vote over four neighbours rather than one cell.
+*
+* `defect` is the Kendrick defect (`m - round(m)`), computed by the caller:
+* the kernel does not decide what a defect is, it only uses the number.
+*
+* The output is FLAT and non-interleaved, the layout every kernel in this crate
+* uses: `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
+* pairs_used]`. The four bounds travel with the data because a grid without
+* its domain is a picture of nothing.
+* @param {Float64Array} mass
+* @param {Float64Array} defect
+* @param {Float64Array} intensity
+* @param {number} nx
+* @param {number} ny
+* @param {number} slope_min
+* @param {number} slope_max
+* @param {number} intercept_min
+* @param {number} intercept_max
+* @returns {Float64Array}
+*/
+export function hough_accumulate(mass: Float64Array, defect: Float64Array, intensity: Float64Array, nx: number, ny: number, slope_min: number, slope_max: number, intercept_min: number, intercept_max: number): Float64Array;
+/**
+* Smooths a grid with a kernel whose SHAPE is estimated from the grid itself,
+* independently at every cell: the k nearest occupied neighbours give a local
+* mean and a local covariance, and the vote each neighbour casts is weighted by
+* that elliptical Gaussian rather than by an isotropic one.
+*
+* The anisotropy is the point. A relation that is narrow across the slope axis
+* and wide along the intercept axis is a LINE, and an isotropic kernel smears
+* it into a blob; the covariance recovers the line.
+* @param {Float64Array} grid
+* @param {number} nx
+* @param {number} ny
+* @param {number} neighbours
+* @param {number} bandwidth
+* @returns {Float64Array}
+*/
+export function hough_smooth(grid: Float64Array, nx: number, ny: number, neighbours: number, bandwidth: number): Float64Array;
+/**
+* The whole transform: accumulate the pairs, then smooth with a locally
+* estimated kernel.
+*
+* Returns `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
+* pairs_used]` — the same layout `hough_accumulate` produces, so the caller
+* slices it the same way whichever of the two it calls.
+* @param {Float64Array} mass
+* @param {Float64Array} defect
+* @param {Float64Array} intensity
+* @param {number} nx
+* @param {number} ny
+* @param {number} slope_min
+* @param {number} slope_max
+* @param {number} intercept_min
+* @param {number} intercept_max
+* @param {number} neighbours
+* @param {number} bandwidth
+* @returns {Float64Array}
+*/
+export function hough_transform(mass: Float64Array, defect: Float64Array, intensity: Float64Array, nx: number, ny: number, slope_min: number, slope_max: number, intercept_min: number, intercept_max: number, neighbours: number, bandwidth: number): Float64Array;
+/**
+* The peak list a Hough accumulator needs: masses, their Kendrick defects, and
+* their intensities, sorted by rising mass and stripped of anything unusable.
+*
+* Exposed as its own step because it is a DECISION, not a detail: the caller
+* must be able to say how many peaks it fed in, because "there is no surface"
+* and "the peaks were all rejected" are different failures.
+* @param {Float64Array} core
+* @param {number} keep
+* @returns {Float64Array}
+*/
+export function hough_prepare(core: Float64Array, keep: number): Float64Array;
+/**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_clusters
+* @param {number} sigma
+* @param {number} k_neighbors
+* @returns {Float64Array}
+*/
+export function spectral_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, sigma: number, k_neighbors: number): Float64Array;
+/**
 * A z READ FROM THE DATA, which is a different thing from the 3σ convention.
 *
 * The MAD is a spread; the cut has to be somewhere. When the widths form one
@@ -355,34 +404,13 @@ export function anti_radio_guess_z(core: Float64Array, stride: number, points_in
 */
 export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
 /**
-* Applies the F-KMD transform to a canonical core.
-*
-* Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
-* input came in, so the shell can hand it straight to `Wave.fromCoordinates`
-* without a second reshape.
-*
-* The output y is the DEFECT, and the input y (the intensities) is not carried
-* over: the caller asked for one value per point, and the defect is that value.
-* Intensities stay reachable on the input wave, which the caller still holds.
-* @param {Float64Array} core
-* @param {number} mz
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_components
 * @returns {Float64Array}
 */
-export function fkmd(core: Float64Array, mz: number): Float64Array;
-/**
-* @param {Uint32Array} compositions
-* @param {number} n_compositions
-* @param {number} k
-* @returns {Float64Array}
-*/
-export function barycentric_project(compositions: Uint32Array, n_compositions: number, k: number): Float64Array;
-/**
-* @param {Float64Array} compositions
-* @param {number} n_compositions
-* @param {number} k
-* @returns {Float64Array}
-*/
-export function barycentric_project_f64(compositions: Float64Array, n_compositions: number, k: number): Float64Array;
+export function pca_project(data: Float64Array, n_samples: number, n_features: number, n_components: number): Float64Array;
 /**
 * @param {Float64Array} data
 * @param {number} n_samples
@@ -393,6 +421,51 @@ export function barycentric_project_f64(compositions: Float64Array, n_compositio
 * @returns {Float64Array}
 */
 export function kmeans_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, max_iter: number, seed: bigint): Float64Array;
+/**
+* @param {number} a
+* @param {number} b
+* @returns {number}
+*/
+export function compute(a: number, b: number): number;
+/**
+* @param {number} a
+* @param {number} b
+* @returns {number}
+*/
+export function add(a: number, b: number): number;
+/**
+* @param {Float64Array} data
+*/
+export function arrust(data: Float64Array): void;
+/**
+* @param {Float64Array} data
+* @param {number} scalar
+*/
+export function add_scalar(data: Float64Array, scalar: number): void;
+/**
+* @param {bigint} n
+* @returns {bigint}
+*/
+export function bench(n: bigint): bigint;
+/**
+* @returns {string}
+*/
+export function sieve(): string;
+/**
+* @param {number} n
+* @returns {Int32Array}
+*/
+export function zeros_matrix(n: number): Int32Array;
+/**
+* Computes 0D persistent homology on a 1D sequence of values (Y values).
+* Supports sublevel (default) and superlevel set filtration.
+* Returns a flat, non-interleaved vector with four contiguous blocks:
+* [births..., deaths..., birth_indices..., death_indices...].
+* @param {Float64Array} data
+* @param {string} mode
+* @returns {Float64Array}
+*/
+export function persistent_homology_0d(data: Float64Array, mode: string): Float64Array;
 /**
 */
 export class CalibrationFitResult {
@@ -673,16 +746,15 @@ export interface InitOutput {
   readonly reading_counts: (a: number, b: number) => void;
   readonly crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
   readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+  readonly __wbg_calibrationfitresult_free: (a: number) => void;
+  readonly calibrationfitresult_coeffs: (a: number, b: number) => void;
+  readonly calibrationfitresult_rmse: (a: number) => number;
+  readonly calibration_fit: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly calibration_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+  readonly calibration_fit_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+  readonly calibration_apply_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
   readonly parse_thermo_raw: (a: number, b: number, c: number, d: number) => void;
-  readonly pca_project: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
-  readonly compute: (a: number, b: number) => number;
-  readonly add: (a: number, b: number) => number;
-  readonly arrust: (a: number, b: number, c: number) => void;
-  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
-  readonly bench: (a: number) => number;
-  readonly sieve: (a: number) => void;
-  readonly zeros_matrix: (a: number, b: number) => void;
-  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
   readonly __wbg_trimresult_free: (a: number) => void;
   readonly trimresult_points_x: (a: number, b: number) => void;
   readonly trimresult_points_y: (a: number, b: number) => void;
@@ -700,14 +772,6 @@ export interface InitOutput {
   readonly trimresult_low_bound: (a: number) => number;
   readonly trimresult_high_bound: (a: number) => number;
   readonly trimresult_kept_count: (a: number) => number;
-  readonly spectral_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
-  readonly __wbg_calibrationfitresult_free: (a: number) => void;
-  readonly calibrationfitresult_coeffs: (a: number, b: number) => void;
-  readonly calibrationfitresult_rmse: (a: number) => number;
-  readonly calibration_fit: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
-  readonly calibration_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
-  readonly calibration_fit_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
-  readonly calibration_apply_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
   readonly __wbg_persistenceanalysis_free: (a: number) => void;
   readonly persistenceanalysis_births: (a: number, b: number) => void;
   readonly persistenceanalysis_deaths: (a: number, b: number) => void;
@@ -750,6 +814,13 @@ export interface InitOutput {
   readonly forest_edge_count: (a: number) => number;
   readonly forest_component_count: (a: number) => number;
   readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
+  readonly barycentric_project: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly barycentric_project_f64: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly hough_accumulate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
+  readonly hough_smooth: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+  readonly hough_transform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => void;
+  readonly hough_prepare: (a: number, b: number, c: number, d: number) => void;
+  readonly spectral_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly __wbg_radiodecision_free: (a: number) => void;
   readonly radiodecision_points_x: (a: number, b: number) => void;
   readonly radiodecision_points_y: (a: number, b: number) => void;
@@ -761,10 +832,16 @@ export interface InitOutput {
   readonly radiodecision_threshold_ppm: (a: number) => number;
   readonly anti_radio_guess_z: (a: number, b: number, c: number, d: number, e: number) => number;
   readonly anti_radio_filter: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
-  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
-  readonly barycentric_project: (a: number, b: number, c: number, d: number, e: number) => void;
-  readonly barycentric_project_f64: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly pca_project: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly kmeans_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+  readonly compute: (a: number, b: number) => number;
+  readonly add: (a: number, b: number) => number;
+  readonly arrust: (a: number, b: number, c: number) => void;
+  readonly add_scalar: (a: number, b: number, c: number, d: number) => void;
+  readonly bench: (a: number) => number;
+  readonly sieve: (a: number) => void;
+  readonly zeros_matrix: (a: number, b: number) => void;
+  readonly persistent_homology_0d: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;

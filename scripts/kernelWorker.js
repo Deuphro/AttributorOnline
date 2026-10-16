@@ -243,7 +243,7 @@ const kernels={
         const keep=Math.max(0,Math.trunc(params?.keep??0))
         const neighbours=Math.max(2,Math.trunc(params?.neighbours??12))
         const bandwidth=Number.isFinite(params?.bandwidth)?params.bandwidth:2
-        const bounds=params?.bounds??[-1,1,-6,6]
+        const bounds=params?.bounds??[-0.001,0.001,-0.2,0.2]
         const [slopeMin,slopeMax,interceptMin,interceptMax]=bounds
         const flat=Float64Array.from(core??[])
         try{

@@ -997,9 +997,23 @@ export class Plot3DWebGL{
 
     /* --- persistence ------------------------------------------------- */
     serializeState(){
+        /* VECTORS GO OUT AS ARRAYS. getAngles() hands back live THREE.Vector3
+           instances; JSON turns their own fields into {x,y,z} objects, and a
+           reader that spreads such an object dies with "not iterable" — taking
+           the whole session import with it. The persisted contract is therefore
+           [x,y,z], written here, once. */
+        const angles=this.controls?this.controls.getAngles():null
+        const array=(value)=>{
+            if(value==null) return null
+            if(Array.isArray(value)) return [...value]
+            if(typeof value.toArray==="function") return value.toArray()
+            const {x,y,z}=value
+            return Number.isFinite(x)&&Number.isFinite(y)&&Number.isFinite(z)?[x,y,z]:null
+        }
         return {
             axisLabels:{...this.axisLabels},
-            camera:this.controls?this.controls.getAngles():null,
+            camera:angles?{theta:angles.theta,phi:angles.phi,distance:angles.distance,
+                target:array(angles.target),pan:array(angles.pan)}:null,
             traces:this.traces.map(trace=>({
                 kind:trace.constructor.name,
                 id:trace.id,
@@ -1014,15 +1028,28 @@ export class Plot3DWebGL{
             this.axisLabels={...this.axisLabels,...state.axisLabels}
         }
         if(state.camera&&this.controls){
-            //a serialized camera comes back as a plain object: the vectors in
-            //it are not Vector3 any more
+            /* A SERIALIZED CAMERA COMES BACK AS A PLAIN OBJECT: the vectors in
+               it are not Vector3 any more. Depending on the path they arrive as
+               [x,y,z], as {x,y,z} (JSON of a live Vector3's own fields), or as
+               a still-live Vector3 — and spreading the object form threw
+               "camera.target is not iterable" from inside importSession, which
+               killed the WHOLE session restore rather than one camera. Each
+               vector is therefore COERCED, never spread blindly. */
+            const vector=(value)=>{
+                if(value==null) return null
+                if(Array.isArray(value)) return new THREE.Vector3(...value)
+                const {x,y,z}=value
+                return Number.isFinite(x)&&Number.isFinite(y)&&Number.isFinite(z)
+                    ?new THREE.Vector3(x,y,z)
+                    :null
+            }
             const camera=state.camera
             this.controls.setAngles({
                 theta:camera.theta,
                 phi:camera.phi,
                 distance:camera.distance,
-                target:camera.target?new THREE.Vector3(...camera.target):null,
-                pan:camera.pan?new THREE.Vector3(...camera.pan):null
+                target:vector(camera.target),
+                pan:vector(camera.pan)
             })
         }
         this._signature=null

@@ -37,12 +37,18 @@ import {computePool} from "../workerPool.js"
    ===================================================================== */
 
 /* THE (SLOPE, INTERCEPT) DOMAIN, kept in one place because three things must
-   agree on it: what the node asks the kernel for, what the axis labels claim —
-   the wave's x,y are NORMALISED: x IS the slope (its span is [-1,1] anyway),
-   y is intercept/6 — and what the metadata of the output wave records. This is
-   also the kernel default (worker: bounds ?? [-1,1,-6,6]), restated so the
-   node owns what it asks for rather than inheriting it. */
-const HOUGH_BOUNDS=[-1,1,-6,6]
+   agree on it: what the node asks the kernel for, what the axis labels claim,
+   and what the metadata of the output wave records. The wave's x,y are
+   NORMALISED onto [-1,1] — each axis linearly mapped from this box — and the
+   box travels with the wave, so the mapping stays reversible.
+
+   The domain is deliberately NARROW: slopes within ±0.001, intercepts within
+   ±0.2. A pair whose line falls outside votes for NOTHING (the kernel drops
+   it, and the readout's pair count says how many survived), so this box IS
+   the question the surface answers. It doubles as the kernel default
+   (worker: bounds ?? [-0.001,0.001,-0.2,0.2]), restated here so the node owns
+   what it asks for rather than inheriting it. */
+const HOUGH_BOUNDS=[-0.001,0.001,-0.2,0.2]
 
 export class HoughTransformNode extends NodeWithRightAccordionGraph{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -380,9 +386,15 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(this.mapInput) this.mapInput.value=this.parameters.colormap
         if(this.scatterInput) this.scatterInput.checked=this.parameters.showScatter
         this.startResolve().then(()=>{
-            //the camera is restored AFTER the traces: framing needs the box,
-            //and the box only exists once there is something in the scene
-            this.graph?.restoreState?.(state.plot)
+            /* The camera is restored AFTER the traces: framing needs the box,
+               and the box only exists once there is something in the scene.
+               It is BEST-EFFORT: a camera that refuses to restore must not
+               take the session import down with it (the rejection would abort
+               importSession, leaving every later node uncreated) nor skip the
+               children's resolve. */
+            try{ this.graph?.restoreState?.(state.plot) }catch(err){
+                console.warn(`[${this.title}] camera restore skipped:`,err)
+            }
             this.resolveChildren()
         })
     }
