@@ -6,7 +6,7 @@
    regroupe les formules: ce n'est pas écrit, donc ce n'est pas testé.
    ------------------------------------------------------------------------- */
 import {readFileSync} from "fs"
-import {Element,Formula} from "./chemistry.js"
+import {Element,Formula,stepSignature,elementSignatures,matchSignatures,scorePairs,scoreCutoffs} from "./chemistry.js"
 import {prettyNotation} from "./nodes/formulaCollectionHelpers.js"
 const TABLE=Element.load(JSON.parse(
     readFileSync(new URL("../data/elements.json",import.meta.url),"utf8")))
@@ -987,6 +987,266 @@ test("une masse négative devient sa conjugée positive et se relit",()=>{
     eq(String(Formula.parse("CH4[H+]",TABLE)),"CH4[H+]",
         "an adduct writes as itself, with no phantom atoms in front of it")
 })
+/* --- la signature de pas, la chimie du Hough ------------------------------
+   Ces tests lisent leurs attentes DANS LA TABLE plutôt que de les recopier,
+   sauf pour trois éléments dont la masse est citée: sans elles, la suite ne
+   prouverait qu'une formule s'auto-cohérence. */
+const signatureOf=(symbol,charge=1)=>
+    stepSignature(TABLE.find(symbol).monoisotopicMass,charge)
+
+test("la signature de pas est la pente exacte qu'un atome produirait",()=>{
+    /* A_H = 1.00782503223 : la partie entière est 1 et la fractionnaire
+       0.00782503223, donc la pente vaut 0.00782503223 / 1.00782503223. */
+    const hydrogen=stepSignature(TABLE.find("H").isotope(1).mass,1)
+    close(hydrogen.k,1,0,"l'hydrogène franchit un seul entier")
+    close(hydrogen.epsilon,0.00782503223,1e-11,"son epsilon est le défaut de masse")
+    close(hydrogen.slope,0.00782503223/1.00782503223,1e-15,
+        "la pente est epsilon sur la masse par charge")
+    /* ET C'EST ÇA QUI LA REND INVERSIBLE: A/z = k/(1-s). Une égalité, donc une
+       comparaison — pas une optimisation. */
+    for(const symbol of ["C","N","O","Si","S","P","Cl","K"]){
+        const signature=signatureOf(symbol)
+        close(signature.slope,signature.epsilon/(signature.k+signature.epsilon),1e-18,
+            `${symbol}: s = eps/(k+eps)`)
+        const recovered=signature.k/(1-signature.slope)
+        close(recovered,TABLE.find(symbol).monoisotopicMass,1e-9,
+            `${symbol}: A = k/(1-s) doit retrouver la masse NIST`)
+    }
+})
+
+test("l'hydrogène est hors de la fenêtre du Hough, et c'est correct",()=>{
+    /* s(H) = 7.8e-3, huit fois la borne ±1e-3. Un pas d'hydrogène franchit sept
+       entiers: ce n'est pas une petite pente, c'est une pente qui n'appartient
+       pas à cet espace. Le dire ici empêche un jour de "corriger" la formule
+       pour faire entrer H dans la fenêtre. */
+    const hydrogen=stepSignature(TABLE.find("H").isotope(1).mass,1)
+    ok(Math.abs(hydrogen.slope)>1e-3,
+        `l'hydrogène doit rester hors de la fenêtre, s = ${hydrogen.slope}`)
+    const carbon=stepSignature(TABLE.find("C").monoisotopicMass,1)
+    close(carbon.slope,0,1e-18,"le carbone est l'élément à pente nulle : 12.000000")
+})
+
+test("les six éléments tassés tiennent dans cinq colonnes",()=>{
+    /* La contrainte de la méthode, énoncée pour qu'on ne la découvre pas sur un
+       plateau gris. Sur une fenêtre de 2e-3 avec 64 colonnes, une colonne vaut
+       3.1e-5, et P/S/Cl/Ar/K/Si s'étalent sur 1.6e-4. */
+    const window=2e-3
+    const columns=64
+    const perColumn=window/(columns-1)
+    const tassed=["P","S","Cl","Ar","K","Si"].map(s=>stepSignature(TABLE.find(s).monoisotopicMass,1).slope)
+    const spread=Math.max(...tassed)-Math.min(...tassed)
+    ok(spread/perColumn<8,
+        `ces six éléments tiennent en ${(spread/perColumn).toFixed(1)} colonnes, pas en une`)
+    /* et la fenêtre est assez large pour les voir tous */
+    for(const slope of tassed){
+        ok(Math.abs(slope)<1e-3,`${slope} doit rester dans la fenêtre ±1e-3`)
+    }
+})
+
+test("un pas qui ne franchit aucun entier n'a pas de signature",()=>{
+    eq(stepSignature(0.4,1),null,"sous la moitié d'une unité, la pente vaut 1: ce n'est pas une signature")
+    eq(stepSignature(12,0),null,"une charge nulle est refusée")
+    eq(stepSignature("x",1),null,"une masse non finie est refusée")
+})
+
+test("la table des signatures est triée par pente, et par abondance d'abord",()=>{
+    const signatures=elementSignatures(TABLE,{charges:[1,2,3]})
+    ok(signatures.length>300,`118 éléments x 3 charges donnent plus de 300 entrées, obtenu ${signatures.length}`)
+    for(let i=1;i<signatures.length;i++){
+        ok(signatures[i].slope>=signatures[i-1].slope,"la liste doit être triée par pente")
+    }
+    /* ET PAS D'ISOTOPE RARE PAR DEFAUT: une signature d'un isotope à 0.2 %
+       sert à trouver un pic qui n'est pas dans le spectre. "Le plus abondant",
+       et pas "au-dessus d'un seuil" — Cl est à 75.8 % et Zn à 49.2 %, et un
+       plancher les effacerait tous les deux. */
+    const single=elementSignatures(TABLE,{charges:[1],isotopeCount:1})
+    eq(single.length,TABLE.elements.length,"un isotope par élément")
+    for(const signature of single){
+        eq(signature.A,signature.element.mostProbableA,
+            `${signature.symbol} doit prendre son isotope le plus probable`)
+    }
+    const both=elementSignatures(TABLE,{charges:[1],isotopeCount:2})
+    ok(both.length>single.length,"deux isotopes par élément en donnent plus")
+    /* le plus probable, pas le plus léger: c'est le même piège que partout else */
+    const iron=elementSignatures(TABLE,{charges:[1],isotopeCount:1})
+        .find(s=>s.symbol==="Fe")
+    eq(iron.A,TABLE.find("Fe").mostProbableA,"Fe prend son isotope le plus probable, pas le plus léger")
+})
+
+test("le matchmaking rapporte la distance, et les deux extrêmes de la fenêtre",()=>{
+    const signatures=elementSignatures(TABLE,{charges:[1]})
+    const nitrogen=stepSignature(TABLE.find("N").monoisotopicMass,1)
+    const hits=matchSignatures(signatures,nitrogen.slope,1e-5)
+    ok(hits.length>0,"l'azote doit se trouver lui-même")
+    eq(hits[0].symbol,"N","et il doit être le plus proche de sa propre pente")
+    close(hits[0].delta,0,1e-15,"sa distance est nulle")
+    /* dans la fenêtre large du Hough, plusieurs éléments répondent à une
+       même pente: c'est le but, et c'est aussi pourquoi il faut une grille
+       fine pour les départager */
+    const wide=matchSignatures(signatures,nitrogen.slope,1e-3)
+    ok(wide.length>1,`plusieurs éléments doivent répondre dans ±1e-3, obtenu ${wide.length}`)
+    for(let i=1;i<wide.length;i++){
+        ok(Math.abs(wide[i].delta)>=Math.abs(wide[i-1].delta),
+            "les résultats doivent être triés par distance croissante")
+    }
+    eq(matchSignatures(signatures,NaN,1e-3).length,0,"une pente non finie ne trouve rien")
+})
+
+/* --- le score par paires — la détection, depuis le plan du noyau ---------
+   Chaque paire porte (pente, dm) ensemble : c'est le lien que l'histogramme
+   global avait perdu, et que le produit cartésien aurait dû deviner. */
+test("le score lit le lien, pas deux listes séparées",()=>{
+    /* DEUX PAIRES, MÊME PENTE, DEUX PAS. Dans la grille elles tombent dans la
+       même case et sont indistinguables ; dans l'histogramme global elles sont
+       deux bins sans dire quelle pente chacune a votée. Ici le lien voyage
+       avec la paire, donc le lecteur n'a rien à recoller. */
+    const nitrogen=TABLE.find("N").monoisotopicMass
+    const nSlope=stepSignature(nitrogen,1).slope
+    const carbon=TABLE.find("C").monoisotopicMass
+    const cSlope=stepSignature(carbon,1).slope
+    const pairs=new Float64Array([
+        nSlope,2*nitrogen,
+        cSlope,3*carbon,
+    ])
+    const rows=scorePairs(TABLE,pairs,{charges:[1]})
+    const hitN=rows.find(r=>r.symbol==="N")
+    /* N est valence 3 (impaire) : x1 et pairs passent — le x2 vote. C est
+       valence 4 (paire) : tout multiple passe, x3 vote aussi. */
+    ok(hitN&&hitN.votes===1,"l'azote reçoit sa paire")
+    eq(hitN.topMultiple,2,"et le multiple tombe par round(), sans seuil")
+    ok(rows.find(r=>r.symbol==="C"),"le carbone x3 vote : valence paire, tout passe")
+})
+
+test("valence impaire : x1 et pairs votent, impairs rejetés ; paire : tout passe",()=>{
+    /* LA RÈGLE CHIMIQUE DES MULTIPLES. C (valence 4, paire) : x1→x4 votent
+       tous — c'est là que l'explosion quadratique survit. N (valence 3,
+       impaire) : x1 et x2 votent, x3 est rejeté. He (valence null) est
+       rejeté, même à x1. */
+    const carbon=TABLE.find("C").monoisotopicMass
+    const cSlope=stepSignature(carbon,1).slope
+    const pairs=[]
+    for(let n=1;n<=4;n++){ pairs.push(cSlope,n*carbon) }
+    const rows=scorePairs(TABLE,new Float64Array(pairs),{charges:[1]})
+    const hit=rows.find(r=>r.symbol==="C")
+    ok(hit,"le carbone vote encore")
+    eq(hit.votes,4,"et tous ses multiples : x1, x2, x3, x4")
+    const nitrogen=TABLE.find("N").monoisotopicMass
+    const nSlope=stepSignature(nitrogen,1).slope
+    const nPairs=[]
+    for(let n=1;n<=4;n++){ nPairs.push(nSlope,n*nitrogen) }
+    const nRows=scorePairs(TABLE,new Float64Array(nPairs),{charges:[1]})
+    const nHit=nRows.find(r=>r.symbol==="N")
+    ok(nHit,"l'azote vote encore")
+    eq(nHit.votes,3,"mais x1, x2, x4 seulement : le x3 impair est rejeté")
+})
+
+test("CH2 sur la pente N vote FAIBLE — le poids tranche, pas un seuil",()=>{
+    /* CH2 (14.0157) sur la pente N : 14/14 = 1, ENTIER — donc ça vote, avec
+       un poids de 1/(14×0.0126) ≈ 5.7, quand un vrai pas N exact pèse 1e12.
+       Pas de refus, pas de tolérance : quelques votes très bons battent des
+       votes médiocres, et le tri sur le score fait le reste. Les groupes
+       (CH2, H2O, …) viendront plus tard, chaque chose en son temps. */
+    const ch2=14.0157
+    const nSlope=stepSignature(TABLE.find("N").monoisotopicMass,1).slope
+    const rows=scorePairs(TABLE,new Float64Array([nSlope,ch2]),{charges:[1]})
+    const hit=rows.find(r=>r.symbol==="N")
+    ok(hit&&hit.votes===1,"l'entier tombe juste : ça vote")
+    ok(hit.score<1e4,`mais le poids reste modeste, obtenu ${hit.score}`)
+    const exact=scorePairs(TABLE,
+        new Float64Array([nSlope,TABLE.find("N").monoisotopicMass]),{charges:[1]})
+        .find(r=>r.symbol==="N")
+    ok(exact.score>hit.score*1e6,
+        "et un vrai pas N exact pèse des ordres de grandeur au-dessus")
+})
+
+test("à résidu égal, un pas court bat un multiple lointain",()=>{
+    /* LE POIDS EST 1/(dm·résidu) : le doute est le moins important à basse
+       masse. Un pas N à 28 Da avec un résidu de 5e-4 (1/(28×5e-4) ≈ 71) bat
+       un pas O lointain au même résidu — le premier est le dimère N₂
+       (valence 3, x2 pair, vote), le second est O x3 (valence 2, paire :
+       il vote aussi, mais plus lourd donc plus faible). He ne sert plus
+       d'exemple : valence null, rejeté. */
+    const oxygen=TABLE.find("O").monoisotopicMass
+    const oSlope=stepSignature(oxygen,1).slope
+    const nitrogen=TABLE.find("N").monoisotopicMass
+    const nSlope=stepSignature(nitrogen,1).slope
+    const residue=5e-4
+    const pairs=new Float64Array([oSlope,3*oxygen+residue,nSlope,nitrogen+residue])
+    const rows=scorePairs(TABLE,pairs,{charges:[1]})
+    const hitN=rows.find(r=>r.symbol==="N")
+    ok(hitN,"l'azote vote, l'entier tombe juste")
+    ok(hitN.score>rows.find(r=>r.symbol==="O").score,"le pas court bat le multiple lointain")
+    ok(hitN.score>0,"et son score est non nul")
+})
+
+test("un pas exact au calibrateur près vote, même loin de l'entier nominal",()=>{
+    /* Le critère est le reste, pas l'arrondi : 2×N exact vote. */
+    const nitrogen=TABLE.find("N").monoisotopicMass
+    const nSlope=stepSignature(nitrogen,1).slope
+    const rows=scorePairs(TABLE,new Float64Array([nSlope,2*nitrogen]),{charges:[1]})
+    const hit=rows.find(r=>r.symbol==="N")
+    ok(hit&&hit.votes===1,"le multiple exact vote")
+    eq(hit.topMultiple,2,"et le multiple est 2")
+})
+
+test("le classement est le score, pas le compte",()=>{
+    /* QUELQUES VOTES TRÈS BONS BATTENT DES VOTES MÉDIOCRES. Une paire N
+       exacte (résidu ~0, poids 1e12) bat six paires H à 0.001 Da de leur pas
+       (résidu 1e-3, poids ~1e3 chacune) : le tri est la somme des poids, pas
+       le compte. H est valence 1, impaire : x1 vote — les six passent. */
+    const hydrogen=TABLE.find("H").isotope(1).mass
+    const hSlope=stepSignature(hydrogen,1).slope
+    const nitrogen=TABLE.find("N").monoisotopicMass
+    const nSlope=stepSignature(nitrogen,1).slope
+    const pairs=[nSlope,2*nitrogen]
+    /* +0.001 Da sur chaque pas H : le résidu fait le poids, pas la pente —
+       le poids ne lit que dm. */
+    for(let n=0;n<6;n++){ pairs.push(hSlope,hydrogen+0.001) }
+    const rows=scorePairs(TABLE,new Float64Array(pairs),{charges:[1]})
+    eq(rows[0].symbol,"N","un vote parfait bat six votes médiocres")
+    eq(rows[0].votes,1,"le compte est rendu tel quel")
+    ok(rows[0].score>rows.find(r=>r.symbol==="H").score,
+        "parce que le score, pas le compte, fait le tri")
+})
+
+test("la valence null est rejetée, pas capée",()=>{
+    /* He, Ne, Ar et les lourds sans convention ne votent JAMAIS — même à x1.
+       Un pas He exact doit rendre zéro vote He. */
+    const he=TABLE.find("He").isotopes.find(i=>i.A===TABLE.find("He").mostProbableA).mass
+    const heSlope=stepSignature(he,1).slope
+    const rows=scorePairs(TABLE,new Float64Array([heSlope,he]),{charges:[1]})
+    ok(!rows.find(r=>r.symbol==="He"),"l'hélium exact ne vote pas : valence null")
+})
+
+test("le score refuse plutôt que de deviner",()=>{
+    eq(scorePairs(TABLE,new Float64Array(0),{charges:[1]}).length,0,"un plan vide ne rend rien")
+    eq(scorePairs(TABLE,new Float64Array([NaN,12]),{charges:[1]}).length,0,"une pente non finie ne vote pas")
+    eq(scorePairs(TABLE,new Float64Array([0,-3]),{charges:[1]}).length,0,"un écart négatif ne vote pas")
+})
+
+test("les seuils k·MAD séparent la falaise du fond",()=>{
+    /* LE GRAPHE DIT « EFFONDREMENT », LE TEST DIT OÙ. Scores sur des ordres
+       de grandeur (1e12 exact contre 80 approximatif) : médiane et MAD en
+       log10, sinon les deux premiers dominent tout et les trois lignes se
+       marchent dessus. */
+    const cutoffs=scoreCutoffs([{score:1e12},{score:1e11},{score:80},{score:60},{score:50}],{ks:[1,2,4]})
+    ok(cutoffs,"des scores rendent des seuils")
+    /* médiane des logs triés [1.7, 1.78, 1.9, 11, 12] : 1.9 = log10(80). */
+    close(cutoffs.medLog,1.9030899869919435,1e-9,"la médiane est en log10")
+    ok(cutoffs.mad>0,"la MAD est strictement positive sur un mélange")
+    eq(cutoffs.lines.length,3,"trois lignes : k=1, 2, 4")
+    for(let i=1;i<cutoffs.lines.length;i++){
+        ok(cutoffs.lines[i].log>cutoffs.lines[i-1].log,"les lignes montent avec k")
+    }
+    /* la falaise dépasse k=4, le fond reste en dessous de k=1 : c'est ce que
+       le graphe montre, l'effondrement entre les deux. */
+    ok(12>cutoffs.lines[2].log,"1e12 est au-dessus de k=4 : la falaise")
+    ok(Math.log10(50)<cutoffs.lines[0].log,"50 est sous k=1 : le fond")
+    /* ET LE VIDE NE REND RIEN : un graphe sans scores n'a pas de lignes. */
+    eq(scoreCutoffs([],{ks:[1,2,4]}),null,"pas de scores, pas de seuils")
+    eq(scoreCutoffs([{score:0},{score:-3}],{ks:[1]}),null,"pas de scores positifs, pas de seuils")
+})
+
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if(failures.length>0) process.exitCode=1
 

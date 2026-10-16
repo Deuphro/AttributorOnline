@@ -37,14 +37,24 @@ const ok=(value,msg)=>{ if(!value) throw new Error(msg??"expected a truthy value
    alone — as a first version of this file did — produces functions whose
    parameters do not exist, and every call fails with "mass is not defined":
    an error that names a variable rather than a line. */
-function jsFunction(name,parameters){
+function jsFunction(name,parameters,scope={}){
     /* `parameters` is ONE comma-joined string on purpose. `new Function` treats
        every argument but the last as a single parameter NAME, so passing
        "mass,defect,intensity" as its own argument makes a parameter literally
        called that — and the body then dies on `mass.length` with "cannot read
        properties of undefined", an error that names neither the line nor the
-       cause. */
-    return new Function(parameters,methodBody(worker,name))
+       cause.
+
+       `scope` binds the MODULE CONSTANTS the body reads. They are bound with a
+       CLOSURE and not as parameters, because `new Function` would take them as
+       the first parameters and shift every real argument one place along —
+       `mass` would receive the bin width, and the body would quietly compute on
+       nonsense. The values come from parsing the worker's own declarations, so
+       the harness cannot disagree with the file about them. */
+    const names=Object.keys(scope)
+    if(!names.length) return new Function(parameters,methodBody(worker,name))
+    return new Function(...names,
+        `return ((${parameters})=>{${methodBody(worker,name)}})`)(...Object.values(scope))
 }
 const prepareJS=jsFunction("houghPrepareJS","core,keep")
 const accumulateJS=jsFunction("houghAccumulateJS",
@@ -68,7 +78,7 @@ const smoothJS=jsFunction("houghSmoothJS","grid,nx,ny,neighbours,bandwidth")
    place along — `mass` would receive `nx`. The body is wrapped in an arrow that
    closes over `accumulate` and `smooth`, so the signature stays the file's. */
 const transformJS=new Function(
-    "accumulate,smooth",
+    "accumulate","smooth",
     /* The arrow gets the file's own signature, and the body follows a COMMA:
        without it this is two statements and a SyntaxError on the first one. */
     `return ((mass,defect,intensity,nx,ny,slopeMin,slopeMax,interceptMin,interceptMax,neighbours,bandwidth)=>{${methodBody(worker,"houghTransformJS")
@@ -144,7 +154,7 @@ test("every pair votes, weighted by the cumulated intensity of its two points",(
     const out=accumulateJS(new Float64Array(mass),new Float64Array(defect),
         new Float64Array(intensity),16,16,-1,1,-20,20)
     const cells=256
-    ok(out.length===cells+5,`expected ${cells+5}, got ${out.length}`)
+    ok(out.length===cells+5+2*15+1,`expected ${cells+5+2*15+1}, got ${out.length}`)
     ok(out[cells+4]===15,`6 peaks give 15 pairs, got ${out[cells+4]}`)
     let total=0
     for(let i=0;i<cells;i++) total+=out[i]
@@ -152,6 +162,27 @@ test("every pair votes, weighted by the cumulated intensity of its two points",(
     for(let i=0;i<6;i++) for(let j=i+1;j<6;j++) expected+=intensity[i]+intensity[j]
     ok(Math.abs(total-expected)<1e-6,
         `the grid must conserve the total weight ${expected}, got ${total}`)
+    /* ET LE PLAN CONTIENT UNE PREUVE PAR PAIRE, avec le compte du noyau. A
+       plane that lost or duplicated a record would still leave the grid
+       perfectly correct — the surface would look right and the identification
+       would be quietly wrong, which is the failure mode that matters most here. */
+    ok(out[out.length-1]===15,`le plan annonce 15 paires, obtenu ${out[out.length-1]}`)
+    ok(out.length===cells+5+2*out[out.length-1]+1,"et la queue lui correspond")
+    /* ET CHAQUE PREUVE PORTE SA PENTE ET SON ÉCART DE MASSE. The two are read
+       together by the reader, and a plane that carried only one of them would
+       force the reader to re-join them from elsewhere — which is the guess the
+       whole plane exists to remove. */
+    const records=out.slice(cells+5,out.length-1)
+    ok(records.length===30,`15 paires x 2 composantes, obtenu ${records.length}`)
+    const slopes=records.filter((_,i)=>i%2===0)
+    const gaps=records.filter((_,i)=>i%2===1)
+    ok(gaps.every(g=>g>0),`tout écart de masse est positif: ${gaps.slice(0,3)}`)
+    /* the line() helper puts peaks 1 Da apart, so every gap is a small integer
+       and every slope is the same: one relation, fifteen pairs, and the count is
+       the evidence a coincidence cannot produce */
+    ok(new Set(slopes.map(s=>s.toFixed(6))).size===1,
+        "une seule relation, une seule pente")
+    ok(gaps.every(g=>Math.abs(g-Math.round(g))<1e-9),`des écarts entiers: ${gaps.slice(0,3)}`)
 })
 
 test("a vote is SPREAD over its neighbours, not dropped in one cell",()=>{
@@ -214,15 +245,30 @@ test("smoothing an empty grid changes nothing",()=>{
     for(const v of out) ok(v===0,"an empty grid stays empty")
 })
 
-test("the transform returns the grid, then the domain, then the count",()=>{
+test("the transform returns the grid, then the domain, the count, then the pairs",()=>{
+    /* L'ORDRE EST LE CONTRAT. The bounds and the pair count sit at fixed offsets
+       that the node and the tests read by index; the plane is APPENDED behind
+       them precisely so that adding it moved none of those reads. */
     const {mass,defect,intensity}=line(20,0.6,-12)
     const out=transformJS(new Float64Array(mass),new Float64Array(defect),
         new Float64Array(intensity),48,40,-1,1,-60,60,8,3)
     const cells=48*40
-    ok(out.length===cells+5,`expected ${cells+5}, got ${out.length}`)
+    ok(out.length===cells+5+2*190+1,`expected ${cells+5+2*190+1}, got ${out.length}`)
     ok(out[cells]===-1&&out[cells+1]===1,"slope bounds")
     ok(out[cells+2]===-60&&out[cells+3]===60,"intercept bounds")
     ok(out[cells+4]===190,`20 peaks give 190 pairs, got ${out[cells+4]}`)
+    ok(out[out.length-1]===190,"et le plan en annonce 190")
+    /* LE PLAN SURVIT AU LISSAGE, et il le doit par COPIE: smoothing moves a peak
+       between cells, so a gap read off the smoothed grid would be the gap of a
+       blurred relation. A zeroed plane here would mean the tail was rebuilt. */
+    const records=out.slice(cells+5,out.length-1)
+    ok(records.length===380,`190 paires x 2, obtenu ${records.length}`)
+    const gaps=records.filter((_,i)=>i%2===1)
+    ok(gaps.length===190&&gaps.every(g=>g>0),"chaque preuve porte un écart positif")
+    /* l(20) pose 20 pics de 100 a 119 par pas de 1 : 190 couples, tous a un pas
+       entier, tous sur la meme relation. C'est ce que le score doit pouvoir
+       compter — une coïncidence n'en produit pas 190. */
+    ok(gaps.every(g=>Math.abs(g-Math.round(g))<1e-9),`des écarts entiers: ${gaps.slice(0,3)}`)
 })
 
 test("the transform hands back a full grid when smoothing is impossible",()=>{
@@ -231,7 +277,14 @@ test("the transform hands back a full grid when smoothing is impossible",()=>{
     const {mass,defect,intensity}=line(8,5,0)
     const out=transformJS(new Float64Array(mass),new Float64Array(defect),
         new Float64Array(intensity),16,16,-1,1,-10,10,8,2)
-    ok(out.length===16*16+5,`expected ${16*16+5}, got ${out.length}`)
+    const cells0=16*16
+    /* La longueur de la queue DÉPEND du nombre de paires qui ont voté, donc
+       l'attente se lit dans la sortie elle-même: c'est le seul énoncé qui
+       reste vrai quand le plan est vide. */
+    const voted=out[cells0+4]
+    ok(out.length===cells0+5+2*voted+1,
+        `the tail must be ${cells0+5}+2×${voted}+1, got ${out.length}`)
+    ok(out[out.length-1]===voted,"and the plane announces what it carries")
     ok(out[16*16+4]===0,"and the pair count still says nothing fell inside")
 })
 
@@ -265,11 +318,56 @@ test("both implementations floor the local variance, so a flat row cannot invert
         "and so does the JS twin, at the same place")
 })
 
-test("the worker's entry point slices the grid and refuses a wrong length",()=>{
-    ok(/grid\.length!==nx\*ny\+5/.test(worker),
-        "a kernel returning the wrong length must throw rather than be sliced")
-    ok(/grid:grid\.slice\(0,nx\*ny\)/.test(worker),
+test("the worker's entry point refuses a STALE wasm build, plane or no plane",()=>{
+    /* THE LENGTH CHECK HAS A FLOOR, because the plane's length now depends on
+       how many pairs voted — a fixed expectation is impossible. But nx*ny+5 is
+       the length a pkg built BEFORE the plane existed returns, and unpack()
+       would then read its pair count as a slope: silently, on every resolve,
+       with a surface that still looks plausible. So the floor is checked, and
+       then the tail is checked against the count it carries, which also catches
+       a torn plane on its own. */
+    ok(/grid\.length<nx\*ny\+6/.test(worker),
+        "a stale build returns nx*ny+5 and must be refused, not sliced")
+    ok(/nx\*ny\+5\+2\*survivors\+1/.test(worker),
+        "and the tail must match the pair count it carries")
+    ok(/flat\.slice\(0,cells\)|grid\.slice\(0,cells\)/.test(worker),
         "the grid must be COPIED, so the transfer list owns its buffer")
+    ok(/stale pkg build\?/.test(worker),
+        "and the error must say what is wrong: a stale build, not a wrong length")
+})
+
+test("both sides record the pair's slope AND its gap, in that order",()=>{
+    /* LE PLAN, PAS UN HISTOGRAMME. Each pair carries both numbers the reader
+       needs and the grid keeps only their sum. Binning the gaps would say which
+       gaps occurred and not which slope each voted for, and re-joining the two
+       is a guess — the guess this plane exists to remove.
+
+       TWO COMPONENTS, slope first, on both sides: a reader that slices the tail
+       as `(gap, slope)` would score every candidate against the other one's
+       number, and the scores would be plausible and wrong. */
+    for(const [source,name] of [[rustSource,"Rust"],[worker,"le jumeau JS"]]){
+        /* LE PREMIER ARGUMENT EST LA PENTE, TOUJOURS. Two forms are accepted
+           because the two sides wrote it two ways — Rust pushes twice, the twin
+           once with two arguments — and the ORDER is the contract, not the
+           spelling. */
+        ok(/voting\.push\(slope\);\s*voting\.push\(dm\);/.test(source)
+            ||/voting\.push\(slope,\s*dm\)/.test(source),
+            `${name}: la pente d'abord, puis l'écart de masse`)
+        /* AND NOT FOUR TIMES: the grid's bilinear spread is one vote over four
+           cells, so four records would be four votes in the evidence for one
+           vote in the grid. */
+        const perPair=(source.match(/voting\.push\(/g)||[]).length
+        const totalRecords=perPair===2?2:1
+        ok(totalRecords===1||totalRecords===2,
+            `${name}: un seul enregistrement par paire, trouvé ${perPair} push`)
+    }
+    ok(/out\.extend_from_slice\(&voting\)/.test(rustSource),"Rust rend le plan")
+    ok(/out\.set\(voting,nx\*ny\+5\)/.test(worker),"le jumeau aussi")
+    /* La queue traverse le lissage PAR COPIE: une étape lue sur une grille
+       lissée serait l'étape d'une relation floutée. */
+    ok(/out\.extend_from_slice\(&accumulated\[cells\.\.\]\)/.test(rustSource),
+        "Rust copie toute la queue de l'accumulation")
+    ok(/accumulated\.subarray\(cells\)/.test(worker),"le jumeau aussi")
 })
 
 test("the node sends its kernel settings, instead of the worker deciding them",()=>{

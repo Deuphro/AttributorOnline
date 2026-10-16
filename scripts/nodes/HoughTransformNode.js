@@ -1,8 +1,10 @@
-import {Wave,SurfaceTrace,Scatter3DTrace} from "../formats.js"
+import {Wave,SurfaceTrace,Scatter3DTrace,XYTrace} from "../formats.js"
 import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
 import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
+import {Plot2D} from "../ui/Plot2D.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
+import {scorePairs,scoreCutoffs} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 
 /* =====================================================================
@@ -90,8 +92,21 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.parameters.keep=0
         this.parameters.neighbours=12
         this.parameters.bandwidth=2
+        /* LA LISTE D'ÉLÉMENTS. `signatureCharges` parce que A_E/z change de pente
+           avec z: le carbone à z=1 est de pente nulle (12.000000/1), le même
+           carbone à z=3 donne 4.000000 et reste nul, mais l'azote à z=7 tombe à
+           2.00044 et devient détectable. Une seule charge ne verrait qu'une
+           fraction des séries réellement présentes.
+
+           PAS DE TOLÉRANCE : la détection est un ordre, pas un filtre — chaque
+           paire vote pour le candidat le plus proche en pente, et le compte
+           des votes fait le tri. Un seuil serait une façon de mettre un filtre
+           là où la formulation n'en demande aucun. */
+        this.parameters.signatureCharges=[1]
         this.surface=null
         this.collectedWaves=[]
+        this.lastAnswer=null
+        this.detection=[]
         /* Monotonic ticket — FKMDNode's pattern: a resolve waiting on the
            worker must not be overwritten by a newer one that started while it
            was still in flight. */
@@ -189,6 +204,42 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const kernelHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
             ["the kernel's own settings: each cell is averaged over its n nearest occupied neighbours with a local covariance, so n is the number of sides of the blobs and bandwidth their minimum width"])
         content.append(kernelHint)
+        const chargeField=(label,key,min,max)=>{
+            const caption=CE("label",{},[label])
+            const input=CE("input",{type:"number",value:this.parameters[key].join(" "),min,max,step:1},[])
+            stylize(input,{width:"100%","box-sizing":"border-box",fontFamily:"inherit","font-size":"0.9em"})
+            input.addEventListener("change",()=>{
+                /* A LIST IS PARSED, NOT CLAMPED. `Math.trunc("1 2 3")` is NaN,
+                   and a NaN that silently becomes the minimum would leave the
+                   widget showing "1 2 3" while the detector runs on charge 1 —
+                   a control that lies about its own value, which is worse than
+                   one that refuses. */
+                const charges=String(input.value).split(/[^0-9]+/)
+                    .map(v=>Math.trunc(Number(v)))
+                    .filter(v=>Number.isFinite(v)&&v>=min&&v<=max)
+                this.parameters[key]=charges.length?charges:[1]
+                input.value=this.parameters[key].join(" ")
+                this.startResolve().then(()=>this.resolveChildren())
+            })
+            content.append(caption,input)
+            return input
+        }
+        this.chargesInput=chargeField("signature charges","signatureCharges",1,12)
+        const detectionCaption=CE("label",{},["elements"])
+        const detectionBox=CE("div",{style:{"grid-column":"1 / -1","white-space":"pre-wrap",
+            fontFamily:"ui-monospace, monospace","font-size":"0.85em","max-height":"220px",
+            "overflow-y":"auto",opacity:"0.95"}},[])
+        this.detectionBox=detectionBox
+        content.append(detectionCaption,detectionBox)
+        const detectionHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
+            ["each peak of the accumulator is a slope; an element answers when A/z = k/(1-s) — the ranking is the share of votes it collected"])
+        content.append(detectionHint)
+        /* LE GRAPHE DU SCORE — barres log10 par candidat, lignes k·MAD.
+           Rendu avec Plot2D (SVG) au lieu d'un canvas brut. Le wrapper a
+           une hauteur fixe parce que Plot2D lit clientHeight pour dessiner. */
+        this.scoreWrapper=CE("div",{style:{"grid-column":"1 / -1",height:"150px",overflow:"hidden"}},[])
+        content.append(this.scoreWrapper)
+        this.scorePlot=new Plot2D([],"HoughTransform score",this.origin,this.scoreWrapper)
         const heightCaption=CE("label",{},["height"])
         this.heightInput=CE("input",{type:"range",min:0.05,max:1,step:0.05,value:this.parameters.heightScale},[])
         stylize(this.heightInput,{width:"100%"})
@@ -259,6 +310,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             `peaks fed: ${this.surface.prepared} of ${this.surface.points} points`,
             `pairs voting: ${this.surface.pairs} — one line through each couple of peaks`,
             `kernel: keep ${this.parameters.keep||"all"}, ${this.parameters.neighbours} neighbours, bandwidth ${this.parameters.bandwidth}`,
+            `elements: ${this.detection?.length??0} signature(s) over charges ${this.parameters.signatureCharges.join(", ")}`,
             `domain: slope [${this.surface.bounds[0]}, ${this.surface.bounds[1]}] intercept [${this.surface.bounds[2]}, ${this.surface.bounds[3]}]`
         ]
         if(this.collectedWaves.length&&!this.kernelErrors.length&&this.surface.prepared<2){
@@ -271,6 +323,253 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             lines.push(`${this.skippedInputs} entrée(s) ignorée(s): pas une wave XY`)
         }
         this.readout.textContent=lines.join("\n")
+    }
+
+    /* --- detection --------------------------------------------------- */
+    /* LA TABLE, UNE FOIS ET SUR DEMANDE. Le motif est celui d'AttributionNode
+       et de FKMDNode, pour la même raison: la table appartient à l'ORIGIN et
+       doit être ATTENDUE, jamais lue en direct — l'App la charge en tâche de
+       fond, donc un nœud qui lit `origin.table` au réveil annonce "no table"
+       sur une table qui est encore en vol.
+
+       Le cache s'appelle `loadedTable` et non `table` parce que le champ et la
+       méthode ne peuvent pas porter le même nom: l'affectation du constructeur
+       poserait une propriété propre qui masque la méthode, et le
+       `this.table()` suivant lève "this.table is not a function" — ce qui est
+       arrivé, et a emporté le nœud à la création. */
+    async table(){
+        if(this.loadedTable) return this.loadedTable
+        if(this.origin.table){
+            this.loadedTable=this.origin.table
+            return this.loadedTable
+        }
+        const loaded=await this.origin.tableReady
+        this.loadedTable=loaded??null
+        return this.loadedTable
+    }
+
+    /* LE PROFIL DE PENTE: la masse de votes par colonne.
+
+       La grille est indexée cell(y)*nx + CELL(x), donc nx court sur la PENTE et
+       ny sur l'intercept. Sommer une colonne revient donc à dire « combien de
+       votes cette pente a recueillis, tous intercepts confondus » — ce qui est
+       la FRÉQUENCE d'apparition d'une signature, mesurée par le noyau lui-même
+       et non estimée par la suite.
+
+       Why this and not a peak list: the accumulator's peak in slope is the
+       thing to count, and a column sum is that count already smoothed by the
+       grid. A peak finder on the surface would answer the same question while
+       depending on the bandwidth and the neighbour count the user just
+       changed. */
+    slopeProfile(){
+        const answer=this.lastAnswer
+        if(!(answer?.grid instanceof Float64Array)) return null
+        const {nx,ny}=this.gridSize()
+        if(answer.grid.length!==nx*ny) return null
+        const profile=new Float64Array(nx)
+        for(let iy=0;iy<ny;iy++){
+            const row=iy*nx
+            for(let ix=0;ix<nx;ix++){
+                const v=answer.grid[row+ix]
+                if(Number.isFinite(v)) profile[ix]+=v
+            }
+        }
+        let max=0
+        for(const v of profile) if(v>max) max=v
+        return {profile,max}
+    }
+
+    /* UN MAXIMUM LOCAL, et le CENTROÏDE de son bassin.
+
+       Le centroïde plutôt que la colonne elle-même: le vote d'une paire est
+       réparti sur quatre cases (bilineaire, dans le noyau), donc la case la
+       plus forte est décalée du centre réel de la tache. La moyenne pondérée par
+       le profil, sur le bassin au-dessus de la moitié du maximum, revient au
+       centre — et c'est ce centre qui est comparé à la masse NIST.
+
+       Le bassin est borné par `mergeRadius` colonnes: sans borne, deux pics
+       voisins et leurs bassins se touchent et un seul maximum les attire tous
+       les deux. */
+    /* Un paramètre nommé, et NON un déstructuré.
+
+       Les tests de ce dépôt extraient le CORPS d'une méthode hors de son
+       fichier et l'évaluent: `slopePeaks({profile,max})` perdrait ses deux
+       paramètres avec la signature et l'appelerait sur un `profile` qui n'existe
+       pas. Un paramètre nommé se reconstruit dans le harnais en une ligne,
+       alors qu'un motif déconstruit demande de deviner la signature. */
+    slopePeaks(summary,{mergeRadius=3}={}){
+        const {profile,max}=summary
+        if(!profile?.length||!(max>0)) return []
+        const floor=max*1e-6
+        const at=j=>profile[Math.min(profile.length-1,Math.max(0,j))]
+        /* STRICT ON ONE SIDE. A plateau satisfies `>=` on both, so with a
+           non-strict test a FLAT surface yields nx peaks — one per column —
+           and the widget then reports a full table of elements that the data
+           does not contain. A constant accumulator is the absence of a peak,
+           not nx of them. */
+        const isPeak=j=>at(j)>=at(j-1)&&at(j)>=at(j+1)&&(at(j)>at(j-1)||at(j)>at(j+1))&&at(j)>floor
+        const candidates=[]
+        for(let j=0;j<profile.length;j++) if(isPeak(j)) candidates.push(j)
+        /* TWO PEAKS INSIDE THE RADIUS ARE ONE PEAK. The smoothing spreads a
+           relation over several columns by construction, so taking the local
+           maxima raw reports one relation three times, and the widget then
+           lists the same element as if it had been found three times over. */
+        const kept=[]
+        for(const j of candidates){
+            const previous=kept[kept.length-1]
+            if(previous&&j-previous.column<=mergeRadius){
+                if(at(j)>at(previous.column)) kept[kept.length-1]={column:j}
+                continue
+            }
+            kept.push({column:j})
+        }
+        const out=[]
+        for(const {column} of kept){
+            let sum=0
+            let weight=0
+            for(let j=Math.max(0,column-mergeRadius);j<=Math.min(profile.length-1,column+mergeRadius);j++){
+                const v=profile[j]
+                if(v<max/2) continue
+                sum+=j*v
+                weight+=v
+            }
+            const centre=weight>0?sum/weight:column
+            out.push({column,centre,mass:at(column),
+                share:max>0?at(column)/max:0})
+        }
+        return out
+    }
+
+    /* LA LISTE. Les PAIRES d'abord, parce que le lien est déjà dedans.
+
+       Le noyau rend, depuis cette version, le plan des paires qui ont voté :
+       chaque paire porte sa pente ET son écart de masse, ensemble, dans le
+       même enregistrement. Un histogramme global des écarts dirait quels pas
+       ont eu lieu, pas QUELLE pente chacun a votée — et recoller les deux
+       après coup serait une devinette, pas une lecture.
+
+       Le classement est la SOMME DES POIDS : |1/(dm - n.A/z)| par paire, pas le compte. Quelques votes tres bons battent des votes mediocres. Les multiples partagent la pente (l'entier se simplifie dans eps/A). Le critere entier est round(dm)/round(A/z) SANS tolerance : un entier est un entier. */
+    async detectElements(){
+        const table=await this.table()
+        const pairs=this.lastAnswer?.pairs
+        if(!table||!(pairs?.length)){ this.detection=[]; return this.detection }
+        const charges=this.parameters.signatureCharges
+        this.detection=scorePairs(table,pairs,{charges})
+        return this.detection
+    }
+    slopeAtColumn(profile,column){
+        const [slopeMin,slopeMax]=this.bounds()
+        const {nx}=this.gridSize()
+        const span=slopeMax-slopeMin
+        return slopeMin+span*(column/Math.max(1,nx-1))
+    }
+
+    renderDetection(){
+        if(!this.detectionBox) return
+        const rows=this.detection??[]
+        if(!rows.length){
+            this.detectionBox.textContent="no signature in the accumulator"
+            this.renderScoreGraph()
+            return
+        }
+        this.detectionBox.textContent=rows.slice(0,14).map((row,i)=>{
+            /* LE SCORE, LA PENTE, LE MULTIPLE. La somme des |1/residu| fait le tri : quelques votes tres bons battent des votes mediocres. */
+            const delta=(row.bestDelta*1e6).toFixed(1)
+            const rank=String(i+1).padStart(2);
+            const label=row.symbol.padEnd(3);
+            const score=row.score>1e9?row.score.toExponential(2):row.score.toPrecision(4);
+            return `${rank}. ${label} z=${row.charge} x${row.topMultiple??"?"} ${row.votes} votes score ${score} dslope ${delta}e-6`;
+        }).join("\n")+(rows.length>14?`\n… and ${rows.length-14} more`:"")
+        this.renderScoreGraph()
+    }
+
+    /* LE GRAPHE DU SCORE — barres log10 par candidat, lignes k·MAD.
+
+       Rendu avec Plot2D (SVG). Une trace de barres (segments verticaux du
+       bas du plot jusqu'à log10(score)) et une trace par ligne k·MAD
+       (segments horizontaux, couleur distincte par k). Les axes sont fixes :
+       X = rang linéaire, Y = log10(score) linéaire (les valeurs sont déjà
+       dans l'espace log). Pas de labels par barre : le tableau ci-dessus
+       donne déjà le symbole et le rang de chaque candidat. */
+    renderScoreGraph(){
+        if(!this.scorePlot) return
+        const rows=this.detection??[]
+        if(!rows.length){
+            this.scorePlot.setTraces([])
+            this.scorePlot.drawGraph()
+            return
+        }
+        const logs=rows.map(r=>Math.log10(Math.max(r.score,1e-300)))
+        const cutoffs=scoreCutoffs(rows,{ks:[1,2,4]})
+        let lo=Math.min(...logs)
+        let hi=Math.max(...logs)
+        if(cutoffs) hi=Math.max(hi,...cutoffs.lines.map(l=>l.log))
+        if(!(hi>lo)) hi=lo+1
+        const n=rows.length
+        /* BARRES : segments verticaux (rank, lo) → (rank, log10(score)).
+           Le mode "segments" relie les points deux à deux, donc chaque paire
+           consécutive forme une barre. Trait épais = barre épaisse. */
+        const barXs=[]
+        const barYs=[]
+        for(let i=0;i<n;i++){
+            barXs.push(i,i)
+            barYs.push(lo,logs[i])
+        }
+        const barWave=Wave.fromCoordinates(
+            new Float64Array(barXs),
+            new Float64Array(barYs),
+            {title:"score bars"},
+            ["rank","log10(score)"]
+        )
+        const barTrace=new XYTrace({
+            id:"score-bars",
+            title:"scores",
+            wave:barWave,
+            options:{
+                color:"rgba(120,160,220,0.8)",
+                mode:"segments",
+                line:{size:Math.max(1,Math.min(6,Math.floor(80/Math.max(n,1))))},
+                layer:"svg"
+            }
+        })
+        const traces=[barTrace]
+        /* LIGNES k·MAD : un segment horizontal par valeur de k, chacune dans
+           sa propre trace pour avoir une couleur distincte. */
+        if(cutoffs){
+            const colors={1:"rgba(255,220,100,0.8)",2:"rgba(255,150,80,0.8)",4:"rgba(255,90,90,0.9)"}
+            for(const line of cutoffs.lines){
+                const lineWave=Wave.fromCoordinates(
+                    new Float64Array([0,n-1]),
+                    new Float64Array([line.log,line.log]),
+                    {title:`k=${line.k}`},
+                    ["x","y"]
+                )
+                traces.push(new XYTrace({
+                    id:`score-mad-k${line.k}`,
+                    title:`k=${line.k}`,
+                    wave:lineWave,
+                    options:{
+                        color:colors[line.k]?? "rgba(255,255,255,0.6)",
+                        mode:"segments",
+                        line:{size:1},
+                        layer:"svg"
+                    }
+                }))
+            }
+        }
+        this.scorePlot.setTraces(traces)
+        /* AXES FIXES : le graphe de score est une lecture, pas un espace
+           d'exploration. X = rang (linéaire), Y = log10(score) (linéaire,
+           les valeurs sont déjà dans l'espace log). */
+        this.scorePlot.parameters.axis.bottom.autoDomain=false
+        this.scorePlot.parameters.axis.bottom.domain=[-0.5,n-0.5]
+        this.scorePlot.parameters.axis.bottom.label="rank"
+        this.scorePlot.parameters.axis.bottom.scale="linear"
+        this.scorePlot.parameters.axis.left.autoDomain=false
+        this.scorePlot.parameters.axis.left.domain=[lo,hi]
+        this.scorePlot.parameters.axis.left.label="log10 score"
+        this.scorePlot.parameters.axis.left.scale="linear"
+        this.scorePlot.drawGraph()
     }
 
     /* --- resolve ------------------------------------------------------ */
@@ -302,10 +601,23 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         }
         if(run!==this.resolveRun) return
         this.buildSurface(answer)
+        /* LA REPONSE DU NOYEAU EST GARDÉE. Le profil de pente la relit pour la
+           détection, et il n'y a pas de deuxième appel au noyau: le compter une
+           fois de plus coûterait O(n²) sur tous les couples de pics pour
+           retrouver un tableau que l'on avait déjà sous la main. */
+        this.lastAnswer=answer
         this.outputs[0]=[this.surfaceWave]
         this.setStatus(this.kernelErrors.length?"error"
             :this.collectedWaves.length?"resolved":"floating")
         this.applyTraces()
+        /* LA DÉTECTION EST ASYNCRE, parce que la table l'est — et elle est donc
+           distincte du resolve: le kernel a déjà sa réponse, l'interprétation
+           peut arriver après. Le billet est revérifié à l'arrivée, sinon une
+           détection lente repeindrait la liste par-dessus une résolution
+           plus récente. */
+        await this.detectElements()
+        if(run!==this.resolveRun) return
+        this.renderDetection()
         this.renderReadout()
     }
     /* ONE FLAT [masses…, intensities…] CORE — the layout `houghPrepare` splits
@@ -460,6 +772,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             keep:this.parameters.keep,
             neighbours:this.parameters.neighbours,
             bandwidth:this.parameters.bandwidth,
+            signatureCharges:[...this.parameters.signatureCharges],
             colormap:this.parameters.colormap,
             showScatter:this.parameters.showScatter,
             slopeMin:this.parameters.slopeMin,
@@ -477,6 +790,11 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(typeof state.colormap==="string") this.parameters.colormap=state.colormap
         if(typeof state.showScatter==="boolean") this.parameters.showScatter=state.showScatter
         if(typeof state.heightScaleLog==="boolean") this.parameters.heightScaleLog=state.heightScaleLog
+        if(Array.isArray(state.signatureCharges)&&state.signatureCharges.length){
+            this.parameters.signatureCharges=state.signatureCharges
+                .map(v=>Math.trunc(Number(v)))
+                .filter(v=>Number.isFinite(v)&&v>=1&&v<=12)
+        }
         if(this.gridXInput) this.gridXInput.value=this.parameters.gridX
         if(this.gridYInput) this.gridYInput.value=this.parameters.gridY
         if(this.slopeMinInput) this.slopeMinInput.value=this.parameters.slopeMin.toFixed(4)
@@ -487,6 +805,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(this.keepInput) this.keepInput.value=this.parameters.keep
         if(this.neighboursInput) this.neighboursInput.value=this.parameters.neighbours
         if(this.bandwidthInput) this.bandwidthInput.value=this.parameters.bandwidth.toFixed(2)
+        if(this.chargesInput) this.chargesInput.value=this.parameters.signatureCharges.join(" ")
         if(this.mapInput) this.mapInput.value=this.parameters.colormap
         if(this.scaleInput) this.scaleInput.value=this.parameters.heightScaleLog?"log":"linear"
         if(this.scatterInput) this.scatterInput.checked=this.parameters.showScatter
@@ -504,6 +823,16 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         })
     }
     suicide(options={}){
+        if(this.scorePlot){
+            /* Plot2D n'a pas de dispose() : on retire ses écouteurs nommés
+               et on détache son conteneur du DOM. */
+            try{this.scorePlot.container.removeEventListener("wheel",this.scorePlot._onWheel)}catch(e){}
+            try{this.scorePlot.container.removeEventListener("dblclick",this.scorePlot._onDblClick)}catch(e){}
+            try{this.scorePlot.container.removeEventListener("mousedown",this.scorePlot._onMouseDown)}catch(e){}
+            if(this.scorePlot.zoomDrawFrame) cancelAnimationFrame(this.scorePlot.zoomDrawFrame)
+            if(this.scorePlot.zoomGestureTimer) clearTimeout(this.scorePlot.zoomGestureTimer)
+            this.scoreWrapper?.remove()
+        }
         this.graph?.dispose?.()
         super.suicide(options)
     }

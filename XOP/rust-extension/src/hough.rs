@@ -31,9 +31,24 @@ use wasm_bindgen::prelude::*;
 /// the kernel does not decide what a defect is, it only uses the number.
 ///
 /// The output is FLAT and non-interleaved, the layout every kernel in this crate
-/// uses: `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
-/// pairs_used]`. The four bounds travel with the data because a grid without
-/// its domain is a picture of nothing.
+/// uses:
+/// `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
+///   pairs_used, pair_slope (2 * survivors), pair_count]`.
+///
+/// WHY THE SURVIVING PAIRS TRAVEL WITH THE GRID. Each pair carries BOTH numbers
+/// the detection needs — the slope it voted for, and the mass gap `dm` it spans —
+/// and the grid throws away everything but their sum. An earlier revision of this
+/// kernel binned `dm` into a histogram instead, which was a LOSS and not a
+/// compression: the histogram is global, so it says which steps occurred and not
+/// which slope each of them voted for, and re-joining the two afterwards is a
+/// guess. It also threw away the multiplicity that makes the transform worth
+/// using — `C`, `C2`, `C3`, `C4` share one slope, so a single observed relation
+/// gathers the votes of all of them.
+///
+/// THE PAIRS THAT TRAVEL ARE THE ONES THAT VOTED. Only pairs inside the domain
+/// reach the grid, so the plane is bounded by the domain rather than by n^2: a
+/// narrow slope window keeps a small fraction of the pairs of a large peak list,
+/// and the caller caps the rest with `keep`.
 #[wasm_bindgen]
 pub fn hough_accumulate(
     mass: &[f64],
@@ -67,6 +82,11 @@ pub fn hough_accumulate(
     }
 
     let mut grid = vec![0.0f64; nx * ny];
+    /* THE VOTING PAIRS, `(slope, dm)` each. Reserved rather than grown, because
+       an O(n^2) loop with a reallocation in it is the difference between a
+       surface that redraws on a slider and one that does not. The reservation is
+       a guess, not a promise: `Vec::push` grows past it. */
+    let mut voting = Vec::with_capacity(n.saturating_mul(8));
     let mut used = 0.0f64;
     let slope_span = slope_max - slope_min;
     let intercept_span = intercept_max - intercept_min;
@@ -105,6 +125,15 @@ pub fn hough_accumulate(
             }
             used += 1.0;
 
+            /* THE PAIR JOINS THE PLANE, once, before the splat spreads it over
+               four cells. Four copies would be four votes in the evidence for
+               one vote in the grid, and the reader would count the same pair
+               four times — so the grid's bilinear spread and this record are two
+               different statements about the same pair, and only this one is the
+               evidence. */
+            voting.push(slope);
+            voting.push(dm);
+
             //Fractional grid coordinates, then a bilinear splat.
             let u = (slope - slope_min) / slope_span * (nx - 1) as f64;
             let v = (intercept - intercept_min) / intercept_span * (ny - 1) as f64;
@@ -138,6 +167,8 @@ pub fn hough_accumulate(
 
     let mut out = grid;
     out.extend_from_slice(&[slope_min, slope_max, intercept_min, intercept_max, used]);
+    out.extend_from_slice(&voting);
+    out.push((voting.len() / 2) as f64);
     out
 }
 
@@ -298,8 +329,14 @@ pub fn hough_smooth(
 /// estimated kernel.
 ///
 /// Returns `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
-/// pairs_used]` — the same layout `hough_accumulate` produces, so the caller
-/// slices it the same way whichever of the two it calls.
+/// pairs_used, pair_slope (2 * survivors), pair_count]` — the same layout
+/// `hough_accumulate` produces, so the caller slices it the same way whichever
+/// of the two it calls.
+///
+/// THE SMOOTHED GRID IS NOT THE ONLY THING THAT COMES BACK. The tail is copied
+/// from the accumulation untouched, the voting pairs included: smoothing moves a
+/// peak between cells, and a mass gap read off the smoothed grid would be the
+/// gap of a blurred relation rather than the gap that actually voted.
 #[wasm_bindgen]
 pub fn hough_transform(
     mass: &[f64],
@@ -467,7 +504,7 @@ mod tests {
     fn a_line_of_peaks_peaks_in_the_cell_of_that_line() {
         let (mass, defect, intensity) = line(24, 0.7, -30.0);
         let out = hough_accumulate(&mass, &defect, &intensity, 64, 48, -1.0, 1.0, -60.0, 60.0);
-        assert_eq!(out.len(), 64 * 48 + 5);
+        assert_eq!(out.len(), 64 * 48 + 5 + 2 * (24 * 23 / 2) + 1);
         let (ix, iy, value) = peak_cell(&out, 64, 48, 0.7, -30.0);
         assert!(
             value > 0.0,
@@ -536,6 +573,133 @@ mod tests {
         let out = hough_accumulate(&mass, &defect, &intensity, 16, 16, -0.5, 0.5, -2.0, 2.0);
         let cells = 256;
         assert_eq!(&out[cells..cells + 4], &[-0.5, 0.5, -2.0, 2.0]);
+    }
+
+// ---- the voting pairs ----
+
+    /// The `(slope, mass gap)` records of one `hough_accumulate` output.
+    fn voting_of(out: &[f64], cells: usize) -> Vec<(f64, f64)> {
+        let start = cells + 5;
+        let count = out[out.len() - 1] as usize;
+        (0..count)
+            .map(|i| (out[start + 2 * i], out[start + 2 * i + 1]))
+            .collect()
+    }
+
+    #[test]
+    fn a_pair_carries_its_slope_and_its_mass_gap_together() {
+        /* LE LIEN QUI MANQUAVAIT. The grid keeps their sum and nothing else, and
+           a mass gap read from a global histogram of gaps says which gaps
+           occurred, not which slope each of them voted for. Re-joining the two
+           afterwards is a guess. Here the pair is intact: same record, both
+           numbers. */
+        let mass = vec![100.0, 128.00614800886, 156.00614800886];
+        let defect = vec![0.0, 0.00614800886, 0.00614800886];
+        let intensity = vec![1.0, 1.0, 1.0];
+        let out = hough_accumulate(&mass, &defect, &intensity, 32, 32, -1.0, 1.0, -10.0, 10.0);
+        let cells = 32 * 32;
+        let voting = voting_of(&out, cells);
+        assert_eq!(voting.len(), 3, "three pairs, three records: {voting:?}");
+        for (slope, gap) in &voting {
+            assert!(slope.abs() <= 1.0, "the slope travels: {slope}");
+            assert!(*gap > 27.0 && *gap < 57.0, "the gap travels with it: {gap}");
+        }
+        /* ET LE MULTIPLE EST LISIBLE DANS LE GAP, sans seuil: 28.006 is twice
+           the 14.003074 of nitrogen, and round(gap)/A is 2. */
+        let (slope, gap) = voting[0];
+        assert_eq!(gap.round(), 28.0, "the gap's integer part is what the reader rounds");
+        let nitrogen = 14.00307400443;
+        assert_eq!((gap / nitrogen).round(), 2.0, "and it is twice nitrogen");
+        /* AND THE SLOPE OF THAT GAP IS NITROGEN'S OWN. The integer scales out of
+           eps/A, so 2 x N has N's slope exactly — which is why one observed
+           relation gathers C, C2, C3 and C4 alike, and why the count of votes is
+           the evidence rather than a detail. */
+        let nitrogen_slope = (nitrogen - nitrogen.round()) / nitrogen;
+        assert!((slope - nitrogen_slope).abs() < 1e-15,
+            "the slope of 2N is the slope of N: {slope} against {nitrogen_slope}");
+    }
+
+    #[test]
+    fn the_multiples_of_one_element_share_one_slope_and_multiply_the_votes() {
+        /* THE REASON THE TRANSFORM IS WORTH USING. C, C2, C3 and C4 all have
+           slope eps/A — the integer scales out — so one observed relation gathers
+           the votes of all of them, and the total grows with the number of
+           multiples rather than staying flat. A candidate that is really there
+           accumulates; a coincidence does not. */
+        let mut mass = Vec::new();
+        let mut defect = Vec::new();
+        let mut intensity = Vec::new();
+        //a ladder of 12 species separated by exactly one carbon: 12, 24, ... 132
+        for n in 0..12 {
+            let step = 12.0 * n as f64;
+            mass.push(100.0 + step);
+            //defect follows the multiples, so every pair lands on the same slope
+            defect.push((100.0 + step) - (100.0 + step).round());
+            intensity.push(1.0);
+        }
+        let out = hough_accumulate(&mass, &defect, &intensity, 64, 64, -1e-3, 1e-3, -1.0, 1.0);
+        let cells = 64 * 64;
+        let voting = voting_of(&out, cells);
+        /* 66 pairs over 12 species, each gap a multiple of the carbon mass, and
+           every recorded slope within a hair of zero — carbon's, to the digit. */
+        assert!(voting.len() >= 60, "most pairs vote: {}", voting.len());
+        let carbon_slope = (12.0 - 12.0) / 12.0;
+        for (slope, gap) in &voting {
+            assert!((slope - carbon_slope).abs() < 1e-9,
+                "toutes les paires ont la pente du carbone: {slope}");
+            assert_eq!((gap / 12.0).round() as usize, (*gap / 12.0).round() as usize);
+            assert!((*gap / 12.0).round() >= 1.0, "and a whole number of carbons");
+        }
+        /* AND THE COUNT IS THE SCORE. Sixty-six pairs is what a real relation
+           looks like; a chance alignment of one or two is what a coincidence
+           looks like, and the sort uses the difference. */
+        assert!(
+            voting.len() as f64 > out[cells + 4] * 0.5,
+            "the plane keeps a record for (nearly) every pair that voted"
+        );
+    }
+
+    #[test]
+    fn a_pair_outside_the_domain_is_dropped_from_the_plane_too() {
+        /* The plane holds the pairs that VOTED. A pair whose slope is outside
+           the window contributed nothing to the grid, so keeping it in the
+           evidence would let the reader score a relation the surface does not
+           show. */
+        let mass = vec![100.0, 110.0, 120.0];
+        let defect = vec![0.0, 50.0, 0.0]; //only the 100-120 pair is near slope 0
+        let intensity = vec![1.0, 1.0, 1.0];
+        let out = hough_accumulate(&mass, &defect, &intensity, 16, 16, -1e-3, 1e-3, -10.0, 10.0);
+        let cells = 256;
+        let voting = voting_of(&out, cells);
+        assert_eq!(out[cells + 4] as usize, voting.len(),
+            "the count and the plane agree");
+        assert_eq!(voting.len(), 1, "one pair inside the window: {voting:?}");
+        assert!((voting[0].1 - 20.0).abs() < 1e-9, "and it is the 100-120 pair");
+    }
+
+    #[test]
+    fn the_plane_travels_through_the_transform_and_is_not_smoothed() {
+        /* LA QUEUE EST RECOPIÉE APRÈS LE LISSAGE. Smoothing moves a peak
+           between cells, so a gap measured on the smoothed grid would be the gap
+           of a blurred relation. The tail is copied verbatim from the
+           accumulation, and this is the test that says so. */
+        let mass = vec![100.0, 114.0157, 128.0314, 142.0471];
+        let defect = vec![0.0, 0.0157, 0.0314, 0.0471];
+        let intensity = vec![1.0, 1.0, 1.0, 1.0];
+        let nx = 16;
+        let ny = 16;
+        let accumulated = hough_accumulate(&mass, &defect, &intensity, nx, ny, -1.0, 1.0, -10.0, 10.0);
+        let transformed = hough_transform(
+            &mass, &defect, &intensity, nx, ny, -1.0, 1.0, -10.0, 10.0, 12, 2.0,
+        );
+        let cells = nx * ny;
+        assert_eq!(
+            &accumulated[cells..],
+            &transformed[cells..],
+            "the whole tail, pairs included, must be the accumulation's"
+        );
+        assert!(!voting_of(&transformed, cells).is_empty(),
+            "and the plane must survive the transform");
     }
 
     #[test]
@@ -627,9 +791,11 @@ mod tests {
             &mass, &defect, &intensity, 48, 40, -1.0, 1.0, -60.0, 60.0, 8, 3.0,
         );
         let cells = 48 * 40;
-        assert_eq!(out.len(), cells + 5);
+        //20 peaks give 190 pairs, all inside the domain: 2 values each, plus the count
+        assert_eq!(out.len(), cells + 5 + 2 * 190 + 1);
         assert_eq!(&out[cells..cells + 4], &[-1.0, 1.0, -60.0, 60.0]);
         assert_eq!(out[cells + 4], 190.0, "20 peaks give 190 pairs");
+        assert_eq!(out[out.len() - 1], 190.0, "and the plane holds every one of them");
         let (_, _, value) = peak_cell(&out, 48, 40, 0.6, -12.0);
         assert!(value > 0.0, "the relation must still be visible after smoothing");
     }
@@ -642,7 +808,7 @@ mod tests {
         let out = hough_transform(
             &mass, &defect, &intensity, 16, 16, -1.0, 1.0, -10.0, 10.0, 8, 2.0,
         );
-        assert_eq!(out.len(), 16 * 16 + 5);
+        assert_eq!(out.len(), 16 * 16 + 5 + 1);
         assert_eq!(out[16 * 16 + 4], 0.0);
     }
 
@@ -654,7 +820,7 @@ mod tests {
         );
         //a grid whose cells are all equal: nothing to borrow a shape from, and
         //the caller still gets a full-length array rather than a short one
-        bad.truncate(24 * 24 + 5);
-        assert_eq!(bad.len(), 24 * 24 + 5);
+        bad.truncate(24 * 24 + 5 + 1);
+        assert_eq!(bad.len(), 24 * 24 + 5 + 1);
     }
 }

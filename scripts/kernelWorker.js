@@ -245,17 +245,37 @@ const kernels={
         const bandwidth=Number.isFinite(params?.bandwidth)?params.bandwidth:2
         const bounds=params?.bounds??[-0.001,0.001,-0.2,0.2]
         const [slopeMin,slopeMax,interceptMin,interceptMax]=bounds
+        /* THE TAIL, DECODED ONCE. The voting pairs come straight from the kernel
+           at a fixed offset, and the caller never has to know the offset because
+           nothing outside this function reads the raw array. */
+        const unpack=(flat)=>{
+            const cells=nx*ny
+            const count=flat[flat.length-1]??0
+            /* TWO COMPONENTS PER PAIR, `(slope, dm)`. Copied rather than a
+               subarray view: the transfer list below is allowed to hand over an
+               owned buffer, and a view of `flat` is not one. */
+            const pairs=flat.slice(cells+5,cells+5+2*count)
+            return {
+                grid:flat.slice(0,cells),
+                count:flat[cells+4]??0,
+                pairs
+            }
+        }
         const flat=Float64Array.from(core??[])
         try{
             await ensureWasm()
             if(typeof rust.hough_transform!=="function"){
                 throw new Error("rust hough_transform is missing (stale pkg build?)")
             }
+const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Array(0),
+                bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
             const prepared=toFloat64(rust.hough_prepare(flat,keep))
             const count=prepared.length?prepared[prepared.length-1]:0
             if(!count||count<2){
-                return {grid:new Float64Array(nx*ny),count:0,prepared:0,
-                    bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
+                //and an EMPTY plane, present and empty: a caller that reads it
+                //on a refused run must find nothing there rather than undefined,
+                // and "no pair voted" is not the same output as "no plane".
+                return {...empty}
             }
             const mass=prepared.slice(0,count)
             const defect=prepared.slice(count,count*2)
@@ -265,23 +285,36 @@ const kernels={
                 slopeMin,slopeMax,interceptMin,interceptMax,
                 neighbours,bandwidth
             ))
-            if(grid.length!==nx*ny+5){
-                throw new Error(`hough_transform returned ${grid.length} values, expected ${nx*ny+5}`)
+            /* THE LAYOUT IS CHECKED, NOT JUST THE GRID. The tail's length
+               now depends on how many pairs voted, so a fixed expectation is
+               impossible — but a FLOOR is not: the bounds and the pair count sit
+               at five fixed offsets and the plane starts at the sixth. A STALE
+               wasm build, one made before the plane existed, returns nx*ny+5 and
+               would be unpacked as though its pair count were a slope. So the
+               floor is checked, and then the tail is checked against the count
+               it carries, which catches a torn plane on its own. */
+            if(grid.length<nx*ny+6){
+                throw new Error(`hough_transform returned ${grid.length} values, expected at least `+
+                    `${nx*ny+6} — stale pkg build? (the voting pairs are missing)`)
+            }
+            const survivors=grid[grid.length-1]??0
+            if(grid.length!==nx*ny+5+2*survivors+1){
+                throw new Error(`hough_transform says ${survivors} pairs but carries `+
+                    `${(grid.length-nx*ny-6)/2} — the tail does not match its own count`)
             }
             //slice, not subarray: a copy owns its buffer, which is what the
             //transfer list below is allowed to hand over. The pair count lives
             //at the END of the grid (grid[nx*ny+4]) — indexing `prepared` there
             //instead read a mass/defect/intensity value whenever the planes
             //were longer than the grid, i.e. for every real peak count.
-            return {grid:grid.slice(0,nx*ny),count:grid[nx*ny+4]??0,prepared:count,
+            return {...unpack(grid),prepared:count,
                 bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
         }catch(err){
             console.warn("[kernelWorker] rust hough unavailable, JS fallback:",err)
             const prepared=houghPrepareJS(flat,keep)
             const count=prepared.length?prepared[prepared.length-1]:0
             if(!count||count<2){
-                return {grid:new Float64Array(nx*ny),count:0,prepared:0,
-                    bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
+                return {...empty}
             }
             const grid=houghTransformJS(
                 prepared.slice(0,count),
@@ -290,7 +323,7 @@ const kernels={
                 nx,ny,slopeMin,slopeMax,interceptMin,interceptMax,
                 neighbours,bandwidth
             )
-            return {grid,count:grid[nx*ny+4]??0,prepared:count,
+            return {...unpack(grid),prepared:count,
                 bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
         }
     },
@@ -840,6 +873,10 @@ function houghAccumulateJS(mass,defect,intensity,nx,ny,slopeMin,slopeMax,interce
        NaN — again a grid nothing lands in. */
     if(!Number.isFinite(slopeMin)||!Number.isFinite(slopeMax)||!Number.isFinite(interceptMin)||!Number.isFinite(interceptMax)) return new Float64Array(0)
     const grid=new Float64Array(nx*ny)
+    /* THE VOTING PAIRS, `(slope, dm)` each. NOT binned: a global histogram of
+       the gaps would say which gaps occurred and not which slope each of them
+       voted for, and re-joining the two is a guess. The pair carries both. */
+    const voting=[]
     let used=0
     const slopeSpan=slopeMax-slopeMin
     const interceptSpan=interceptMax-interceptMin
@@ -856,6 +893,10 @@ function houghAccumulateJS(mass,defect,intensity,nx,ny,slopeMin,slopeMax,interce
             const weight=intensity[i]+intensity[j]
             if(!(weight>0)) continue
             used++
+            /* once, before the splat: the grid's bilinear spread is one vote
+               spread over four cells, and four records would be four votes in
+               the evidence for one vote in the grid */
+            voting.push(slope,dm)
             const u=(slope-slopeMin)/slopeSpan*(nx-1)
             const v=(intercept-interceptMin)/interceptSpan*(ny-1)
             const u0=Math.min(Math.max(Math.floor(u),0),nx-2)
@@ -874,9 +915,11 @@ function houghAccumulateJS(mass,defect,intensity,nx,ny,slopeMin,slopeMax,interce
             }
         }
     }
-    const out=new Float64Array(nx*ny+5)
+    const out=new Float64Array(nx*ny+5+voting.length+1)
     out.set(grid,0)
     out.set([slopeMin,slopeMax,interceptMin,interceptMax,used],nx*ny)
+    out.set(voting,nx*ny+5)
+    out[nx*ny+5+voting.length]=voting.length/2
     return out
 }
 
@@ -970,10 +1013,12 @@ function houghTransformJS(mass,defect,intensity,nx,ny,slopeMin,slopeMax,intercep
     if(accumulated.length<cells||cells===0) return accumulated
     const smoothed=houghSmoothJS(accumulated,nx,ny,neighbours,bandwidth)
     if(smoothed.length!==cells) return accumulated
-    const out=new Float64Array(cells+5)
+    const out=new Float64Array(accumulated.length)
     out.set(smoothed,0)
-    //the domain and the pair count travel with the grid, from the accumulation
-    out.set(accumulated.subarray(cells,cells+5),cells)
+    //the domain, the pair count and the VOTING PAIRS travel from the
+    //accumulation untouched: smoothing moves a peak between cells, and a gap
+    //measured on the smoothed grid would be the gap of a blurred relation
+    out.set(accumulated.subarray(cells),cells)
     return out
 }
 

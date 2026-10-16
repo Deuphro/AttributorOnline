@@ -142,6 +142,231 @@ export function calibration_apply_2d(x: Float64Array, y: Float64Array, coeffs: F
 */
 export function parse_thermo_raw(data: Uint8Array, options: any): any;
 /**
+* Accumulates every pair of peaks into a `nx` x `ny` grid of (slope, intercept),
+* spreading each vote over four neighbours rather than one cell.
+*
+* `defect` is the Kendrick defect (`m - round(m)`), computed by the caller:
+* the kernel does not decide what a defect is, it only uses the number.
+*
+* The output is FLAT and non-interleaved, the layout every kernel in this crate
+* uses: `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
+* pairs_used, mass_steps (MASS_STEP_BINS), steps_overflow]`.
+*
+* WHY THE MASS-STEP HISTOGRAM IS HERE, AND WHY IT IS APPENDED RATHER THAN
+* INSERTED. The slope of a relation is `eps / (k + eps)` for a mass step
+* `k + eps`, so it has already thrown `k` away — and `k` is nearly all of the
+* information. Every element's signature is `eps / A`, which for the heavy ones
+* collapses: Po and F, in this crate's own table, sit 1.9e-8 apart in slope,
+* which on a 2e-3 window needs a hundred thousand columns to tell apart, while
+* their masses are 209 and 19. The step carries the integer that the slope
+* lost, and the step is the atom's mass over the charge. So the accumulator
+* keeps it, even though it cost nothing to compute: `dm` is already read for
+* the slope.
+*
+* APPENDED, because the bounds and `pairs_used` sit at a fixed offset that
+* existing tests — and the JS twin — read by index. Inserting a plane ahead of
+* them would move every one of those reads for no gain; appending keeps the
+* contract that is already written down and lets the histogram be optional to
+* look at.
+* @param {Float64Array} mass
+* @param {Float64Array} defect
+* @param {Float64Array} intensity
+* @param {number} nx
+* @param {number} ny
+* @param {number} slope_min
+* @param {number} slope_max
+* @param {number} intercept_min
+* @param {number} intercept_max
+* @returns {Float64Array}
+*/
+export function hough_accumulate(mass: Float64Array, defect: Float64Array, intensity: Float64Array, nx: number, ny: number, slope_min: number, slope_max: number, intercept_min: number, intercept_max: number): Float64Array;
+/**
+* Smooths a grid with a kernel whose SHAPE is estimated from the grid itself,
+* independently at every cell: the k nearest occupied neighbours give a local
+* mean and a local covariance, and the vote each neighbour casts is weighted by
+* that elliptical Gaussian rather than by an isotropic one.
+*
+* The anisotropy is the point. A relation that is narrow across the slope axis
+* and wide along the intercept axis is a LINE, and an isotropic kernel smears
+* it into a blob; the covariance recovers the line.
+* @param {Float64Array} grid
+* @param {number} nx
+* @param {number} ny
+* @param {number} neighbours
+* @param {number} bandwidth
+* @returns {Float64Array}
+*/
+export function hough_smooth(grid: Float64Array, nx: number, ny: number, neighbours: number, bandwidth: number): Float64Array;
+/**
+* The whole transform: accumulate the pairs, then smooth with a locally
+* estimated kernel.
+*
+* Returns `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
+* pairs_used, mass_steps (MASS_STEP_BINS), steps_overflow]` — the same layout
+* `hough_accumulate` produces, so the caller slices it the same way whichever
+* of the two it calls.
+*
+* THE SMOOTHED GRID IS NOT THE ONLY THING THAT COMES BACK. The tail is copied
+* from the accumulation untouched, histogram included: smoothing moves a peak
+* between cells, and a mass step measured AFTER the smoothing would be the
+* step of a blurred peak rather than the step that actually voted.
+* @param {Float64Array} mass
+* @param {Float64Array} defect
+* @param {Float64Array} intensity
+* @param {number} nx
+* @param {number} ny
+* @param {number} slope_min
+* @param {number} slope_max
+* @param {number} intercept_min
+* @param {number} intercept_max
+* @param {number} neighbours
+* @param {number} bandwidth
+* @returns {Float64Array}
+*/
+export function hough_transform(mass: Float64Array, defect: Float64Array, intensity: Float64Array, nx: number, ny: number, slope_min: number, slope_max: number, intercept_min: number, intercept_max: number, neighbours: number, bandwidth: number): Float64Array;
+/**
+* The peak list a Hough accumulator needs: masses, their Kendrick defects, and
+* their intensities, sorted by rising mass and stripped of anything unusable.
+*
+* Exposed as its own step because it is a DECISION, not a detail: the caller
+* must be able to say how many peaks it fed in, because "there is no surface"
+* and "the peaks were all rejected" are different failures.
+* @param {Float64Array} core
+* @param {number} keep
+* @returns {Float64Array}
+*/
+export function hough_prepare(core: Float64Array, keep: number): Float64Array;
+/**
+* Computes one H0 interval per input point. `core` is canonical:
+* [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
+* Superlevel activates points by decreasing Y; sublevel by increasing Y.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {string} mode
+* @returns {PersistenceAnalysis}
+*/
+export function persistent_homology_0d_waves(core: Float64Array, stride: number, mode: string): PersistenceAnalysis;
+/**
+* `points_index` is the position of each point in the INPUT wave (the
+* birth_indices of persistent_homology_0d_waves, already sorted and aligned
+* with the points). It is carried through the classifier untouched: the slope
+* decides WHICH points survive, never where they came from.
+* @param {Float64Array} births
+* @param {Float64Array} deaths
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} slope
+* @param {Float64Array} integrated_mass
+* @param {Float64Array} centroid_x
+* @returns {PersistenceClassification}
+*/
+export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number, integrated_mass: Float64Array, centroid_x: Float64Array): PersistenceClassification;
+/**
+* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
+*
+* The MAD is a spread; the cut has to be somewhere. When the widths form one
+* population the two agree, but when a spectrum is MOSTLY radio - a dirty
+* sample, a failed acquisition - the MAD is inflated by the very peaks the
+* filter should catch, and 3σ then rejects nothing. A gap does not have that
+* failure mode: it measures where the bulk ends whatever lies beyond.
+*
+* The cut is read as the largest gap between consecutive sorted widths, in
+* robust sigma, and only when that gap is far larger than the typical spacing
+* between neighbours. Two earlier attempts are worth recording, because both
+* are plausible and both are wrong:
+*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
+*     wide peak in eight, and reports a z of about 1, which would reject the
+*     whole cluster;
+*   - a ratio to the median width is not scale-free - a comb of near-identical
+*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_index
+* @returns {number}
+*/
+export function anti_radio_guess_z(core: Float64Array, stride: number, points_index: Float64Array): number;
+/**
+*
+* `z` is the ONE knob, and it is a statistical convention rather than a fitted
+* setting: a peak is "radio" when its width sits z robust sigma above the
+* median width of the spectrum. Since the reference is measured on the data in
+* hand, the filter follows the instrument's actual resolution instead of a
+* hard-coded one, and the false-positive rate stays a property of the spread
+* rather than of how many peaks the spectrum happens to contain.
+* @param {Float64Array} core
+* @param {number} stride
+* @param {Float64Array} points_x
+* @param {Float64Array} points_y
+* @param {Float64Array} points_index
+* @param {number} z
+* @returns {RadioDecision}
+*/
+export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
+/**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_components
+* @returns {Float64Array}
+*/
+export function pca_project(data: Float64Array, n_samples: number, n_features: number, n_components: number): Float64Array;
+/**
+* @param {Float64Array} data
+* @param {number} n_samples
+* @param {number} n_features
+* @param {number} n_clusters
+* @param {number} sigma
+* @param {number} k_neighbors
+* @returns {Float64Array}
+*/
+export function spectral_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, sigma: number, k_neighbors: number): Float64Array;
+/**
+* L'arbre couvrant de poids minimal sur des points MESURÉS.
+*
+* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
+* précoce de la boucle des paires, et le seul prérequis que la fonction ne
+* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
+* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
+* écrit est un bug qui n'apparaît qu'à l'écran.
+*
+* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
+* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
+* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
+* `forest.js` le fait, à partir des briques du plan.
+*
+* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
+* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
+*
+* `limit` est LA COUPURE: combien de candidats, dans l'ordre des poids
+* croissants, Kruskal est autorisé à consommer. `<= 0` les prend tous — c'est le
+* `GrowForest` d'Igor. C'est ici, et nulle part ailleurs, que la coupure agit:
+* l'arbre se construit par dessus un PRÉFIXE de la liste triée, donc changer la
+* coupure ne change que le nombre d'arêtes considérées, jamais leur ordre.
+* @param {Float64Array} masses
+* @param {Float64Array} intensities
+* @param {Float64Array} standards
+* @param {number} tolerance
+* @param {number} degree_max
+* @param {number} limit
+* @returns {Forest}
+*/
+export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number, limit: number): Forest;
+/**
+* @param {Uint32Array} compositions
+* @param {number} n_compositions
+* @param {number} k
+* @returns {Float64Array}
+*/
+export function barycentric_project(compositions: Uint32Array, n_compositions: number, k: number): Float64Array;
+/**
+* @param {Float64Array} compositions
+* @param {number} n_compositions
+* @param {number} k
+* @returns {Float64Array}
+*/
+export function barycentric_project_f64(compositions: Float64Array, n_compositions: number, k: number): Float64Array;
+/**
 * Applies the F-KMD transform to a canonical core.
 *
 * Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
@@ -208,209 +433,6 @@ export function trim_apply(core: Float64Array, stride: number, low_bound: number
 * @returns {TrimHistogram}
 */
 export function trim_histogram(core: Float64Array, stride: number, bins: number, scale: string): TrimHistogram;
-/**
-* Computes one H0 interval per input point. `core` is canonical:
-* [x0..xN, y0..yN] for stride 2, or [y0..yN] for stride 1.
-* Superlevel activates points by decreasing Y; sublevel by increasing Y.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {string} mode
-* @returns {PersistenceAnalysis}
-*/
-export function persistent_homology_0d_waves(core: Float64Array, stride: number, mode: string): PersistenceAnalysis;
-/**
-* `points_index` is the position of each point in the INPUT wave (the
-* birth_indices of persistent_homology_0d_waves, already sorted and aligned
-* with the points). It is carried through the classifier untouched: the slope
-* decides WHICH points survive, never where they came from.
-* @param {Float64Array} births
-* @param {Float64Array} deaths
-* @param {Float64Array} points_x
-* @param {Float64Array} points_y
-* @param {Float64Array} points_index
-* @param {number} slope
-* @param {Float64Array} integrated_mass
-* @param {Float64Array} centroid_x
-* @returns {PersistenceClassification}
-*/
-export function classify_persistence_0d(births: Float64Array, deaths: Float64Array, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, slope: number, integrated_mass: Float64Array, centroid_x: Float64Array): PersistenceClassification;
-/**
-* L'arbre couvrant de poids minimal sur des points MESURÉS.
-*
-* `masses` doit être TRIÉ par masse croissante — c'est ce qui autorise l'arrêt
-* précoce de la boucle des paires, et le seul prérequis que la fonction ne
-* peut pas vérifier elle-même sans payer un tri qu'elle ne sera pas amenée à
-* faire. C'est donc un CONTRAT, et il est écrit ici parce qu'un contrat non
-* écrit est un bug qui n'apparaît qu'à l'écran.
-*
-* `intensities` sert au composant le plus intense, comme le `wavemax(roi1)`
-* d'Igor. `standards` sont des masses EN M/Z: la comparaison se fait donc dans
-* l'espace mesuré, et c'est à l'appelant de diviser par la charge —
-* `forest.js` le fait, à partir des briques du plan.
-*
-* `degree_max` plafonne le degré d'un sommet; `<= 0` ou non fini signifie
-* « aucun plafond », ce qui est le `degmax=inf` de `GrowForest`.
-*
-* `limit` est LA COUPURE: combien de candidats, dans l'ordre des poids
-* croissants, Kruskal est autorisé à consommer. `<= 0` les prend tous — c'est le
-* `GrowForest` d'Igor. C'est ici, et nulle part ailleurs, que la coupure agit:
-* l'arbre se construit par dessus un PRÉFIXE de la liste triée, donc changer la
-* coupure ne change que le nombre d'arêtes considérées, jamais leur ordre.
-* @param {Float64Array} masses
-* @param {Float64Array} intensities
-* @param {Float64Array} standards
-* @param {number} tolerance
-* @param {number} degree_max
-* @param {number} limit
-* @returns {Forest}
-*/
-export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number, limit: number): Forest;
-/**
-* @param {Uint32Array} compositions
-* @param {number} n_compositions
-* @param {number} k
-* @returns {Float64Array}
-*/
-export function barycentric_project(compositions: Uint32Array, n_compositions: number, k: number): Float64Array;
-/**
-* @param {Float64Array} compositions
-* @param {number} n_compositions
-* @param {number} k
-* @returns {Float64Array}
-*/
-export function barycentric_project_f64(compositions: Float64Array, n_compositions: number, k: number): Float64Array;
-/**
-* Accumulates every pair of peaks into a `nx` x `ny` grid of (slope, intercept),
-* spreading each vote over four neighbours rather than one cell.
-*
-* `defect` is the Kendrick defect (`m - round(m)`), computed by the caller:
-* the kernel does not decide what a defect is, it only uses the number.
-*
-* The output is FLAT and non-interleaved, the layout every kernel in this crate
-* uses: `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
-* pairs_used]`. The four bounds travel with the data because a grid without
-* its domain is a picture of nothing.
-* @param {Float64Array} mass
-* @param {Float64Array} defect
-* @param {Float64Array} intensity
-* @param {number} nx
-* @param {number} ny
-* @param {number} slope_min
-* @param {number} slope_max
-* @param {number} intercept_min
-* @param {number} intercept_max
-* @returns {Float64Array}
-*/
-export function hough_accumulate(mass: Float64Array, defect: Float64Array, intensity: Float64Array, nx: number, ny: number, slope_min: number, slope_max: number, intercept_min: number, intercept_max: number): Float64Array;
-/**
-* Smooths a grid with a kernel whose SHAPE is estimated from the grid itself,
-* independently at every cell: the k nearest occupied neighbours give a local
-* mean and a local covariance, and the vote each neighbour casts is weighted by
-* that elliptical Gaussian rather than by an isotropic one.
-*
-* The anisotropy is the point. A relation that is narrow across the slope axis
-* and wide along the intercept axis is a LINE, and an isotropic kernel smears
-* it into a blob; the covariance recovers the line.
-* @param {Float64Array} grid
-* @param {number} nx
-* @param {number} ny
-* @param {number} neighbours
-* @param {number} bandwidth
-* @returns {Float64Array}
-*/
-export function hough_smooth(grid: Float64Array, nx: number, ny: number, neighbours: number, bandwidth: number): Float64Array;
-/**
-* The whole transform: accumulate the pairs, then smooth with a locally
-* estimated kernel.
-*
-* Returns `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
-* pairs_used]` — the same layout `hough_accumulate` produces, so the caller
-* slices it the same way whichever of the two it calls.
-* @param {Float64Array} mass
-* @param {Float64Array} defect
-* @param {Float64Array} intensity
-* @param {number} nx
-* @param {number} ny
-* @param {number} slope_min
-* @param {number} slope_max
-* @param {number} intercept_min
-* @param {number} intercept_max
-* @param {number} neighbours
-* @param {number} bandwidth
-* @returns {Float64Array}
-*/
-export function hough_transform(mass: Float64Array, defect: Float64Array, intensity: Float64Array, nx: number, ny: number, slope_min: number, slope_max: number, intercept_min: number, intercept_max: number, neighbours: number, bandwidth: number): Float64Array;
-/**
-* The peak list a Hough accumulator needs: masses, their Kendrick defects, and
-* their intensities, sorted by rising mass and stripped of anything unusable.
-*
-* Exposed as its own step because it is a DECISION, not a detail: the caller
-* must be able to say how many peaks it fed in, because "there is no surface"
-* and "the peaks were all rejected" are different failures.
-* @param {Float64Array} core
-* @param {number} keep
-* @returns {Float64Array}
-*/
-export function hough_prepare(core: Float64Array, keep: number): Float64Array;
-/**
-* @param {Float64Array} data
-* @param {number} n_samples
-* @param {number} n_features
-* @param {number} n_clusters
-* @param {number} sigma
-* @param {number} k_neighbors
-* @returns {Float64Array}
-*/
-export function spectral_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, sigma: number, k_neighbors: number): Float64Array;
-/**
-* A z READ FROM THE DATA, which is a different thing from the 3σ convention.
-*
-* The MAD is a spread; the cut has to be somewhere. When the widths form one
-* population the two agree, but when a spectrum is MOSTLY radio - a dirty
-* sample, a failed acquisition - the MAD is inflated by the very peaks the
-* filter should catch, and 3σ then rejects nothing. A gap does not have that
-* failure mode: it measures where the bulk ends whatever lies beyond.
-*
-* The cut is read as the largest gap between consecutive sorted widths, in
-* robust sigma, and only when that gap is far larger than the typical spacing
-* between neighbours. Two earlier attempts are worth recording, because both
-* are plausible and both are wrong:
-*   - a fixed quantile (90th) lands INSIDE the tight cluster when there is one
-*     wide peak in eight, and reports a z of about 1, which would reject the
-*     whole cluster;
-*   - a ratio to the median width is not scale-free - a comb of near-identical
-*     peaks has a vanishing MAD, and the ratio to the outlier explodes.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_index
-* @returns {number}
-*/
-export function anti_radio_guess_z(core: Float64Array, stride: number, points_index: Float64Array): number;
-/**
-*
-* `z` is the ONE knob, and it is a statistical convention rather than a fitted
-* setting: a peak is "radio" when its width sits z robust sigma above the
-* median width of the spectrum. Since the reference is measured on the data in
-* hand, the filter follows the instrument's actual resolution instead of a
-* hard-coded one, and the false-positive rate stays a property of the spread
-* rather than of how many peaks the spectrum happens to contain.
-* @param {Float64Array} core
-* @param {number} stride
-* @param {Float64Array} points_x
-* @param {Float64Array} points_y
-* @param {Float64Array} points_index
-* @param {number} z
-* @returns {RadioDecision}
-*/
-export function anti_radio_filter(core: Float64Array, stride: number, points_x: Float64Array, points_y: Float64Array, points_index: Float64Array, z: number): RadioDecision;
-/**
-* @param {Float64Array} data
-* @param {number} n_samples
-* @param {number} n_features
-* @param {number} n_components
-* @returns {Float64Array}
-*/
-export function pca_project(data: Float64Array, n_samples: number, n_features: number, n_components: number): Float64Array;
 /**
 * @param {Float64Array} data
 * @param {number} n_samples
@@ -754,24 +776,10 @@ export interface InitOutput {
   readonly calibration_fit_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
   readonly calibration_apply_2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
   readonly parse_thermo_raw: (a: number, b: number, c: number, d: number) => void;
-  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
-  readonly __wbg_trimresult_free: (a: number) => void;
-  readonly trimresult_points_x: (a: number, b: number) => void;
-  readonly trimresult_points_y: (a: number, b: number) => void;
-  readonly trimresult_kept_indices: (a: number, b: number) => void;
-  readonly trimresult_total_count: (a: number) => number;
-  readonly __wbg_trimhistogram_free: (a: number) => void;
-  readonly trimhistogram_centres: (a: number, b: number) => void;
-  readonly trimhistogram_counts: (a: number, b: number) => void;
-  readonly trimhistogram_min: (a: number) => number;
-  readonly trimhistogram_max: (a: number) => number;
-  readonly trimhistogram_dropped: (a: number) => number;
-  readonly trim_guess: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
-  readonly trim_apply: (a: number, b: number, c: number, d: number, e: number) => number;
-  readonly trim_histogram: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
-  readonly trimresult_low_bound: (a: number) => number;
-  readonly trimresult_high_bound: (a: number) => number;
-  readonly trimresult_kept_count: (a: number) => number;
+  readonly hough_accumulate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
+  readonly hough_smooth: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+  readonly hough_transform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => void;
+  readonly hough_prepare: (a: number, b: number, c: number, d: number) => void;
   readonly __wbg_persistenceanalysis_free: (a: number) => void;
   readonly persistenceanalysis_births: (a: number, b: number) => void;
   readonly persistenceanalysis_deaths: (a: number, b: number) => void;
@@ -794,6 +802,19 @@ export interface InitOutput {
   readonly persistenceclassification_kept_integrated_mass: (a: number, b: number) => void;
   readonly persistenceclassification_kept_centroid_x: (a: number, b: number) => void;
   readonly persistenceclassification_discarded_births: (a: number, b: number) => void;
+  readonly __wbg_radiodecision_free: (a: number) => void;
+  readonly radiodecision_points_x: (a: number, b: number) => void;
+  readonly radiodecision_points_y: (a: number, b: number) => void;
+  readonly radiodecision_indices: (a: number, b: number) => void;
+  readonly radiodecision_widths_ppm: (a: number, b: number) => void;
+  readonly radiodecision_is_radio: (a: number, b: number) => void;
+  readonly radiodecision_kept_count: (a: number) => number;
+  readonly radiodecision_reference_ppm: (a: number) => number;
+  readonly radiodecision_threshold_ppm: (a: number) => number;
+  readonly anti_radio_guess_z: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly anti_radio_filter: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
+  readonly pca_project: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+  readonly spectral_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly __wbg_forest_free: (a: number) => void;
   readonly forest_edge_u: (a: number, b: number) => void;
   readonly forest_edge_v: (a: number, b: number) => void;
@@ -816,23 +837,24 @@ export interface InitOutput {
   readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
   readonly barycentric_project: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly barycentric_project_f64: (a: number, b: number, c: number, d: number, e: number) => void;
-  readonly hough_accumulate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
-  readonly hough_smooth: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
-  readonly hough_transform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => void;
-  readonly hough_prepare: (a: number, b: number, c: number, d: number) => void;
-  readonly spectral_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
-  readonly __wbg_radiodecision_free: (a: number) => void;
-  readonly radiodecision_points_x: (a: number, b: number) => void;
-  readonly radiodecision_points_y: (a: number, b: number) => void;
-  readonly radiodecision_indices: (a: number, b: number) => void;
-  readonly radiodecision_widths_ppm: (a: number, b: number) => void;
-  readonly radiodecision_is_radio: (a: number, b: number) => void;
-  readonly radiodecision_kept_count: (a: number) => number;
-  readonly radiodecision_reference_ppm: (a: number) => number;
-  readonly radiodecision_threshold_ppm: (a: number) => number;
-  readonly anti_radio_guess_z: (a: number, b: number, c: number, d: number, e: number) => number;
-  readonly anti_radio_filter: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
-  readonly pca_project: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+  readonly fkmd: (a: number, b: number, c: number, d: number) => void;
+  readonly __wbg_trimresult_free: (a: number) => void;
+  readonly trimresult_points_x: (a: number, b: number) => void;
+  readonly trimresult_points_y: (a: number, b: number) => void;
+  readonly trimresult_kept_indices: (a: number, b: number) => void;
+  readonly trimresult_total_count: (a: number) => number;
+  readonly __wbg_trimhistogram_free: (a: number) => void;
+  readonly trimhistogram_centres: (a: number, b: number) => void;
+  readonly trimhistogram_counts: (a: number, b: number) => void;
+  readonly trimhistogram_min: (a: number) => number;
+  readonly trimhistogram_max: (a: number) => number;
+  readonly trimhistogram_dropped: (a: number) => number;
+  readonly trim_guess: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+  readonly trim_apply: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly trim_histogram: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly trimresult_low_bound: (a: number) => number;
+  readonly trimresult_high_bound: (a: number) => number;
+  readonly trimresult_kept_count: (a: number) => number;
   readonly kmeans_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly compute: (a: number, b: number) => number;
   readonly add: (a: number, b: number) => number;

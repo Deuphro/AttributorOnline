@@ -2663,4 +2663,267 @@ function nearestTarget(targets){
     return best
 }
 
-export {Element,Formula,Stoichiometry,FormulaCollection,nearestByMz,nearestTarget,loadTable}
+/* -------------------------------------------------------------------------
+   SIGNATURE DE PAS — la chimie du Hough.
+
+   Le noyau de HoughTransformNode travaille dans le plan (masse, défaut), avec
+   défaut = m - round(m). Deux pics d'une série qui diffèrent d'UN atome de
+   l'élément E, à la charge z, satisfont:
+
+       Δm = A_E / z = k + ε,   k entier, ε = partie fractionnaire
+
+   Si k ≥ 1 le pas franchit un entier, donc le défaut ne bouge que de ε
+   pendant que la masse bouge de k+ε. La pente mesurée par le noyau est donc
+   EXACTEMENT
+
+       s = ε / (k + ε)          soit, à l'inverse,   A_E / z ≈ k / (1 - s)
+
+   C'est une égalité, pas un ajustement : la partie entière k se connaît d-ahead
+   pour un élément donné, il n'y a donc rien à faire tensiónner et rien à
+   itérer. C'est ce qui rend la détection une COMPARAISON — ce que demandait
+   l'outil — au lieu d'un problema d'optimisation.
+
+   DEUX CONSÉQUENCES, vérifiées sur les masses NIST de data/elements.json :
+
+   - H sort de la fenêtre. A_H/z = 1.00783 donne s = 7.8e-3, huit fois la borne
+     ±1e-3 du Hough. Un pas d'hydrogène traverse sept entiers: ce n'est pas une
+     petite pente, c'est une pente qui n'appartient pas à cet espace. Le Hough ne
+     voit pas les substitutions H, et il ne doit pas prétendre le contraire.
+
+   - P, S, Cl, Ar, K et Si sont TASSÉS en 1.6e-4. Sur une fenêtre de 2e-3, une
+     grille de 64 colonnes donne 3.1e-5 par colonne: ces six éléments tiennent
+     dans cinq colonnes. Il faut une grille nettement plus fine pour les
+     séparer, et c'est une contrainte de la méthode, pas un réglage de confort.
+   ------------------------------------------------------------------------- */
+
+/* La signature d'UNE masse à UNE charge, ou null quand la notion n'a pas de
+   sens. Le refus est sur k < 1 : un pas qui ne franchit aucun entier laisse le
+   défaut suivre la masse, la pente vaut 1, et « 1 » n'est pas une signature —
+   c'est la définition de la coordonnée. */
+function stepSignature(mass,charge=1){
+    if(!Number.isFinite(mass)||!(charge>0)) return null
+    const massPerCharge=mass/charge
+    const k=Math.round(massPerCharge)
+    if(k<1) return null
+    const epsilon=massPerCharge-k
+    return {charge,massPerCharge,k,epsilon,slope:epsilon/massPerCharge}
+}
+
+/* Toutes les signatures de la table, une par (élément, isotope retenu, charge).
+
+   LES ISOTOPES LES PLUS ABONDANTS, parce qu'une signature d'un isotope rare ne
+   sert qu'à trouver un pic qui n'existe pas dans le spectre. `isotopeCount` les
+   garde, par ordre d'abondance décroissante — l'ordre dans lequel Element
+   indexe déjà, et qu'il ne faut pas recalculer.
+
+   La table est triée par pente parce que c'est l'ordre du matchmaking : la
+   détection est une recherche par balayage, pas un filtre sur toute la liste. */
+function elementSignatures(table,{charges=[1],isotopeCount=1,abundanceFloor=0}={}){
+    if(!table?.elements?.length) return []
+    const out=[]
+    for(const element of table.elements){
+        const ranked=element._byAbundance??element.isotopes??[]
+        let kept=0
+        for(const isotope of ranked){
+            if(kept>=isotopeCount) break
+            //null is 1 by convention (Element.index): a monoisotopic element has
+            //no abundance written and IS certain, so a floor must not skip it
+            const abundance=isotope.abundance??1
+            if(abundance<abundanceFloor) continue
+            const mass=Number.isFinite(isotope.mass)?isotope.mass:element.monoisotopicMass
+            for(const charge of charges){
+                const signature=stepSignature(mass,charge)
+                if(!signature) continue
+                out.push({...signature,element,symbol:element.symbol,Z:element.Z,
+                    name:element.name,A:isotope.A,mass,abundance})
+            }
+            kept++
+        }
+    }
+    out.sort((a,b)=>a.slope-b.slope)
+    return out
+}
+
+/* Les signatures compatibles avec une pente mesurée, la plus proche d'abord.
+
+   `tolerance` est en pentes, pas en colonnes : la grille est un échantillonnage
+   de l'espace des pentes, et l'appelant sait de combien elle est trop grossière.
+   La distance est rapportée, parce que deux éléments voisins en pentes peuvent
+   être très loin en masse — et c'est la masse qui décide de la confusion. */
+function matchSignatures(signatures,slope,tolerance=1e-3){
+    if(!Number.isFinite(slope)) return []
+    const out=[]
+    for(const signature of signatures){
+        const delta=signature.slope-slope
+        if(Math.abs(delta)>tolerance) continue
+        out.push({...signature,delta,relative:Math.abs(delta)/(Math.abs(slope)||1e-12)})
+    }
+    out.sort((a,b)=>Math.abs(a.delta)-Math.abs(b.delta))
+    return out
+}
+
+/* Les masses par charge, sous la forme que le matchmaking des pas veut:
+   une entrée par (élément, isotope, charge), la VALEUR étant A/z — le pas lui-même.
+
+   C'est `elementSignatures` sans la pente, et c'est la forme qui identifie. La
+   pente est ε/(k+ε) et a jeté k; le pas est k+ε et l'a gardé. Deux éléments
+   indiscernables en pente le sont ici par leur masse. */
+function massSteps(table,{charges=[1],isotopeCount=1}={}){
+    return elementSignatures(table,{charges,isotopeCount}).map(signature=>{
+        const {slope,k,epsilon,...rest}=signature
+        return {...rest,massPerCharge:signature.massPerCharge}
+    })
+}
+
+/* LE SCORE PAR PAIRES — la détection, depuis que le noyau rend le plan.
+
+   Chaque paire porte les DEUX nombres dont la lecture a besoin — la pente
+   pour laquelle elle a voté, et l'écart de masse `dm` qu'elle enjambe — et
+   la grille n'en a gardé que la somme. Un histogramme global des écarts
+   dirait quels pas ont eu lieu, mais pas QUELLE pente chacun a votée, et
+   recoller les deux après coup serait une devinette.
+
+   L'ALGORITHME, EN TROIS LIGNES :
+   1. pour chaque paire, la meilleure pente parmi les pentes théoriques —
+      dichotomie dans la liste triée, pas de tolérance en pente ;
+   2. `round(dm) / round(A/z)` doit être un ENTIER — pas « près d'un entier
+      à 0.01 près », un entier : c'est l'identité « le pas est n fois la
+      masse », et le 0.01 d'avant était le fossile d'un histogramme mort ;
+   3. si oui, vote pondéré par `1 / (dm · |dm − n·A/z|)` — l'inverse du
+      résidu RELATIF au pas : un match bon à basse masse pèse plus fort
+      qu'un multiple lointain forcément approximatif, parce que le doute
+      est le moins important là où dm est petit.
+
+   LE CLASSEMENT EST LA SOMME DES POIDS, PAS LE COMPTE. Quelques votes très
+   bons battent des votes médiocres — et à résidu égal, un pas de 14 Da bat
+   un pas de 164 Da : le second est forcément un multiple, le premier peut
+   être l'atome lui-même. CH2 (14.0157) sur la pente N vote bien (14/14 = 1,
+   entier), avec un poids de 1/(14×0.0126) ≈ 5.7 ; un pas He à 164 Da avec
+   un résidu de 5e-4 pèse 1/(164×5e-4) ≈ 12 — le même ordre, pas des ordres
+   de grandeur : c'est le doute à basse masse qui tranche, pas l'arithmétique.
+
+   `pairs` est le plan du noyau, à plat : [pente, dm, pente, dm, …]. */
+function scorePairs(table,pairs,{charges=[1],isotopeCount=1}={}){
+    const candidates=elementSignatures(table,{charges,isotopeCount})
+        /* REJET SI VALENCE NULLE, PARITÉ DES MULTIPLES. He, Ne, Ar et les
+           lourds sans convention renseignée ne votent jamais. La règle
+           chimique qui faisait qu'on regardait les multiples : un fragment
+           homonucléaire Xₙ ne tient que si les électrons célibataires se
+           referment — donc à valence IMPAIRE (H=1, N=3, Cl=1) seuls les
+           multiples PAIRS votent (H₂, N₂, Cl₂…), et à valence PAIRE
+           (C=4, O=2) tout multiple passe : c'est là que l'explosion
+           quadratique survit. */
+        .filter(c=>Number.isFinite(c.element?.valences?.default))
+        .map(c=>({...c,oddValence:(c.element.valences.default%2!==0)}))
+    if(!candidates.length) return []
+    /* TRIÉS PAR PENTE, UNE FOIS : la meilleure pente est alors une
+       dichotomie, pas un balayage des ~118 candidats par paire. */
+    const sorted=[...candidates].sort((a,b)=>a.slope-b.slope)
+    const slopes=sorted.map(c=>c.slope)
+    const flat=pairs instanceof Float64Array?pairs:Float64Array.from(pairs??[])
+    const count=Math.floor(flat.length/2)
+    const found=new Map()
+    for(let i=0;i<count;i++){
+        const slope=flat[2*i]
+        const dm=flat[2*i+1]
+        if(!Number.isFinite(slope)||!Number.isFinite(dm)||!(dm>0)) continue
+        /* 1. LA MEILLEURE PENTE — dichotomie dans la liste triée. Le point
+           d'insertion est entre lo-1 et lo : le plus proche des deux gagne,
+           et il n'y en a qu'un. */
+        let lo=0
+        let hi=slopes.length
+        while(lo<hi){
+            const mid=(lo+hi)>>1
+            if(slopes[mid]<slope) lo=mid+1
+            else hi=mid
+        }
+        const dl=lo-1>=0?Math.abs(slope-slopes[lo-1]):Infinity
+        const dr=lo<slopes.length?Math.abs(slope-slopes[lo]):Infinity
+        const best=sorted[dl<=dr?lo-1:lo]??null
+        if(!best) continue
+        /* 2. L'ENTIER — round(dm) / round(A/z) doit tomber juste. Pas de
+           tolérance : un entier est un entier, et c'est le critère qui
+           remplace le 0.01 Da hérité de l'histogramme. */
+        const roundedStep=Math.round(dm)
+        const roundedMass=Math.round(best.massPerCharge)
+        if(!(roundedMass>=1)||!(roundedStep>=1)) continue
+        if(roundedStep%roundedMass!==0) continue
+        const multiple=roundedStep/roundedMass
+        /* LA PARITÉ DES MULTIPLES : à valence impaire, le pas direct x1 vote
+           toujours, et au-delà seuls les multiples pairs (H₂, pas H₃) — un
+           x3 ou un x41 n'est pas un mauvais vote, c'est un vote qui
+           n'aurait jamais dû exister. À valence paire, tout multiple passe :
+           C, C₂, C₃, C₄ partagent une pente et l'explosion quadratique
+           survit. */
+        if(best.oddValence&&multiple!==1&&(multiple%2!==0)) continue
+        /* 3. LE POIDS — l'inverse du résidu relatif : 1/(dm·|dm − n·A/z|).
+           À résidu égal, un pas court pèse plus qu'un multiple lointain —
+           le doute est le moins important à basse masse. */
+        const residue=Math.abs(dm-multiple*best.massPerCharge)
+        const weight=1/(dm*residue+1e-12)
+        const key=`${best.symbol}/${best.charge}`
+        let row=found.get(key)
+        if(!row){
+            row={symbol:best.symbol,Z:best.Z,name:best.name,
+                A:best.A,charge:best.charge,
+                mass:best.mass,massPerCharge:best.massPerCharge,slope:best.slope,
+                votes:0,score:0,bestDelta:Infinity,totalDelta:0,multiples:{}}
+            found.set(key,row)
+        }
+        const delta=Math.abs(slope-best.slope)
+        row.votes++
+        row.score+=weight
+        row.totalDelta+=delta
+        if(delta<row.bestDelta) row.bestDelta=delta
+        row.multiples[multiple]=(row.multiples[multiple]??0)+1
+    }
+    const out=[...found.values()]
+    for(const row of out){
+        row.meanDelta=row.votes?row.totalDelta/row.votes:Infinity
+        /* Le multiple le plus fréquent — ce que la relation dit le plus souvent. */
+        let top=null
+        let topVotes=0
+        for(const [multiple,votes] of Object.entries(row.multiples)){
+            if(votes>topVotes){ topVotes=votes; top=Number(multiple) }
+        }
+        row.topMultiple=top
+    }
+    /* LE SCORE D'ABORD : quelques votes très bons battent des votes
+       médiocres — la somme des |1/résidu|, pas le compte. Le compte ne
+       départage que les égalités de score. */
+    out.sort((a,b)=>b.score-a.score||b.votes-a.votes||a.symbol.localeCompare(b.symbol))
+    return out
+}
+
+/* LES SEUILS k·MAD DU SCORE — pour le graphe, pas pour le tri.
+
+   Les scores s'étalent sur des ordres de grandeur (un pas exact pèse 1e12
+   quand un pas approximatif pèse 80), donc médiane et MAD se calculent en
+   log10 : en linéaire, la MAD serait dominée par les deux premiers et les
+   trois lignes se marcheraient dessus. `scores` est la liste des scores
+   triés ou non ; le retour donne la médiane, la MAD et une ligne par k,
+   dans les deux espaces (log pour dessiner, linéaire pour lire). */
+function scoreCutoffs(scores,{ks=[1,2,4]}={}){
+    const logs=(scores??[])
+        .map(s=>Number(s?.score??s))
+        .filter(s=>Number.isFinite(s)&&s>0)
+        .map(s=>Math.log10(s))
+        .sort((a,b)=>a-b)
+    if(!logs.length) return null
+    const median=logs.length%2
+        ?logs[(logs.length-1)/2]
+        :(logs[logs.length/2-1]+logs[logs.length/2])/2
+    const deviations=logs.map(l=>Math.abs(l-median)).sort((a,b)=>a-b)
+    const mad=deviations.length%2
+        ?deviations[(deviations.length-1)/2]
+        :(deviations[deviations.length/2-1]+deviations[deviations.length/2])/2
+    return {
+        medLog:median,
+        median:10**median,
+        mad,
+        lines:ks.map(k=>({k,log:median+k*mad,score:10**(median+k*mad)})),
+    }
+}
+
+export {Element,Formula,Stoichiometry,FormulaCollection,nearestByMz,nearestTarget,loadTable,
+    stepSignature,elementSignatures,matchSignatures,massSteps,scorePairs,scoreCutoffs}
