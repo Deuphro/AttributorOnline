@@ -57,31 +57,42 @@ for(let iy=0;iy<NY;iy++){
     }
 }
 
-/* computeBounds closes over SurfaceTrace and Scatter3DTrace, so both names
-   are supplied: that IS the dispatch under test. */
+/* computeBounds closes over SurfaceTrace, Scatter3DTrace AND the shared height
+   mapping, so all three names are supplied. That IS the dispatch under test —
+   and the third name is the point: computeBounds used to carry its OWN copy of
+   the height arithmetic while the mesh used the plot's, so the two could
+   disagree and nothing here would have seen it. */
 const makeBounds=new Function(
-    "SurfaceTrace","Scatter3DTrace",
+    "SurfaceTrace","Scatter3DTrace","surfaceHeightMap",
     methodBodyOf(source,"computeBounds")
 )
 /* `.call` FIRST, arguments after: a function built by `new Function` and then
    invoked without `new` RUNS the body with `this = globalThis` instead of
    building anything, and the resulting failure reads as a bug in
    computeBounds rather than in the harness. */
-const build=traces=>makeBounds.call({visibleTraces:traces},SurfaceTrace,Scatter3DTrace)
+const build=traces=>makeBounds.call({visibleTraces:traces},
+    SurfaceTrace,Scatter3DTrace,surfaceHeightMap)
+/* The mapping is EVALUATED FROM THE FILE, not retyped: the whole reason it
+   lives at module level is that the box and the mesh share one implementation,
+   and a transcription in the test would be a second implementation — the test
+   would then agree with a broken mapping exactly as the bug happens. It closes
+   over nothing, so its body stands alone. */
+const surfaceHeightMap=new Function("wave","options",methodBodyOf(source,"surfaceHeightMap"))
 
-test("a surface's z box is its remapped height, centred on the data",()=>{
+test("a surface's z box runs from its floor to its peak",()=>{
     const bounds=build(
         [surfaceTrace({height:0.5,stride:1})]
     )
     ok(bounds,`no bounds for a valid surface (got ${bounds})`)
-    //z runs 2..6, so mid=4 and half=2; height 0.5 puts the box at
-    //4 ± 2*0.5*2 = 4 ± 2, i.e. [2, 6] — the same span, re-centred
-    const mid=(2+6)/2
-    const half=(6-2)/2
-    ok(Math.abs(bounds.zMin-(mid-half*0.5*2))<1e-12,
-        `zMin should be ${mid-half*0.5*2}, got ${bounds.zMin}`)
-    ok(Math.abs(bounds.zMax-(mid+half*0.5*2))<1e-12,
-        `zMax should be ${mid+half*0.5*2}, got ${bounds.zMax}`)
+    /* z runs 2..6 and is mapped onto [0, height]: the floor of the data sits at
+       the bottom of the cube and its peak at the top. It used to be centred,
+       (z-mid)/span*height, which put every ordinary cell of a peaked surface on
+       the bottom plane at once — the flat sheet with needles that made a Hough
+       accumulator look like a plane of samples. */
+    ok(Math.abs(bounds.zMin-0)<1e-12,
+        `zMin should be the floor at 0, got ${bounds.zMin}`)
+    ok(Math.abs(bounds.zMax-0.5)<1e-12,
+        `zMax should be the peak at height 0.5, got ${bounds.zMax}`)
 })
 
 test("the height option actually moves the box",()=>{
@@ -92,9 +103,103 @@ test("the height option actually moves the box",()=>{
     const tall=withHeight(1.5)
     const flatSpan=flat.zMax-flat.zMin
     const tallSpan=tall.zMax-tall.zMin
-    ok(Math.abs(flatSpan-4)<1e-12,`height 0.5 should give a z span of 4, got ${flatSpan}`)
-    ok(Math.abs(tallSpan-12)<1e-12,`height 1.5 should give a z span of 12, got ${tallSpan}`)
+    ok(Math.abs(flatSpan-0.5)<1e-12,`height 0.5 should give a z span of 0.5, got ${flatSpan}`)
+    ok(Math.abs(tallSpan-1.5)<1e-12,`height 1.5 should give a z span of 1.5, got ${tallSpan}`)
     ok(tallSpan>flatSpan,"a taller height must give a taller box")
+})
+
+test("the box and the mesh agree on a PEAKED range",()=>{
+    /* THE CASE A LINEAR SCALE LOSES. One cell holding a hundred times the rest
+       is the ordinary shape of a vote accumulator, and it is where a mapping
+       and a box drift apart: if computeBounds and heightMapping each do their
+       own arithmetic, one of them centres and the other does not, and the mesh
+       sits somewhere its own axis denies. Both are asked here. */
+    const NX=8,NY=8
+    const peaked={
+        dims:[NX,NY,3],
+        index:(ix,iy,k)=>ix+iy*NX+k*NX*NY,
+        core:new Float64Array(NX*NY*3)
+    }
+    for(let iy=0;iy<NY;iy++){
+        for(let ix=0;ix<NX;ix++){
+            peaked.core[peaked.index(ix,iy,2)]=(ix===3&&iy===5)?1000:0
+        }
+    }
+    const trace=surfaceTrace({height:0.5,stride:1},peaked)
+    const bounds=build([trace])
+    ok(Math.abs(bounds.zMin)<1e-12,`the floor should sit at 0, got ${bounds.zMin}`)
+    ok(Math.abs(bounds.zMax-0.5)<1e-12,`the peak should sit at the height, got ${bounds.zMax}`)
+    const map=surfaceHeightMap(peaked,{height:0.5})
+    ok(Math.abs(map.place(0))<1e-12,"place() must put the floor at the bottom")
+    ok(Math.abs(map.place(1000)-0.5)<1e-12,"place() must put the peak at the top")
+})
+
+test("a log scale separates the cells a linear one flattens",()=>{
+    /* Votes are integers spanning orders of magnitude. On a linear scale every
+       cell under 1% of the peak normalises to within 1/100 of the floor and the
+       ridges between them vanish; on a log scale they spread out. This is the
+       difference between a surface you can read and a flat sheet. */
+    const values=[0,1,3,10,30,100,300,1000]
+    const NX=values.length,NY=2
+    const w={
+        dims:[NX,NY,3],
+        index:(ix,iy,k)=>ix+iy*NX+k*NX*NY,
+        core:new Float64Array(NX*NY*3)
+    }
+    for(let iy=0;iy<NY;iy++){
+        for(let ix=0;ix<NX;ix++){
+            w.core[w.index(ix,iy,2)]=values[ix]
+        }
+    }
+    const linear=surfaceHeightMap(w,{height:1,scale:"linear"})
+    const log=surfaceHeightMap(w,{height:1,scale:"log"})
+    /* the cell at 1 vote: a hundredth of the range on a linear scale */
+    ok(Math.abs(linear.normalise(1)-0.001)<1e-9,
+        `a linear scale must leave 1 vote at the floor, got ${linear.normalise(1)}`)
+    /* Not "above some number" — an arbitrary threshold would only encode the
+       shift. The claim is a RATIO: log spends the bottom of the cube on the
+       small votes, which is the whole point, and spends an order of magnitude
+       less of it on them than a linear scale does. */
+    ok(log.normalise(1)>10*linear.normalise(1),
+        `log must lift 1 vote far clear of the floor: ${log.normalise(1)} against ${linear.normalise(1)}`)
+    ok(log.normalise(1)<0.5,
+        `and not so far that the low votes all crowd the ceiling, got ${log.normalise(1)}`)
+    /* and the two must agree at the ends, or the floor and the peak move */
+    for(const map of [linear,log]){
+        ok(Math.abs(map.normalise(0))<1e-12,"the floor stays at the floor")
+        ok(Math.abs(map.normalise(1000)-1)<1e-12,"the peak stays at the peak")
+        ok(Math.abs(map.place(0))<1e-12,"place() puts the floor at the bottom")
+        ok(Math.abs(map.place(1000)-1)<1e-12,"place() puts the peak at the top")
+    }
+    /* the inverse has to hold, or a hovered vertex is quoted in cube units */
+    for(const map of [linear,log]){
+        for(const v of values){
+            const back=map.denormalise(map.normalise(v))
+            ok(Math.abs(back-v)<1e-6,
+                `denormalise(normalise(${v})) must be ${v}, got ${back}`)
+        }
+    }
+})
+
+test("a log scale still works on a range that starts NEGATIVE",()=>{
+    /* An error surface is signed, so the log's argument has to be shifted by the
+       floor: log() of a negative accumulator is NaN, and a NaN position drops
+       the whole vertex out of the mesh — a hole in the surface, not a message. */
+    const NX=4,NY=1
+    const w={
+        dims:[NX,NY,3],
+        index:(ix,iy,k)=>ix+iy*NX+k*NX*NY,
+        core:new Float64Array(NX*NY*3)
+    }
+    for(let ix=0;ix<NX;ix++) w.core[w.index(ix,0,2)]=-5+ix*10   // -5 … 25
+    const map=surfaceHeightMap(w,{height:1,scale:"log"})
+    for(let ix=0;ix<NX;ix++){
+        const v=w.core[w.index(ix,0,2)]
+        const placed=map.place(v)
+        ok(Number.isFinite(placed),`place(${v}) must be a finite z, got ${placed}`)
+    }
+    ok(Math.abs(map.normalise(-5))<1e-12,"the floor stays at the floor")
+    ok(Math.abs(map.normalise(25)-1)<1e-12,"the peak stays at the peak")
 })
 
 test("a scatter's z is a COORDINATE and is not remapped",()=>{

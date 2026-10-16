@@ -272,6 +272,31 @@ test("the worker's entry point slices the grid and refuses a wrong length",()=>{
         "the grid must be COPIED, so the transfer list owns its buffer")
 })
 
+test("the node sends its kernel settings, instead of the worker deciding them",()=>{
+    /* A DEFAULT BURIED IN THE WORKER IS A DECISION NOBODY TOOK. `neighbours`
+       and `bandwidth` shape the surface — `neighbours` is literally the number
+       of sides of the blobs, because the kernel convolves each cell with that
+       many discrete gaussians — and they used to be invisible: the node sent
+       keep:0 and bounds, and the worker supplied the rest. So the surface came
+       out shaped by a number the user could neither see nor change, and the
+       only way to alter it was to edit the worker.
+
+       The defaults must also still MATCH, or the inspector opens showing one
+       answer and the worker uses another. */
+    const node=readFileSync(join(here,"nodes/HoughTransformNode.js"),"utf8")
+    for(const key of ["keep","neighbours","bandwidth"]){
+        ok(new RegExp(`params:\\{[^}]*\\b${key}\\b`).test(node.replace(/\s+/g," ")),
+            `the node must send ${key} to the kernel`)
+    }
+    for(const [key,fallback] of [["keep","0"],["neighbours","12"],["bandwidth","2"]]){
+        const declared=new RegExp(`this\\.parameters\\.${key}=(${fallback.replace(".","\\.")})`)
+        ok(declared.test(node),
+            `the node must declare ${key}=${fallback}, the worker's own default`)
+    }
+    ok(/this\.parameters\.neighbours\b/.test(node)&&/bandwidth:Number\(this\.parameters\.bandwidth\)/.test(node),
+        "both must reach the params object the worker reads")
+})
+
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if(failures.length){
     process.exitCode=1

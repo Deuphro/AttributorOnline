@@ -746,11 +746,16 @@ class SurfaceTrace extends Trace{
         this.wave=wave
         this.options={
             colormap:"viridis",
-            //the height range, mapped onto [-height, +height] about the box
-            //centre. null means "use the data range", which is what makes a
-            //surface comparable between two runs.
+            //the height range, mapped onto [0, height]: the floor of the data
+            //at the bottom of the cube, its peak at the top. null means "use
+            //the data range", which is what makes a surface comparable between
+            //two runs.
             heightRange:null,
             height:0.5,
+            /* "linear" or "log". A vote count spans orders of magnitude, and on
+               a linear scale everything under the top few percent of the range
+               looks identical — a flat sheet with a needle on it. */
+            scale:"linear",
             ...options
         }
     }

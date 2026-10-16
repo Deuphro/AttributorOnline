@@ -59,6 +59,11 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.parameters.gridX=64
         this.parameters.gridY=48
         this.parameters.heightScale=0.55
+        /* An accumulator is peaked by nature: one relation gathers the votes of
+           every pair at once, so its range is one cell against thousands. On a
+           linear scale that is a flat sheet with a needle, which is why log is
+           the default here and the linear scale is the opt-in. */
+        this.parameters.heightScaleLog=true
         this.parameters.colormap="viridis"
         this.parameters.showScatter=false
         /* The (slope, intercept) box the kernel is asked for. Editable from
@@ -67,6 +72,24 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.parameters.slopeMax=0.001
         this.parameters.interceptMin=-0.2
         this.parameters.interceptMax=0.2
+        /* THE KERNEL'S OWN KNOBS. They live here rather than in the worker
+           because they are DECISIONS the user makes about their data, and a
+           default buried in kernelWorker.js is a decision nobody took:
+           - keep:      the N most intense peaks, 0 = all of them. Above a few
+                        hundred peaks the pair count is quadratic, and the
+                        extra pairs are the weakest ones.
+           - neighbours: how many occupied cells each cell averages over. THIS
+                        IS THE SHAPE OF THE OCTAGONS: the kernel convolves with
+                        k discrete gaussians, not with a continuous one, so a
+                        small k gives a polygon with k sides and a large one
+                        gives a round blob that costs a scan per cell.
+           - bandwidth: the floor added to the local covariance, in cells. It
+                        is what keeps a lone occupied cell from having a
+                        singular one — and the ceiling, past which the ellipse
+                        is wider than the grid. */
+        this.parameters.keep=0
+        this.parameters.neighbours=12
+        this.parameters.bandwidth=2
         this.surface=null
         this.collectedWaves=[]
         /* Monotonic ticket — FKMDNode's pattern: a resolve waiting on the
@@ -160,6 +183,12 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.slopeMaxInput=decimalField("slope max","slopeMax",-1,1)
         this.interceptMinInput=decimalField("intercept min","interceptMin",-10,10)
         this.interceptMaxInput=decimalField("intercept max","interceptMax",-10,10)
+        this.keepInput=numberField("keep (0 = all)","keep",0,20000)
+        this.neighboursInput=numberField("neighbours","neighbours",2,256)
+        this.bandwidthInput=decimalField("bandwidth","bandwidth",0.05,50,0.05,2)
+        const kernelHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
+            ["the kernel's own settings: each cell is averaged over its n nearest occupied neighbours with a local covariance, so n is the number of sides of the blobs and bandwidth their minimum width"])
+        content.append(kernelHint)
         const heightCaption=CE("label",{},["height"])
         this.heightInput=CE("input",{type:"range",min:0.05,max:1,step:0.05,value:this.parameters.heightScale},[])
         stylize(this.heightInput,{width:"100%"})
@@ -170,6 +199,22 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             this.applyTraces()
         })
         content.append(heightCaption,this.heightInput)
+        const scaleCaption=CE("label",{},["height scale"])
+        this.scaleInput=CE("select",{},[])
+        for(const [value,label] of [["log","log — ridges visible"],
+                                    ["linear","linear — peak height"]]){
+            this.scaleInput.append(CE("option",{value},[label]))
+        }
+        this.scaleInput.value=this.parameters.heightScaleLog?"log":"linear"
+        stylize(this.scaleInput,{width:"100%",fontFamily:"inherit","font-size":"0.9em"})
+        this.scaleInput.addEventListener("change",()=>{
+            this.parameters.heightScaleLog=this.scaleInput.value==="log"
+            this.applyTraces()
+        })
+        content.append(scaleCaption,this.scaleInput)
+        const scaleHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
+            ["a vote count spans orders of magnitude: one relation can collect the votes of every pair at once, and on a linear scale that flattens the whole surface into a sheet"])
+        content.append(scaleHint)
         const mapCaption=CE("label",{},["colormap"])
         this.mapInput=CE("select",{},[])
         for(const [value,label] of [["viridis","viridis"],["coolwarm","cool / warm"],["grayscale","grayscale"]]){
@@ -182,7 +227,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             this.applyTraces()
         })
         content.append(mapCaption,this.mapInput)
-        const scatterCaption=CE("label",{},["pairs"])
+        const scatterCaption=CE("label",{},["grid points"])
         this.scatterInput=CE("input",{type:"checkbox"},[])
         this.scatterInput.checked=!!this.parameters.showScatter
         stylize(this.scatterInput,{justifySelf:"start"})
@@ -204,11 +249,14 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         }
         const {nx,ny}=this.surface
         const lines=[
-            `grid ${nx} x ${ny} = ${nx*ny} nodes`,
-            `z in [${this.surface.zMin.toFixed(4)}, ${this.surface.zMax.toFixed(4)}]`,
+            `grid ${nx} x ${ny} = ${nx*ny} nodes — the (slope, intercept) sampling, not your data`,
+            `votes in [${this.surface.zMin.toFixed(4)}, ${this.surface.zMax.toFixed(4)}]`,
+            `height scale: ${this.parameters.heightScaleLog?"log":"linear"}` +
+                (this.surface.zMax>0?` (max/min = ${(this.surface.zMax/Math.max(this.surface.zMin,1e-9)).toPrecision(3)})`:" — the range says nothing on a zero surface"),
             `inputs accumulated: ${this.collectedWaves.length}`,
             `peaks fed: ${this.surface.prepared} of ${this.surface.points} points`,
-            `pairs used: ${this.surface.pairs}`,
+            `pairs voting: ${this.surface.pairs} — one line through each couple of peaks`,
+            `kernel: keep ${this.parameters.keep||"all"}, ${this.parameters.neighbours} neighbours, bandwidth ${this.parameters.bandwidth}`,
             `domain: slope [${this.surface.bounds[0]}, ${this.surface.bounds[1]}] intercept [${this.surface.bounds[2]}, ${this.surface.bounds[3]}]`
         ]
         if(this.collectedWaves.length&&!this.kernelErrors.length&&this.surface.prepared<2){
@@ -240,7 +288,10 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             try{
                 answer=await computePool.run("houghTransform",{
                     core:this.houghCore(),
-                    params:{nx,ny,keep:0,bounds:this.bounds()}
+                    params:{nx,ny,keep:Math.max(0,Math.trunc(this.parameters.keep)||0),
+                        neighbours:Math.max(2,Math.trunc(this.parameters.neighbours)||12),
+                        bandwidth:Number(this.parameters.bandwidth)||2,
+                        bounds:this.bounds()}
                 })
             }catch(err){
                 if(run!==this.resolveRun) return
@@ -375,6 +426,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             options:{
                 colormap:this.parameters.colormap,
                 height:this.parameters.heightScale,
+                scale:this.parameters.heightScaleLog?"log":"linear",
                 //the data's own range, so a change of grid resolution cannot
                 //shift what a colour means
                 heightRange:[this.surface.zMin,this.surface.zMax]
@@ -402,6 +454,10 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             gridX:this.parameters.gridX,
             gridY:this.parameters.gridY,
             heightScale:this.parameters.heightScale,
+            heightScaleLog:this.parameters.heightScaleLog,
+            keep:this.parameters.keep,
+            neighbours:this.parameters.neighbours,
+            bandwidth:this.parameters.bandwidth,
             colormap:this.parameters.colormap,
             showScatter:this.parameters.showScatter,
             slopeMin:this.parameters.slopeMin,
@@ -413,11 +469,12 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
     }
     restoreState(state){
         if(!state) return
-        for(const key of ["gridX","gridY","heightScale","slopeMin","slopeMax","interceptMin","interceptMax"]){
+        for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax"]){
             if(Number.isFinite(state[key])) this.parameters[key]=state[key]
         }
         if(typeof state.colormap==="string") this.parameters.colormap=state.colormap
         if(typeof state.showScatter==="boolean") this.parameters.showScatter=state.showScatter
+        if(typeof state.heightScaleLog==="boolean") this.parameters.heightScaleLog=state.heightScaleLog
         if(this.gridXInput) this.gridXInput.value=this.parameters.gridX
         if(this.gridYInput) this.gridYInput.value=this.parameters.gridY
         if(this.slopeMinInput) this.slopeMinInput.value=this.parameters.slopeMin.toFixed(4)
@@ -425,7 +482,11 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(this.interceptMinInput) this.interceptMinInput.value=this.parameters.interceptMin.toFixed(4)
         if(this.interceptMaxInput) this.interceptMaxInput.value=this.parameters.interceptMax.toFixed(4)
         if(this.heightInput) this.heightInput.value=this.parameters.heightScale
+        if(this.keepInput) this.keepInput.value=this.parameters.keep
+        if(this.neighboursInput) this.neighboursInput.value=this.parameters.neighbours
+        if(this.bandwidthInput) this.bandwidthInput.value=this.parameters.bandwidth.toFixed(2)
         if(this.mapInput) this.mapInput.value=this.parameters.colormap
+        if(this.scaleInput) this.scaleInput.value=this.parameters.heightScaleLog?"log":"linear"
         if(this.scatterInput) this.scatterInput.checked=this.parameters.showScatter
         this.startResolve().then(()=>{
             /* The camera is restored AFTER the traces: framing needs the box,

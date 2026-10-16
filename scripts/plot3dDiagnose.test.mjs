@@ -324,11 +324,18 @@ test("a face index is halved before it is read as a grid cell",()=>{
         "requestPick() must divide the face index by two to get a cell")
     /* The guard, not the variable name: the crash WAS this call. `z` is no
        longer the raw attribute — it is mapped back to data units first, so the
-       check has to sit on whatever reaches toPrecision(). */
-    ok(/Number\.isFinite\((dataZ|z)\)[^;]*toPrecision/.test(pick),
+       check has to sit on whatever reaches toPrecision(). The formatting moved
+       into hoverLabel(), so THAT is where the guard now has to be: the invariant
+       is about the value, not about which method it sits in. */
+    const label=methodBody(source,"hoverLabel",source.indexOf("export class Plot3DWebGL"))
+    ok(/Number\.isFinite\(value\)\?value\.toPrecision/.test(label),
         "and must not call toPrecision() on a value it has not checked: the crash was exactly that")
+    ok(/toPrecision\(\d\)/.test(label),
+        "and with enough digits to tell two smoothed cells apart: four showed neighbours identical")
     ok(/dataZ/.test(pick),
         "the tooltip must report DATA units: the buffer holds the world z, and a 12.5 ppm error labelled -0.42 is a lie")
+    ok(/Number\.isFinite\(dataZ\)/.test(pick),
+        "and only ask for a label at all once the mapped value is finite")
 })
 
 test("the orbit must redraw BOTH layers",()=>{

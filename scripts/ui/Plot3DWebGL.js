@@ -292,6 +292,67 @@ class OrbitPanControls{
    the ticks of that axis are laid on whichever of the box's parallel edges is
    currently the longest on screen.
    ===================================================================== */
+/* THE HEIGHT MAPPING, ONCE.
+
+   A surface's third column is a DISPLACEMENT, not a coordinate: an
+   accumulator has no natural zero, and the structure worth seeing is relative
+   to the surface's own range. So the value is normalised to t in [0,1] and the
+   height placed on t*height — the floor of the data sits at the bottom of the
+   cube and the peak at the top, with nothing under it and nothing over it.
+
+   It was `(z-mid)/span*height`, centred. That reads better in prose and is
+   worse on screen: when one cell of the range is a hundred times the others —
+   which is the NORMAL shape of a Hough accumulator, where a single relation
+   collects the votes of every pair at once — then mid sits up at half the peak,
+   every ordinary cell falls to the bottom plane at once, and the surface comes
+   out as a flat coloured sheet wearing a few needles.
+
+   THE SHIFT K. The floor of the range is what it is — often ZERO votes, and
+   log(0) is not a number, so the argument is shifted up by a thousandth of the
+   span before the log. That thousandth is also the accumulator's own
+   resolution: one vote against a peak of a million is exactly that, so a cell
+   holding a single vote lands a tenth of the way up instead of on the floor
+   with its neighbours, and the ridges between votes become visible. The shift
+   is relative, so a range that starts NEGATIVE — an error surface is signed —
+   works through the same code.
+
+   ONE function, because the box and the mesh were deriving the same arithmetic
+   separately, and the box is what the axis ticks are drawn from: two copies of
+   a mapping disagree exactly where it matters, in the labels. */
+export function surfaceHeightMap(wave,options={}){
+    const [nx,ny]=wave.dims
+    const range=options.heightRange
+    let lo=range?range[0]:Infinity
+    let hi=range?range[1]:-Infinity
+    if(!range){
+        for(let iy=0;iy<ny;iy++){
+            for(let ix=0;ix<nx;ix++){
+                const z=wave.core[wave.index(ix,iy,2)]
+                if(!Number.isFinite(z)) continue
+                if(z<lo) lo=z
+                if(z>hi) hi=z
+            }
+        }
+    }
+    if(!(hi>lo)){ lo=Number.isFinite(lo)?lo:0; hi=lo+1 }
+    const span=hi-lo
+    const height=Number.isFinite(options.height)?options.height:0.5
+    const log=options.scale==="log"
+    const shift=span*1e-3||1
+    const f=log?(v=>Math.log(v-lo+shift)):(v=>v-lo)
+    const fLo=f(lo)
+    const fSpan=f(hi)-fLo||1
+    const t=v=>Math.min(1,Math.max(0,(f(v)-fLo)/fSpan))
+    return {lo,hi,span,height,scale:log?"log":"linear",
+        /* the colour: the position in the range, on the same scale as the height
+           — a linear colour beside a log height would make the ridges lie */
+        normalise:t,
+        place:v=>t(v)*height,
+        /* the inverse, for the hover readout: a world z has to be reported in
+           the units the user gave, not in cube coordinates */
+        denormalise:u=>log?(Math.exp(fLo+u*fSpan)-shift+lo):(lo+u*fSpan)}
+}
+
 export class Plot3DWebGL{
     constructor(data,title,origin,destination,defaultAngles=null){
         this.title=title
@@ -502,8 +563,8 @@ export class Plot3DWebGL{
 
     /* The box the whole scene is fitted to. Over all visible traces: the two
        axes a trace declares are read from its own labels, and a surface's
-       height is remapped onto ±height about the box centre, so the box is
-       about the DATA, not about the raw value range. */
+       height is mapped onto [0, height] by the shared height mapping, so the
+       box is about the DATA, not about the raw value range. */
     computeBounds(){
         let xMin=Infinity,yMin=Infinity,zMin=Infinity
         let xMax=-Infinity,yMax=-Infinity,zMax=-Infinity
@@ -531,16 +592,15 @@ export class Plot3DWebGL{
                 }
             }
             if(!Number.isFinite(traceZMin)) continue
-            /* A surface's z is a DISPLACEMENT, centred and scaled onto ±height
-               about the box centre, so the box is about the data and not about
-               the raw value range — which is what makes two runs comparable.
-               A scatter's z is a coordinate and stays where it is. */
+            /* A surface's z is a DISPLACEMENT mapped onto [0, height] — through
+               the SHARED mapping, not a second copy of the arithmetic. The box
+               is what the overlay's tick labels are read off, so a second copy
+               is a second answer: the mesh would sit somewhere its own axis said
+               it was not. A scatter's z is a coordinate and stays where it is. */
             if(trace instanceof SurfaceTrace){
-                const height=Number.isFinite(trace.options?.height)?trace.options.height:0.5
-                const mid=(traceZMin+traceZMax)/2
-                const half=(traceZMax-traceZMin)/2||1
-                traceZMin=mid-half*height*2
-                traceZMax=mid+half*height*2
+                const map=surfaceHeightMap(wave,trace.options??{})
+                traceZMin=map.place(traceZMin)
+                traceZMax=map.place(traceZMax)
             }
             if(traceZMin<zMin) zMin=traceZMin
             if(traceZMax>zMax) zMax=traceZMax
@@ -601,6 +661,11 @@ export class Plot3DWebGL{
                 options.opacity??"",
                 options.colormap??"",
                 options.height??"",
+                //the SCALE is part of the fingerprint, not the styling: changing
+                //it moves every vertex, so a surface that kept the old buffers
+                //would change colour and not shape
+                options.scale??"",
+                options.heightRange?JSON.stringify(options.heightRange):"",
                 options.size??"",
                 options.stride??1,
                 wave?(wave.revision??0):0,
@@ -645,25 +710,7 @@ export class Plot3DWebGL{
        centred and scaled onto ±height about the box centre, and the colour is
        the un-remapped position in the range. */
     heightMapping(trace,bounds){
-        const wave=trace.wave
-        const [nx,ny]=wave.dims
-        const range=trace.options?.heightRange
-        let lo=range?range[0]:Infinity
-        let hi=range?range[1]:-Infinity
-        if(!range){
-            for(let iy=0;iy<ny;iy++){
-                for(let ix=0;ix<nx;ix++){
-                    const z=wave.core[wave.index(ix,iy,2)]
-                    if(!Number.isFinite(z)) continue
-                    if(z<lo) lo=z
-                    if(z>hi) hi=z
-                }
-            }
-        }
-        const span=hi-lo||1
-        const mid=(lo+hi)/2
-        const height=Number.isFinite(trace.options?.height)?trace.options.height:0.5
-        return {lo,hi,span,mid,height,normalise:z=>Math.min(1,Math.max(0,(z-lo)/span)),place:z=>((z-mid)/span)*height}
+        return surfaceHeightMap(trace.wave,trace.options??{})
     }
     /* The inverse of the height mapping for ONE trace, so a picked vertex can be
        reported in data units. Without it the tooltip would quote the world
@@ -672,7 +719,7 @@ export class Plot3DWebGL{
         const mapping=this.heightMapping(trace,this.bounds)
         const height=mapping.height||1
         if(!Number.isFinite(worldZ)) return NaN
-        return mapping.mid+(worldZ/height)*mapping.span
+        return mapping.denormalise(worldZ/height)
     }
     buildSurface(trace,bounds){
         const wave=trace.wave
@@ -1031,6 +1078,28 @@ export class Plot3DWebGL{
         group.appendChild(text)
         svg.appendChild(group)
     }
+    /* WHAT THE HOVER SAYS.
+
+       Six significant digits, not four. A smoothed surface is flat between
+       its samples BY CONSTRUCTION — the kernel averages each cell over its k
+       nearest occupied neighbours, so neighbouring cells agree to many places
+       — and four digits showed them all identical, which reads as "the cursor
+       does nothing" rather than as "these two cells really are the same value".
+
+       And the two in-plane coordinates, in the trace's OWN units. The x and y
+       of a grid surface are data, not cube coordinates: for the Hough node
+       they are the normalised (slope, intercept) position, and without them a
+       number cannot be located at all — you cannot look for a peak you cannot
+       address. */
+    hoverLabel(trace,dataZ,index){
+        const digits=value=>Number.isFinite(value)?value.toPrecision(6):"—"
+        const geometry=this.visibleTraces.find(t=>t.id===trace?.id)?.wave
+        if(!geometry||!Number.isInteger(index)) return `z ${digits(dataZ)}`
+        const [nx,ny]=geometry.dims
+        const x=geometry.core[geometry.index(index%nx,Math.floor(index/nx),0)]
+        const y=geometry.core[geometry.index(index%nx,Math.floor(index/nx),1)]
+        return `x ${digits(x)}  y ${digits(y)}  z ${digits(dataZ)}`
+    }
     /* One raycast per frame at most. A mousemove fires far more often than a
        surface can usefully be re-tested, and the throttle is what keeps the
        hover free on a 200k-vertex grid. */
@@ -1075,7 +1144,7 @@ export class Plot3DWebGL{
                    "-0.42". The tooltip reports DATA units, like the ticks. */
                 const trace=this.visibleTraces.find(t=>t.id===object.userData?.traceId)
                 const dataZ=trace?this.dataZOf(trace,z):NaN
-                label=Number.isFinite(dataZ)?`z ${dataZ.toPrecision(4)}`:""
+                label=Number.isFinite(dataZ)?this.hoverLabel(trace,dataZ,index):""
                 this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,label}
             }else{
                 this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,
