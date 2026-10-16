@@ -49,32 +49,50 @@ export function methodBody(text,name,after=0){
        is found by name at the start of a line, and a module-level function has
        no indentation and carries `function` in front. The fallback also skips a
        prefix match — `dispose()` must not land on `disposeState()`. */
-    let start=src.search(new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?${name}\\s*\\(`,`m`))
+    /* Search the COMMENT-BLANKED copy and slice the original. These files are
+       commented at length and the prose names the very methods being looked
+       for — "every gesture ends in update()" is a sentence in a comment that
+       sits a hundred lines ABOVE update() itself, and a search over the raw
+       text found the sentence and returned the next method's body instead.
+       It reads as a failure of the method under test, which is the worst
+       possible place for a failure of the extractor. blankComments replaces
+       with spaces, so every offset is valid in both. */
+    const blanked=blankComments(src)
+    const findAt=(pattern,from)=>{
+        const re=new RegExp(pattern,from?"gm":"m")
+        re.lastIndex=Math.max(0,from)
+        const hit=re.exec(blanked)
+        return hit?hit.index:-1
+    }
+    let start=findAt(`^\\s*(?:export\\s+)?(?:async\\s+)?${name}\\s*\\(`,after)
     if(start<0){
-        start=src.search(new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*\\(`,`m`))
+        start=findAt(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*\\(`,after)
     }
     if(start<0){
         //a plain call or a member access: find it past `after`, on a word bound
-        const re=new RegExp(`\\b${name}\\s*\\(`,`g`)
-        re.lastIndex=Math.max(0,after)
-        const hit=re.exec(src)
-        start=hit?hit.index:-1
+        start=findAt(`\\b${name}\\s*\\(`,after)
     }
     if(start<0) throw new Error(`${name}() not found`)
-    const openParen=src.indexOf("(",start)
+    /* EVERY structural step below reads `blanked`, not `src`. Reading `src`
+       for the parenthesis is the same bug one line later: a doc comment on the
+       method often mentions the method's own name, and the first "(" after a
+       match that starts inside a blanked comment is a "(" in the PROSE. The
+       returned body is the only thing that must come from `src`, because a
+       blanked comment would be handed to `new Function` as a wall of spaces. */
+    const openParen=blanked.indexOf("(",start)
     let depth=0
     let closeParen=-1
-    for(let k=openParen;k<src.length;k++){
-        if(src[k]==="(") depth++
-        else if(src[k]===")"){
+    for(let k=openParen;k<blanked.length;k++){
+        if(blanked[k]==="(") depth++
+        else if(blanked[k]===")"){
             depth--
             if(depth===0){ closeParen=k; break }
         }
     }
     if(closeParen<0) throw new Error(`${name}( has no closing parenthesis in its signature`)
-    const open=src.indexOf("{",closeParen)
+    const open=blanked.indexOf("{",closeParen)
     if(open<0) throw new Error(`${name}() has no opening brace after its signature`)
-    const clean=blankComments(src.slice(open))
+    const clean=blanked.slice(open)
     let braces=0
     for(let k=0;k<clean.length;k++){
         if(clean[k]==="{") braces++

@@ -78,6 +78,11 @@ class OrbitPanControls{
         this._theta=Math.PI/4
         this._phi=Math.PI/3
         this._distance=4
+        /* The distance at which an ORTHOGRAPHIC camera is at zoom 1. An
+           ortho frustum has no perspective divide: its magnification is
+           camera.zoom alone, so a wheel that only moved the camera along its
+           axis would be worth exactly nothing on screen. See update(). */
+        this._orthoReference=4
         this._last=new THREE.Vector2()
         this._spherical=new THREE.Spherical()
         this._panOffset=new THREE.Vector3()
@@ -119,11 +124,10 @@ class OrbitPanControls{
         }else{
             //pan in the camera plane, scaled by the distance so a pixel is a
             //pixel at any zoom
-            const scale=this.panSpeed*this._distance
             const right=new THREE.Vector3().setFromMatrixColumn(this.camera.matrix,0)
             const up=new THREE.Vector3().setFromMatrixColumn(this.camera.matrix,1)
-            this._panOffset.addScaledVector(right,-dx*scale)
-            this._panOffset.addScaledVector(up,dy*scale)
+            this._panOffset.addScaledVector(right,-dx*this.pixelScale())
+            this._panOffset.addScaledVector(up,dy*this.pixelScale())
         }
         /* THE MISSING update(). This is what made a left-drag do nothing at
            all: the deltas piled up here, and nothing consumed them, because
@@ -161,6 +165,20 @@ class OrbitPanControls{
        So the delta is applied in full, per gesture event, and zeroed. Direct
        manipulation with no lag is also the better feel here; damping mostly
        matters when a camera is chasing a moving target, and nothing here does. */
+    /* World units per CSS pixel for a pan, at the target plane. The
+       perspective form is the one panSpeed was tuned against and is left
+       alone. The orthographic form CANNOT be derived from the distance — the
+       distance does not enter the projection at all — so it is read off the
+       frustum, which is also what makes a pan track the zoom: dolly in and the
+       pan slows down with the scene instead of sliding it off the panel. */
+    pixelScale(){
+        const cam=this.camera
+        if(cam.isOrthographicCamera){
+            const visibleHeight=(cam.top-cam.bottom)/Math.max(cam.zoom,1e-6)
+            return this.panSpeed*this._distance*visibleHeight/2
+        }
+        return this.panSpeed*this._distance
+    }
     update(){
         this._theta+=this._deltaTheta
         this._phi+=this._deltaPhi
@@ -174,6 +192,18 @@ class OrbitPanControls{
         this.camera.position.setFromSpherical(this._spherical).add(this.target).add(this._panOffset)
         this.camera.lookAt(this.target.clone().add(this._panOffset))
         this.camera.updateMatrixWorld()
+        /* THE WHEEL ON AN ORTHOGRAPHIC CAMERA. There is no perspective divide
+           to shorten the rays, so the frustum is fixed and the ONLY thing that
+           magnifies is camera.zoom. Driving the camera along its axis instead
+           — which is all update() used to do — produces an identical picture on
+           every wheel notch: the zoom is not "weak" in orthographic mode, it
+           is absent. The distance stays the single zoom quantity (so min and
+           maxDistance keep bounding it, and getAngles still round-trips), and
+           is projected onto the zoom here. */
+        if(this.camera.isOrthographicCamera){
+            this.camera.zoom=Math.max(1e-3,this._orthoReference/this._distance)
+            this.camera.updateProjectionMatrix()
+        }
         /* The depth range belongs to the distance, or the near plane eats the
            scene. It used to be a constant sized for a 2000-unit budget, which
            clipped a unit-sized surface whole — and a fixed far plane loses the
@@ -190,7 +220,7 @@ class OrbitPanControls{
        hundreds, where frame() asks for size*1.6 and got silently clamped to
        80. The result is the same bug at the other end: the scene framed at a
        fraction of its own size, so it comes out a speck. */
-    frame(box,{resetAngles=false}={}){
+    frame(box,{resetAngles=false,angles=null}={}){
         this.target.set((box.xMin+box.xMax)/2,(box.yMin+box.yMax)/2,(box.zMin+box.zMax)/2)
         const size=Math.max(box.xMax-box.xMin,box.yMax-box.yMin,box.zMax-box.zMin,1e-6)
         this.minDistance=size*0.15
@@ -199,11 +229,23 @@ class OrbitPanControls{
         this._panOffset.set(0,0,0)
         this._scale=1
         if(resetAngles){
-            this._theta=Math.PI/4
-            this._phi=Math.PI/3
+            if(angles){
+                if(Number.isFinite(angles.theta)) this._theta=angles.theta
+                if(Number.isFinite(angles.phi)) this._phi=angles.phi
+                if(Number.isFinite(angles.distance)) this._distance=angles.distance
+            }else{
+                this._theta=Math.PI/4
+                this._phi=Math.PI/3
+            }
             this._deltaTheta=0
             this._deltaPhi=0
         }
+        /* frame() is what establishes the framing, so it is also what
+           establishes zoom 1 for an orthographic camera. In an ortho camera
+           there is no near-to-far perspective to absorb a bigger distance:
+           dollying out has to become a smaller zoom, or the framing the user
+           asked for is silently not the framing they get. */
+        this._orthoReference=this._distance
         this.update()
     }
     getAngles(){
@@ -251,7 +293,7 @@ class OrbitPanControls{
    currently the longest on screen.
    ===================================================================== */
 export class Plot3DWebGL{
-    constructor(data,title,origin,destination){
+    constructor(data,title,origin,destination,defaultAngles=null){
         this.title=title
         this.data=data
         this.origin=origin
@@ -265,6 +307,8 @@ export class Plot3DWebGL{
         this.controls=null
         this.axisLabels={x:"x",y:"y",z:"z"}
         this.bounds=null
+        this._orthographic=false
+        this.defaultAngles=defaultAngles
         this._traces=[]           // what is currently on the GPU
         this._signature=null
         this._dataRevision=0
@@ -368,9 +412,22 @@ export class Plot3DWebGL{
                 onDistance:distance=>this.glLayer?.setDepthRange(distance)
             })
         }
-        this._onDblClick=()=>{
-            if(!this.bounds||!this.controls) return
-            this.controls.frame(Plot3DWebGL.WORLD_BOX,{resetAngles:true})
+        /* TWO GESTURES, because one gesture was asked to do two unrelated things.
+           Double-click REFRAMES: back to the angles the plot was given, so the
+           node's chosen view is what the user gets back after an exploratory
+           orbit. Shift+double-click switches the LENS, perspective to
+           orthographic, and keeps the angles — a different lens is not a
+           different viewpoint. Bundled into one gesture, every toggle threw
+           the viewpoint away, which is why the two readings disagreed. */
+        this._onDblClick=(e)=>{
+            if(!this.glLayer) return
+            if(e.shiftKey){
+                this._orthographic=!this._orthographic
+                this.setCameraType(this._orthographic)
+            }else{
+                this.controls.frame(Plot3DWebGL.WORLD_BOX,
+                    {resetAngles:true,angles:this.defaultAngles??undefined})
+            }
             this.requestFrame()
             this.drawOverlay()
         }
@@ -390,6 +447,40 @@ export class Plot3DWebGL{
         this.container.addEventListener("dblclick",this._onDblClick)
         this.container.addEventListener("mousemove",this._onMove,{passive:true})
         this.container.addEventListener("mouseleave",this._onLeave)
+    }
+    /* Switch the GL layer's camera between Perspective and Orthographic,
+       keeping the current viewing angles. Rebuilds the orbit controls on the
+       new camera so orbit/pan/zoom keep working. */
+    setCameraType(orthographic){
+        const layer=this.glLayer
+        if(!layer) return
+        const old=layer.camera
+        const kept=this.controls?.getAngles?.()??this.defaultAngles??null
+        const aspect=(layer.width/layer.height)||1
+        let camera
+        if(orthographic){
+            const size=1
+            camera=new THREE.OrthographicCamera(-size*aspect,size*aspect,size,-size,0.01,1000)
+        }else{
+            camera=new THREE.PerspectiveCamera(45,aspect,0.01,1000)
+        }
+        camera.position.copy(old.position)
+        camera.lookAt(0,0,0)
+        camera.updateMatrixWorld()
+        layer.camera=camera
+        this.glCamera=camera
+        this.controls?.dispose?.()
+        this.controls=new OrbitPanControls(camera,this.container,{
+            onChange:()=>{
+                this.requestFrame()
+                this.requestOverlay()
+            },
+            onDistance:distance=>layer?.setDepthRange(distance)
+        })
+        /* resetAngles with the angles we just read: a perspective/orthographic
+           toggle is a change of lens, not of viewpoint. Without them the view
+           would snap back to pi/4, pi/3 on every toggle. */
+        this.controls.frame(Plot3DWebGL.WORLD_BOX,{resetAngles:true,angles:kept})
     }
 
     /* --- data -------------------------------------------------------- */
@@ -701,7 +792,7 @@ export class Plot3DWebGL{
         const firstDraw=!this._traces.length
         this.syncScene(this.bounds)
         if(firstDraw&&this.bounds&&this.controls){
-            this.controls.frame(Plot3DWebGL.WORLD_BOX,{resetAngles:true})
+            this.controls.frame(Plot3DWebGL.WORLD_BOX,{resetAngles:true,angles:this.defaultAngles})
         }
         this.syncViewport()
         this.drawOverlay()
@@ -1012,6 +1103,7 @@ export class Plot3DWebGL{
         }
         return {
             axisLabels:{...this.axisLabels},
+            orthographic:this._orthographic,
             camera:angles?{theta:angles.theta,phi:angles.phi,distance:angles.distance,
                 target:array(angles.target),pan:array(angles.pan)}:null,
             traces:this.traces.map(trace=>({
@@ -1027,6 +1119,7 @@ export class Plot3DWebGL{
         if(state.axisLabels&&typeof state.axisLabels==="object"){
             this.axisLabels={...this.axisLabels,...state.axisLabels}
         }
+        if(typeof state.orthographic==="boolean") this.setCameraType(state.orthographic)
         if(state.camera&&this.controls){
             /* A SERIALIZED CAMERA COMES BACK AS A PLAIN OBJECT: the vectors in
                it are not Vector3 any more. Depending on the path they arrive as

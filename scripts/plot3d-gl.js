@@ -149,8 +149,20 @@ export class GLSceneLayer{
         //the CSS box is owned by the caller
         this.canvas.style.width=`${w}px`
         this.canvas.style.height=`${h}px`
-        this.camera.aspect=w/h
-        this.camera.updateProjectionMatrix()
+        if(this.camera.isOrthographicCamera){
+            //keep a unit-sized world view, scaled to the aspect so nothing
+            //stretches when the panel is resized
+            const size=1
+            const ar=w/h
+            this.camera.left=-size*ar
+            this.camera.right=size*ar
+            this.camera.top=size
+            this.camera.bottom=-size
+            this.camera.updateProjectionMatrix()
+        }else{
+            this.camera.aspect=w/h
+            this.camera.updateProjectionMatrix()
+        }
         return true
     }
     render(){

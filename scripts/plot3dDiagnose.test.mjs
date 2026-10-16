@@ -228,13 +228,47 @@ test("the camera frames the CUBE, never the data extents",()=>{
     ok(/static WORLD_BOX=\{xMin:-1,xMax:1/.test(source),
         "the framed box must be the world cube")
     const frames=source.match(/controls\.frame\([^)]*\)/g)||[]
-    ok(frames.length===2,`expected two frame() calls, found ${frames.length}`)
+    /* Every call must frame the cube. The COUNT is not the invariant — the
+       perspective/orthographic swap frames too — so this only refuses a
+       frame() that was never wired up at all. */
+    ok(frames.length>=2,`expected at least two frame() calls, found ${frames.length}`)
     for(const call of frames){
         ok(/WORLD_BOX/.test(call),
             `the camera must frame the cube, not the data bounds: ${call}`)
         ok(!/this\.bounds/.test(call),
             `frame() on this.bounds places the camera at the data scale: ${call}`)
     }
+})
+
+test("the wheel zooms an ORTHOGRAPHIC camera, where the distance cannot",()=>{
+    /* THE BUG THIS CAUGHT. update() positioned the camera from a spherical
+       distance and nothing else. On a perspective camera that is a zoom,
+       because the frustum shrinks as the camera backs off. On an
+       orthographic camera there is no perspective divide at all: the frustum
+       is fixed, the only magnification is camera.zoom, and the wheel rendered
+       a BIT-IDENTICAL picture on every notch. Not a weak zoom — an absent
+       one, and one that looks like a broken mouse rather than a missing line.
+
+       The distance stays the single zoom quantity, so minDistance/maxDistance
+       still bound it and getAngles() still round-trips it, but it has to be
+       projected onto camera.zoom. `_orthoReference` is the distance frame()
+       established, which is what makes zoom 1 mean "the framing you asked
+       for" instead of "whatever distance the constructor happened to hold". */
+    /* update() and frame() live in OrbitPanControls, ABOVE the plot class, so
+       `after` is left at 0 on purpose: passing the class offset would search
+       past the only definitions there are. */
+    const update=methodBody(source,"update")
+    ok(/isOrthographicCamera/.test(update),
+        "update() must treat the orthographic camera differently")
+    const at=update.search(/camera\.zoom\s*=/)
+    ok(at>0,"update() must write camera.zoom: the frustum alone cannot zoom")
+    ok(/_orthoReference/.test(update.slice(at,at+200)),
+        "the zoom must be the framed distance over the current distance")
+    ok(/updateProjectionMatrix\(\)/.test(update.slice(at,at+200)),
+        "a new camera.zoom needs its projection matrix rebuilt")
+    const frame=methodBody(source,"frame")
+    ok(/_orthoReference\s*=/.test(frame),
+        "frame() is what establishes the framing, so it establishes zoom 1")
 })
 
 test("a left-drag ends in update(), or it does nothing at all",()=>{

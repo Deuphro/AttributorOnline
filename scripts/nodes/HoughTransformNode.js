@@ -45,10 +45,9 @@ import {computePool} from "../workerPool.js"
    The domain is deliberately NARROW: slopes within ±0.001, intercepts within
    ±0.2. A pair whose line falls outside votes for NOTHING (the kernel drops
    it, and the readout's pair count says how many survived), so this box IS
-   the question the surface answers. It doubles as the kernel default
-   (worker: bounds ?? [-0.001,0.001,-0.2,0.2]), restated here so the node owns
-   what it asks for rather than inheriting it. */
-const HOUGH_BOUNDS=[-0.001,0.001,-0.2,0.2]
+   the question the surface answers. The defaults below double as the kernel
+   default (worker: bounds ?? [-0.001,0.001,-0.2,0.2]), restated here so the
+   node owns what it asks for rather than inheriting it. */
 
 export class HoughTransformNode extends NodeWithRightAccordionGraph{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -62,6 +61,12 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.parameters.heightScale=0.55
         this.parameters.colormap="viridis"
         this.parameters.showScatter=false
+        /* The (slope, intercept) box the kernel is asked for. Editable from
+           the inspector and persisted with the session. */
+        this.parameters.slopeMin=-0.001
+        this.parameters.slopeMax=0.001
+        this.parameters.interceptMin=-0.2
+        this.parameters.interceptMax=0.2
         this.surface=null
         this.collectedWaves=[]
         /* Monotonic ticket — FKMDNode's pattern: a resolve waiting on the
@@ -80,9 +85,21 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
        context. Browsers cap those per page — Chrome at 16 — and past the cap
        it drops the OLDEST LIVE one, which belongs to a plot the user is still
        looking at. So one node, one context, from the start. */
+    /* The (slopeMin, slopeMax, interceptMin, interceptMax) box the kernel is
+       asked for. Read through this so the inspector and the kernel always agree. */
+    bounds(){
+        return [this.parameters.slopeMin,this.parameters.slopeMax,
+                this.parameters.interceptMin,this.parameters.interceptMax]
+    }
+    /* The Hough surface lies on a VERTICAL plane of the cube, so the camera
+       belongs in the horizontal one: theta 0, phi pi/2 looks the surface
+       face-on. The plot's own pi/4, pi/3 is a 30-degree oblique and turns the
+       surface nearly edge-on. */
     createGraph(dialog,label){
-        const plot=new Plot3DWebGL([],`${label} surface`,this.origin,dialog.DOMelt.content)
-        plot.axisLabels={x:`slope [${HOUGH_BOUNDS[0]}, ${HOUGH_BOUNDS[1]}]`,y:`intercept [${HOUGH_BOUNDS[2]}, ${HOUGH_BOUNDS[3]}]`,z:"intensity"}
+        const plot=new Plot3DWebGL([],`${label} surface`,this.origin,dialog.DOMelt.content,
+            {theta:0,phi:Math.PI/2})
+        const b=this.bounds()
+        plot.axisLabels={x:`slope [${b[0]}, ${b[1]}]`,y:`intercept [${b[2]}, ${b[3]}]`,z:"intensity"}
         return plot
     }
     registered(e){
@@ -124,8 +141,25 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             content.append(caption,input)
             return input
         }
+        const decimalField=(label,key,min,max,step=0.0001,decimals=4)=>{
+            const caption=CE("label",{},[label])
+            const input=CE("input",{type:"number",value:this.parameters[key].toFixed(decimals),min,max,step},[])
+            stylize(input,{width:"100%","box-sizing":"border-box",fontFamily:"inherit","font-size":"0.9em"})
+            input.addEventListener("change",()=>{
+                const value=Math.max(min,Math.min(max,Number(input.value)||this.parameters[key]))
+                this.parameters[key]=value
+                input.value=value.toFixed(decimals)
+                this.startResolve().then(()=>this.resolveChildren())
+            })
+            content.append(caption,input)
+            return input
+        }
         this.gridXInput=numberField("grid x","gridX",8,256)
         this.gridYInput=numberField("grid y","gridY",8,256)
+        this.slopeMinInput=decimalField("slope min","slopeMin",-1,1)
+        this.slopeMaxInput=decimalField("slope max","slopeMax",-1,1)
+        this.interceptMinInput=decimalField("intercept min","interceptMin",-10,10)
+        this.interceptMaxInput=decimalField("intercept max","interceptMax",-10,10)
         const heightCaption=CE("label",{},["height"])
         this.heightInput=CE("input",{type:"range",min:0.05,max:1,step:0.05,value:this.parameters.heightScale},[])
         stylize(this.heightInput,{width:"100%"})
@@ -157,7 +191,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             this.applyTraces()
         })
         content.append(scatterCaption,this.scatterInput)
-        const hint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7"}},["drag: orbit · shift+drag: pan · wheel: zoom · double-click: reframe"])
+        const hint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7"}},["drag: orbit · shift+drag: pan · wheel: zoom · double-click: reframe · shift+double-click: perspective ↔ orthographic"])
         content.append(hint)
         this.readout=CE("div",{style:{"grid-column":"1 / -1","white-space":"pre-wrap",opacity:"0.85"}},[])
         content.append(this.readout)
@@ -206,7 +240,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             try{
                 answer=await computePool.run("houghTransform",{
                     core:this.houghCore(),
-                    params:{nx,ny,keep:0,bounds:HOUGH_BOUNDS}
+                    params:{nx,ny,keep:0,bounds:this.bounds()}
                 })
             }catch(err){
                 if(run!==this.resolveRun) return
@@ -306,7 +340,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             zMin,
             zMax,
             domain:"[-1,1]^2",
-            bounds:[...HOUGH_BOUNDS],
+            bounds:[...this.bounds()],
             source:usable?"kernel (computePool houghTransform)"
                 :this.kernelErrors.length?`kernel error: ${this.kernelErrors[0]}`
                 :answer?"kernel refused the inputs"
@@ -318,7 +352,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         wave.touch()
         let points=0
         for(const w of this.collectedWaves) points+=Math.floor(w.core.length/2)
-        this.surface={nx,ny,wave,zMin,zMax,prepared,pairs,points,bounds:HOUGH_BOUNDS}
+        this.surface={nx,ny,wave,zMin,zMax,prepared,pairs,points,bounds:this.bounds()}
         this.surfaceWave=wave
         return wave
     }
@@ -370,18 +404,26 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             heightScale:this.parameters.heightScale,
             colormap:this.parameters.colormap,
             showScatter:this.parameters.showScatter,
+            slopeMin:this.parameters.slopeMin,
+            slopeMax:this.parameters.slopeMax,
+            interceptMin:this.parameters.interceptMin,
+            interceptMax:this.parameters.interceptMax,
             plot:this.graph?.serializeState?.()??null
         }
     }
     restoreState(state){
         if(!state) return
-        for(const key of ["gridX","gridY","heightScale"]){
+        for(const key of ["gridX","gridY","heightScale","slopeMin","slopeMax","interceptMin","interceptMax"]){
             if(Number.isFinite(state[key])) this.parameters[key]=state[key]
         }
         if(typeof state.colormap==="string") this.parameters.colormap=state.colormap
         if(typeof state.showScatter==="boolean") this.parameters.showScatter=state.showScatter
         if(this.gridXInput) this.gridXInput.value=this.parameters.gridX
         if(this.gridYInput) this.gridYInput.value=this.parameters.gridY
+        if(this.slopeMinInput) this.slopeMinInput.value=this.parameters.slopeMin.toFixed(4)
+        if(this.slopeMaxInput) this.slopeMaxInput.value=this.parameters.slopeMax.toFixed(4)
+        if(this.interceptMinInput) this.interceptMinInput.value=this.parameters.interceptMin.toFixed(4)
+        if(this.interceptMaxInput) this.interceptMaxInput.value=this.parameters.interceptMax.toFixed(4)
         if(this.heightInput) this.heightInput.value=this.parameters.heightScale
         if(this.mapInput) this.mapInput.value=this.parameters.colormap
         if(this.scatterInput) this.scatterInput.checked=this.parameters.showScatter
