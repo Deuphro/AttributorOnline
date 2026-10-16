@@ -462,6 +462,149 @@ test("CalibrationNode holds no private 3D GPU state any more",()=>{
         `suicide() must release the 3D plot: NodeWithAccordion only frees the accordion (got ${JSON.stringify(suicide.slice(-90))})`)
 })
 
+/* The COLORMAPS table is module-level, so its body is a constant and can be
+   read out of the file and evaluated. The glow is specified to the decimal —
+   transparent white at the base, white opaque at 3/4, Cherenkov blue at half
+   opacity at the peak — so those are the numbers asserted, not a shape. */
+const COLORMAP_AT=source.indexOf("const COLORMAPS={")
+const colorMaps=new Function(`return ${source.slice(source.indexOf("=",COLORMAP_AT)+1,
+    source.indexOf("\n}",COLORMAP_AT)+2)}`)()
+
+test("a colormap that carries an alpha is declared with FOUR components",()=>{
+    for(const name of ["viridis","grayscale","coolwarm"]){
+        ok(colorMaps[name](0).length===3&&colorMaps[name](1).length===3,
+            `${name} is opaque everywhere: a 4-component answer would make the whole mesh transparent for nothing`)
+    }
+    for(const t of [0,0.5,0.75,1]){
+        ok(colorMaps.glow(t).length===4,`glow(${t}) must carry an alpha`)
+    }
+})
+
+test("the glow is white and rising, then Cherenkov and over-driven",()=>{
+    const glow=colorMaps.glow
+    /* THE BASE: white, and invisible. Anything else tints the low ground. */
+    const base=glow(0)
+    ok(base.slice(0,3).every(v=>Math.abs(v-1)<1e-9),`the base must be white, got ${base}`)
+    ok(Math.abs(base[3])<1e-9,`the base must be transparent, got alpha ${base[3]}`)
+    /* OPAQUE WHITE AT THREE QUARTERS. The body of the surface is white and
+       solid; if the ramp warmed up before that, the whole surface would be
+       tinted and only a pinprick would be blue. */
+    const threeQuarters=glow(0.75)
+    ok(threeQuarters.slice(0,3).every(v=>Math.abs(v-1)<1e-9),
+        `three quarters up must still be white, got ${threeQuarters}`)
+    ok(Math.abs(threeQuarters[3]-1)<1e-9,
+        `three quarters up must be fully opaque, got alpha ${threeQuarters[3]}`)
+    /* THE PEAK IS EMISSIVE, which is a claim about the LIGHT, not the hue. A
+       per-vertex colour above 1 is not clamped by three.js: it clips in the
+       framebuffer, so a face the light rig reaches burns to white while a face
+       in shadow keeps the blue. Asserting the channel alone would pass on any
+       pale blue; what has to be asserted is that the peak EXCEEDS its own hue,
+       which is the whole mechanism. */
+    const peak=glow(1)
+    ok(peak[2]>1,`the peak must be driven over 1 so lit faces clip to white, got ${peak[2]}`)
+    ok(Math.abs(peak[3]-1)<1e-9,
+        `the peak must be fully opaque: at a=0.5 over a dark panel the brightest cell in the grid cannot exceed half its own colour, and the body beside it is brighter — the peak was the darkest pixel of the surface`)
+    /* and it must still be recognisably blue where the light does not reach,
+       so the over-drive is on the HUE and not a fade to plain white */
+    const ratio=peak[0]/peak[2]
+    ok(ratio>0.1&&ratio<0.4,`the peak must keep a blue hue, r/b = ${ratio.toFixed(3)}`)
+    /* ALPHA RISES AND STOPS. It used to fall again over the top quarter, and
+       that is the arithmetic above; the rise itself must still hold, or the
+       surface would have no transparent ground at all. */
+    const alphas=[0,0.25,0.5,0.75,0.9,1].map(t=>glow(t)[3])
+    for(let i=1;i<alphas.length;i++){
+        ok(alphas[i]>=alphas[i-1],`alpha must never fall: ${alphas.join(", ")}`)
+    }
+    for(const t of [0.75,0.9,1]){
+        ok(Math.abs(glow(t)[3]-1)<1e-9,`above 3/4 the surface is opaque, alpha(${t})=${glow(t)[3]}`)
+    }
+    /* and out of range it must clamp, not extrapolate into a negative alpha */
+    ok(glow(-5)[3]>=0&&glow(5)[3]<=1,"the ramp must clamp outside [0,1]")
+    ok(glow(5).every(Number.isFinite)&&glow(5)[3]<=1,
+        "the over-drive must clamp too, or the top of the range is unbounded")
+})
+
+const COLOR_HEX=(rgb)=>"#"+rgb.slice(0,3)
+    .map(v=>Math.round(Math.min(1,Math.max(0,v))*255).toString(16).padStart(2,"0"))
+    .join("").toUpperCase()
+
+test("Tcherenkov passes through its five stops, at its five places",()=>{
+    /* THE SPECIFICATION, in hex and in t, because that is what it was given
+       as. Asserting the numbers would pin the arithmetic; asserting the hex
+       pins the COLOUR, which is the thing anybody looking at the plot will
+       notice being wrong. */
+    const expected=[
+        [0.00,"#0070B4"],
+        [0.15,"#E6E6FC"],
+        [0.30,"#45C3EC"],
+        [0.50,"#004F9E"],
+        [1.00,"#001A7B"]
+    ]
+    for(const [t,hex] of expected){
+        ok(COLOR_HEX(colorMaps.tcherenkov(t))===hex,
+            `tcherenkov(${t}) must be ${hex}, got ${COLOR_HEX(colorMaps.tcherenkov(t))}`)
+    }
+})
+
+test("Tcherenkov's alpha rises at the base and thins at the peak",()=>{
+    /* A four-component ramp makes the ENTIRE mesh transparent — three.js's
+       per-vertex alpha is a material-level switch, not a per-band one — so
+       where the alpha sits is the whole visual decision.
+
+       TWO SEGMENTS, NOT ONE CURVE: transparent at the base, opaque at 0.15
+       where the palette turns pale, then a fifth at the peak. The turnaround
+       point is the design, and it is checked at its exact t because a curve
+       that peaked in the middle of the BODY would leave a hole through the
+       surface rather than a soft edge at its top. */
+    const ramp=t=>colorMaps.tcherenkov(t)
+    for(const t of [0,0.075,0.15,0.3,0.5,0.75,1]){
+        ok(ramp(t).length===4,`tcherenkov(${t}) must carry an alpha, got ${ramp(t).length} components`)
+    }
+    ok(Math.abs(ramp(0)[3])<1e-9,`the base must be fully transparent, got alpha ${ramp(0)[3]}`)
+    ok(Math.abs(ramp(0.15)[3]-1)<1e-9,
+        `opaque at 0.15, where the palette turns pale, got ${ramp(0.15)[3]}`)
+    ok(Math.abs(ramp(1)[3]-0.2)<1e-9,`a fifth at the peak, got alpha ${ramp(1)[3]}`)
+    /* up to 0.15, down after it, and nothing in between out of order */
+    for(const [a,b] of [[0,0.0375],[0.0375,0.075],[0.075,0.1125],[0.1125,0.15]]){
+        ok(ramp(b)[3]>ramp(a)[3],`alpha must rise to 0.15: ${ramp(a)[3]} -> ${ramp(b)[3]}`)
+    }
+    for(const [a,b] of [[0.15,0.3],[0.3,0.5],[0.5,0.75],[0.75,1]]){
+        ok(ramp(b)[3]<ramp(a)[3],`alpha must thin above 0.15: ${ramp(a)[3]} -> ${ramp(b)[3]}`)
+    }
+    /* the fall has to be steady to the very top: a ramp that thinned and then
+       came back would put a bright shell around the peak */
+    ok(ramp(0.9)[3]>ramp(1)[3],`the thinning must reach the peak, got ${ramp(0.9)[3]} -> ${ramp(1)[3]}`)
+    /* it interpolates the colours between the stops, rather than snapping into
+       five plates — a stepped table reads as five colours, not a ramp */
+    const between=COLOR_HEX(ramp(0.075).slice(0,3))
+    ok(between!=="#0070B4"&&between!=="#E6E6FC",
+        `t=0.075 is between two stops and must be a blend of them, got ${between}`)
+    ok(Math.abs(ramp(0.075)[2]
+        -(ramp(0)[2]+ramp(0.15)[2])/2)<1e-9,
+    "the blend must be halfway at the halfway point, measured between the stops themselves")
+    /* out of range it clamps rather than extrapolating off the ends */
+    ok(COLOR_HEX(ramp(-1).slice(0,3))==="#0070B4","below the range it clamps to the first stop")
+    ok(COLOR_HEX(ramp(2).slice(0,3))==="#001A7B","above the range it clamps to the last stop")
+    ok(Math.abs(ramp(2)[3]-ramp(1)[3])<1e-9,"and the alpha clamps with them, or the peak gets brighter past 1")
+})
+
+test("buildSurface sizes its colour buffer to the ramp, not to three",()=>{
+    /* A FOURTH component written into a THREE-component buffer is not an
+       error. It is dropped, silently, and the surface comes out flat opaque —
+       which is what a glow that does not glow looks like. So the itemSize has
+       to be derived from the ramp, and the material has to be told, since
+       three.js also ignores the alpha on a material that is not transparent. */
+    const body=methodBodyOf(source,"buildSurface")
+    ok(/length===4/.test(body),"buildSurface must ask the ramp whether it carries an alpha")
+    ok(/new THREE\.BufferAttribute\(colors,\s*stride\)/.test(body),
+        "the colour buffer's itemSize must follow the ramp, not a literal 3")
+    ok(/vertexAlpha/.test(body),
+        "and the material must be told, or three.js drops the alpha silently")
+    const gl=readFileSync(join(here,"plot3d-gl.js"),"utf8")
+    ok(/transparent:opacity<1\|\|vertexAlpha/.test(gl),
+        "surfaceMaterial must flag a vertex-alpha mesh transparent")
+})
+
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if(failures.length){
     process.exitCode=1

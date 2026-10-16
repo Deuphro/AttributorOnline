@@ -217,7 +217,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         content.append(scaleHint)
         const mapCaption=CE("label",{},["colormap"])
         this.mapInput=CE("select",{},[])
-        for(const [value,label] of [["viridis","viridis"],["coolwarm","cool / warm"],["grayscale","grayscale"]]){
+        for(const [value,label] of [["viridis","viridis"],["grayscale","grayscale"],
+                                    ["coolwarm","cool / warm"],["tcherenkov","Tcherenkov"],
+                                    ["glow","glow — white body, Cherenkov peak"]]){
             this.mapInput.append(CE("option",{value},[label]))
         }
         this.mapInput.value=this.parameters.colormap

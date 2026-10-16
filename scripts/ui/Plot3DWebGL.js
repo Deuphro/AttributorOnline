@@ -44,6 +44,104 @@ const COLORMAPS={
     coolwarm:t=>{
         const x=Math.min(1,Math.max(0,t))
         return x<0.5?[0.23+0.54*(x*2),0.30+0.10*(x*2),0.75-0.28*(x*2)]:[0.77+0.23*((x-0.5)*2),0.40+0.30*((x-0.5)*2),0.47-0.28*((x-0.5)*2)]
+    },
+    /* CHERENKOV. The only ramp here that carries an ALPHA, which is why it
+       returns FOUR components and the others return three (see buildSurface).
+
+       THE SHAPE. Transparent white at the base, rising to opaque white by three
+       quarters of the range; above that the hue turns Cherenkov and the
+       intensity is driven OVER one, so the peak reads as emission rather than
+       as a tinted facet.
+
+       WHY THE ALPHA STOPS RISING. An earlier version took the alpha back DOWN
+       to a half at the peak, on the reasoning that a glow is thin where it is
+       brightest. The arithmetic does not allow it: blending is
+       src*a + dst*(1-a), so at a=0.5 over a panel that is nearly black, the
+       brightest cell in the whole grid cannot exceed half its own colour — and
+       the opaque white body beside it is brighter. The peak was the darkest
+       pixel of the surface. Translucency is kept where it EARNS its place, on
+       the lower half, where it lets the shape of the grid show through the
+       ground; above three quarters it is opaque and it glows.
+
+       WHY THE COLOUR GOES ABOVE 1. three.js does not clamp a per-vertex
+       colour, and the framebuffer clips at the end: a component at 2.5 is
+       white on every face the light rig reaches, and still carries its hue on
+       the faces in shadow. That difference — a saturated core with a blue
+       fringe, varying with the lighting — is what a photograph of something
+       emitting light looks like, and no alpha and no blending mode produces it
+       on their own. */
+    glow:t=>{
+        const x=Math.min(1,Math.max(0,t))
+        const white=[1,1,1]
+        /* #2a82ff — the blue of the Cherenkov glow rather than the cyan of a
+           cold plasma: saturated, because it is the clipped faces that go
+           white, and a desaturated blue would only go grey there. */
+        const cherenkov=[0.165,0.510,1]
+        if(x<0.75){
+            /* THE BASE IS TRANSPARENT WHITE, and it stays white all the way
+               up: a ramp that warmed up first would tint the whole body and
+               leave only a pinprick blue. The ramp is in the ALPHA. */
+            return [white[0],white[1],white[2],x/0.75]
+        }
+        const k=(x-0.75)/0.25
+        const gain=1+2*k
+        return [
+            (white[0]+(cherenkov[0]-white[0])*k)*gain,
+            (white[1]+(cherenkov[1]-white[1])*k)*gain,
+            (white[2]+(cherenkov[2]-white[2])*k)*gain,
+            1
+        ]
+    },
+    /* TCHERENKOV — five stops, at five PLACES. The t values are NOT evenly
+       spaced, which is the design: the pale band sits between 0.15 and 0.30,
+       so a fifth of the range carries the near-white and the ramp spends the
+       rest of its travel going DEEPER into blue. On a vote accumulator that
+       reads correctly — the shoulder catches the slopes, and the dark end is
+       the dense core of the peak rather than a bright cap.
+
+       THE ALPHA. Fully transparent at the base, opaque at 0.15 — the same t where
+       the palette turns pale — then thinning to 0.2 by the peak.
+
+       The rise and the fall are both deliberate. The rise is what lets the
+       surface come up out of the box instead of starting as a blue sheet; the
+       fall is what makes the deep core of a peak see-through, so the shape
+       around it stays readable when the peak is tall. Where it thins, the
+       colour there is the darkest of the ramp (#001A7B), which is the one
+       place a low alpha costs least.
+
+       Both are only possible because a per-vertex alpha is NOT a local effect:
+       three.js applies it through the material, so the whole mesh is
+       transparent from the moment this ramp returns four components. That is
+       the trade this ramp makes — a folded surface may show its own back faces
+       through its front ones, which plot3d-gl.js argues against at length. */
+    tcherenkov:t=>{
+        const x=Math.min(1,Math.max(0,t))
+        /* [t, r, g, b] — the three channels are the hex, 0..255 divided by 255,
+           written out because a colour table that needs a hex parser to be read
+           is a colour table nobody edits. */
+        const stops=[
+            [0.00,0.000,0.439,0.706],   //#0070B4
+            [0.15,0.902,0.902,0.988],   //#E6E6FC
+            [0.30,0.271,0.765,0.925],   //#45C3EC
+            [0.50,0.000,0.310,0.620],   //#004F9E
+            [1.00,0.000,0.102,0.482]    //#001A7B
+        ]
+        let i=0
+        while(i<stops.length-2&&x>stops[i+1][0]) i++
+        const a=stops[i]
+        const b=stops[i+1]
+        const span=b[0]-a[0]
+        const k=span>0?(x-a[0])/span:0
+        return [
+            a[1]+(b[1]-a[1])*k,
+            a[2]+(b[2]-a[2])*k,
+            a[3]+(b[3]-a[3])*k,
+            /* UP to opaque at 0.15, then DOWN to a fifth at the peak. Two
+               segments rather than one curve because the turnaround point is
+               the design: it sits where the palette turns pale, not in the
+               middle of the body where it would leave a hole in the surface. */
+            x<0.15?x/0.15:1-0.8*((x-0.15)/0.85)
+        ]
     }
 }
 
@@ -725,21 +823,39 @@ export class Plot3DWebGL{
         const wave=trace.wave
         const [nx,ny]=wave.dims
         const {normalise,place}=this.heightMapping(trace,bounds)
-        const ramp=COLORMAPS[trace.options?.colormap]??COLORMAPS.viridis
+        const name=trace.options?.colormap
+        const ramp=COLORMAPS[name]??COLORMAPS.viridis
+        /* AN ALPHA CHANNEL IN THE RAMP. A ramp returns [r,g,b] or [r,g,b,a],
+           and the itemSize of the colour buffer has to follow it — a 4-item
+           attribute is how three.js reads a per-vertex alpha, and writing one
+           into a 3-item buffer does not fail, it is silently dropped, so the
+           glow would render as flat white and nobody would know why.
+
+           It is asked of ONE vertex rather than of the whole grid: the ramp is
+           read at the endpoints once, and a map that is opaque at both ends
+           plainly has no alpha in it. */
+        const hasAlpha=ramp(0).length===4||ramp(1).length===4
+        const stride=hasAlpha?4:3
         const world=this.axisWorld()
         const positions=new Float32Array(nx*ny*3)
-        const colors=new Float32Array(nx*ny*3)
+        const colors=new Float32Array(nx*ny*stride)
         for(let iy=0;iy<ny;iy++){
             for(let ix=0;ix<nx;ix++){
                 const node=(iy*nx+ix)*3
+                const colour=(iy*nx+ix)*stride
                 const z=wave.core[wave.index(ix,iy,2)]
                 positions[node]=world.x(wave.core[wave.index(ix,iy,0)])
                 positions[node+1]=world.y(wave.core[wave.index(ix,iy,1)])
                 positions[node+2]=world.z(Number.isFinite(z)?place(z):0)
-                const [r,g,b]=ramp(normalise(z))
-                colors[node]=r
-                colors[node+1]=g
-                colors[node+2]=b
+                const c=ramp(normalise(z))
+                colors[colour]=c[0]
+                colors[colour+1]=c[1]
+                colors[colour+2]=c[2]
+                /* An opaque fallback, not a zero: a ramp that returned three
+                   components on a four-component buffer would leave this at 0
+                   and the surface would vanish, which is the same class of
+                   silent failure as the itemSize itself. */
+                if(stride===4) colors[colour+3]=c.length===4?c[3]:1
             }
         }
         //two triangles per cell, wound so the normal points up: with
@@ -757,11 +873,28 @@ export class Plot3DWebGL{
         }
         const geometry=new THREE.BufferGeometry()
         geometry.setAttribute("position",new THREE.BufferAttribute(positions,3))
-        geometry.setAttribute("color",new THREE.BufferAttribute(colors,3))
+        geometry.setAttribute("color",new THREE.BufferAttribute(colors,stride))
         geometry.setIndex(indices)
         geometry.computeVertexNormals()
         const opacity=Number.isFinite(trace.options?.opacity)?trace.options.opacity:1
-        const mesh=new THREE.Mesh(geometry,surfaceMaterial({colors:true,opacity}))
+        /* A VERTEX ALPHA IS A WHOLE-MESH DECISION. three.js only multiplies the
+           vertex alpha into the fragment when the material is `transparent`,
+           and the material is per-mesh: there is no such thing as one surface
+           that is opaque in part and blended in part. So a ramp with an alpha
+           makes the WHOLE mesh transparent.
+
+           And depthWrite STAYS ON, which is the opposite of what a transparent
+           material usually wants and deliberate here. The file header's reason
+           for keeping it is the folded surface showing its own back faces; a
+           surface with a glow is exactly the case where that fold is visible,
+           because the glow invites the eye through it. The cost is that
+           fragments are written in whatever order the mesh happens to be
+           rasterised, so on a steep face a translucent peak can be culled by
+           the opaque body behind it. `depthWrite` is an option so that is a
+           choice rather than a law. */
+        const mesh=new THREE.Mesh(geometry,surfaceMaterial({
+            colors:true,opacity,vertexAlpha:hasAlpha,
+            depthWrite:trace.options?.depthWrite}))
         mesh.name=trace.title??"surface"
         //the picking code needs to walk back from the hit to the grid cell
         mesh.userData.traceId=trace.id

@@ -286,16 +286,23 @@ export class GLSceneLayer{
    faces through its front ones. Half-transparent facets are that bug, not
    geometry. Depth test and depth write stay ON, which is the whole reason
    this layer exists separately from GLTraceLayer. */
-export function surfaceMaterial({colors=false,shininess=24,specular=0x1a1a1a,opacity=1,side=THREE.DoubleSide}={}){
+export function surfaceMaterial({colors=false,shininess=24,specular=0x1a1a1a,opacity=1,side=THREE.DoubleSide,vertexAlpha=false,depthWrite=null}={}){
     return new THREE.MeshPhongMaterial({
         vertexColors:colors,
         side,
         shininess,
         specular,
         opacity,
-        transparent:opacity<1,
+        /* `vertexAlpha` means the colour buffer carries four components, and
+           three.js IGNORES the fourth unless the material is flagged
+           transparent — no warning, no error, a flat opaque surface. So the
+           alpha in a colormap is invisible unless this is set from the same
+           test that chose the buffer's itemSize. */
+        transparent:opacity<1||vertexAlpha,
         depthTest:true,
-        depthWrite:opacity>=1
+        /* An explicit null means "use the rule below", so a caller that says
+           nothing still gets the behaviour this file argues for. */
+        depthWrite:depthWrite===null?opacity>=1:depthWrite
     })
 }
 
