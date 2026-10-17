@@ -518,25 +518,24 @@ export function parse_thermo_raw(data, options) {
 * the kernel does not decide what a defect is, it only uses the number.
 *
 * The output is FLAT and non-interleaved, the layout every kernel in this crate
-* uses: `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
-* pairs_used, mass_steps (MASS_STEP_BINS), steps_overflow]`.
+* uses:
+* `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
+*   pairs_used, pair_slope (2 * survivors), pair_count]`.
 *
-* WHY THE MASS-STEP HISTOGRAM IS HERE, AND WHY IT IS APPENDED RATHER THAN
-* INSERTED. The slope of a relation is `eps / (k + eps)` for a mass step
-* `k + eps`, so it has already thrown `k` away — and `k` is nearly all of the
-* information. Every element's signature is `eps / A`, which for the heavy ones
-* collapses: Po and F, in this crate's own table, sit 1.9e-8 apart in slope,
-* which on a 2e-3 window needs a hundred thousand columns to tell apart, while
-* their masses are 209 and 19. The step carries the integer that the slope
-* lost, and the step is the atom's mass over the charge. So the accumulator
-* keeps it, even though it cost nothing to compute: `dm` is already read for
-* the slope.
+* WHY THE SURVIVING PAIRS TRAVEL WITH THE GRID. Each pair carries BOTH numbers
+* the detection needs — the slope it voted for, and the mass gap `dm` it spans —
+* and the grid throws away everything but their sum. An earlier revision of this
+* kernel binned `dm` into a histogram instead, which was a LOSS and not a
+* compression: the histogram is global, so it says which steps occurred and not
+* which slope each of them voted for, and re-joining the two afterwards is a
+* guess. It also threw away the multiplicity that makes the transform worth
+* using — `C`, `C2`, `C3`, `C4` share one slope, so a single observed relation
+* gathers the votes of all of them.
 *
-* APPENDED, because the bounds and `pairs_used` sit at a fixed offset that
-* existing tests — and the JS twin — read by index. Inserting a plane ahead of
-* them would move every one of those reads for no gain; appending keeps the
-* contract that is already written down and lets the histogram be optional to
-* look at.
+* THE PAIRS THAT TRAVEL ARE THE ONES THAT VOTED. Only pairs inside the domain
+* reach the grid, so the plane is bounded by the domain rather than by n^2: a
+* narrow slope window keeps a small fraction of the pairs of a large peak list,
+* and the caller caps the rest with `keep`.
 * @param {Float64Array} mass
 * @param {Float64Array} defect
 * @param {Float64Array} intensity
@@ -605,14 +604,14 @@ export function hough_smooth(grid, nx, ny, neighbours, bandwidth) {
 * estimated kernel.
 *
 * Returns `[grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
-* pairs_used, mass_steps (MASS_STEP_BINS), steps_overflow]` — the same layout
+* pairs_used, pair_slope (2 * survivors), pair_count]` — the same layout
 * `hough_accumulate` produces, so the caller slices it the same way whichever
 * of the two it calls.
 *
 * THE SMOOTHED GRID IS NOT THE ONLY THING THAT COMES BACK. The tail is copied
-* from the accumulation untouched, histogram included: smoothing moves a peak
-* between cells, and a mass step measured AFTER the smoothing would be the
-* step of a blurred peak rather than the step that actually voted.
+* from the accumulation untouched, the voting pairs included: smoothing moves a
+* peak between cells, and a mass gap read off the smoothed grid would be the
+* gap of a blurred relation rather than the gap that actually voted.
 * @param {Float64Array} mass
 * @param {Float64Array} defect
 * @param {Float64Array} intensity

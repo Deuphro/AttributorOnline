@@ -58,21 +58,21 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.status="floating"
         /* grid sizes, how tall the surface is drawn, and which colormap.
            Plain numbers on `parameters` because serializeState() owns them. */
-        this.parameters.gridX=64
-        this.parameters.gridY=48
+        this.parameters.gridX=256
+        this.parameters.gridY=256
         this.parameters.heightScale=0.55
         /* An accumulator is peaked by nature: one relation gathers the votes of
            every pair at once, so its range is one cell against thousands. On a
            linear scale that is a flat sheet with a needle, which is why log is
            the default here and the linear scale is the opt-in. */
         this.parameters.heightScaleLog=true
-        this.parameters.colormap="viridis"
+        this.parameters.colormap="Tcherenkov"
         this.parameters.showScatter=false
         /* The (slope, intercept) box the kernel is asked for. Editable from
            the inspector and persisted with the session. */
         this.parameters.slopeMin=-0.001
-        this.parameters.slopeMax=0.001
-        this.parameters.interceptMin=-0.2
+        this.parameters.slopeMax=0.008
+        this.parameters.interceptMin=-5
         this.parameters.interceptMax=0.2
         /* THE KERNEL'S OWN KNOBS. They live here rather than in the worker
            because they are DECISIONS the user makes about their data, and a
@@ -145,6 +145,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             return
         }
         super.registered(e)
+        /* L'Hough surface est un plan vertical : l'orthographique est la vue
+           naturelle (pas de perspective qui écrase le relief). */
+        this.graph?.setCameraType?.(true)
         this.setupUI()
         //the first resolve runs the kernel on NO input at all: it publishes a
         //zeroed grid whose readout names the refusal, so the view is never an
@@ -497,6 +500,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(!rows.length){
             this.scorePlot.setTraces([])
             this.scorePlot.drawGraph()
+            this._clearScoreLabels()
             return
         }
         const logs=rows.map(r=>Math.log10(Math.max(r.score,1e-300)))
@@ -534,7 +538,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         })
         const traces=[barTrace]
         /* LIGNES k·MAD : un segment horizontal par valeur de k, chacune dans
-           sa propre trace pour avoir une couleur distincte. */
+           sa propre trace pour avoir une couleur distincte. k=1,2,4. */
         if(cutoffs){
             const colors={1:"rgba(255,220,100,0.8)",2:"rgba(255,150,80,0.8)",4:"rgba(255,90,90,0.9)"}
             for(const line of cutoffs.lines){
@@ -570,6 +574,34 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.scorePlot.parameters.axis.left.label="log10 score"
         this.scorePlot.parameters.axis.left.scale="linear"
         this.scorePlot.drawGraph()
+        /* ÉTIQUETTES : symbole de l'élément au-dessus de chaque barre. */
+        this._drawScoreLabels(rows,logs,n,hi)
+    }
+    /* Retire les étiquettes de score précédentes avant un nouveau dessin. */
+    _clearScoreLabels(){
+        if(!this.scoreWrapper) return
+        this.scoreWrapper.querySelectorAll(".score-label").forEach(el=>el.remove())
+    }
+    /* Écrit le symbole de chaque élément au sommet de sa barre, en utilisant
+       les échelles du plot juste après drawGraph(). */
+    _drawScoreLabels(rows,logs,n,hi){
+        this._clearScoreLabels()
+        if(!this.scorePlot.graphSVG) return
+        const {xScale,yScale}=this.scorePlot.plotScales()
+        const anchor=this.scorePlot.graphSVG.select(".anchor")
+        for(let i=0;i<n;i++){
+            const x=xScale(i)
+            const y=yScale(logs[i])
+            anchor.append("text")
+                .attr("class","score-label")
+                .attr("x",x)
+                .attr("y",y-5)
+                .attr("text-anchor","middle")
+                .attr("font-size","9px")
+                .attr("fill","rgba(255,255,255,0.9)")
+                .attr("font-family","ui-monospace, monospace")
+                .text(rows[i].symbol??`?`)
+        }
     }
 
     /* --- resolve ------------------------------------------------------ */
