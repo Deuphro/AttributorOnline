@@ -10,9 +10,8 @@ const PLOT3D_DEFAULTS={
     //the box is padded by this fraction of its own size, so a surface never
     //touches the edge of the frame
     padding:0.08,
-    //raycast hover, throttled to one hit test per frame
-    pick:true,
-    pickPixelRadius:6
+    //plus de hover : le raycast testait chaque triangle à chaque mousemove,
+    //impraticable sur une grille 512×512 (≈500k triangles en JS pur)
 }
 
 /* The colormaps a SurfaceTrace can ask for. Kept as plain functions rather
@@ -481,9 +480,6 @@ export class Plot3DWebGL{
         this._frame=null
         this._resizeFrame=null
         this._overlayFrame=null
-        this._pickFrame=null
-        this._pickEvent=null
-        this._hover=null
         this.container=CE("div",{className:"plot3d container",pilot:this},[])
         stylize(this.container,{position:"relative",width:"100%",height:"100%",zIndex:"0"})
         this.destination.appendChild(this.container)
@@ -597,22 +593,7 @@ export class Plot3DWebGL{
             this.requestFrame()
             this.drawOverlay()
         }
-        this._onMove=(e)=>{
-            if(!this.renderOptions.pick) return
-            this._pickEvent={x:e.clientX,y:e.clientY}
-            this.requestPick()
-        }
-        this._onLeave=()=>{
-            this._pickEvent=null
-            if(this._hover){
-                this._hover=null
-                this.drawOverlay()
-                this.requestFrame()
-            }
-        }
         this.container.addEventListener("dblclick",this._onDblClick)
-        this.container.addEventListener("mousemove",this._onMove,{passive:true})
-        this.container.addEventListener("mouseleave",this._onLeave)
     }
     /* Switch the GL layer's camera between Perspective and Orthographic,
        keeping the current viewing angles. Rebuilds the orbit controls on the
@@ -1053,7 +1034,6 @@ export class Plot3DWebGL{
         this.drawBox(svg,bounds,width,height)
         this.drawRules(svg,width,height)
         this.drawTicks(svg,bounds,width,height)
-        this.drawHover(svg,width,height)
     }
     /* The twelve edges of the CUBE, at the world corners. Not the data
        corners: those would be 100 x 1e7 x 1 for a real error surface, and a
@@ -1136,6 +1116,14 @@ export class Plot3DWebGL{
             polygon.setAttribute("stroke-width","1")
             polygon.setAttribute("vector-effect","non-scaling-stroke")
             group.appendChild(polygon)
+            /* L'INTERSECTION MUR × MESH, TRACÉE SUR LE MUR : le mur est le plan
+               {axis = value}, la courbe est z(y) à x = value — deux colonnes
+               encadrantes interpolées, ligne par ligne, donc O(ny) par mur.
+               LE MÊME heightMapping QUE LE MESH (place()) : en échelle log le
+               relief affiché est log, et une courbe linéaire flotterait hors du
+               relief. Même world.z que buildSurface, même project() que le
+               reste — la courbe suit la caméra comme le mur lui-même. */
+            this.drawRuleProfile(group,ns,rule,world)
             if(rule.label){
                 const mid={x:(corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4,
                     y:(corners[0].y+corners[1].y+corners[2].y+corners[3].y)/4}
@@ -1165,6 +1153,98 @@ export class Plot3DWebGL{
             }
         }
         svg.appendChild(group)
+    }
+    /* LE PROFIL MUR × MESH — la courbe z(axe libre) à {axis = value}, tracée
+       SUR le mur, dans la couleur du mur en trait épais. Le mur est un plan
+       vertical, le mesh un champ de hauteur : leur intersection est une
+       courbe, pas une surface — un polyline SVG projeté suffit, et il suit
+       la caméra comme tout l'overlay (reprojeté à chaque drawOverlay).
+
+       ÉCHANTILLONNAGE LE LONG DE LA GRILLE, PAS DU MONDE : pour un mur x=w,
+       on balaye les ny lignes, et dans chaque ligne on encadre w par deux
+       colonnes puis on interpole y et z (lerp en t). Si w sort de la ligne,
+       pas de point — la courbe s'interrompt au lieu d'extrapoler. Les NaN
+       coupent aussi : deux segments plutôt qu'un saut à travers le vide.
+
+       L'ÉCHELLE LOG EST CELLE DU MESH : z passe par le même `place()` de
+       surfaceHeightMap que buildSurface — en log le relief affiché est
+       log, et une courbe linéaire flotterait au-dessus du relief au lieu
+       de le longer. Les axes x/y restent linéaires (axisWorld), comme le
+       mesh lui-même. Mur z=w : une courbe de niveau, pas un profil —
+       extraction de contour, autre chantier — on ne trace rien. */
+    drawRuleProfile(group,ns,rule,world){
+        const axis=rule.axis==="y"?"y":rule.axis==="z"?"z":"x"
+        if(axis==="z") return
+        if(!Number.isFinite(rule.value)) return
+        const trace=this.visibleTraces.find(t=>t instanceof SurfaceTrace&&t.wave?.core&&t.wave.dims?.length)
+        if(!trace) return
+        const wave=trace.wave
+        const [nx,ny]=wave.dims
+        if(!(nx>=2&&ny>=2)) return
+        const {place}=surfaceHeightMap(wave,trace.options??{})
+        const fixedW=world[axis](rule.value)
+        if(!Number.isFinite(fixedW)) return
+        /* Axe balayé et axe interpolé : mur x=w → on balaye les lignes (y),
+           on encadre w dans les colonnes ; mur y=w → l'inverse. */
+        const alongNy=axis==="x"
+        const inner=alongNy?nx:ny
+        const outer=alongNy?ny:nx
+        const at=(o,i)=>alongNy?{fx:wave.core[wave.index(i,o,0)],u:wave.core[wave.index(i,o,1)],z:wave.core[wave.index(i,o,2)]}
+            :{fx:wave.core[wave.index(o,i,1)],u:wave.core[wave.index(o,i,0)],z:wave.core[wave.index(o,i,2)]}
+        const color=rule.color??"#46BEFF"
+        const subpaths=[]
+        let segment=[]
+        const flush=()=>{
+            if(segment.length>=2) subpaths.push("M"+segment.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join("L"))
+            segment=[]
+        }
+        for(let o=0;o<outer;o++){
+            /* Les DEUX colonnes qui encadrent rule.value dans cette rangée :
+               balayage simple, O(inner) par rangée donc O(nx·ny) par mur —
+               une passe grille, comme buildSurface, pas un tri. */
+            let a=null,b=null
+            let prev=null
+            for(let i=0;i<inner;i++){
+                const p=at(o,i)
+                if(!Number.isFinite(p.fx)||!Number.isFinite(p.u)||!Number.isFinite(p.z)){ prev=null; continue }
+                if(prev&&Number.isFinite(prev.fx)){
+                    const lo=Math.min(prev.fx,p.fx),hi=Math.max(prev.fx,p.fx)
+                    if(rule.value>=lo&&rule.value<=hi){ a=prev; b=p; break }
+                }
+                prev=p
+            }
+            if(!a||!b){
+                /* w hors de la rangée : la courbe s'interrompt — flush, pas
+                   d'extrapolation qui inventerait un relief hors grille. */
+                flush()
+                continue
+            }
+            const span=b.fx-a.fx
+            const t=span!==0?(rule.value-a.fx)/span:0.5
+            const u=a.u+(b.u-a.u)*t
+            const z=a.z+(b.z-a.z)*t
+            if(!Number.isFinite(u)||!Number.isFinite(z)){ flush(); continue }
+            const point=axis==="x"
+                ?{x:fixedW,y:world.y(u),z:world.z(place(z))}
+                :{x:world.x(u),y:fixedW,z:world.z(place(z))}
+            if(![point.x,point.y,point.z].every(Number.isFinite)){ flush(); continue }
+            const p=this.project(point.x,point.y,point.z)
+            if(p.behind){ flush(); continue }
+            segment.push(p)
+        }
+        flush()
+        if(!subpaths.length) return
+        const path=document.createElementNS(ns,"path")
+        path.setAttribute("d",subpaths.join(""))
+        path.setAttribute("fill","none")
+        path.setAttribute("stroke",color)
+        path.setAttribute("stroke-width","2.2")
+        path.setAttribute("stroke-linejoin","round")
+        path.setAttribute("stroke-linecap","round")
+        path.setAttribute("vector-effect","non-scaling-stroke")
+        /* Opacité pleine : c'est la lecture du mur — le polygone à 0.12
+           reste le fond, la courbe est l'encre. */
+        group.appendChild(path)
     }
     /* Tick placement is the one piece of real 3D in the front layer. An axis
        is drawn on the box edge along it that is currently the LONGEST on
@@ -1260,111 +1340,6 @@ export class Plot3DWebGL{
             group.appendChild(name)
         }
         svg.appendChild(group)
-    }
-    /* The hover marker: a ring drawn at the projected position of the point
-       the raycast hit, plus its value. The raycast itself is the source of
-       truth — there is no 2D index to rebuild on every upload. */
-    drawHover(svg,width,height){
-        if(!this._hover) return
-        const ns="http://www.w3.org/2000/svg"
-        const group=document.createElementNS(ns,"g")
-        group.setAttribute("class","gl3d-hover")
-        const p=this.project(this._hover.x,this._hover.y,this._hover.z)
-        if(p.behind) return
-        const radius=this.renderOptions.pickPixelRadius??6
-        const ring=document.createElementNS(ns,"circle")
-        ring.setAttribute("cx",p.x)
-        ring.setAttribute("cy",p.y)
-        ring.setAttribute("r",radius)
-        ring.setAttribute("fill","none")
-        ring.setAttribute("stroke","#ffd479")
-        ring.setAttribute("stroke-width","1.5")
-        group.appendChild(ring)
-        const text=document.createElementNS(ns,"text")
-        text.setAttribute("x",p.x+radius+4)
-        text.setAttribute("y",p.y-radius-2)
-        text.setAttribute("fill","#ffd479")
-        text.setAttribute("font-size","10")
-        text.setAttribute("font-family","inherit")
-        text.textContent=this._hover.label
-        group.appendChild(text)
-        svg.appendChild(group)
-    }
-    /* WHAT THE HOVER SAYS.
-
-       Six significant digits, not four. A smoothed surface is flat between
-       its samples BY CONSTRUCTION — the kernel averages each cell over its k
-       nearest occupied neighbours, so neighbouring cells agree to many places
-       — and four digits showed them all identical, which reads as "the cursor
-       does nothing" rather than as "these two cells really are the same value".
-
-       And the two in-plane coordinates, in the trace's OWN units. The x and y
-       of a grid surface are data, not cube coordinates: for the Hough node
-       they are the normalised (slope, intercept) position, and without them a
-       number cannot be located at all — you cannot look for a peak you cannot
-       address. */
-    hoverLabel(trace,dataZ,index){
-        const digits=value=>Number.isFinite(value)?value.toPrecision(6):"—"
-        const geometry=this.visibleTraces.find(t=>t.id===trace?.id)?.wave
-        if(!geometry||!Number.isInteger(index)) return `z ${digits(dataZ)}`
-        const [nx,ny]=geometry.dims
-        const x=geometry.core[geometry.index(index%nx,Math.floor(index/nx),0)]
-        const y=geometry.core[geometry.index(index%nx,Math.floor(index/nx),1)]
-        return `x ${digits(x)}  y ${digits(y)}  z ${digits(dataZ)}`
-    }
-    /* One raycast per frame at most. A mousemove fires far more often than a
-       surface can usefully be re-tested, and the throttle is what keeps the
-       hover free on a 200k-vertex grid. */
-    requestPick(){
-        if(this._pickFrame!==null) return
-        this._pickFrame=requestAnimationFrame(()=>{
-            this._pickFrame=null
-            const event=this._pickEvent
-            if(!event||!this.glLayer||!this.renderOptions.pick) return
-            const hit=this.glLayer.raycast(event.x,event.y)
-            const previous=this._hover
-            if(!hit){
-                if(previous){
-                    this._hover=null
-                    this.drawOverlay()
-                    this.requestFrame()
-                }
-                return
-            }
-            const object=hit.object
-            const grid=object.userData?.grid
-            let label=object.userData?.traceId??""
-            if(grid&&Number.isInteger(hit.faceIndex)){
-                /* A CELL, not a face — and that halving is the whole fix.
-                   buildSurface emits TWO triangles per grid cell, so faceIndex
-                   runs over 2*(nx-1)*(ny-1) while cells run over (nx-1)*(ny-1).
-                   Reading a face index as a cell therefore walked iy up to
-                   twice the last row, and `getZ()` past the end of the
-                   attribute returned undefined: "can't access property
-                   'toPrecision', z is undefined", thrown from a rAF callback
-                   where the stack points nowhere near the arithmetic.
-
-                   And it only showed on SOME cells, which is why it looked
-                   arbitrary: the first triangle of each cell landed in range. */
-                const cell=Math.floor(hit.faceIndex/2)
-                const ix=cell%(grid.nx-1)
-                const iy=Math.floor(cell/(grid.nx-1))
-                const index=iy*grid.nx+ix
-                const z=Number.isInteger(index)?object.geometry.attributes.position.getZ(index):NaN
-                /* The buffer holds the WORLD z — after the per-axis mapping —
-                   so reading it straight would label a 12.5 ppm error as
-                   "-0.42". The tooltip reports DATA units, like the ticks. */
-                const trace=this.visibleTraces.find(t=>t.id===object.userData?.traceId)
-                const dataZ=trace?this.dataZOf(trace,z):NaN
-                label=Number.isFinite(dataZ)?this.hoverLabel(trace,dataZ,index):""
-                this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,label}
-            }else{
-                this._hover={x:hit.point.x,y:hit.point.y,z:hit.point.z,
-                    label:label?`${label}`:""}
-            }
-            this.drawOverlay()
-            this.requestFrame()
-        })
     }
 
     /* --- persistence ------------------------------------------------- */
@@ -1487,19 +1462,14 @@ export class Plot3DWebGL{
         }
         this._resizeHook=null
         this.container.removeEventListener("dblclick",this._onDblClick)
-        this.container.removeEventListener("mousemove",this._onMove)
-        this.container.removeEventListener("mouseleave",this._onLeave)
         this.controls?.dispose()
         this.controls=null
-        for(const frame of [this._frame,this._resizeFrame,this._overlayFrame,this._pickFrame]){
+        for(const frame of [this._frame,this._resizeFrame,this._overlayFrame]){
             if(frame!==null&&frame!==undefined) cancelAnimationFrame(frame)
         }
         this._frame=null
         this._resizeFrame=null
         this._overlayFrame=null
-        this._pickFrame=null
-        this._pickEvent=null
-        this._hover=null
         this._traces=[]
         this._signature=null
         this.glLayer?.dispose()
