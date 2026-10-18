@@ -1139,12 +1139,26 @@ export class Plot3DWebGL{
             if(rule.label){
                 const mid={x:(corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4,
                     y:(corners[0].y+corners[1].y+corners[2].y+corners[3].y)/4}
+                /* LE PASTILLE SOMBRE : l'étiquette flottait nue sur la surface,
+                   illisible dès qu'un pic clair passait derrière. Un disque
+                   foncé cerclé de la couleur du mur, et le symbole en blanc,
+                   plus gros et en gras — la couleur reste portée par le mur et
+                   le cercle, la lecture par le blanc. */
+                const disc=document.createElementNS(ns,"circle")
+                disc.setAttribute("cx",mid.x)
+                disc.setAttribute("cy",mid.y)
+                disc.setAttribute("r",String(11+Math.max(0,rule.label.length-1)*4.5))
+                disc.setAttribute("fill","rgba(2,8,20,0.82)")
+                disc.setAttribute("stroke",color)
+                disc.setAttribute("stroke-width","1.2")
+                group.appendChild(disc)
                 const text=document.createElementNS(ns,"text")
                 text.setAttribute("x",mid.x)
-                text.setAttribute("y",mid.y-4)
+                text.setAttribute("y",mid.y+4.5)
                 text.setAttribute("text-anchor","middle")
-                text.setAttribute("fill",color)
-                text.setAttribute("font-size","10")
+                text.setAttribute("fill","#ffffff")
+                text.setAttribute("font-size","13")
+                text.setAttribute("font-weight","700")
                 text.setAttribute("font-family","inherit")
                 text.textContent=rule.label
                 group.appendChild(text)
