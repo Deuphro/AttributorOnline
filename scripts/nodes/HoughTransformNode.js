@@ -7,6 +7,13 @@ import {wavesFromInput} from "../utils/index.js"
 import {scorePairs,scoreCutoffs} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 
+/* LA COULEUR DU SEUIL, au niveau module : c'est elle qui départage les
+   candidats (et non plus une k·MAD parmi d'autres), et trois endroits
+   doivent s'accorder dessus — le paint de la barre, son étiquette et le
+   readout sous le graphe. */
+const OTSU_COLOR="#2ecc71"
+
+
 /* =====================================================================
    HoughTransformNode — the Hough accumulator of (slope, intercept), as a
    surface on [-1,1]^2.
@@ -107,6 +114,13 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.collectedWaves=[]
         this.lastAnswer=null
         this.detection=[]
+        /* LE SEUIL DE SÉLECTION DU GRAPHE DE SCORE : null = suivre l'Otsu
+           (ce que les données devinent), une valeur = la main de l'utilisateur
+           posée en glissant la barre verte. Champ d'instance, PAS persisté :
+           il n'a de sens que vis-à-vis de la distribution courante, et un
+           seuil relu sur une session rechargée mentirait sur des scores
+           recalculés. Le bouton Guess remet null. */
+        this.scoreThreshold=null
         /* Monotonic ticket — FKMDNode's pattern: a resolve waiting on the
            worker must not be overwritten by a newer one that started while it
            was still in flight. */
@@ -237,12 +251,60 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const detectionHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
             ["each peak of the accumulator is a slope; an element answers when A/z = k/(1-s) — the ranking is the share of votes it collected"])
         content.append(detectionHint)
-        /* LE GRAPHE DU SCORE — barres log10 par candidat, lignes k·MAD.
-           Rendu avec Plot2D (SVG) au lieu d'un canvas brut. Le wrapper a
-           une hauteur fixe parce que Plot2D lit clientHeight pour dessiner. */
-        this.scoreWrapper=CE("div",{style:{"grid-column":"1 / -1",height:"150px",overflow:"hidden"}},[])
+        /* LE GRAPHE DU SCORE — barres linéaires par candidat, une barre de
+           seuil verte DÉPLAÇABLE à la souris (Otsu par défaut). Rendu avec
+           Plot2D (SVG) au lieu d'un canvas brut. Le wrapper a une hauteur
+           fixe parce que Plot2D lit clientHeight pour dessiner. */
+        this.scoreWrapper=CE("div",{
+            style:{"grid-column":"1 / -1",height:"150px",overflow:"hidden",cursor:"ns-resize"}
+        },[])
         content.append(this.scoreWrapper)
         this.scorePlot=new Plot2D([],"HoughTransform score",this.origin,this.scoreWrapper)
+        /* PAS DE ZOOM : ce graphe est une LECTURE du seuil. Les axes sont
+           épinglés par renderScoreGraph (autoDomain=false) ; la molette, le
+           pan et le double-clic reset remettraient des domaines que personne
+           ne redemande — et les barres ne sont même plus des traces. */
+        this.scorePlot.allowZoom=false
+        /* TOUT LE REPEINT VIENT DU CACHE : barres, étiquettes d'éléments,
+           médiane et barre de seuil sont peints par _paintScoreOverlay()
+           depuis this._scoreOverlay, et l'enveloppe de drawGraph le rappelle
+           après chaque redessin (resize compris). C'est ce qui fait suivre
+           les étiquettes au redimensionnement : posées une fois hors du
+           chemin de redraw, elles restaient accrochées à d'anciens pixels. */
+        const origDrawGraph=this.scorePlot.drawGraph.bind(this.scorePlot)
+        this.scorePlot.drawGraph=(...args)=>{
+            const out=origDrawGraph(...args)
+            this._paintScoreOverlay()
+            return out
+        }
+        /* LA BARRE DE SEUIL PREND LA SOURIS : pointerdown dans la zone, et le
+           seuil SAUTE à la hauteur du pointeur puis le suit (le motif du
+           Trimmer — teleport + drag, sans aller chercher la barre au préalable).
+           Plot2D ne peut pas le faire lui-même : allowZoom=false a éteint ses
+           gestes, et c'est voulu. */
+        this._onScorePointerDown=(event)=>this.handleScorePointerDown(event)
+        this.scorePlot.container.addEventListener("pointerdown",this._onScorePointerDown)
+        /* LA LIGNE DE COMMANDE DU SEUIL : le bouton Guess rend la main à
+           l'Otsu, le readout dit ce qui est en vigueur — l'Otsu suivi, ou le
+           seuil posé à la main. Sans ce readout, un seuil déplacé et un seuil
+           Otsu se ressemblent et l'utilisateur ne sait plus ce qu'il regarde. */
+        const thresholdRow=CE("div",{
+            style:{"grid-column":"1 / -1",display:"flex",gap:"6px","align-items":"center"}
+        },[])
+        this.thresholdGuessBtn=CE("button",{
+            type:"button",
+            title:"Put the threshold back on the Otsu value computed from the scores"
+        },["Guess"])
+        stylize(this.thresholdGuessBtn,{fontSize:"0.85em",padding:"2px 8px",cursor:"pointer"})
+        this.thresholdGuessBtn.addEventListener("click",()=>this.guessScoreThreshold())
+        this.thresholdReadout=CE("span",{
+            style:{opacity:"0.8",whiteSpace:"nowrap",fontFamily:"ui-monospace, monospace","font-size":"0.85em"}
+        },[])
+        thresholdRow.append(this.thresholdGuessBtn,this.thresholdReadout)
+        content.append(thresholdRow)
+        const thresholdHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
+            ["drag inside the graph to move the threshold — candidates below it fade to 50 %; Guess restores the Otsu cut"])
+        content.append(thresholdHint)
         const heightCaption=CE("label",{},["height"])
         this.heightInput=CE("input",{type:"range",min:0.05,max:1,step:0.05,value:this.parameters.heightScale},[])
         stylize(this.heightInput,{width:"100%"})
@@ -486,86 +548,82 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.renderScoreGraph()
     }
 
-    /* LE GRAPHE DU SCORE — barres linéaires par candidat, lignes k·MAD.
+    /* LE GRAPHE DU SCORE — barres linéaires par candidat, une barre de
+       seuil VERTE DÉPLAÇABLE à la souris.
 
-       Rendu avec Plot2D (SVG). Une trace de barres (segments verticaux de 0
-       jusqu'au score) et une trace par ligne k·MAD (segments horizontaux,
-       couleur distincte par k). Les axes sont fixes :
-       X = rang linéaire, Y = score linéaire. Le symbole de chaque élément
-       est écrit au-dessus de sa barre. */
+       Rendu avec Plot2D (SVG). Seule la MÉDIANE est une trace Plot2D
+       (segment horizontal statique) : tout le reste — barres, seuil,
+       étiquettes — est peint à la main par _paintScoreOverlay depuis le
+       cache `this._scoreOverlay`, et repeinté par l'enveloppe de drawGraph
+       à chaque redessin, resize compris. Les axes sont fixes : X = rang
+       linéaire, Y = score linéaire.
+
+       LE SEUIL N'EST PLUS UNE LIGNE k·MAD : k=1,2,4 et médiane encombraient
+       un graphe dont la seule ligne qui compte est celle qui départage les
+       candidats. Ce seuil est l'Otsu par défaut (variance inter-classes
+       maximale — aucune constante arbitraire), et la main de l'utilisateur
+       le déplace : `this.scoreThreshold` (champ d'instance, PAS persisté —
+       un seuil relu sur une session rechargée mentirait sur une
+       distribution recalculée) le fixe, Guess le remet à null et suit de
+       nouveau l'Otsu. */
     renderScoreGraph(){
         if(!this.scorePlot) return
-        const rows=this.detection??[]
-        if(!rows.length){
+        const all=this.detection??[]
+        if(!all.length){
+            this._scoreOverlay=null
             this.scorePlot.setTraces([])
             this.scorePlot.drawGraph()
-            this._clearScoreLabels()
+            this.updateThresholdReadout()
             return
         }
+        /* LES STATISTIQUES SE CALCULENT SUR TOUTE LA POPULATION : médiane et
+           Otsu sont des statistiques d'ensemble — tronquer avant fausserait. */
+        const cutoffs=scoreCutoffs(all)
+        const otsuScore=cutoffs?.otsu?.score??null
+        const medianScore=cutoffs?.median??null
+        /* LE SEUIL EN VIGUEUR : la main si elle existe, sinon l'Otsu. `let` :
+           un seuil à la main gardé d'une session de données précédente peut
+           dépasser le nouveau domaine après un recalcul, et la ligne se
+           peindrait hors-zone — on le ramène dans l'axe (clamp). */
+        let threshold=Number.isFinite(this.scoreThreshold)?this.scoreThreshold:otsuScore
+        /* LES RANGS AFFICHÉS restent cadrés sur l'OTSU, pas sur le curseur :
+           pendant un drag, le cadrage ne doit pas sauter à chaque pas — le
+           seuil ne déplace que la ligne et l'estompage. scorePairs trie par
+           score décroissant et otsu.score = values[cut] avec nGood = cut+1,
+           donc les nGood premiers rangs sont exactement la classe « bonne »,
+           plus DEUX FOIS autant des meilleurs en dessous. */
+        let rows=all
+        let nGood=0
+        if(cutoffs?.otsu){
+            nGood=cutoffs.otsu.nGood
+            rows=all.slice(0,Math.min(all.length,3*nGood))
+        }
         const scores=rows.map(r=>Math.max(r.score,0))
-        const cutoffs=scoreCutoffs(rows,{ks:[1,2,4]})
+        const n=rows.length
         let lo=0
         let hi=Math.max(...scores)
-        if(cutoffs) hi=Math.max(hi,...cutoffs.lines.map(l=>l.score))
         if(!(hi>lo)) hi=lo+1
-        const n=rows.length
-        /* BARRES : segments verticaux (rank, 0) → (rank, score).
-           Le mode "segments" relie les points deux à deux, donc chaque paire
-           consécutive forme une barre. Trait épais = barre épaisse. */
-        const barXs=[]
-        const barYs=[]
-        for(let i=0;i<n;i++){
-            barXs.push(i,i)
-            barYs.push(lo,scores[i])
+        if(threshold!==null){
+            threshold=Math.min(Math.max(threshold,lo),hi)
+            if(this.scoreThreshold!==null) this.scoreThreshold=threshold
         }
-        const barWave=Wave.fromCoordinates(
-            new Float64Array(barXs),
-            new Float64Array(barYs),
-            {title:"score bars"},
-            ["rank","score"]
-        )
-        const barTrace=new XYTrace({
-            id:"score-bars",
-            title:"scores",
-            wave:barWave,
-            options:{
-                color:"rgba(120,160,220,0.8)",
-                mode:"segments",
-                line:{size:Math.max(1,Math.min(6,Math.floor(80/Math.max(n,1))))},
-                layer:"svg"
-            }
-        })
-        const traces=[barTrace]
-        /* LIGNES k·MAD : un segment horizontal par valeur de k, chacune dans
-           sa propre trace pour avoir une couleur distincte. k=1,2,4. */
-        const lineInfos=[]
-        if(cutoffs){
-            const colors={1:"rgba(255,220,100,0.8)",2:"rgba(255,150,80,0.8)",4:"rgba(255,90,90,0.9)"}
-            for(const line of cutoffs.lines){
-                const lineWave=Wave.fromCoordinates(
-                    new Float64Array([0,n-1]),
-                    new Float64Array([line.score,line.score]),
-                    {title:`k=${line.k}`},
-                    ["x","y"]
-                )
-                traces.push(new XYTrace({
-                    id:`score-mad-k${line.k}`,
-                    title:`k=${line.k}`,
-                    wave:lineWave,
-                    options:{
-                        color:colors[line.k]?? "rgba(255,255,255,0.6)",
-                        mode:"segments",
-                        line:{size:1},
-                        layer:"svg"
-                    }
-                }))
-                lineInfos.push({value:line.score,label:`k=${line.k}`,color:colors[line.k]})
-            }
-            /* LIGNE médiane : median pur, sans facteur k ni MAD.
-               Niveau central de la population des scores. */
+        /* LE SEUIL EST PEINT À LA MAIN ET NON EN TRACE : il doit être
+           prenable à la souris, et une trace Plot2D n'a ni pointeurs ni
+           drag. nGood actif = rangs au-dessus du seuil EN VIGUEUR, pour
+           l'étiquette « N bons ». */
+        const activeGood=threshold===null?all.length:all.filter(r=>r.score>=threshold).length
+        /* LE CACHE TIENT TOUT LE MOBILIER : barres, étiquettes, médiane,
+           seuil — c'est ce que _paintScoreOverlay relit à chaque drawGraph. */
+        this._scoreOverlay={rows,scores,lo,hi,n,threshold,otsuScore,median:medianScore,nGood:activeGood}
+        const traces=[]
+        /* LA MÉDIANE reste une trace Plot2D : c'est une droite statique, un
+           repère de population, sans geste. Le SEUIL, lui, n'est plus une
+           trace — il doit être prenable à la souris, et une trace Plot2D
+           n'a ni pointeurs ni drag : _paintScoreOverlay le peint. */
+        if(Number.isFinite(medianScore)){
             const medWave=Wave.fromCoordinates(
                 new Float64Array([0,n-1]),
-                new Float64Array([cutoffs.median,cutoffs.median]),
+                new Float64Array([medianScore,medianScore]),
                 {title:"median"},
                 ["x","y"]
             )
@@ -580,31 +638,6 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
                     layer:"svg"
                 }
             }))
-            lineInfos.push({value:cutoffs.median,label:"median",color:"rgba(255,255,255,0.85)"})
-            /* LIGNE Otsu : seuil optimal entre "good" et "bad" par la
-               méthode d'Otsu (variance inter-classes maximale). Aucun
-               seuil arbitraire — le score de séparation est calculé pour
-               chaque coupure possible. */
-            if(cutoffs.otsu){
-                const otsuWave=Wave.fromCoordinates(
-                    new Float64Array([0,n-1]),
-                    new Float64Array([cutoffs.otsu.score,cutoffs.otsu.score]),
-                    {title:`otsu (${cutoffs.otsu.nGood} good)`},
-                    ["x","y"]
-                )
-                traces.push(new XYTrace({
-                    id:"score-otsu",
-                    title:"otsu",
-                    wave:otsuWave,
-                    options:{
-                        color:"rgba(100,255,100,0.9)",
-                        mode:"segments",
-                        line:{size:2},
-                        layer:"svg"
-                    }
-                }))
-                lineInfos.push({value:cutoffs.otsu.score,label:`otsu (${cutoffs.otsu.nGood} good)`,color:"rgba(100,255,100,0.9)"})
-            }
         }
         this.scorePlot.setTraces(traces)
         /* AXES FIXES : le graphe de score est une lecture, pas un espace
@@ -618,56 +651,213 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.scorePlot.parameters.axis.left.label="score"
         this.scorePlot.parameters.axis.left.scale="linear"
         this.scorePlot.drawGraph()
-        /* ÉTIQUETTES : symbole de l'élément au-dessus de chaque barre. */
-        this._drawScoreLabels(rows,scores,n,hi)
-        /* ÉTIQUETTES DES LIGNES : nom de chaque ligne horizontale à droite. */
-        this._drawScoreLineLabels(lineInfos,n,hi)
+        /* BARRES, ÉTIQUETTES ET SEUIL sont repeints par l'enveloppe de
+           drawGraph (voir setupUI) — resize compris. Il ne reste ici qu'à
+           dire ce que la lecture affiche. */
+        this.updateThresholdReadout()
     }
-    /* Retire les étiquettes de score précédentes avant un nouveau dessin. */
-    _clearScoreLabels(){
-        if(!this.scoreWrapper) return
-        this.scoreWrapper.querySelectorAll(".score-label,.score-line-label").forEach(el=>el.remove())
-    }
-    /* Écrit le symbole de chaque élément au sommet de sa barre, en utilisant
-       les échelles du plot juste après drawGraph(). */
-    _drawScoreLabels(rows,scores,n,hi){
-        this._clearScoreLabels()
-        if(!this.scorePlot.graphSVG) return
-        const {xScale,yScale}=this.scorePlot.plotScales()
+    /* TOUT LE MOBILIER DU GRAPHE, REPEINT D'UN SEUL COUP : les BARRES
+       (dégradé PAR BARRE — blanc opaque au sommet, #46BEFF à 50 % au milieu,
+       #01287F transparent à la base ; un dégradé unique sur toute la hauteur
+       de l'axe écraserait la falaise : les bons candidats vivent en bas de
+       l'axe linéaire), les ÉTIQUETTES de symbole, l'étiquette de la médiane
+       et la barre de SEUIL.
+
+       UNE SEULE COUCHE DESSINÉE, `.score-overlay`, APRÈS g.trace : les
+       barres y sont d'abord, puis médiane-étiquette et seuil par-dessus.
+       Tout y est repeint à CHAQUE drawGraph — l'enveloppe posée à la
+       création du plot — ce qui inclut le resize : c'est la condition pour
+       que les étiquettes SUIVENT le cadrage, elles qui auparavant étaient
+       posées une fois hors du chemin de redraw et restaient accrochées à
+       d'anciens pixels pendant que les barres, elles, suivaient. */
+    _paintScoreOverlay(){
+        const cached=this._scoreOverlay
+        if(!this.scorePlot?.graphSVG) return
         const anchor=this.scorePlot.graphSVG.select(".anchor")
+        if(anchor.empty()) return
+        let layer=anchor.select(".score-overlay")
+        if(layer.empty()) layer=anchor.append("g").attr("class","score-overlay")
+        /* PLUS DE CANDIDAT : la couche précédente ne doit pas survivre — le
+           cache null est l'occasion de laver, pas de faire un no-op. */
+        layer.selectAll("*").remove()
+        if(!cached) return
+        const zone=this.scorePlot.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        const {xScale,yScale}=this.scorePlot.plotScales()
+        const {rows,scores,lo,hi,n,threshold,otsuScore,median,nGood}=cached
+        /* <defs> must be appended (not selected-into-existence): d3's append
+           on an empty selection creates nothing, leaving fill="url(#...)"
+           dangling — SVG then refuses to paint the rect at all. Le motif et
+           le commentaire viennent de MassCalculatorNode.drawPeakBars. */
+        let defs=anchor.select("defs")
+        if(defs.empty()) defs=anchor.append("defs")
+        /* l'id porte l'id du SVG : les refs url(#…) se résolvent dans tout le
+           document, deux plots ne doivent pas répondre au même (règle posée
+           par Plot2D.instanceCounter). */
+        const gradId=`score-bar-gradient-${this.scorePlot.graphSVG.attr("id")}`
+        let gradient=defs.select(`#${gradId}`)
+        if(gradient.empty()){
+            gradient=defs.append("linearGradient")
+                .attr("id",gradId)
+                .attr("x1","0%").attr("x2","0%")
+                .attr("y1","0%").attr("y2","100%")
+            gradient.append("stop").attr("offset","0%").attr("stop-color","#ffffff").attr("stop-opacity","1")
+            gradient.append("stop").attr("offset","50%").attr("stop-color","#46BEFF").attr("stop-opacity","0.5")
+            gradient.append("stop").attr("offset","100%").attr("stop-color","#01287F").attr("stop-opacity","0")
+        }
+        const width=Math.max(1,Math.min(6,Math.floor(80/Math.max(n,1))))
+        const base=yScale(lo)
+        for(let i=0;i<n;i++){
+            const top=yScale(scores[i])
+            layer.append("rect")
+                .attr("x",xScale(i)-width/2)
+                .attr("y",top)
+                .attr("width",width)
+                .attr("height",Math.max(0,base-top))
+                .attr("fill",`url(#${gradId})`)
+        }
+        const xRight=xScale(n-1)+12
+        /* L'ÉTIQUETTE DE LA MÉDIANE, à droite, à la hauteur de sa valeur. */
+        if(Number.isFinite(median)){
+            layer.append("text")
+                .attr("class","score-line-label")
+                .attr("x",xRight)
+                .attr("y",yScale(median)+3)
+                .attr("text-anchor","start")
+                .attr("font-size","9px")
+                .attr("fill","rgba(255,255,255,0.85)")
+                .attr("font-family","ui-monospace, monospace")
+                .text("median")
+        }
+        /* LA BARRE DE SEUIL, VERTE, DÉPLAÇABLE : quand la main a bougé le
+           seuil, l'OTSU reste affiché en pointillé — l'endroit où « Guess »
+           renverrait la barre, et la distance entre la coupure subie et la
+           coupure devinée. */
+        if(Number.isFinite(otsuScore)&&otsuScore!==threshold){
+            const oy=yScale(otsuScore)
+            layer.append("line")
+                .attr("x1",0).attr("x2",zone.width)
+                .attr("y1",oy).attr("y2",oy)
+                .attr("stroke",OTSU_COLOR)
+                .attr("stroke-width",1)
+                .attr("stroke-dasharray","4 3")
+                .attr("opacity",0.4)
+            layer.append("text")
+                .attr("class","score-line-label")
+                .attr("x",xRight)
+                .attr("y",oy+3)
+                .attr("text-anchor","start")
+                .attr("font-size","9px")
+                .attr("fill",OTSU_COLOR)
+                .attr("opacity",0.6)
+                .attr("font-family","ui-monospace, monospace")
+                .text("otsu")
+        }
+        if(Number.isFinite(threshold)){
+            const y=yScale(threshold)
+            layer.append("line")
+                .attr("x1",0).attr("x2",zone.width)
+                .attr("y1",y).attr("y2",y)
+                .attr("stroke",OTSU_COLOR)
+                .attr("stroke-width",2)
+            /* LA POIGNÉE, à gauche : ce que la souris prend — un repère de
+               prise visible sur une ligne de 2 px, qui suit le pointeur. */
+            layer.append("path")
+                .attr("d",`M0,${y-4} L8,${y} L0,${y+4} Z`)
+                .attr("fill",OTSU_COLOR)
+            layer.append("text")
+                .attr("class","score-line-label")
+                .attr("x",xRight)
+                .attr("y",y+3)
+                .attr("text-anchor","start")
+                .attr("font-size","9px")
+                .attr("fill",OTSU_COLOR)
+                .attr("font-family","ui-monospace, monospace")
+                .text(`seuil ${threshold.toPrecision(3)} — ${nGood} bons`)
+        }
+        /* LE SYMBOLE DE L'ÉLÉMENT au sommet de sa barre — en pâle (50 %)
+           sous le seuil EN VIGUEUR : le candidat reste lisible comme
+           contexte (c'est un rang affiché), sans rivaliser avec la classe
+           « bonne ». */
         for(let i=0;i<n;i++){
             const x=xScale(i)
             const y=yScale(scores[i])
-            anchor.append("text")
+            layer.append("text")
                 .attr("class","score-label")
                 .attr("x",x)
                 .attr("y",y-5)
                 .attr("text-anchor","middle")
                 .attr("font-size","9px")
                 .attr("fill","rgba(255,255,255,0.9)")
+                .attr("opacity",Number.isFinite(threshold)&&scores[i]<threshold?0.5:1)
                 .attr("font-family","ui-monospace, monospace")
                 .text(rows[i].symbol??`?`)
         }
     }
-    /* Écrit le nom de chaque ligne horizontale (k·MAD, médiane, otsu)
-       à droite du plot, à la hauteur de sa valeur score. */
-    _drawScoreLineLabels(lineInfos,n,hi){
-        if(!this.scorePlot.graphSVG) return
-        const {xScale,yScale}=this.scorePlot.plotScales()
-        const anchor=this.scorePlot.graphSVG.select(".anchor")
-        const xRight=xScale(n-1)+12
-        for(const info of lineInfos){
-            const y=yScale(info.value)
-            anchor.append("text")
-                .attr("class","score-line-label")
-                .attr("x",xRight)
-                .attr("y",y+3)
-                .attr("text-anchor","start")
-                .attr("font-size","9px")
-                .attr("fill",info.color)
-                .attr("font-family","ui-monospace, monospace")
-                .text(info.label)
+    /* LA MAIN SUR LE SEUIL : pointerdown dans le graphe = le seuil SAUTE à
+       la hauteur du pointeur puis le suit jusqu'au relâchement. Le motif
+       (teleport + écouteurs window) vient de TrimmerNode.handleTrimPointerDown
+       — et pour la même raison : les QUATRE sorties (up, cancel, blur, et
+       pointercancel du tactile) doivent toutes désengager, sinon un drag
+       interrompu laisse des écouteurs accrochés à window pour le reste de la
+       session, en train de repeindre un nœud peut-être détruit. */
+    handleScorePointerDown(event){
+        if(event.button!==undefined&&event.button!==0) return
+        const cached=this._scoreOverlay
+        if(!cached||!this.scorePlot?.graphSVG) return
+        const plot=this.scorePlot
+        const rect=plot.container.getBoundingClientRect()
+        const zone=plot.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        const margins=plot.parameters.margins
+        const {yScale}=plot.plotScales()
+        const {lo,hi}=cached
+        /* pixel → valeur : le pointeur projeté sur l'axe Y, clampé dans le
+           domaine épinglé — on ne choisit pas un seuil hors des scores. */
+        const toThreshold=(clientY)=>{
+            const pixel=Math.min(Math.max(clientY-rect.top-margins.top,0),zone.height)
+            return Math.min(Math.max(yScale.invert(pixel),lo),hi)
         }
+        event.preventDefault()
+        this.scoreThreshold=toThreshold(event.clientY)
+        this.renderScoreGraph()
+        const stopDrag=()=>{
+            window.removeEventListener("pointermove",onMove)
+            window.removeEventListener("pointerup",stopDrag)
+            window.removeEventListener("pointercancel",stopDrag)
+            window.removeEventListener("blur",stopDrag)
+            this._scoreDragCleanup=null
+        }
+        const onMove=(moveEvent)=>{
+            this.scoreThreshold=toThreshold(moveEvent.clientY)
+            this.renderScoreGraph()
+        }
+        this._scoreDragCleanup=stopDrag
+        window.addEventListener("pointermove",onMove)
+        window.addEventListener("pointerup",stopDrag)
+        window.addEventListener("pointercancel",stopDrag)
+        window.addEventListener("blur",stopDrag)
+    }
+    /* LE SEUIL REDEVIENT CE QUE LES DONNÉES DISENT : null = suivre l'Otsu
+       au prochain paint. */
+    guessScoreThreshold(){
+        this.scoreThreshold=null
+        this.renderScoreGraph()
+    }
+    /* CE QUE LA LECTURE DIT DU SEUIL, à côté du bouton Guess : l'Otsu quand
+       il est suivi, la valeur à la main ET l'Otsu de référence quand le
+       seuil a été déplacé — sinon on compare à l'aveugle. */
+    updateThresholdReadout(){
+        if(!this.thresholdReadout) return
+        const cached=this._scoreOverlay
+        if(!cached||!Number.isFinite(cached.threshold)){
+            this.thresholdReadout.textContent="aucun seuil"
+            return
+        }
+        const fmt=(value)=>value.toPrecision(3)
+        this.thresholdReadout.textContent=cached.otsuScore!==cached.threshold
+            ?`seuil ${fmt(cached.threshold)} · otsu ${fmt(cached.otsuScore)} · ${cached.nGood} bons`
+            :`otsu ${fmt(cached.threshold)} · ${cached.nGood} bons`
     }
 
     /* --- resolve ------------------------------------------------------ */
@@ -921,12 +1111,18 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         })
     }
     suicide(options={}){
+        /* LE DRAG ÉVENTUEL SE TERMINE ICI : pointerup n'arrivera peut-être
+           plus jamais (le nœud meurt sous le doigt), et laisser les
+           écouteurs window vivre, c'est repeindre un cadavre à chaque
+           mouvement de souris. */
+        this._scoreDragCleanup?.()
         if(this.scorePlot){
             /* Plot2D n'a pas de dispose() : on retire ses écouteurs nommés
                et on détache son conteneur du DOM. */
             try{this.scorePlot.container.removeEventListener("wheel",this.scorePlot._onWheel)}catch(e){}
             try{this.scorePlot.container.removeEventListener("dblclick",this.scorePlot._onDblClick)}catch(e){}
             try{this.scorePlot.container.removeEventListener("mousedown",this.scorePlot._onMouseDown)}catch(e){}
+            try{this.scorePlot.container.removeEventListener("pointerdown",this._onScorePointerDown)}catch(e){}
             if(this.scorePlot.zoomDrawFrame) cancelAnimationFrame(this.scorePlot.zoomDrawFrame)
             if(this.scorePlot.zoomGestureTimer) clearTimeout(this.scorePlot.zoomGestureTimer)
             this.scoreWrapper?.remove()

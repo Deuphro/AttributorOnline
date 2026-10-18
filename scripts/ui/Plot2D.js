@@ -558,6 +558,10 @@ export class Plot2D{
     }
     //double-click: give the automatic (data fitted) view back
     handleZoomReset(event){
+        //a plot that opted out of navigation (allowZoom=false) keeps the
+        //domains its node pinned: the reset would flip autoDomain on and let
+        //the next drawGraph refit axes that were fixed on purpose
+        if(this.allowZoom===false) return
         //the click completing a just-finished pan must not reset the view
         if(performance.now()-this.lastPanEndAt<PAN_DBLCLICK_GUARD) return
         event.preventDefault()
@@ -656,6 +660,9 @@ export class Plot2D{
     //go through the rAF-coalesced zoom pipeline, and one whole drag lands
     //in the history as a single undoable command
     handlePanStart(event){
+        //same opt-out as the wheel: a fixed plot (allowZoom=false) is a
+        //reading, and sliding its domains would rewrite what it displays
+        if(this.allowZoom===false) return
         //only the left button pans: the right one keeps its menu
         if(event.button!==0) return
         const zone=this.graphzone
