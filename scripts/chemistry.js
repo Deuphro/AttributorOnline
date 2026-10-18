@@ -2856,11 +2856,11 @@ function scorePairs(table,pairs,{charges=[1],isotopeCount=1}={}){
            C, C₂, C₃, C₄ partagent une pente et l'explosion quadratique
            survit. */
         if(best.oddValence&&multiple!==1&&(multiple%2!==0)) continue
-        /* 3. LE POIDS — l'inverse du résidu relatif : 1/(dm·|dm − n·A/z|).
-           À résidu égal, un pas court pèse plus qu'un multiple lointain —
-           le doute est le moins important à basse masse. */
-        const residue=Math.abs(dm-multiple*best.massPerCharge)
-        const weight=1/(dm*residue+1e-12)
+        /* 3. LE POIDS — l'inverse du résidu pur : 1/résidu. Un pas exact
+           (résidu nul) pèse le plus fort ; plus le pas s'écarte de n·A/z,
+           moins il compte. Pas de terme dm. */
+        const residue = Math.abs(dm - multiple * best.massPerCharge)
+        const weight = 1 / (residue + 1e-12)
         const key=`${best.symbol}/${best.charge}`
         let row=found.get(key)
         if(!row){
@@ -2897,31 +2897,66 @@ function scorePairs(table,pairs,{charges=[1],isotopeCount=1}={}){
 
 /* LES SEUILS k·MAD DU SCORE — pour le graphe, pas pour le tri.
 
-   Les scores s'étalent sur des ordres de grandeur (un pas exact pèse 1e12
-   quand un pas approximatif pèse 80), donc médiane et MAD se calculent en
-   log10 : en linéaire, la MAD serait dominée par les deux premiers et les
-   trois lignes se marcheraient dessus. `scores` est la liste des scores
-   triés ou non ; le retour donne la médiane, la MAD et une ligne par k,
-   dans les deux espaces (log pour dessiner, linéaire pour lire). */
+   Le graphe de score est en linéaire : les statistiques y sont calculées
+   aussi. La MAD est une médiane d'écarts, pas une moyenne — quelques scores
+   géants (1e12 contre 80) ne peuvent pas la tirer tant qu'ils restent
+   minoritaires. `scores` est la liste des scores triés ou non ; médiane,
+   MAD, Otsu et lignes reviennent tous en linéaire, prêts à placer sur l'axe. */
 function scoreCutoffs(scores,{ks=[1,2,4]}={}){
-    const logs=(scores??[])
+    const values=(scores??[])
         .map(s=>Number(s?.score??s))
         .filter(s=>Number.isFinite(s)&&s>0)
-        .map(s=>Math.log10(s))
-        .sort((a,b)=>a-b)
-    if(!logs.length) return null
-    const median=logs.length%2
-        ?logs[(logs.length-1)/2]
-        :(logs[logs.length/2-1]+logs[logs.length/2])/2
-    const deviations=logs.map(l=>Math.abs(l-median)).sort((a,b)=>a-b)
+        .sort((a,b)=>b-a)   /* du plus haut vers le plus bas */
+    if(!values.length) return null
+    const asc=[...values].reverse()   /* pour la médiane et la MAD (ordre croissant) */
+    const median=asc.length%2
+        ?asc[(asc.length-1)/2]
+        :(asc[asc.length/2-1]+asc[asc.length/2])/2
+    const deviations=asc.map(v=>Math.abs(v-median)).sort((a,b)=>a-b)
     const mad=deviations.length%2
         ?deviations[(deviations.length-1)/2]
         :(deviations[deviations.length/2-1]+deviations[deviations.length/2])/2
+    /* DÉTECTION DE FALAISE par la méthode d'Otsu : cherche le seuil qui
+       maximise la variance inter-classes entre "good" (haut score) et "bad"
+       (bas score), calculée sur les scores bruts. Aucun seuil arbitraire :
+       le score de séparation est calculé pour chaque coupure possible entre
+       deux valeurs consécutives, et on garde celle qui sépare le mieux. */
+    let otsu=null
+    {
+        const n=values.length
+        let total=0
+        for(const v of values) total+=v
+        let sum=0
+        let w0=0
+        let maxBetween=-1
+        let cut=-1
+        for(let i=0;i<n-1;i++){
+            const v=values[i]
+            sum+=v
+            w0+=1
+            const w1=n-w0
+            if(w1===0) break
+            const mean0=sum/w0
+            const mean1=(total-sum)/w1
+            const between=w0*w1*(mean0-mean1)*(mean0-mean1)
+            if(between>maxBetween){ maxBetween=between; cut=i }
+        }
+        if(cut>=0){
+            const threshold=(values[cut]+values[cut+1])/2
+            otsu={
+                score:threshold,
+                index:cut,
+                gap:values[cut]-values[cut+1],
+                nGood:cut+1,
+                betweenVariance:maxBetween
+            }
+        }
+    }
     return {
-        medLog:median,
-        median:10**median,
+        median,
         mad,
-        lines:ks.map(k=>({k,log:median+k*mad,score:10**(median+k*mad)})),
+        otsu,
+        lines:ks.map(k=>({k,score:median+k*mad})),
     }
 }
 

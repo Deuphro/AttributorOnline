@@ -1226,22 +1226,29 @@ test("le score refuse plutôt que de deviner",()=>{
 
 test("les seuils k·MAD séparent la falaise du fond",()=>{
     /* LE GRAPHE DIT « EFFONDREMENT », LE TEST DIT OÙ. Scores sur des ordres
-       de grandeur (1e12 exact contre 80 approximatif) : médiane et MAD en
-       log10, sinon les deux premiers dominent tout et les trois lignes se
-       marchent dessus. */
+       de grandeur (1e12 exact contre 80 approximatif), calculés EN LINÉAIRE
+       comme le graphe qui les dessine. La MAD est une médiane d'écarts :
+       les géants sont minoritaires, ils ne peuvent pas la tirer. */
     const cutoffs=scoreCutoffs([{score:1e12},{score:1e11},{score:80},{score:60},{score:50}],{ks:[1,2,4]})
     ok(cutoffs,"des scores rendent des seuils")
-    /* médiane des logs triés [1.7, 1.78, 1.9, 11, 12] : 1.9 = log10(80). */
-    close(cutoffs.medLog,1.9030899869919435,1e-9,"la médiane est en log10")
-    ok(cutoffs.mad>0,"la MAD est strictement positive sur un mélange")
+    /* médiane des valeurs triées [50, 60, 80, 1e11, 1e12] : 80. */
+    close(cutoffs.median,80,1e-9,"la médiane est en linéaire")
+    /* écarts à la médiane [30, 20, 0, 1e11-80, 1e12-80] triés :
+       [0, 20, 30, …] — la MAD vaut 30, pas 1e11. */
+    close(cutoffs.mad,30,1e-9,"la MAD est en linéaire, et une médiane la protège")
     eq(cutoffs.lines.length,3,"trois lignes : k=1, 2, 4")
     for(let i=1;i<cutoffs.lines.length;i++){
-        ok(cutoffs.lines[i].log>cutoffs.lines[i-1].log,"les lignes montent avec k")
+        ok(cutoffs.lines[i].score>cutoffs.lines[i-1].score,"les lignes montent avec k")
     }
     /* la falaise dépasse k=4, le fond reste en dessous de k=1 : c'est ce que
        le graphe montre, l'effondrement entre les deux. */
-    ok(12>cutoffs.lines[2].log,"1e12 est au-dessus de k=4 : la falaise")
-    ok(Math.log10(50)<cutoffs.lines[0].log,"50 est sous k=1 : le fond")
+    ok(1e12>cutoffs.lines[2].score,"1e12 est au-dessus de k=4 : la falaise")
+    ok(50<cutoffs.lines[0].score,"50 est sous k=1 : le fond")
+    /* LE SEUIL Otsu SE CALCULE LUI AUSSI SUR LES SCORES BRUTS : il tombe
+       entre le géant isolé et le reste. */
+    ok(cutoffs.otsu,"Otsu trouve un seuil")
+    ok(cutoffs.otsu.score>cutoffs.lines[2].score,"le seuil Otsu passe au-dessus de k=4")
+    eq(cutoffs.otsu.nGood,1,"le plus grand seul forme la classe haute")
     /* ET LE VIDE NE REND RIEN : un graphe sans scores n'a pas de lignes. */
     eq(scoreCutoffs([],{ks:[1,2,4]}),null,"pas de scores, pas de seuils")
     eq(scoreCutoffs([{score:0},{score:-3}],{ks:[1]}),null,"pas de scores positifs, pas de seuils")

@@ -486,14 +486,13 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.renderScoreGraph()
     }
 
-    /* LE GRAPHE DU SCORE — barres log10 par candidat, lignes k·MAD.
+    /* LE GRAPHE DU SCORE — barres linéaires par candidat, lignes k·MAD.
 
-       Rendu avec Plot2D (SVG). Une trace de barres (segments verticaux du
-       bas du plot jusqu'à log10(score)) et une trace par ligne k·MAD
-       (segments horizontaux, couleur distincte par k). Les axes sont fixes :
-       X = rang linéaire, Y = log10(score) linéaire (les valeurs sont déjà
-       dans l'espace log). Pas de labels par barre : le tableau ci-dessus
-       donne déjà le symbole et le rang de chaque candidat. */
+       Rendu avec Plot2D (SVG). Une trace de barres (segments verticaux de 0
+       jusqu'au score) et une trace par ligne k·MAD (segments horizontaux,
+       couleur distincte par k). Les axes sont fixes :
+       X = rang linéaire, Y = score linéaire. Le symbole de chaque élément
+       est écrit au-dessus de sa barre. */
     renderScoreGraph(){
         if(!this.scorePlot) return
         const rows=this.detection??[]
@@ -503,27 +502,27 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             this._clearScoreLabels()
             return
         }
-        const logs=rows.map(r=>Math.log10(Math.max(r.score,1e-300)))
+        const scores=rows.map(r=>Math.max(r.score,0))
         const cutoffs=scoreCutoffs(rows,{ks:[1,2,4]})
-        let lo=Math.min(...logs)
-        let hi=Math.max(...logs)
-        if(cutoffs) hi=Math.max(hi,...cutoffs.lines.map(l=>l.log))
+        let lo=0
+        let hi=Math.max(...scores)
+        if(cutoffs) hi=Math.max(hi,...cutoffs.lines.map(l=>l.score))
         if(!(hi>lo)) hi=lo+1
         const n=rows.length
-        /* BARRES : segments verticaux (rank, lo) → (rank, log10(score)).
+        /* BARRES : segments verticaux (rank, 0) → (rank, score).
            Le mode "segments" relie les points deux à deux, donc chaque paire
            consécutive forme une barre. Trait épais = barre épaisse. */
         const barXs=[]
         const barYs=[]
         for(let i=0;i<n;i++){
             barXs.push(i,i)
-            barYs.push(lo,logs[i])
+            barYs.push(lo,scores[i])
         }
         const barWave=Wave.fromCoordinates(
             new Float64Array(barXs),
             new Float64Array(barYs),
             {title:"score bars"},
-            ["rank","log10(score)"]
+            ["rank","score"]
         )
         const barTrace=new XYTrace({
             id:"score-bars",
@@ -539,12 +538,13 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const traces=[barTrace]
         /* LIGNES k·MAD : un segment horizontal par valeur de k, chacune dans
            sa propre trace pour avoir une couleur distincte. k=1,2,4. */
+        const lineInfos=[]
         if(cutoffs){
             const colors={1:"rgba(255,220,100,0.8)",2:"rgba(255,150,80,0.8)",4:"rgba(255,90,90,0.9)"}
             for(const line of cutoffs.lines){
                 const lineWave=Wave.fromCoordinates(
                     new Float64Array([0,n-1]),
-                    new Float64Array([line.log,line.log]),
+                    new Float64Array([line.score,line.score]),
                     {title:`k=${line.k}`},
                     ["x","y"]
                 )
@@ -559,39 +559,85 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
                         layer:"svg"
                     }
                 }))
+                lineInfos.push({value:line.score,label:`k=${line.k}`,color:colors[line.k]})
+            }
+            /* LIGNE médiane : median pur, sans facteur k ni MAD.
+               Niveau central de la population des scores. */
+            const medWave=Wave.fromCoordinates(
+                new Float64Array([0,n-1]),
+                new Float64Array([cutoffs.median,cutoffs.median]),
+                {title:"median"},
+                ["x","y"]
+            )
+            traces.push(new XYTrace({
+                id:"score-median",
+                title:"median",
+                wave:medWave,
+                options:{
+                    color:"rgba(255,255,255,0.85)",
+                    mode:"segments",
+                    line:{size:1},
+                    layer:"svg"
+                }
+            }))
+            lineInfos.push({value:cutoffs.median,label:"median",color:"rgba(255,255,255,0.85)"})
+            /* LIGNE Otsu : seuil optimal entre "good" et "bad" par la
+               méthode d'Otsu (variance inter-classes maximale). Aucun
+               seuil arbitraire — le score de séparation est calculé pour
+               chaque coupure possible. */
+            if(cutoffs.otsu){
+                const otsuWave=Wave.fromCoordinates(
+                    new Float64Array([0,n-1]),
+                    new Float64Array([cutoffs.otsu.score,cutoffs.otsu.score]),
+                    {title:`otsu (${cutoffs.otsu.nGood} good)`},
+                    ["x","y"]
+                )
+                traces.push(new XYTrace({
+                    id:"score-otsu",
+                    title:"otsu",
+                    wave:otsuWave,
+                    options:{
+                        color:"rgba(100,255,100,0.9)",
+                        mode:"segments",
+                        line:{size:2},
+                        layer:"svg"
+                    }
+                }))
+                lineInfos.push({value:cutoffs.otsu.score,label:`otsu (${cutoffs.otsu.nGood} good)`,color:"rgba(100,255,100,0.9)"})
             }
         }
         this.scorePlot.setTraces(traces)
         /* AXES FIXES : le graphe de score est une lecture, pas un espace
-           d'exploration. X = rang (linéaire), Y = log10(score) (linéaire,
-           les valeurs sont déjà dans l'espace log). */
+           d'exploration. X = rang (linéaire), Y = score (linéaire). */
         this.scorePlot.parameters.axis.bottom.autoDomain=false
         this.scorePlot.parameters.axis.bottom.domain=[-0.5,n-0.5]
         this.scorePlot.parameters.axis.bottom.label="rank"
         this.scorePlot.parameters.axis.bottom.scale="linear"
         this.scorePlot.parameters.axis.left.autoDomain=false
         this.scorePlot.parameters.axis.left.domain=[lo,hi]
-        this.scorePlot.parameters.axis.left.label="log10 score"
+        this.scorePlot.parameters.axis.left.label="score"
         this.scorePlot.parameters.axis.left.scale="linear"
         this.scorePlot.drawGraph()
         /* ÉTIQUETTES : symbole de l'élément au-dessus de chaque barre. */
-        this._drawScoreLabels(rows,logs,n,hi)
+        this._drawScoreLabels(rows,scores,n,hi)
+        /* ÉTIQUETTES DES LIGNES : nom de chaque ligne horizontale à droite. */
+        this._drawScoreLineLabels(lineInfos,n,hi)
     }
     /* Retire les étiquettes de score précédentes avant un nouveau dessin. */
     _clearScoreLabels(){
         if(!this.scoreWrapper) return
-        this.scoreWrapper.querySelectorAll(".score-label").forEach(el=>el.remove())
+        this.scoreWrapper.querySelectorAll(".score-label,.score-line-label").forEach(el=>el.remove())
     }
     /* Écrit le symbole de chaque élément au sommet de sa barre, en utilisant
        les échelles du plot juste après drawGraph(). */
-    _drawScoreLabels(rows,logs,n,hi){
+    _drawScoreLabels(rows,scores,n,hi){
         this._clearScoreLabels()
         if(!this.scorePlot.graphSVG) return
         const {xScale,yScale}=this.scorePlot.plotScales()
         const anchor=this.scorePlot.graphSVG.select(".anchor")
         for(let i=0;i<n;i++){
             const x=xScale(i)
-            const y=yScale(logs[i])
+            const y=yScale(scores[i])
             anchor.append("text")
                 .attr("class","score-label")
                 .attr("x",x)
@@ -601,6 +647,26 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
                 .attr("fill","rgba(255,255,255,0.9)")
                 .attr("font-family","ui-monospace, monospace")
                 .text(rows[i].symbol??`?`)
+        }
+    }
+    /* Écrit le nom de chaque ligne horizontale (k·MAD, médiane, otsu)
+       à droite du plot, à la hauteur de sa valeur score. */
+    _drawScoreLineLabels(lineInfos,n,hi){
+        if(!this.scorePlot.graphSVG) return
+        const {xScale,yScale}=this.scorePlot.plotScales()
+        const anchor=this.scorePlot.graphSVG.select(".anchor")
+        const xRight=xScale(n-1)+12
+        for(const info of lineInfos){
+            const y=yScale(info.value)
+            anchor.append("text")
+                .attr("class","score-line-label")
+                .attr("x",xRight)
+                .attr("y",y+3)
+                .attr("text-anchor","start")
+                .attr("font-size","9px")
+                .attr("fill",info.color)
+                .attr("font-family","ui-monospace, monospace")
+                .text(info.label)
         }
     }
 
