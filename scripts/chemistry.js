@@ -2960,5 +2960,97 @@ function scoreCutoffs(scores,{ks=[1,2,4]}={}){
     }
 }
 
+/* DEUXIÈME ORDRE — groupes composés à partir des deux premiers éléments Otsu.
+   
+   On prend les deux premiers candidats au-dessus du seuil Otsu (premier ordre),
+   on forme des groupes homonucléaires/hétéro-nucléaires dont la VALENCE TOTALE
+   est paire, on synthétise leurs masses (isotopes les plus abondants), et on
+   compte combien de fois ces masses apparaissent dans les Δmasses du noyau.
+   
+   La structure de sortie MIME scorePairs : même type de lignes, même tri par
+   score, pour qu'un second graphe de score identique puisse l'afficher. */
+function scoreSecondOrder(firstOrderRows,pairs,table,otsuThreshold,{maxMultiple=2}={}){
+    if(!firstOrderRows?.length||!pairs?.length||!table?.elements?.length) return []
+    /* Les deux premiers éléments AU-DESSUS du seuil Otsu. scorePairs trie par
+       score décroissant, donc les premiers sont les plus forts. */
+    const top=firstOrderRows.filter(r=>Number.isFinite(r.score)&&r.score>=otsuThreshold)
+    if(top.length<2) return []
+    const [row1,row2]=[top[0],top[1]]
+    /* Retrouver les Element complets dans la table (les lignes 1er ordre n'ont que symbol/Z). */
+    const findEl=(sym)=>table.elements.find(e=>e.symbol===sym)
+    const el1=findEl(row1.symbol)
+    const el2=findEl(row2.symbol)
+    if(!el1||!el2) return []
+    /* Valence de chaque élément (défaut de la table). */
+    const v1=el1.valences?.default
+    const v2=el2.valences?.default
+    if(!Number.isFinite(v1)||!Number.isFinite(v2)) return []
+    /* Groupes candidats : multiples de chaque élément seul, et combinaisons
+       croisées. On garde ceux à valence totale PAIRE. */
+    const candidates=[]
+    const maxM=Math.max(1,Math.trunc(maxMultiple))
+    for(let n1=1;n1<=maxM;n1++){
+        for(let n2=0;n2<=maxM;n2++){
+            if(n1===0&&n2===0) continue
+            const totalValence=n1*v1+n2*v2
+            if(totalValence%2!==0) continue
+            /* Masse synthétique : isotopes les plus abondants. */
+            const iso1=el1._byAbundance?.[0]??el1.isotopes?.[0]
+            const iso2=el2._byAbundance?.[0]??el2.isotopes?.[0]
+            if(!iso1||!iso2) continue
+            const mass=n1*iso1.mass+n2*iso2.mass
+            if(!Number.isFinite(mass)||mass<=0) continue
+            const label=n2===0
+                ?`${row1.symbol}${n1>1?n1:""}`  // homonucléaire
+                :`${row1.symbol}${n1>1?n1:""}${row2.symbol}${n2>1?n2:""}`  // hétéro
+            candidates.push({label,mass,valence:totalValence,n1,n2})
+        }
+    }
+    if(!candidates.length) return []
+    /* Aplatir les paires du noyau : [slope, dm, slope, dm, ...] → tableau des dm. */
+    const flat=pairs instanceof Float64Array?pairs:Float64Array.from(pairs??[])
+    const dms=[]
+    for(let i=0;i<flat.length/2;i++){
+        const dm=flat[2*i+1]
+        if(Number.isFinite(dm)&&dm>0) dms.push(dm)
+    }
+    if(!dms.length) return []
+    /* Pour chaque candidat, compter les dm proches (tolérance 0.01 Da). */
+    const tol=0.01
+    const out=[]
+    for(const cand of candidates){
+        let votes=0
+        let score=0
+        let bestDelta=Infinity
+        let totalDelta=0
+        for(const dm of dms){
+            const delta=Math.abs(dm-cand.mass)
+            if(delta<=tol){
+                votes++
+                const weight=1/(delta+1e-12)
+                score+=weight
+                totalDelta+=delta
+                if(delta<bestDelta) bestDelta=delta
+            }
+        }
+        if(votes>0){
+            out.push({
+                symbol:cand.label,
+                mass:cand.mass,
+                votes,
+                score,
+                bestDelta,
+                totalDelta,
+                meanDelta:votes?totalDelta/votes:Infinity,
+                topMultiple:1,  // pas de multiple pour les groupes synthétiques
+                valence:cand.valence,
+                components:`${row1.symbol}x${cand.n1}${cand.n2?`+${row2.symbol}x${cand.n2}`:""}`
+            })
+        }
+    }
+    out.sort((a,b)=>b.score-a.score||b.votes-a.votes||a.symbol.localeCompare(b.symbol))
+    return out
+}
+
 export {Element,Formula,Stoichiometry,FormulaCollection,nearestByMz,nearestTarget,loadTable,
-    stepSignature,elementSignatures,matchSignatures,massSteps,scorePairs,scoreCutoffs}
+    stepSignature,elementSignatures,matchSignatures,massSteps,scorePairs,scoreCutoffs,scoreSecondOrder}

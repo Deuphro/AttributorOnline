@@ -4,7 +4,7 @@ import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
 import {Plot2D} from "../ui/Plot2D.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
-import {scorePairs,scoreCutoffs} from "../chemistry.js"
+import {scorePairs,scoreCutoffs,scoreSecondOrder} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 
 /* LA COULEUR DU SEUIL, au niveau module : c'est elle qui départage les
@@ -117,6 +117,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            la masse de son isotope le plus abondant. `signatureCharges` reste
            réglable pour la suite (multichargés), mais le défaut est [1]. */
         this.parameters.signatureCharges=[1]
+        this.parameters.secondOrderMaxMultiple=2
         this.surface=null
         this.collectedWaves=[]
         this.lastAnswer=null
@@ -304,6 +305,53 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const thresholdHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
             ["drag inside the graph to move the threshold — candidates below it fade to 50 %; Guess restores the Otsu cut"])
         content.append(thresholdHint)
+        /* SECOND-ORDER SCORE GRAPH — même UI, même logique, sur les groupes
+           synthétiques à partir des 2 premiers éléments Otsu. */
+        const soHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em","margin-top":"8px"}},
+            ["second order: synthetic groups from the top 2 Otsu elements, even valence only — counts in kernel Δmasses"])
+        content.append(soHint)
+        this.scoreWrapper2=CE("div",{
+            style:{"grid-column":"1 / -1",height:"150px",overflow:"hidden",cursor:"ns-resize"}
+        },[])
+        content.append(this.scoreWrapper2)
+        this.scorePlot2=new Plot2D([],"HoughTransform 2nd order",this.origin,this.scoreWrapper2)
+        this.scorePlot2.allowZoom=false
+        const origDrawGraph2=this.scorePlot2.drawGraph.bind(this.scorePlot2)
+        this.scorePlot2.drawGraph=(...args)=>{
+            const out=origDrawGraph2(...args)
+            this._paintScoreOverlay2()
+            return out
+        }
+        this._onScorePointerDown2=(event)=>this.handleScorePointerDown2(event)
+        this.scorePlot2.container.addEventListener("pointerdown",this._onScorePointerDown2)
+        const thresholdRow2=CE("div",{
+            style:{"grid-column":"1 / -1",display:"flex",gap:"6px","align-items":"center"}
+        },[])
+        this.thresholdGuessBtn2=CE("button",{
+            type:"button",
+            title:"Put the threshold back on the Otsu value computed from the scores"
+        },["Guess"])
+        stylize(this.thresholdGuessBtn2,{padding:"2px 8px",cursor:"pointer"})
+        this.thresholdGuessBtn2.addEventListener("click",()=>this.guessScoreThreshold2())
+        this.thresholdReadout2=CE("span",{
+            style:{opacity:"0.8",whiteSpace:"nowrap",fontFamily:"ui-monospace, monospace","font-size":"0.85em"}
+        },[])
+        thresholdRow2.append(this.thresholdGuessBtn2,this.thresholdReadout2)
+        content.append(thresholdRow2)
+        /* Second-order max multiple — limite les combinaisons testées (n1, n2 ≤ max). */
+        const soMaxCaption=CE("label",{},["2nd order max multiple"])
+        this.secondOrderMaxMultipleInput=CE("input",{type:"number",value:this.parameters.secondOrderMaxMultiple,min:1,max:6,step:1},[])
+        stylize(this.secondOrderMaxMultipleInput,{width:"100%","box-sizing":"border-box",fontFamily:"inherit","font-size":"0.9em"})
+        this.secondOrderMaxMultipleInput.addEventListener("change",()=>{
+            const value=Math.max(1,Math.min(6,Math.trunc(Number(this.secondOrderMaxMultipleInput.value))||1))
+            this.parameters.secondOrderMaxMultiple=value
+            this.secondOrderMaxMultipleInput.value=value
+            this.startResolve().then(()=>this.resolveChildren())
+        })
+        content.append(soMaxCaption,this.secondOrderMaxMultipleInput)
+        const soMaxHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
+            ["max n1/n2 for synthetic groups: CH2, C2, N2, C2H2, etc. — higher = more combinations, slower"])
+        content.append(soMaxHint)
         const scaleCaption=CE("label",{},["height scale"])
         this.scaleInput=CE("select",{},[])
         for(const [value,label] of [["log","log — ridges visible"],
@@ -843,6 +891,199 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             ?`seuil ${fmt(cached.threshold)} · otsu ${fmt(cached.otsuScore)} · ${names}`
             :`otsu ${fmt(cached.threshold)} · ${names}`
     }
+    /* SECOND ORDER — même pattern que le premier ordre, sur les groupes
+       synthétiques. */
+    renderScoreGraph2(){
+        if(!this.scorePlot2) return
+        const all=this.detection2??[]
+        console.log("[HoughTransformNode] renderScoreGraph2", {hasPlot2:!!this.scorePlot2, detection2Len:all.length, wrapperHeight:this.scoreWrapper2?.clientHeight, wrapperWidth:this.scoreWrapper2?.clientWidth, graphzone:this.scorePlot2?.graphzone})
+        if(!all.length){
+            this._scoreOverlay2=null
+            this.scorePlot2.setTraces([])
+            this.scorePlot2.drawGraph()
+            this.updateThresholdReadout2()
+            return
+        }
+        const cutoffs=scoreCutoffs(all)
+        const otsuScore=cutoffs?.otsu?.score??null
+        let threshold=Number.isFinite(this.scoreThreshold2)?this.scoreThreshold2:otsuScore
+        let rows=all
+        let nGood=0
+        if(cutoffs?.otsu){
+            nGood=cutoffs.otsu.nGood
+            rows=all.slice(0,Math.min(all.length,3*nGood))
+        }
+        const scores=rows.map(r=>Math.max(r.score,0))
+        const n=rows.length
+        let lo=0
+        let hi=Math.max(...scores)
+        if(!(hi>lo)) hi=lo+1
+        if(threshold!==null){
+            threshold=Math.min(Math.max(threshold,lo),hi)
+            if(this.scoreThreshold2!==null) this.scoreThreshold2=threshold
+        }
+        const activeGood=threshold===null?all.length:all.filter(r=>r.score>=threshold).length
+        const goodSymbols=Number.isFinite(threshold)
+            ?rows.filter((r,i)=>scores[i]>=threshold).map(r=>r.symbol)
+            :[]
+        this._scoreOverlay2={rows,scores,lo,hi,n,threshold,otsuScore,nGood:activeGood,goodSymbols}
+        this.scorePlot2.setTraces([])
+        this.scorePlot2.parameters.axis.bottom.autoDomain=false
+        this.scorePlot2.parameters.axis.bottom.domain=[-0.5,n-0.5]
+        this.scorePlot2.parameters.axis.bottom.label="rank"
+        this.scorePlot2.parameters.axis.bottom.scale="linear"
+        this.scorePlot2.parameters.axis.left.autoDomain=false
+        this.scorePlot2.parameters.axis.left.domain=[lo,hi]
+        this.scorePlot2.parameters.axis.left.label="score"
+        this.scorePlot2.parameters.axis.left.scale="linear"
+        this.scorePlot2.drawGraph()
+        this.updateThresholdReadout2()
+    }
+    _paintScoreOverlay2(){
+        const cached=this._scoreOverlay2
+        if(!this.scorePlot2?.graphSVG) return
+        const anchor=this.scorePlot2.graphSVG.select(".anchor")
+        if(anchor.empty()) return
+        let layer=anchor.select(".score-overlay")
+        if(layer.empty()) layer=anchor.append("g").attr("class","score-overlay")
+        layer.selectAll("*").remove()
+        if(!cached) return
+        const zone=this.scorePlot2.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        const {xScale,yScale}=this.scorePlot2.plotScales()
+        const {rows,scores,lo,hi,n,threshold,otsuScore,goodSymbols}=cached
+        let defs=anchor.select("defs")
+        if(defs.empty()) defs=anchor.append("defs")
+        const gradId=`score-bar-gradient-${this.scorePlot2.graphSVG.attr("id")}`
+        let gradient=defs.select(`#${gradId}`)
+        if(gradient.empty()){
+            gradient=defs.append("linearGradient")
+                .attr("id",gradId)
+                .attr("x1","0%").attr("x2","0%")
+                .attr("y1","0%").attr("y2","100%")
+            gradient.append("stop").attr("offset","0%").attr("stop-color","#ffffff").attr("stop-opacity","1")
+            gradient.append("stop").attr("offset","50%").attr("stop-color","#46BEFF").attr("stop-opacity","0.5")
+            gradient.append("stop").attr("offset","100%").attr("stop-color","#01287F").attr("stop-opacity","0")
+        }
+        const width=Math.max(1,Math.min(6,Math.floor(80/Math.max(n,1))))
+        const base=yScale(lo)
+        for(let i=0;i<n;i++){
+            const top=yScale(scores[i])
+            layer.append("rect")
+                .attr("x",xScale(i)-width/2)
+                .attr("y",top)
+                .attr("width",width)
+                .attr("height",Math.max(0,base-top))
+                .attr("fill",`url(#${gradId})`)
+        }
+        const xRight=xScale(n-1)+12
+        if(Number.isFinite(otsuScore)&&otsuScore!==threshold){
+            const oy=yScale(otsuScore)
+            layer.append("line")
+                .attr("x1",0).attr("x2",zone.width)
+                .attr("y1",oy).attr("y2",oy)
+                .attr("stroke",OTSU_COLOR)
+                .attr("stroke-width",1)
+                .attr("stroke-dasharray","4 3")
+                .attr("opacity",0.4)
+            layer.append("text")
+                .attr("class","score-line-label")
+                .attr("x",xRight)
+                .attr("y",oy+3)
+                .attr("text-anchor","start")
+                .attr("font-size","9px")
+                .attr("fill",OTSU_COLOR)
+                .attr("opacity",0.6)
+                .attr("font-family","ui-monospace, monospace")
+                .text("otsu")
+        }
+        if(Number.isFinite(threshold)){
+            const y=yScale(threshold)
+            layer.append("line")
+                .attr("x1",0).attr("x2",zone.width)
+                .attr("y1",y).attr("y2",y)
+                .attr("stroke",OTSU_COLOR)
+                .attr("stroke-width",2)
+            layer.append("path")
+                .attr("d",`M0,${y-4} L8,${y} L0,${y+4} Z`)
+                .attr("fill",OTSU_COLOR)
+            layer.append("text")
+                .attr("class","score-line-label")
+                .attr("x",xRight)
+                .attr("y",y+3)
+                .attr("text-anchor","start")
+                .attr("font-size","9px")
+                .attr("fill",OTSU_COLOR)
+                .attr("font-family","ui-monospace, monospace")
+                .text(`seuil ${threshold.toPrecision(3)} — ${goodSymbols.length?goodSymbols.join(" "):"aucun"}`)
+        }
+        for(let i=0;i<n;i++){
+            const x=xScale(i)
+            const y=yScale(scores[i])
+            layer.append("text")
+                .attr("class","score-label")
+                .attr("x",x)
+                .attr("y",y-5)
+                .attr("text-anchor","middle")
+                .attr("font-size","9px")
+                .attr("fill","rgba(255,255,255,0.9)")
+                .attr("opacity",Number.isFinite(threshold)&&scores[i]<threshold?0.5:1)
+                .attr("font-family","ui-monospace, monospace")
+                .text(rows[i].symbol)
+        }
+    }
+    handleScorePointerDown2(event){
+        if(event.button!==undefined&&event.button!==0) return
+        const cached=this._scoreOverlay2
+        if(!cached||!this.scorePlot2?.graphSVG) return
+        const plot=this.scorePlot2
+        const rect=plot.container.getBoundingClientRect()
+        const zone=plot.graphzone
+        if(!(zone.width>0&&zone.height>0)) return
+        const margins=plot.parameters.margins
+        const {yScale}=plot.plotScales()
+        const {lo,hi}=cached
+        const toThreshold=(clientY)=>{
+            const pixel=Math.min(Math.max(clientY-rect.top-margins.top,0),zone.height)
+            return Math.min(Math.max(yScale.invert(pixel),lo),hi)
+        }
+        event.preventDefault()
+        this.scoreThreshold2=toThreshold(event.clientY)
+        this.renderScoreGraph2()
+        const stopDrag=()=>{
+            window.removeEventListener("pointermove",onMove)
+            window.removeEventListener("pointerup",stopDrag)
+            window.removeEventListener("pointercancel",stopDrag)
+            window.removeEventListener("blur",stopDrag)
+            this._scoreDragCleanup2=null
+        }
+        const onMove=(moveEvent)=>{
+            this.scoreThreshold2=toThreshold(moveEvent.clientY)
+            this.renderScoreGraph2()
+        }
+        this._scoreDragCleanup2=stopDrag
+        window.addEventListener("pointermove",onMove)
+        window.addEventListener("pointerup",stopDrag)
+        window.addEventListener("pointercancel",stopDrag)
+        window.addEventListener("blur",stopDrag)
+    }
+    guessScoreThreshold2(){
+        this.scoreThreshold2=null
+        this.renderScoreGraph2()
+    }
+    updateThresholdReadout2(){
+        if(!this.thresholdReadout2) return
+        const cached=this._scoreOverlay2
+        if(!cached||!Number.isFinite(cached.threshold)){
+            this.thresholdReadout2.textContent="aucun seuil"
+            return
+        }
+        const fmt=(value)=>value.toPrecision(3)
+        const names=(cached.goodSymbols??[]).join(" ")||"aucun"
+        this.thresholdReadout2.textContent=cached.otsuScore!==cached.threshold
+            ?`seuil ${fmt(cached.threshold)} · otsu ${fmt(cached.otsuScore)} · ${names}`
+            :`otsu ${fmt(cached.threshold)} · ${names}`
+    }
 
     /* --- resolve ------------------------------------------------------ */
     /* THE KERNEL RUNS HERE, off the UI thread, and its answer may land after a
@@ -892,6 +1133,21 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         /* La détection ne fait plus que REPEINDRE le graphe de score — la
            liste texte a été retirée, le graphique porte les candidats. */
         this.renderScoreGraph()
+        /* Second-order detection: synthetic groups from top 2 Otsu elements.
+           Needs otsuScore from _scoreOverlay populated by renderScoreGraph(). */
+        const table=await this.table()
+        const pairs=this.lastAnswer?.pairs
+        const otsuThreshold=this._scoreOverlay?.otsuScore
+        console.log("[HoughTransformNode] startResolve detection2 check", {hasTable:!!table, pairsLen:pairs?.length, otsuThreshold, detectionLen:this.detection?.length})
+        if(table&&pairs?.length&&Number.isFinite(otsuThreshold)){
+            const maxMultiple=this.parameters.secondOrderMaxMultiple??2
+            this.detection2=scoreSecondOrder(this.detection,pairs,table,otsuThreshold,{maxMultiple})
+            console.log("[HoughTransformNode] detection2 computed", this.detection2)
+        }else{
+            this.detection2=[]
+        }
+        if(run!==this.resolveRun) return
+        this.renderScoreGraph2()
         this.renderReadout()
     }
     /* ONE FLAT [masses…, intensities…] CORE — the layout `houghPrepare` splits
@@ -1057,12 +1313,13 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             slopeMax:this.parameters.slopeMax,
             interceptMin:this.parameters.interceptMin,
             interceptMax:this.parameters.interceptMax,
+            secondOrderMaxMultiple:this.parameters.secondOrderMaxMultiple,
             plot:this.graph?.serializeState?.()??null
         }
     }
     restoreState(state){
         if(!state) return
-        for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax","isotopeGaps"]){
+        for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax","isotopeGaps","secondOrderMaxMultiple"]){
             if(Number.isFinite(state[key])) this.parameters[key]=state[key]
         }
         /* LES COLORMAPS SONT STOCKÉES EN MINUSCULES : une session d'avant
@@ -1088,6 +1345,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(this.mapInput) this.mapInput.value=this.parameters.colormap
         if(this.scaleInput) this.scaleInput.value=this.parameters.heightScaleLog?"log":"linear"
         if(this.scatterInput) this.scatterInput.checked=this.parameters.showScatter
+        if(this.secondOrderMaxMultipleInput) this.secondOrderMaxMultipleInput.value=this.parameters.secondOrderMaxMultiple
         this.startResolve().then(()=>{
             /* The camera is restored AFTER the traces: framing needs the box,
                and the box only exists once there is something in the scene.
@@ -1107,6 +1365,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            écouteurs window vivre, c'est repeindre un cadavre à chaque
            mouvement de souris. */
         this._scoreDragCleanup?.()
+        this._scoreDragCleanup2?.()
         if(this.scorePlot){
             /* Plot2D n'a pas de dispose() : on retire ses écouteurs nommés
                et on détache son conteneur du DOM. */
@@ -1117,6 +1376,15 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             if(this.scorePlot.zoomDrawFrame) cancelAnimationFrame(this.scorePlot.zoomDrawFrame)
             if(this.scorePlot.zoomGestureTimer) clearTimeout(this.scorePlot.zoomGestureTimer)
             this.scoreWrapper?.remove()
+        }
+        if(this.scorePlot2){
+            try{this.scorePlot2.container.removeEventListener("wheel",this.scorePlot2._onWheel)}catch(e){}
+            try{this.scorePlot2.container.removeEventListener("dblclick",this.scorePlot2._onDblClick)}catch(e){}
+            try{this.scorePlot2.container.removeEventListener("mousedown",this.scorePlot2._onMouseDown)}catch(e){}
+            try{this.scorePlot2.container.removeEventListener("pointerdown",this._onScorePointerDown2)}catch(e){}
+            if(this.scorePlot2.zoomDrawFrame) cancelAnimationFrame(this.scorePlot2.zoomDrawFrame)
+            if(this.scorePlot2.zoomGestureTimer) clearTimeout(this.scorePlot2.zoomGestureTimer)
+            this.scoreWrapper2?.remove()
         }
         this.graph?.dispose?.()
         super.suicide(options)
