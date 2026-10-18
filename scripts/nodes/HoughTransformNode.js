@@ -1,4 +1,4 @@
-import {Wave,SurfaceTrace,Scatter3DTrace,XYTrace} from "../formats.js"
+import {Wave,SurfaceTrace,Scatter3DTrace} from "../formats.js"
 import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
 import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
 import {Plot2D} from "../ui/Plot2D.js"
@@ -12,6 +12,17 @@ import {computePool} from "../workerPool.js"
    doivent s'accorder dessus — le paint de la barre, son étiquette et le
    readout sous le graphe. */
 const OTSU_COLOR="#2ecc71"
+
+/* L'ÉTIQUETTE D'UNE LIGNE — le symbole, et la CHARGE en exposant quand elle
+   n'est pas 1. Exposants UNICODE : l'étiquette tient au-dessus d'une barre
+   de 9 px. */
+const SUPERSCRIPTS="⁰¹²³⁴⁵⁶⁷⁸⁹"
+function rowLabel(row){
+    const symbol=row?.symbol??"?"
+    const charge=Math.trunc(Number(row?.charge))
+    if(!Number.isFinite(charge)||charge<=1) return symbol
+    return `${symbol}${String(charge).split("").map(d=>SUPERSCRIPTS[Number(d)]??d).join("")}⁺`
+}
 
 
 /* =====================================================================
@@ -102,16 +113,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.parameters.keep=0
         this.parameters.neighbours=2
         this.parameters.bandwidth=0.5
-        /* LA LISTE D'ÉLÉMENTS. `signatureCharges` parce que A_E/z change de pente
-           avec z: le carbone à z=1 est de pente nulle (12.000000/1), le même
-           carbone à z=3 donne 4.000000 et reste nul, mais l'azote à z=7 tombe à
-           2.00044 et devient détectable. Une seule charge ne verrait qu'une
-           fraction des séries réellement présentes.
-
-           PAS DE TOLÉRANCE : la détection est un ordre, pas un filtre — chaque
-           paire vote pour le candidat le plus proche en pente, et le compte
-           des votes fait le tri. Un seuil serait une façon de mettre un filtre
-           là où la formulation n'en demande aucun. */
+        /* LA LISTE D'ÉLÉMENTS, à charge 1 par défaut : un élément = une signature,
+           la masse de son isotope le plus abondant. `signatureCharges` reste
+           réglable pour la suite (multichargés), mais le défaut est [1]. */
         this.parameters.signatureCharges=[1]
         this.surface=null
         this.collectedWaves=[]
@@ -229,11 +233,6 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             const input=CE("input",{type:"number",value:this.parameters[key].join(" "),min,max,step:1},[])
             stylize(input,{width:"100%","box-sizing":"border-box",fontFamily:"inherit","font-size":"0.9em"})
             input.addEventListener("change",()=>{
-                /* A LIST IS PARSED, NOT CLAMPED. `Math.trunc("1 2 3")` is NaN,
-                   and a NaN that silently becomes the minimum would leave the
-                   widget showing "1 2 3" while the detector runs on charge 1 —
-                   a control that lies about its own value, which is worse than
-                   one that refuses. */
                 const charges=String(input.value).split(/[^0-9]+/)
                     .map(v=>Math.trunc(Number(v)))
                     .filter(v=>Number.isFinite(v)&&v>=min&&v<=max)
@@ -249,7 +248,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            candidat par rang, symbole au-dessus de chaque barre — une deuxième
            copie en texte ne faisait que diverger d'un graphe qui bouge. */
         const detectionHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
-            ["each peak of the accumulator is a slope; an element answers when A/z = k/(1-s) — the score graph below ranks the candidates"])
+            ["each peak of the accumulator is a slope; an element answers when A/z = k/(1-s) — the score graph below ranks the candidates."])
         content.append(detectionHint)
         /* LE GRAPHE DU SCORE — barres linéaires par candidat, une barre de
            seuil verte DÉPLAÇABLE à la souris (Otsu par défaut). Rendu avec
@@ -364,7 +363,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             `peaks fed: ${this.surface.prepared} of ${this.surface.points} points`,
             `pairs voting: ${this.surface.pairs} — one line through each couple of peaks`,
             `kernel: keep ${this.parameters.keep||"all"}, ${this.parameters.neighbours} neighbours, bandwidth ${this.parameters.bandwidth}`,
-            `elements: ${this.detection?.length??0} signature(s) over charges ${this.parameters.signatureCharges.join(", ")}`,
+            `elements: ${this.detection?.length??0} signature(s) over charges ${(this.parameters.signatureCharges??[1]).join(", ")}`,
             `domain: slope [${this.surface.bounds[0]}, ${this.surface.bounds[1]}] intercept [${this.surface.bounds[2]}, ${this.surface.bounds[3]}]`
         ]
         if(this.collectedWaves.length&&!this.kernelErrors.length&&this.surface.prepared<2){
@@ -507,7 +506,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const table=await this.table()
         const pairs=this.lastAnswer?.pairs
         if(!table||!(pairs?.length)){ this.detection=[]; return this.detection }
-        const charges=this.parameters.signatureCharges
+        const charges=this.parameters.signatureCharges??[1]
         this.detection=scorePairs(table,pairs,{charges})
         return this.detection
     }
@@ -516,6 +515,44 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const {nx}=this.gridSize()
         const span=slopeMax-slopeMin
         return slopeMin+span*(column/Math.max(1,nx-1))
+    }
+
+    /* LES PLANS DE PENTE sur la boîte — un plan à slope = constante, pour
+       chaque candidat retenu. row.slope est la pente THÉORIQUE du
+       matchmaking, ramenée sur le [-1,1] de la surface par la même formule
+       que le kernel pour ses colonnes : u = (s - slopeMin)/span * 2 - 1.
+       UNE SIGNATURE HORS BOÎTE NE TRACE RIENT : le matchmaking n'a pas de
+       tolérance en pente (H à 7.8e-3 répond à une paire à 7e-3, boîte ou
+       pas), mais hors boîte aucune paire n'a pu voter — la règle mentirait.
+
+       Le plan vit dans le calque SVG du plot (axisRules), projeté à chaque
+       image : un mur WebGL serait invisible pile dans la vue face-on où le
+       nœud s'ouvre. Tous les plans sont bleus : les séries d'éléments retenues
+       au-dessus du seuil — pairscore sur les isotopes les plus abondants. */
+    applySlopeRules(){
+        if(!this.graph) return
+        const [slopeMin,slopeMax]=this.bounds()
+        const span=slopeMax-slopeMin
+        const rules=[]
+        const cached=this._scoreOverlay
+        if(cached&&Number.isFinite(cached.threshold)&&span>0){
+            const {rows,scores,threshold}=cached
+            for(let i=0;i<rows.length;i++){
+                /* LE MÊME PRÉDICAT QUE goodSymbols : les plans sont les
+                   symboles, vus de la boîte — deux règles de sélection
+                   différentes finiraient par se contredire à la main. */
+                if(!(scores[i]>=threshold)) continue
+                const row=rows[i]
+                if(!Number.isFinite(row.slope)) continue
+                const u=(row.slope-slopeMin)/span*2-1
+                if(u<-1||u>1) continue
+                rules.push({axis:"x",value:u,
+                    color:"#46BEFF",
+                    label:rowLabel(row)})
+            }
+        }
+        this.graph.axisRules=rules
+        this.graph.requestOverlay?.()
     }
 
     /* PAS DE renderDetection : la liste écrite des candidats a été retirée —
@@ -550,11 +587,8 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             this.updateThresholdReadout()
             return
         }
-        /* LES STATISTIQUES SE CALCULENT SUR TOUTE LA POPULATION : médiane et
-           Otsu sont des statistiques d'ensemble — tronquer avant fausserait. */
         const cutoffs=scoreCutoffs(all)
         const otsuScore=cutoffs?.otsu?.score??null
-        const medianScore=cutoffs?.median??null
         /* LE SEUIL EN VIGUEUR : la main si elle existe, sinon l'Otsu. `let` :
            un seuil à la main gardé d'une session de données précédente peut
            dépasser le nouveau domaine après un recalcul, et la ligne se
@@ -590,36 +624,15 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            est au-dessus du seuil EN VIGUEUR (les barres peintes), pas un
            décompte — ni dans l'étiquette de la ligne, ni dans le readout. */
         const goodSymbols=Number.isFinite(threshold)
-            ?rows.filter((r,i)=>scores[i]>=threshold).map(r=>r.symbol)
+            ?rows.filter((r,i)=>scores[i]>=threshold).map(rowLabel)
             :[]
-        /* LE CACHE TIENT TOUT LE MOBILIER : barres, étiquettes, médiane,
+        /* LE CACHE TIENT TOUT LE MOBILIER : barres, étiquettes,
            seuil — c'est ce que _paintScoreOverlay relit à chaque drawGraph. */
-        this._scoreOverlay={rows,scores,lo,hi,n,threshold,otsuScore,median:medianScore,nGood:activeGood,goodSymbols}
-        const traces=[]
-        /* LA MÉDIANE reste une trace Plot2D : c'est une droite statique, un
-           repère de population, sans geste. Le SEUIL, lui, n'est plus une
-           trace — il doit être prenable à la souris, et une trace Plot2D
-           n'a ni pointeurs ni drag : _paintScoreOverlay le peint. */
-        if(Number.isFinite(medianScore)){
-            const medWave=Wave.fromCoordinates(
-                new Float64Array([0,n-1]),
-                new Float64Array([medianScore,medianScore]),
-                {title:"median"},
-                ["x","y"]
-            )
-            traces.push(new XYTrace({
-                id:"score-median",
-                title:"median",
-                wave:medWave,
-                options:{
-                    color:"rgba(255,255,255,0.85)",
-                    mode:"segments",
-                    line:{size:1},
-                    layer:"svg"
-                }
-            }))
-        }
-        this.scorePlot.setTraces(traces)
+        this._scoreOverlay={rows,scores,lo,hi,n,threshold,otsuScore,nGood:activeGood,goodSymbols}
+        /* AUCUNE TRACE : barres, étiquettes et seuil sont peints à la main
+           par _paintScoreOverlay — le seuil doit être prenable à la souris,
+           et une trace Plot2D n'a ni pointeurs ni drag. */
+        this.scorePlot.setTraces([])
         /* AXES FIXES : le graphe de score est une lecture, pas un espace
            d'exploration. X = rang (linéaire), Y = score (linéaire). */
         this.scorePlot.parameters.axis.bottom.autoDomain=false
@@ -635,16 +648,18 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            drawGraph (voir setupUI) — resize compris. Il ne reste ici qu'à
            dire ce que la lecture affiche. */
         this.updateThresholdReadout()
+        /* LES PLANS DE PENTE suivent le seuil : ils sortent des mêmes lignes
+           que les symboles, donc un drag sur la barre verte les repeint. */
+        this.applySlopeRules()
     }
     /* TOUT LE MOBILIER DU GRAPHE, REPEINT D'UN SEUL COUP : les BARRES
        (dégradé PAR BARRE — blanc opaque au sommet, #46BEFF à 50 % au milieu,
        #01287F transparent à la base ; un dégradé unique sur toute la hauteur
        de l'axe écraserait la falaise : les bons candidats vivent en bas de
-       l'axe linéaire), les ÉTIQUETTES de symbole, l'étiquette de la médiane
-       et la barre de SEUIL.
+       l'axe linéaire), les ÉTIQUETTES de symbole et la barre de SEUIL.
 
        UNE SEULE COUCHE DESSINÉE, `.score-overlay`, APRÈS g.trace : les
-       barres y sont d'abord, puis médiane-étiquette et seuil par-dessus.
+       barres y sont d'abord, puis le seuil par-dessus.
        Tout y est repeint à CHAQUE drawGraph — l'enveloppe posée à la
        création du plot — ce qui inclut le resize : c'est la condition pour
        que les étiquettes SUIVENT le cadrage, elles qui auparavant étaient
@@ -664,7 +679,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const zone=this.scorePlot.graphzone
         if(!(zone.width>0&&zone.height>0)) return
         const {xScale,yScale}=this.scorePlot.plotScales()
-        const {rows,scores,lo,hi,n,threshold,otsuScore,median,goodSymbols}=cached
+        const {rows,scores,lo,hi,n,threshold,otsuScore,goodSymbols}=cached
         /* <defs> must be appended (not selected-into-existence): d3's append
            on an empty selection creates nothing, leaving fill="url(#...)"
            dangling — SVG then refuses to paint the rect at all. Le motif et
@@ -697,18 +712,6 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
                 .attr("fill",`url(#${gradId})`)
         }
         const xRight=xScale(n-1)+12
-        /* L'ÉTIQUETTE DE LA MÉDIANE, à droite, à la hauteur de sa valeur. */
-        if(Number.isFinite(median)){
-            layer.append("text")
-                .attr("class","score-line-label")
-                .attr("x",xRight)
-                .attr("y",yScale(median)+3)
-                .attr("text-anchor","start")
-                .attr("font-size","9px")
-                .attr("fill","rgba(255,255,255,0.85)")
-                .attr("font-family","ui-monospace, monospace")
-                .text("median")
-        }
         /* LA BARRE DE SEUIL, VERTE, DÉPLAÇABLE : quand la main a bougé le
            seuil, l'OTSU reste affiché en pointillé — l'endroit où « Guess »
            renverrait la barre, et la distance entre la coupure subie et la
@@ -771,7 +774,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
                 .attr("fill","rgba(255,255,255,0.9)")
                 .attr("opacity",Number.isFinite(threshold)&&scores[i]<threshold?0.5:1)
                 .attr("font-family","ui-monospace, monospace")
-                .text(rows[i].symbol??`?`)
+                .text(rowLabel(rows[i]))
         }
     }
     /* LA MAIN SUR LE SEUIL : pointerdown dans le graphe = le seuil SAUTE à
@@ -1031,6 +1034,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             }))
         }
         this.graph.setTraces(traces)
+        /* LES PLANS DE PENTE viennent du cache de score — même resolve que les
+           traces, et requestOverlay repeint le calque sans toucher au GPU. */
+        this.applySlopeRules()
     }
 
     /* --- persistence -------------------------------------------------- */
@@ -1044,6 +1050,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             neighbours:this.parameters.neighbours,
             bandwidth:this.parameters.bandwidth,
             signatureCharges:[...this.parameters.signatureCharges],
+            isotopeGaps:this.parameters.isotopeGaps,
             colormap:this.parameters.colormap,
             showScatter:this.parameters.showScatter,
             slopeMin:this.parameters.slopeMin,
@@ -1055,7 +1062,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
     }
     restoreState(state){
         if(!state) return
-        for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax"]){
+        for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax","isotopeGaps"]){
             if(Number.isFinite(state[key])) this.parameters[key]=state[key]
         }
         /* LES COLORMAPS SONT STOCKÉES EN MINUSCULES : une session d'avant
@@ -1077,7 +1084,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(this.keepInput) this.keepInput.value=this.parameters.keep
         if(this.neighboursInput) this.neighboursInput.value=this.parameters.neighbours
         if(this.bandwidthInput) this.bandwidthInput.value=this.parameters.bandwidth.toFixed(2)
-        if(this.chargesInput) this.chargesInput.value=this.parameters.signatureCharges.join(" ")
+        if(this.chargesInput) this.chargesInput.value=(this.parameters.signatureCharges??[1]).join(" ")
         if(this.mapInput) this.mapInput.value=this.parameters.colormap
         if(this.scaleInput) this.scaleInput.value=this.parameters.heightScaleLog?"log":"linear"
         if(this.scatterInput) this.scatterInput.checked=this.parameters.showScatter

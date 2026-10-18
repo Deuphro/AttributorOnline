@@ -465,6 +465,13 @@ export class Plot3DWebGL{
         this.overlay=null
         this.controls=null
         this.axisLabels={x:"x",y:"y",z:"z"}
+        /* AXIS RULES — planes at one fixed data coordinate, drawn in the SVG
+           overlay and projected every frame like the box. The plot owns only
+           their geometry; the caller owns what they mean (a Hough slope, a
+           calibration level). Each rule: {axis:"x"|"y"|"z", value in DATA
+           units, color, label}. Changed rules take effect on the next
+           requestOverlay()/drawGraph — there is no watcher, by design. */
+        this.axisRules=[]
         this.bounds=null
         this._orthographic=false
         this.defaultAngles=defaultAngles
@@ -1044,6 +1051,7 @@ export class Plot3DWebGL{
         const bounds=this.bounds
         if(!bounds) return
         this.drawBox(svg,bounds,width,height)
+        this.drawRules(svg,width,height)
         this.drawTicks(svg,bounds,width,height)
         this.drawHover(svg,width,height)
     }
@@ -1084,6 +1092,63 @@ export class Plot3DWebGL{
             line.setAttribute("stroke-width","1")
             line.setAttribute("vector-effect","non-scaling-stroke")
             group.appendChild(line)
+        }
+        svg.appendChild(group)
+    }
+    /* AXIS RULES — the plane {axis = value} across the CUBE, as a projected
+       quad. Four corners, the same world frame as the box, the same project()
+       as the edges — so the rule follows the camera for free.
+
+       A MESH WALL WOULD BE WRONG HERE: seen edge-on — which is exactly the
+       face-on view the Hough node opens with — a filled plane degenerates to
+       zero pixels, while an SVG polygon still strokes its own collapsed
+       outline as a crisp line. The overlay also draws above the surface, so
+       the rule stays readable wherever the relief stands. */
+    drawRules(svg,width,height){
+        const rules=Array.isArray(this.axisRules)?this.axisRules:[]
+        if(!rules.length) return
+        const ns="http://www.w3.org/2000/svg"
+        const group=document.createElementNS(ns,"g")
+        group.setAttribute("class","gl3d-rules")
+        const lo=Plot3DWebGL.WORLD_MIN
+        const hi=Plot3DWebGL.WORLD_MAX
+        const world=this.axisWorld()
+        for(const rule of rules){
+            if(!rule||!Number.isFinite(rule.value)) continue
+            const axis=rule.axis==="y"?"y":rule.axis==="z"?"z":"x"
+            const w=world[axis](rule.value)
+            if(!Number.isFinite(w)) continue
+            const at=(u,v)=>axis==="x"?{x:w,y:u,z:v}
+                :axis==="y"?{x:u,y:w,z:v}
+                :{x:u,y:v,z:w}
+            const corners=[at(lo,lo),at(hi,lo),at(hi,hi),at(lo,hi)]
+                .map(c=>this.project(c.x,c.y,c.z))
+            /* A corner behind the camera FOLDS the projection onto its mirror
+               half of the screen — a quad built from that would be garbage,
+               and unlike a lone edge it is not readable in any position. */
+            if(corners.some(p=>p.behind)) continue
+            const color=rule.color??"#46BEFF"
+            const polygon=document.createElementNS(ns,"polygon")
+            polygon.setAttribute("points",corners.map(p=>`${p.x},${p.y}`).join(" "))
+            polygon.setAttribute("fill",color)
+            polygon.setAttribute("fill-opacity","0.12")
+            polygon.setAttribute("stroke",color)
+            polygon.setAttribute("stroke-width","1")
+            polygon.setAttribute("vector-effect","non-scaling-stroke")
+            group.appendChild(polygon)
+            if(rule.label){
+                const mid={x:(corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4,
+                    y:(corners[0].y+corners[1].y+corners[2].y+corners[3].y)/4}
+                const text=document.createElementNS(ns,"text")
+                text.setAttribute("x",mid.x)
+                text.setAttribute("y",mid.y-4)
+                text.setAttribute("text-anchor","middle")
+                text.setAttribute("fill",color)
+                text.setAttribute("font-size","10")
+                text.setAttribute("font-family","inherit")
+                text.textContent=rule.label
+                group.appendChild(text)
+            }
         }
         svg.appendChild(group)
     }

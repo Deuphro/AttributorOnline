@@ -211,5 +211,57 @@ test("un plateau sans pic ne donne aucun élément",()=>{
     eq(node.slopePeaks(profile).length,0,"un plateau n'a aucun maximum local")
 })
 
+/* --- l'étiquette et les plans de pente — la boîte dit ce qu'elle montre ---- */
+/* Le corps est EXTRAIT du fichier, comme partout dans ce dépôt : rowLabel est
+   une fonction module, methodBody sait les trouver ; applySlopeRules reçoit
+   rowLabel comme argument, à la main. */
+const SUPERSCRIPTS="⁰¹²³⁴⁵⁶⁷⁸⁹"
+const _rowLabel=new Function("row","SUPERSCRIPTS",methodBody(source,"rowLabel"))
+const rowLabel=(r)=>_rowLabel(r,SUPERSCRIPTS)
+const applySlopeRules=new Function("rowLabel",methodBody(source,"applySlopeRules"))
+
+test("l'étiquette porte la charge",()=>{
+    eq(rowLabel({symbol:"C",charge:1}),"C","z=1 ne s'écrit pas")
+    eq(rowLabel({symbol:"C",charge:2}),"C²⁺","z=2 s'écrit en exposant")
+    eq(rowLabel({symbol:"N",charge:7}),"N⁷⁺","plusieurs chiffres se composent")
+    eq(rowLabel({symbol:"C"}),"C","une ligne sans charge reste lisible")
+})
+
+test("les plans de pente ne suivent QUE les lignes au-dessus du seuil",()=>{
+    const bounds=[-0.001,0.001,-0.2,0.2]
+    let requested=0
+    const node={
+        bounds:()=>[...bounds],
+        graph:{axisRules:null,requestOverlay(){requested++}},
+        _scoreOverlay:{
+            rows:[
+                {symbol:"C",charge:1,slope:0},         // au-dessus
+                {symbol:"N",charge:2,slope:0.0005},    // au-dessus
+                {symbol:"S",charge:1,slope:-0.0005},    // en dessous
+                {symbol:"H",charge:1,slope:0.0078},    // hors boîte
+            ],
+            scores:[100,50,10,5],
+            threshold:20
+        }
+    }
+    applySlopeRules.call(node,rowLabel)
+    eq(requested,1,"le calque doit être redemandé")
+    const rules=node.graph.axisRules
+    eq(rules.length,2,"deux lignes au-dessus du seuil, deux plans")
+    eq(rules[0].label,"C","et l'étiquette voyage avec le plan")
+    close(rules[0].value,((0-bounds[0])/(bounds[1]-bounds[0]))*2-1,1e-12,
+        "C à pente 0 est au milieu de la boîte")
+    eq(rules[1].label,"N²⁺","la charge en exposant, comme sur les barres")
+    eq(rules[1].color,"#46BEFF","une série d'élément est en bleu")
+    close(rules[1].value,((0.0005-bounds[0])/(bounds[1]-bounds[0]))*2-1,1e-12)
+    /* S est sous le seuil : pas de plan. H est hors boîte — aucune
+       paire n'a pu voter à 7.8e-3, et une règle mentirait. */
+    ok(!rules.some(r=>r.label==="S"||r.label==="H"),"ni le sous-seuil ni le hors-boîte")
+    /* SANS SEUIL, aucune règle : le cache dit « rien n'est retenu ». */
+    node._scoreOverlay={rows:[{symbol:"C",charge:1,slope:0}],scores:[1],threshold:null}
+    applySlopeRules.call(node,rowLabel)
+    eq(node.graph.axisRules.length,0,"sans seuil, aucune règle — la boîte est lavée")
+})
+
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if(failures.length) process.exitCode=1
