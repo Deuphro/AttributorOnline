@@ -65,15 +65,18 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.status="floating"
         /* grid sizes, how tall the surface is drawn, and which colormap.
            Plain numbers on `parameters` because serializeState() owns them. */
-        this.parameters.gridX=256
-        this.parameters.gridY=256
+        this.parameters.gridX=512
+        this.parameters.gridY=512
         this.parameters.heightScale=0.55
         /* An accumulator is peaked by nature: one relation gathers the votes of
            every pair at once, so its range is one cell against thousands. On a
            linear scale that is a flat sheet with a needle, which is why log is
            the default here and the linear scale is the opt-in. */
         this.parameters.heightScaleLog=true
-        this.parameters.colormap="Tcherenkov"
+        /* EN MINUSCULES : les clés de COLORMAPS (Plot3DWebGL) et les `value`
+           du select sont minuscules — « Tcherenkov » ne trouvait ni l'une ni
+           l'autre et la surface retombait sur la viridis par défaut. */
+        this.parameters.colormap="tcherenkov"
         this.parameters.showScatter=false
         /* The (slope, intercept) box the kernel is asked for. Editable from
            the inspector and persisted with the session. */
@@ -97,8 +100,8 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
                         singular one — and the ceiling, past which the ellipse
                         is wider than the grid. */
         this.parameters.keep=0
-        this.parameters.neighbours=12
-        this.parameters.bandwidth=2
+        this.parameters.neighbours=2
+        this.parameters.bandwidth=0.5
         /* LA LISTE D'ÉLÉMENTS. `signatureCharges` parce que A_E/z change de pente
            avec z: le carbone à z=1 est de pente nulle (12.000000/1), le même
            carbone à z=3 donne 4.000000 et reste nul, mais l'azote à z=7 tombe à
@@ -209,8 +212,8 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             content.append(caption,input)
             return input
         }
-        this.gridXInput=numberField("grid x","gridX",8,256)
-        this.gridYInput=numberField("grid y","gridY",8,256)
+        this.gridXInput=numberField("grid x","gridX",8,512)
+        this.gridYInput=numberField("grid y","gridY",8,512)
         this.slopeMinInput=decimalField("slope min","slopeMin",-1,1)
         this.slopeMaxInput=decimalField("slope max","slopeMax",-1,1)
         this.interceptMinInput=decimalField("intercept min","interceptMin",-10,10)
@@ -242,14 +245,11 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             return input
         }
         this.chargesInput=chargeField("signature charges","signatureCharges",1,12)
-        const detectionCaption=CE("label",{},["elements"])
-        const detectionBox=CE("div",{style:{"grid-column":"1 / -1","white-space":"pre-wrap",
-            fontFamily:"ui-monospace, monospace","font-size":"0.85em","max-height":"220px",
-            "overflow-y":"auto",opacity:"0.95"}},[])
-        this.detectionBox=detectionBox
-        content.append(detectionCaption,detectionBox)
+        /* PAS DE LISTE D'ÉLÉMENTS ÉCRITE : le graphe de score porte déjà un
+           candidat par rang, symbole au-dessus de chaque barre — une deuxième
+           copie en texte ne faisait que diverger d'un graphe qui bouge. */
         const detectionHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
-            ["each peak of the accumulator is a slope; an element answers when A/z = k/(1-s) — the ranking is the share of votes it collected"])
+            ["each peak of the accumulator is a slope; an element answers when A/z = k/(1-s) — the score graph below ranks the candidates"])
         content.append(detectionHint)
         /* LE GRAPHE DU SCORE — barres linéaires par candidat, une barre de
            seuil verte DÉPLAÇABLE à la souris (Otsu par défaut). Rendu avec
@@ -295,7 +295,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             type:"button",
             title:"Put the threshold back on the Otsu value computed from the scores"
         },["Guess"])
-        stylize(this.thresholdGuessBtn,{fontSize:"0.85em",padding:"2px 8px",cursor:"pointer"})
+        stylize(this.thresholdGuessBtn,{padding:"2px 8px",cursor:"pointer"})
         this.thresholdGuessBtn.addEventListener("click",()=>this.guessScoreThreshold())
         this.thresholdReadout=CE("span",{
             style:{opacity:"0.8",whiteSpace:"nowrap",fontFamily:"ui-monospace, monospace","font-size":"0.85em"}
@@ -305,16 +305,6 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const thresholdHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
             ["drag inside the graph to move the threshold — candidates below it fade to 50 %; Guess restores the Otsu cut"])
         content.append(thresholdHint)
-        const heightCaption=CE("label",{},["height"])
-        this.heightInput=CE("input",{type:"range",min:0.05,max:1,step:0.05,value:this.parameters.heightScale},[])
-        stylize(this.heightInput,{width:"100%"})
-        this.heightInput.addEventListener("input",()=>{
-            this.parameters.heightScale=Number(this.heightInput.value)
-            //the height is a TRACE OPTION, not the data: the grid does not
-            //change, so no resolve and no re-upload of the wave
-            this.applyTraces()
-        })
-        content.append(heightCaption,this.heightInput)
         const scaleCaption=CE("label",{},["height scale"])
         this.scaleInput=CE("select",{},[])
         for(const [value,label] of [["log","log — ridges visible"],
@@ -333,9 +323,8 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         content.append(scaleHint)
         const mapCaption=CE("label",{},["colormap"])
         this.mapInput=CE("select",{},[])
-        for(const [value,label] of [["viridis","viridis"],["grayscale","grayscale"],
-                                    ["coolwarm","cool / warm"],["tcherenkov","Tcherenkov"],
-                                    ["glow","glow — white body, Cherenkov peak"]]){
+        for(const [value,label] of [["tcherenkov","Tcherenkov"],["viridis","viridis"],
+                                    ["grayscale","grayscale"],["coolwarm","cool / warm"]]){
             this.mapInput.append(CE("option",{value},[label]))
         }
         this.mapInput.value=this.parameters.colormap
@@ -529,24 +518,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         return slopeMin+span*(column/Math.max(1,nx-1))
     }
 
-    renderDetection(){
-        if(!this.detectionBox) return
-        const rows=this.detection??[]
-        if(!rows.length){
-            this.detectionBox.textContent="no signature in the accumulator"
-            this.renderScoreGraph()
-            return
-        }
-        this.detectionBox.textContent=rows.slice(0,14).map((row,i)=>{
-            /* LE SCORE, LA PENTE, LE MULTIPLE. La somme des |1/residu| fait le tri : quelques votes tres bons battent des votes mediocres. */
-            const delta=(row.bestDelta*1e6).toFixed(1)
-            const rank=String(i+1).padStart(2);
-            const label=row.symbol.padEnd(3);
-            const score=row.score>1e9?row.score.toExponential(2):row.score.toPrecision(4);
-            return `${rank}. ${label} z=${row.charge} x${row.topMultiple??"?"} ${row.votes} votes score ${score} dslope ${delta}e-6`;
-        }).join("\n")+(rows.length>14?`\n… and ${rows.length-14} more`:"")
-        this.renderScoreGraph()
-    }
+    /* PAS DE renderDetection : la liste écrite des candidats a été retirée —
+       le graphe de score EST le classement (une barre par rang, symbole au-
+       dessus, seuil déplacable), et une copie texte ne faisait qu'en diverger. */
 
     /* LE GRAPHE DU SCORE — barres linéaires par candidat, une barre de
        seuil VERTE DÉPLAÇABLE à la souris.
@@ -609,12 +583,18 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         }
         /* LE SEUIL EST PEINT À LA MAIN ET NON EN TRACE : il doit être
            prenable à la souris, et une trace Plot2D n'a ni pointeurs ni
-           drag. nGood actif = rangs au-dessus du seuil EN VIGUEUR, pour
-           l'étiquette « N bons ». */
+           drag. Les symboles au-dessus du seuil EN VIGUEUR servent
+           d'étiquette — le nom de ce qui est retenu, pas un décompte. */
         const activeGood=threshold===null?all.length:all.filter(r=>r.score>=threshold).length
+        /* LES SYMBOLES RETENUS voyagent avec le cache : c'est le nom de ce qui
+           est au-dessus du seuil EN VIGUEUR (les barres peintes), pas un
+           décompte — ni dans l'étiquette de la ligne, ni dans le readout. */
+        const goodSymbols=Number.isFinite(threshold)
+            ?rows.filter((r,i)=>scores[i]>=threshold).map(r=>r.symbol)
+            :[]
         /* LE CACHE TIENT TOUT LE MOBILIER : barres, étiquettes, médiane,
            seuil — c'est ce que _paintScoreOverlay relit à chaque drawGraph. */
-        this._scoreOverlay={rows,scores,lo,hi,n,threshold,otsuScore,median:medianScore,nGood:activeGood}
+        this._scoreOverlay={rows,scores,lo,hi,n,threshold,otsuScore,median:medianScore,nGood:activeGood,goodSymbols}
         const traces=[]
         /* LA MÉDIANE reste une trace Plot2D : c'est une droite statique, un
            repère de population, sans geste. Le SEUIL, lui, n'est plus une
@@ -684,7 +664,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const zone=this.scorePlot.graphzone
         if(!(zone.width>0&&zone.height>0)) return
         const {xScale,yScale}=this.scorePlot.plotScales()
-        const {rows,scores,lo,hi,n,threshold,otsuScore,median,nGood}=cached
+        const {rows,scores,lo,hi,n,threshold,otsuScore,median,goodSymbols}=cached
         /* <defs> must be appended (not selected-into-existence): d3's append
            on an empty selection creates nothing, leaving fill="url(#...)"
            dangling — SVG then refuses to paint the rect at all. Le motif et
@@ -773,7 +753,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
                 .attr("font-size","9px")
                 .attr("fill",OTSU_COLOR)
                 .attr("font-family","ui-monospace, monospace")
-                .text(`seuil ${threshold.toPrecision(3)} — ${nGood} bons`)
+                .text(`seuil ${threshold.toPrecision(3)} — ${goodSymbols.length?goodSymbols.join(" "):"aucun"}`)
         }
         /* LE SYMBOLE DE L'ÉLÉMENT au sommet de sa barre — en pâle (50 %)
            sous le seuil EN VIGUEUR : le candidat reste lisible comme
@@ -855,9 +835,10 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             return
         }
         const fmt=(value)=>value.toPrecision(3)
+        const names=(cached.goodSymbols??[]).join(" ")||"aucun"
         this.thresholdReadout.textContent=cached.otsuScore!==cached.threshold
-            ?`seuil ${fmt(cached.threshold)} · otsu ${fmt(cached.otsuScore)} · ${cached.nGood} bons`
-            :`otsu ${fmt(cached.threshold)} · ${cached.nGood} bons`
+            ?`seuil ${fmt(cached.threshold)} · otsu ${fmt(cached.otsuScore)} · ${names}`
+            :`otsu ${fmt(cached.threshold)} · ${names}`
     }
 
     /* --- resolve ------------------------------------------------------ */
@@ -905,7 +886,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            plus récente. */
         await this.detectElements()
         if(run!==this.resolveRun) return
-        this.renderDetection()
+        /* La détection ne fait plus que REPEINDRE le graphe de score — la
+           liste texte a été retirée, le graphique porte les candidats. */
+        this.renderScoreGraph()
         this.renderReadout()
     }
     /* ONE FLAT [masses…, intensities…] CORE — the layout `houghPrepare` splits
@@ -1075,7 +1058,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax"]){
             if(Number.isFinite(state[key])) this.parameters[key]=state[key]
         }
-        if(typeof state.colormap==="string") this.parameters.colormap=state.colormap
+        /* LES COLORMAPS SONT STOCKÉES EN MINUSCULES : une session d'avant
+           (« Tcherenkov », « glow ») est remise à plat au chargement. */
+        if(typeof state.colormap==="string") this.parameters.colormap=state.colormap.toLowerCase()
         if(typeof state.showScatter==="boolean") this.parameters.showScatter=state.showScatter
         if(typeof state.heightScaleLog==="boolean") this.parameters.heightScaleLog=state.heightScaleLog
         if(Array.isArray(state.signatureCharges)&&state.signatureCharges.length){
@@ -1089,7 +1074,6 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(this.slopeMaxInput) this.slopeMaxInput.value=this.parameters.slopeMax.toFixed(4)
         if(this.interceptMinInput) this.interceptMinInput.value=this.parameters.interceptMin.toFixed(4)
         if(this.interceptMaxInput) this.interceptMaxInput.value=this.parameters.interceptMax.toFixed(4)
-        if(this.heightInput) this.heightInput.value=this.parameters.heightScale
         if(this.keepInput) this.keepInput.value=this.parameters.keep
         if(this.neighboursInput) this.neighboursInput.value=this.parameters.neighbours
         if(this.bandwidthInput) this.bandwidthInput.value=this.parameters.bandwidth.toFixed(2)

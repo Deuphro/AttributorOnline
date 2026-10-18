@@ -241,8 +241,8 @@ const kernels={
         const nx=Math.max(2,Math.trunc(params?.nx??64))
         const ny=Math.max(2,Math.trunc(params?.ny??48))
         const keep=Math.max(0,Math.trunc(params?.keep??0))
-        const neighbours=Math.max(2,Math.trunc(params?.neighbours??12))
-        const bandwidth=Number.isFinite(params?.bandwidth)?params.bandwidth:2
+        const neighbours=Math.max(2,Math.trunc(params?.neighbours??2))
+        const bandwidth=Number.isFinite(params?.bandwidth)?params.bandwidth:0.5
         const bounds=params?.bounds??[-0.001,0.001,-0.2,0.2]
         const [slopeMin,slopeMax,interceptMin,interceptMax]=bounds
         /* THE TAIL, DECODED ONCE. The voting pairs come straight from the kernel

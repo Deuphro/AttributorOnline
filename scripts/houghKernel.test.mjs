@@ -386,7 +386,7 @@ test("the node sends its kernel settings, instead of the worker deciding them",(
         ok(new RegExp(`params:\\{[^}]*\\b${key}\\b`).test(node.replace(/\s+/g," ")),
             `the node must send ${key} to the kernel`)
     }
-    for(const [key,fallback] of [["keep","0"],["neighbours","12"],["bandwidth","2"]]){
+    for(const [key,fallback] of [["keep","0"],["neighbours","2"],["bandwidth","0.5"]]){
         const declared=new RegExp(`this\\.parameters\\.${key}=(${fallback.replace(".","\\.")})`)
         ok(declared.test(node),
             `the node must declare ${key}=${fallback}, the worker's own default`)
