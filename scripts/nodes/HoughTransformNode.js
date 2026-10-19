@@ -76,8 +76,8 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.status="floating"
         /* grid sizes, how tall the surface is drawn, and which colormap.
            Plain numbers on `parameters` because serializeState() owns them. */
-        this.parameters.gridX=512
-        this.parameters.gridY=512
+        this.parameters.gridX=256
+        this.parameters.gridY=256
         this.parameters.heightScale=0.55
         /* An accumulator is peaked by nature: one relation gathers the votes of
            every pair at once, so its range is one cell against thousands. On a
@@ -118,6 +118,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            réglable pour la suite (multichargés), mais le défaut est [1]. */
         this.parameters.signatureCharges=[1]
         this.parameters.secondOrderMaxMultiple=2
+        this.parameters.secondOrderMaxElements=8
         this.surface=null
         this.collectedWaves=[]
         this.lastAnswer=null
@@ -217,8 +218,8 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             content.append(caption,input)
             return input
         }
-        this.gridXInput=numberField("grid x","gridX",8,512)
-        this.gridYInput=numberField("grid y","gridY",8,512)
+        this.gridXInput=numberField("grid x","gridX",8,256)
+        this.gridYInput=numberField("grid y","gridY",8,256)
         this.slopeMinInput=decimalField("slope min","slopeMin",-1,1)
         this.slopeMaxInput=decimalField("slope max","slopeMax",-1,1)
         this.interceptMinInput=decimalField("intercept min","interceptMin",-10,10)
@@ -352,6 +353,20 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const soMaxHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
             ["max n1/n2 for synthetic groups: CH2, C2, N2, C2H2, etc. — higher = more combinations, slower"])
         content.append(soMaxHint)
+        /* Second-order max elements — limite le nombre d'éléments 1er ordre combinés. */
+        const soMaxElCaption=CE("label",{},["2nd order max elements"])
+        this.secondOrderMaxElementsInput=CE("input",{type:"number",value:this.parameters.secondOrderMaxElements,min:2,max:12,step:1},[])
+        stylize(this.secondOrderMaxElementsInput,{width:"100%","box-sizing":"border-box",fontFamily:"inherit","font-size":"0.9em"})
+        this.secondOrderMaxElementsInput.addEventListener("change",()=>{
+            const value=Math.max(2,Math.min(12,Math.trunc(Number(this.secondOrderMaxElementsInput.value))||2))
+            this.parameters.secondOrderMaxElements=value
+            this.secondOrderMaxElementsInput.value=value
+            this.startResolve().then(()=>this.resolveChildren())
+        })
+        content.append(soMaxElCaption,this.secondOrderMaxElementsInput)
+        const soMaxElHint=CE("div",{style:{"grid-column":"1 / -1",opacity:"0.7","font-size":"0.9em"}},
+            ["max first-order elements to combine (top N by score) — higher = more pairs, slower"])
+        content.append(soMaxElHint)
         const scaleCaption=CE("label",{},["height scale"])
         this.scaleInput=CE("select",{},[])
         for(const [value,label] of [["log","log — ridges visible"],
@@ -602,6 +617,41 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.graph.axisRules=rules
         this.graph.requestOverlay?.()
     }
+    /* MURS DE SECOND ORDRE — plans verticaux aux pentes des groupes 2nd ordre > Otsu.
+       La pente d'un groupe synthétique de masse M est (M - round(M)) / M,
+       exactement comme pour un élément 1er ordre (stepSignature: ε/(k+ε)). Couleur orange (#FF8C00). */
+    applySecondOrderRules(){
+        if(!this.graph||!this.detection2?.length||!this._scoreOverlay2) return
+        const cached=this._scoreOverlay2
+        const {rows,threshold}=cached
+        if(!Number.isFinite(threshold)) return
+        const [slopeMin,slopeMax]=this.bounds()
+        const span=slopeMax-slopeMin
+        if(!(span>0)) return
+        const rules=[]
+        /* Uniquement les groupes 2nd ordre AU-DESSUS du seuil Otsu (même que goodSymbols). */
+        for(const row of rows){
+            if(row.score < threshold) continue
+            if(!Number.isFinite(row.mass)) continue
+            /* Pente équivalente : (M - round(M)) / M — même formule que stepSignature (ε/(k+ε)). */
+            const mass=row.mass
+            const k=Math.round(mass)
+            if(k<1) continue
+            const epsilon=mass-k
+            const slope=epsilon/mass
+            const u=(slope-slopeMin)/span*2-1
+            if(u<-1||u>1) continue
+            rules.push({axis:"x",value:u,
+                color:"#FF8C00",
+                label:row.symbol})
+        }
+        if(rules.length){
+            /* Garder les règles bleues (1er ordre), remplacer les oranges (2nd ordre). */
+            const existing=(this.graph.axisRules??[]).filter(r=>r.color!=="#FF8C00")
+            this.graph.axisRules=[...existing,...rules]
+            this.graph.requestOverlay?.()
+        }
+    }
 
     /* PAS DE renderDetection : la liste écrite des candidats a été retirée —
        le graphe de score EST le classement (une barre par rang, symbole au-
@@ -699,6 +749,22 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         /* LES PLANS DE PENTE suivent le seuil : ils sortent des mêmes lignes
            que les symboles, donc un drag sur la barre verte les repeint. */
         this.applySlopeRules()
+        /* Recalculer le 2nd ordre : le seuil 1er ordre a changé → éléments au-dessus d'Otsu changent. */
+        this.recomputeSecondOrder()
+    }
+    async recomputeSecondOrder(){
+        if(!this.lastAnswer?.pairs?.length) return
+        const table=await this.table()
+        const cached=this._scoreOverlay
+        if(!cached||!Number.isFinite(cached.otsuScore)) return
+        /* Seuil EFFECTIF 1er ordre : manuel (scoreThreshold) sinon Otsu. */
+        const effectiveThreshold=Number.isFinite(this.scoreThreshold)?this.scoreThreshold:cached.otsuScore
+        const maxMultiple=this.parameters.secondOrderMaxMultiple??2
+        const maxElements=this.parameters.secondOrderMaxElements??8
+        this.detection2=scoreSecondOrder(this.detection,this.lastAnswer.pairs,table,effectiveThreshold,{maxMultiple,maxElements,dmBin:this._dmBinCache})
+        console.log("[HoughTransformNode] recomputeSecondOrder done", {detection2Len:this.detection2?.length, effectiveThreshold, manual:this.scoreThreshold, otsu:cached.otsuScore})
+        this.renderScoreGraph2()
+        this.applySecondOrderRules()
     }
     /* TOUT LE MOBILIER DU GRAPHE, REPEINT D'UN SEUL COUP : les BARRES
        (dégradé PAR BARRE — blanc opaque au sommet, #46BEFF à 50 % au milieu,
@@ -896,7 +962,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
     renderScoreGraph2(){
         if(!this.scorePlot2) return
         const all=this.detection2??[]
-        console.log("[HoughTransformNode] renderScoreGraph2", {hasPlot2:!!this.scorePlot2, detection2Len:all.length, wrapperHeight:this.scoreWrapper2?.clientHeight, wrapperWidth:this.scoreWrapper2?.clientWidth, graphzone:this.scorePlot2?.graphzone})
+        console.log("[HoughTransformNode] renderScoreGraph2 called", {hasPlot2:!!this.scorePlot2, allLen:all.length, wrapperH:this.scoreWrapper2?.clientHeight})
         if(!all.length){
             this._scoreOverlay2=null
             this.scorePlot2.setTraces([])
@@ -938,6 +1004,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.scorePlot2.parameters.axis.left.scale="linear"
         this.scorePlot2.drawGraph()
         this.updateThresholdReadout2()
+        this.applySecondOrderRules()
     }
     _paintScoreOverlay2(){
         const cached=this._scoreOverlay2
@@ -1119,6 +1186,23 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
            fois de plus coûterait O(n²) sur tous les couples de pics pour
            retrouver un tableau que l'on avait déjà sous la main. */
         this.lastAnswer=answer
+        /* Cache l'index binné des Δmasses pour le 2nd ordre (O(1) par candidat au lieu de O(N)). */
+        if(answer?.pairs?.length){
+            const flat=answer.pairs instanceof Float64Array?answer.pairs:Float64Array.from(answer.pairs)
+            const dmBin=new Map()
+            for(let i=0;i<flat.length/2;i++){
+                const dm=flat[2*i+1]
+                if(Number.isFinite(dm)&&dm>0){
+                    const bin=Math.round(dm*100)
+                    const arr=dmBin.get(bin)||[]
+                    arr.push(dm)
+                    dmBin.set(bin,arr)
+                }
+            }
+            this._dmBinCache=dmBin
+        }else{
+            this._dmBinCache=null
+        }
         this.outputs[0]=[this.surfaceWave]
         this.setStatus(this.kernelErrors.length?"error"
             :this.collectedWaves.length?"resolved":"floating")
@@ -1138,16 +1222,16 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         const table=await this.table()
         const pairs=this.lastAnswer?.pairs
         const otsuThreshold=this._scoreOverlay?.otsuScore
-        console.log("[HoughTransformNode] startResolve detection2 check", {hasTable:!!table, pairsLen:pairs?.length, otsuThreshold, detectionLen:this.detection?.length})
         if(table&&pairs?.length&&Number.isFinite(otsuThreshold)){
             const maxMultiple=this.parameters.secondOrderMaxMultiple??2
-            this.detection2=scoreSecondOrder(this.detection,pairs,table,otsuThreshold,{maxMultiple})
-            console.log("[HoughTransformNode] detection2 computed", this.detection2)
+            const maxElements=this.parameters.secondOrderMaxElements??8
+            this.detection2=scoreSecondOrder(this.detection,pairs,table,otsuThreshold,{maxMultiple,maxElements})
         }else{
             this.detection2=[]
         }
         if(run!==this.resolveRun) return
         this.renderScoreGraph2()
+        this.applySecondOrderRules()
         this.renderReadout()
     }
     /* ONE FLAT [masses…, intensities…] CORE — the layout `houghPrepare` splits
@@ -1314,12 +1398,13 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             interceptMin:this.parameters.interceptMin,
             interceptMax:this.parameters.interceptMax,
             secondOrderMaxMultiple:this.parameters.secondOrderMaxMultiple,
+            secondOrderMaxElements:this.parameters.secondOrderMaxElements,
             plot:this.graph?.serializeState?.()??null
         }
     }
     restoreState(state){
         if(!state) return
-        for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax","isotopeGaps","secondOrderMaxMultiple"]){
+        for(const key of ["gridX","gridY","heightScale","keep","neighbours","bandwidth","slopeMin","slopeMax","interceptMin","interceptMax","isotopeGaps","secondOrderMaxMultiple","secondOrderMaxElements"]){
             if(Number.isFinite(state[key])) this.parameters[key]=state[key]
         }
         /* LES COLORMAPS SONT STOCKÉES EN MINUSCULES : une session d'avant
@@ -1346,6 +1431,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(this.scaleInput) this.scaleInput.value=this.parameters.heightScaleLog?"log":"linear"
         if(this.scatterInput) this.scatterInput.checked=this.parameters.showScatter
         if(this.secondOrderMaxMultipleInput) this.secondOrderMaxMultipleInput.value=this.parameters.secondOrderMaxMultiple
+        if(this.secondOrderMaxElementsInput) this.secondOrderMaxElementsInput.value=this.parameters.secondOrderMaxElements
         this.startResolve().then(()=>{
             /* The camera is restored AFTER the traces: framing needs the box,
                and the box only exists once there is something in the scene.

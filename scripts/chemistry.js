@@ -2960,77 +2960,98 @@ function scoreCutoffs(scores,{ks=[1,2,4]}={}){
     }
 }
 
-/* DEUXIÈME ORDRE — groupes composés à partir des deux premiers éléments Otsu.
+/* DEUXIÈME ORDRE — groupes composés à partir de TOUS les éléments 1er ordre > Otsu.
    
-   On prend les deux premiers candidats au-dessus du seuil Otsu (premier ordre),
-   on forme des groupes homonucléaires/hétéro-nucléaires dont la VALENCE TOTALE
-   est paire, on synthétise leurs masses (isotopes les plus abondants), et on
-   compte combien de fois ces masses apparaissent dans les Δmasses du noyau.
+   On prend tous les candidats au-dessus du seuil Otsu (plafonné à 8 pour la perf),
+   on forme toutes les paires d'éléments distincts + homonucléaires, valence totale PAIRE,
+   masses synthétiques (isotopes les plus abondants), et on compte les occurrences
+   dans les Δmasses du noyau via un index binné (O(1) au lieu de O(N)).
    
    La structure de sortie MIME scorePairs : même type de lignes, même tri par
    score, pour qu'un second graphe de score identique puisse l'afficher. */
-function scoreSecondOrder(firstOrderRows,pairs,table,otsuThreshold,{maxMultiple=2}={}){
+function scoreSecondOrder(firstOrderRows,pairs,table,effectiveThreshold,{maxMultiple=2,maxElements=8,dmBin=null}={}){
     if(!firstOrderRows?.length||!pairs?.length||!table?.elements?.length) return []
-    /* Les deux premiers éléments AU-DESSUS du seuil Otsu. scorePairs trie par
-       score décroissant, donc les premiers sont les plus forts. */
-    const top=firstOrderRows.filter(r=>Number.isFinite(r.score)&&r.score>=otsuThreshold)
+    /* Tous les éléments AU-DESSUS du seuil effectif (manuel ou Otsu), triés par score. */
+    const top=firstOrderRows.filter(r=>Number.isFinite(r.score)&&r.score>=effectiveThreshold)
     if(top.length<2) return []
-    const [row1,row2]=[top[0],top[1]]
-    /* Retrouver les Element complets dans la table (les lignes 1er ordre n'ont que symbol/Z). */
+    const elements=top.slice(0,maxElements)
+    /* Retrouver les Element complets dans la table. */
     const findEl=(sym)=>table.elements.find(e=>e.symbol===sym)
-    const el1=findEl(row1.symbol)
-    const el2=findEl(row2.symbol)
-    if(!el1||!el2) return []
-    /* Valence de chaque élément (défaut de la table). */
-    const v1=el1.valences?.default
-    const v2=el2.valences?.default
-    if(!Number.isFinite(v1)||!Number.isFinite(v2)) return []
-    /* Groupes candidats : multiples de chaque élément seul, et combinaisons
-       croisées. On garde ceux à valence totale PAIRE. */
-    const candidates=[]
+    const elementData=elements.map(row=>{
+        const el=findEl(row.symbol)
+        if(!el) return null
+        const v=el.valences?.default
+        const iso=el._byAbundance?.[0]??el.isotopes?.[0]
+        return {row,el,v,iso}
+    }).filter(d=>d&&Number.isFinite(d.v)&&d.iso)
+    if(elementData.length<2) return []
+    /* Index binné des Δmasses : utiliser le cache si fourni, sinon le construire. */
+    let binMap=dmBin
+    if(!binMap){
+        const flat=pairs instanceof Float64Array?pairs:Float64Array.from(pairs??[])
+        binMap=new Map()
+        for(let i=0;i<flat.length/2;i++){
+            const dm=flat[2*i+1]
+            if(Number.isFinite(dm)&&dm>0){
+                const bin=Math.round(dm*100)
+                const arr=binMap.get(bin)||[]
+                arr.push(dm)
+                binMap.set(bin,arr)
+            }
+        }
+    }
+    if(!binMap.size) return []
+    /* Générer tous les candidats : homonucléaires + hétéro-nucléaires (paires distinctes). */
     const maxM=Math.max(1,Math.trunc(maxMultiple))
-    for(let n1=1;n1<=maxM;n1++){
-        for(let n2=0;n2<=maxM;n2++){
-            if(n1===0&&n2===0) continue
-            const totalValence=n1*v1+n2*v2
+    const candidates=[]
+    for(let i=0;i<elementData.length;i++){
+        const {row:row1,el:el1,v:v1,iso:iso1}=elementData[i]
+        /* Homonucléaire : multiples de el1 seul. */
+        for(let n=1;n<=maxM;n++){
+            const totalValence=n*v1
             if(totalValence%2!==0) continue
-            /* Masse synthétique : isotopes les plus abondants. */
-            const iso1=el1._byAbundance?.[0]??el1.isotopes?.[0]
-            const iso2=el2._byAbundance?.[0]??el2.isotopes?.[0]
-            if(!iso1||!iso2) continue
-            const mass=n1*iso1.mass+n2*iso2.mass
+            const mass=n*iso1.mass
             if(!Number.isFinite(mass)||mass<=0) continue
-            const label=n2===0
-                ?`${row1.symbol}${n1>1?n1:""}`  // homonucléaire
-                :`${row1.symbol}${n1>1?n1:""}${row2.symbol}${n2>1?n2:""}`  // hétéro
-            candidates.push({label,mass,valence:totalValence,n1,n2})
+            candidates.push({label:`${row1.symbol}${n>1?n:""}`,mass,valence:totalValence,components:`${row1.symbol}x${n}`,elements:[{sym:row1.symbol,n}]} )
+        }
+        /* Hétéro-nucléaire : combinaisons avec el2 (j > i pour éviter doublons). */
+        for(let j=i+1;j<elementData.length;j++){
+            const {row:row2,el:el2,v:v2,iso:iso2}=elementData[j]
+            for(let n1=1;n1<=maxM;n1++){
+                for(let n2=1;n2<=maxM;n2++){
+                    const totalValence=n1*v1+n2*v2
+                    if(totalValence%2!==0) continue
+                    const mass=n1*iso1.mass+n2*iso2.mass
+                    if(!Number.isFinite(mass)||mass<=0) continue
+                    candidates.push({
+                        label:`${row1.symbol}${n1>1?n1:""}${row2.symbol}${n2>1?n2:""}`,
+                        mass,valence:totalValence,
+                        components:`${row1.symbol}x${n1}+${row2.symbol}x${n2}`,
+                        elements:[{sym:row1.symbol,n:n1},{sym:row2.symbol,n:n2}]
+                    })
+                }
+            }
         }
     }
     if(!candidates.length) return []
-    /* Aplatir les paires du noyau : [slope, dm, slope, dm, ...] → tableau des dm. */
-    const flat=pairs instanceof Float64Array?pairs:Float64Array.from(pairs??[])
-    const dms=[]
-    for(let i=0;i<flat.length/2;i++){
-        const dm=flat[2*i+1]
-        if(Number.isFinite(dm)&&dm>0) dms.push(dm)
-    }
-    if(!dms.length) return []
-    /* Pour chaque candidat, compter les dm proches (tolérance 0.01 Da). */
+    /* Lookup binné : pour chaque candidat, regarder le bin exact + bins adjacents (±1). */
     const tol=0.01
     const out=[]
     for(const cand of candidates){
-        let votes=0
-        let score=0
-        let bestDelta=Infinity
-        let totalDelta=0
-        for(const dm of dms){
-            const delta=Math.abs(dm-cand.mass)
-            if(delta<=tol){
-                votes++
-                const weight=1/(delta+1e-12)
-                score+=weight
-                totalDelta+=delta
-                if(delta<bestDelta) bestDelta=delta
+        const bin=Math.round(cand.mass*100)
+        let votes=0,score=0,bestDelta=Infinity,totalDelta=0
+        for(let b=bin-1;b<=bin+1;b++){
+            const arr=binMap.get(b)
+            if(!arr) continue
+            for(const dm of arr){
+                const delta=Math.abs(dm-cand.mass)
+                if(delta<=tol){
+                    votes++
+                    const weight=1/(delta+1e-12)
+                    score+=weight
+                    totalDelta+=delta
+                    if(delta<bestDelta) bestDelta=delta
+                }
             }
         }
         if(votes>0){
@@ -3042,9 +3063,10 @@ function scoreSecondOrder(firstOrderRows,pairs,table,otsuThreshold,{maxMultiple=
                 bestDelta,
                 totalDelta,
                 meanDelta:votes?totalDelta/votes:Infinity,
-                topMultiple:1,  // pas de multiple pour les groupes synthétiques
+                topMultiple:1,
                 valence:cand.valence,
-                components:`${row1.symbol}x${cand.n1}${cand.n2?`+${row2.symbol}x${cand.n2}`:""}`
+                components:cand.components,
+                elements:cand.elements
             })
         }
     }

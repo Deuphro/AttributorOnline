@@ -1087,13 +1087,20 @@ export class Plot3DWebGL{
     drawRules(svg,width,height){
         const rules=Array.isArray(this.axisRules)?this.axisRules:[]
         if(!rules.length) return
+        /* Filtrer les murs bleus (1er ordre) : ne garder que les oranges (2nd ordre). */
+        const filtered=rules.filter(r=>r.color==="#FF8C00")
+        if(!filtered.length) return
         const ns="http://www.w3.org/2000/svg"
         const group=document.createElementNS(ns,"g")
         group.setAttribute("class","gl3d-rules")
         const lo=Plot3DWebGL.WORLD_MIN
         const hi=Plot3DWebGL.WORLD_MAX
         const world=this.axisWorld()
-        for(const rule of rules){
+        const isOrtho=this.cameraType===true
+        /* Pour orthographique : empiler les étiquettes sur le bord HAUT du mur par bin x.
+           Pour perspective : centrer sur le mur comme avant. */
+        const labelSlots=isOrtho?new Map():[]
+        for(const rule of filtered){
             if(!rule||!Number.isFinite(rule.value)) continue
             const axis=rule.axis==="y"?"y":rule.axis==="z"?"z":"x"
             const w=world[axis](rule.value)
@@ -1103,54 +1110,70 @@ export class Plot3DWebGL{
                 :{x:u,y:v,z:w}
             const corners=[at(lo,lo),at(hi,lo),at(hi,hi),at(lo,hi)]
                 .map(c=>this.project(c.x,c.y,c.z))
-            /* A corner behind the camera FOLDS the projection onto its mirror
-               half of the screen — a quad built from that would be garbage,
-               and unlike a lone edge it is not readable in any position. */
             if(corners.some(p=>p.behind)) continue
-            const color=rule.color??"#46BEFF"
+            const color=rule.color??"#FF8C00"
             const polygon=document.createElementNS(ns,"polygon")
             polygon.setAttribute("points",corners.map(p=>`${p.x},${p.y}`).join(" "))
             polygon.setAttribute("fill",color)
-            polygon.setAttribute("fill-opacity","0.12")
+            polygon.setAttribute("fill-opacity","0.06")
             polygon.setAttribute("stroke",color)
-            polygon.setAttribute("stroke-width","1")
+            polygon.setAttribute("stroke-width","0.8")
             polygon.setAttribute("vector-effect","non-scaling-stroke")
             group.appendChild(polygon)
-            /* L'INTERSECTION MUR × MESH, TRACÉE SUR LE MUR : le mur est le plan
-               {axis = value}, la courbe est z(y) à x = value — deux colonnes
-               encadrantes interpolées, ligne par ligne, donc O(ny) par mur.
-               LE MÊME heightMapping QUE LE MESH (place()) : en échelle log le
-               relief affiché est log, et une courbe linéaire flotterait hors du
-               relief. Même world.z que buildSurface, même project() que le
-               reste — la courbe suit la caméra comme le mur lui-même. */
             this.drawRuleProfile(group,ns,rule,world)
-            if(rule.label){
+            if(!rule.label) continue
+            /* Position de l'étiquette. */
+            let cx, cy
+            const r=11+Math.max(0,rule.label.length-1)*4.5
+            if(isOrtho){
+                /* Bord HAUT du mur (y max des corners projetés). */
+                const topY=Math.max(...corners.map(c=>c.y))
+                const leftX=Math.min(...corners.map(c=>c.x))
+                const rightX=Math.max(...corners.map(c=>c.x))
+                cx=(leftX+rightX)/2
+                /* Binner les x projetés (taille du bin ~ largeur pastille). */
+                const binSize=24
+                const xBin=Math.round(cx/binSize)*binSize
+                /* Stack vertical par bin x : garde les labels alignés sur leur pente. */
+                const stack=labelSlots.get(xBin)??{x:xBin,y:topY}
+                cy=stack.y-r-4
+                stack.y=cy-r-8
+                labelSlots.set(xBin,stack)
+            }else{
+                /* Perspective : centre du mur + anti-chevauchement circulaire. */
                 const mid={x:(corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4,
                     y:(corners[0].y+corners[1].y+corners[2].y+corners[3].y)/4}
-                /* LE PASTILLE SOMBRE : l'étiquette flottait nue sur la surface,
-                   illisible dès qu'un pic clair passait derrière. Un disque
-                   foncé cerclé de la couleur du mur, et le symbole en blanc,
-                   plus gros et en gras — la couleur reste portée par le mur et
-                   le cercle, la lecture par le blanc. */
-                const disc=document.createElementNS(ns,"circle")
-                disc.setAttribute("cx",mid.x)
-                disc.setAttribute("cy",mid.y)
-                disc.setAttribute("r",String(11+Math.max(0,rule.label.length-1)*4.5))
-                disc.setAttribute("fill","rgba(2,8,20,0.82)")
-                disc.setAttribute("stroke",color)
-                disc.setAttribute("stroke-width","1.2")
-                group.appendChild(disc)
-                const text=document.createElementNS(ns,"text")
-                text.setAttribute("x",mid.x)
-                text.setAttribute("y",mid.y+4.5)
-                text.setAttribute("text-anchor","middle")
-                text.setAttribute("fill","#ffffff")
-                text.setAttribute("font-size","13")
-                text.setAttribute("font-weight","700")
-                text.setAttribute("font-family","inherit")
-                text.textContent=rule.label
-                group.appendChild(text)
+                cx=mid.x; cy=mid.y
+                for(const dp of labelSlots){
+                    const dx=dp.x-cx, dy=dp.y-cy
+                    const dist=Math.hypot(dx,dy)
+                    const minDist=dp.r+r+8
+                    if(dist<minDist&&dist>0){
+                        const push=minDist-dist
+                        cx-=dx/dist*push
+                        cy-=dy/dist*push
+                    }
+                }
+                labelSlots.push({x:cx,y:cy,r})
             }
+            const disc=document.createElementNS(ns,"circle")
+            disc.setAttribute("cx",cx)
+            disc.setAttribute("cy",cy)
+            disc.setAttribute("r",String(r))
+            disc.setAttribute("fill","rgba(2,8,20,0.82)")
+            disc.setAttribute("stroke",color)
+            disc.setAttribute("stroke-width","1.2")
+            group.appendChild(disc)
+            const text=document.createElementNS(ns,"text")
+            text.setAttribute("x",cx)
+            text.setAttribute("y",cy+4.5)
+            text.setAttribute("text-anchor","middle")
+            text.setAttribute("fill","#ffffff")
+            text.setAttribute("font-size","13")
+            text.setAttribute("font-weight","700")
+            text.setAttribute("font-family","inherit")
+            text.textContent=rule.label
+            group.appendChild(text)
         }
         svg.appendChild(group)
     }
