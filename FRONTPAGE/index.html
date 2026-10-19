@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -80,6 +80,75 @@
     }
     .card h3{color:#aef22e;margin-bottom:8px;font-size:1.05em;}
     .card p{color:#b9c4d0;font-size:0.92em;}
+    .card.star{
+        border-color:rgba(174,242,46,0.4);
+        background:rgba(174,242,46,0.05);
+    }
+    .card.star h3{font-size:1.12em;}
+    .pipeline-intro{
+        color:#8fa0b3;
+        font-size:0.92em;
+        margin:-10px 0 18px;
+    }
+    /* ---- the linear path, drawn as steps rather than prose ---- */
+    .flow{
+        background:rgba(255,255,255,0.03);
+        border:1px solid rgba(255,255,255,0.13);
+        border-radius:6px;
+        padding:18px 16px;
+        margin:10px 0 20px;
+    }
+    .flow-row{
+        display:flex;
+        flex-wrap:wrap;
+        align-items:center;
+        gap:10px 8px;
+    }
+    .flow-step{
+        display:inline-flex;
+        align-items:center;
+        gap:6px;
+        padding:8px 13px;
+        border-radius:4px;
+        border:1px solid rgba(255,255,255,0.18);
+        background:rgba(0,0,0,0.28);
+        color:#dfe6ee;
+        font-size:0.9em;
+    }
+    .flow-step.hot{
+        border-color:rgba(174,242,46,0.55);
+        background:rgba(174,242,46,0.1);
+        color:#aef22e;
+    }
+    .flow-step em{
+        font-style:normal;
+        font-size:0.82em;
+        opacity:0.65;
+    }
+    .flow-op{
+        color:#8fa0b3;
+        font-size:0.85em;
+        letter-spacing:0;
+    }
+    .flow-op em{
+        font-style:normal;
+        opacity:0.7;
+        padding:0 3px;
+    }
+    .flow-step + .flow-op::before,
+    .flow-op + .flow-step::before{
+        content:"→";
+        color:#aef22e;
+        margin-right:10px;
+        font-size:1.1em;
+    }
+    .flow-note{
+        color:#8fa0b3;
+        font-size:0.92em;
+        margin:0 0 14px;
+    }
+    .card.small h3{font-size:0.98em;margin-bottom:5px;}
+    .card.small p{font-size:0.86em;}
     .pipeline{
         margin-top:10px;
         color:#8fa0b3;
@@ -172,6 +241,136 @@
         border-color:rgba(255,99,99,0.6);
         color:#ff6363;
     }
+
+    /* ---- node reference: one card per node, filterable ---- */
+    .docs .node{
+        border:1px solid rgba(255,255,255,0.13);
+        border-left:3px solid rgba(174,242,46,0.45);
+        border-radius:6px;
+        background:rgba(255,255,255,0.025);
+        padding:4px 22px 22px;
+        margin:0 0 18px;
+        scroll-margin-top:16px;
+        transition:border-color 200ms;
+    }
+    .docs .node:hover{border-left-color:#aef22e;}
+    .docs .node > h4{
+        margin:18px 0 10px;
+        padding:0 0 10px;
+        border-bottom:1px solid rgba(255,255,255,0.12);
+        font-size:1.22em;
+        display:flex;
+        flex-wrap:wrap;
+        align-items:baseline;
+        gap:0 6px;
+    }
+    .docs .node > h5{
+        color:#aef22e;
+        font-size:1em;
+        margin:24px 0 6px;
+    }
+    .docs .node > h6{
+        color:#cfe07a;
+        font-size:0.95em;
+        margin:20px 0 6px;
+        border-left:2px solid rgba(174,242,46,0.35);
+        padding-left:10px;
+    }
+    .docs h5{color:#aef22e;font-size:1em;margin:18px 0 6px;}
+    .docs h6{color:#cfe07a;font-size:0.95em;margin:16px 0 6px;}
+    .node-toolbar{
+        position:sticky;
+        top:0;
+        z-index:5;
+        display:flex;
+        flex-wrap:wrap;
+        gap:10px;
+        align-items:center;
+        padding:12px 0;
+        margin:0 0 18px;
+        background:rgba(28,33,41,0.94);
+        backdrop-filter:blur(6px);
+        border-bottom:1px solid rgba(255,255,255,0.12);
+    }
+    .node-toolbar input[type=search]{
+        flex:1 1 220px;
+        min-width:180px;
+        background:rgba(0,0,0,0.4);
+        border:1px solid rgba(255,255,255,0.18);
+        border-radius:4px;
+        color:#dfe6ee;
+        font:inherit;
+        padding:8px 10px;
+    }
+    .node-toolbar input[type=search]:focus{
+        outline:none;
+        border-color:#aef22e;
+        box-shadow:0 0 10px rgba(174,242,46,0.25);
+    }
+    .chipset{display:flex;flex-wrap:wrap;gap:6px;}
+    .chip{
+        font-size:0.82em;
+        padding:5px 11px;
+        border-radius:12px;
+        border:1px solid rgba(255,255,255,0.18);
+        color:#b9c4d0;
+        cursor:pointer;
+        user-select:none;
+        background:rgba(255,255,255,0.03);
+        transition:200ms;
+    }
+    .chip:hover{border-color:rgba(174,242,46,0.6);color:#aef22e;}
+    .chip[aria-pressed=true]{
+        background:rgba(174,242,46,0.15);
+        border-color:#aef22e;
+        color:#aef22e;
+    }
+    .node-count{color:#7a8794;font-size:0.85em;}
+    .node mark{background:rgba(174,242,46,0.25);color:#eafbb0;}
+    .node-menu{
+        font-size:0.62em;
+        letter-spacing:0.5px;
+        text-transform:uppercase;
+        padding:2px 8px;
+        border-radius:9px;
+        border:1px solid rgba(255,255,255,0.22);
+        color:#8fa0b3;
+        background:rgba(0,0,0,0.3);
+        font-weight:normal;
+        align-self:center;
+    }
+    .node-empty{
+        display:none;
+        color:#7a8794;
+        padding:24px 0;
+        font-size:0.95em;
+    }
+    .docs-lede{
+        color:#8fa0b3;
+        font-size:0.92em;
+        margin:-4px 0 14px;
+    }
+    .catalogue{
+        border:1px solid rgba(255,255,255,0.13);
+        border-radius:6px;
+        background:rgba(255,255,255,0.025);
+        padding:12px 18px;
+        margin:22px 0 8px;
+    }
+    .catalogue summary{
+        cursor:pointer;
+        color:#b9c4d0;
+        font-size:0.95em;
+        list-style:none;
+    }
+    .catalogue summary::-webkit-details-marker{display:none;}
+    .catalogue summary::before{
+        content:"▸ ";
+        color:#aef22e;
+    }
+    .catalogue[open] summary::before{content:"▾ ";}
+    .catalogue summary:hover{color:#aef22e;}
+    .catalogue summary strong{color:#aef22e;}
 </style>
 </head>
 <body>
@@ -195,70 +394,176 @@
     </p>
 
     <h2>Main features</h2>
+    <p class="pipeline-intro">
+        Ordered by what the work actually rests on: the algorithms that decide <em>which</em> peaks are
+        real and <em>which</em> formulas fit, first; the machinery that makes them usable at scale, next.
+    </p>
     <div class="features">
+
+        <div class="card star">
+            <h3>🎯 Exhaustive attribution</h3>
+            <p>A mixed-radix sieve enumerates <strong>every</strong> combination of your groups inside a
+            ppm window — no sampling, no heuristic, each formula reached exactly once — and keeps the
+            best distinct readings per peak, ranked by log-probability. This is the core of the
+            platform.</p>
+        </div>
+
+        <div class="card star">
+            <h3>🔬 Peak picking</h3>
+            <p>Two independent stages in one node: 0D persistent homology decides which points survive
+            the classifier line, then a statistical <strong>half-height width</strong> test — measured in
+            ppm against the spectrum's own median width — removes the broad structures that are not
+            real peaks.</p>
+        </div>
+
+        <div class="card star">
+            <h3>🌲 Measurement network</h3>
+            <p>Link peaks whose gaps match reference masses, take the minimum spanning forest, cut it
+            on the weight curve, merge trees by their stoichiometric difference and propagate formulas
+            from any root you click. Formula assignment follows from measured structure.</p>
+        </div>
+
+        <div class="card star">
+            <h3>🕸️ Hough pattern detection</h3>
+            <p>Every pair of peaks votes for the slope of the line it defines in the (mass, defect)
+            plane, and the ridges of that vote count <em>are</em> the elemental signatures. The cut
+            between real signatures and coincidences is made by <strong>Otsu's method</strong>, not by a
+            fixed multiple — and the winning steps are re-tested for composite fragments.</p>
+        </div>
+
+        <div class="card star">
+            <h3>🎛️ Mass calibration</h3>
+            <p>Fit an <strong>error surface over m/z <em>and</em> intensity</strong> from the attribution's
+            own ppm errors, and apply it to every linked spectrum. Two peaks at the same mass but
+            different heights do not get the same correction — which is exactly what a 1D curve cannot
+            do. Residuals and the fitted surface are on screen.</p>
+        </div>
+
+        <div class="card star">
+            <h3>🧭 Formula-based Kendrick</h3>
+            <p>Type a chemical formula, and every linked spectrum is rescaled around that m/z and
+            reported as a mass defect — homologous series collapse onto one another, and what is left is
+            the part chemistry does <em>not</em> explain.</p>
+        </div>
+
+        <div class="card star">
+            <h3>⚗️ Mass &amp; isotopic calculator</h3>
+            <p>Click a periodic table or type a formula: monoisotopic mass, average mass, m/z and the
+            full <strong>isotopic envelope</strong>, with per-isotope pinning. The reference you need
+            before you trust a group table.</p>
+        </div>
+
+        <div class="card">
+            <h3>🧬 Formula collections &amp; clustering</h3>
+            <p>The attributed formulas are a live, editable, exportable set — browsable by molecule,
+            formula or peak, annotatable. They can be <strong>clustered</strong> by k-means or by
+            <strong>spectral partitioning</strong> (optionally on a PCA rotation, over the targets or
+            over the plotted graph), and each partition becomes real sub-collections you can calibrate,
+            plot or feed onward.</p>
+        </div>
+
         <div class="card">
             <h3>⚡ Rust / WebAssembly compute</h3>
-            <p>Numerical kernels compiled to WebAssembly process spectral data quickly, directly in the browser.</p>
+            <p>The numerical kernels — sieve, persistent homology, width filter, Hough, calibration,
+            PCA, clustering — are written in Rust and compiled to WebAssembly. The same algorithms run
+            as a JavaScript fallback when WASM is unavailable, with identical decision rules.</p>
         </div>
+
+        <div class="card">
+            <h3>📈 Large-data rendering</h3>
+            <p>Interactive <strong>WebGL</strong> plots and surfaces — spectra, Kendrick axes, calibration
+            error surfaces, the Hough voting plane, van Krevelen spaces — stay fluid while panning and
+            zooming over datasets where a DOM plot would choke. The formula list is virtualised, and
+            markers adapt to the pixel density instead of scaling with the zoom.</p>
+        </div>
+
         <div class="card">
             <h3>🧵 Non-blocking compute</h3>
-            <p>Heavy operations run in dedicated workers, so the interface stays responsive even on very large datasets.</p>
+            <p>Heavy operations run in dedicated workers, so the interface stays responsive on very
+            large datasets; output buffers are transferred zero-copy back to the UI thread.</p>
         </div>
+
         <div class="card">
             <h3>🧮 Adaptive compute pool</h3>
-            <p>Tasks are distributed across several workers according to the browser capabilities, with a queue and a JavaScript fallback if needed.</p>
+            <p>Tasks are distributed across several workers according to the browser capabilities, with
+            a queue, a monotonic ticket that discards superseded results, and a JavaScript fallback.</p>
         </div>
+
         <div class="card">
             <h3>🔗 Interactive data flow</h3>
-            <p>Add nodes, move them and link the steps of your analysis. The pipeline runs, updates and clearly visualises how data propagates.</p>
+            <p>Add nodes, move them and link the steps of your analysis. The pipeline runs, updates and
+            clearly visualises how data propagates; a pattern of nodes can be saved and pasted whole.</p>
         </div>
-        <div class="card">
-            <h3>📈 Integrated WebGL rendering</h3>
-            <p>Explore XY data in interactive WebGL plots designed to keep large datasets fluid while panning and zooming.</p>
-        </div>
-        <div class="card">
-            <h3>🔬 Peak picking</h3>
-            <p>Two stages in one node: 0D persistent homology decides which points are peaks, then a statistical width filter removes the broad structures that are not real peaks.</p>
-        </div>
-        <div class="card">
-            <h3>🧭 Formula-based Kendrick</h3>
-            <p>Type a chemical formula, and every linked spectrum is rescaled around that m/z and reported as a mass defect — homologous series collapse onto one another.</p>
-        </div>
+
         <div class="card">
             <h3>📂 Flexible import</h3>
-            <p>Load delimited text files with configurable separator and columns, or convert raw <code>.raw</code> files through the msConvert service. <strong>Direct native <code>.raw</code> import</strong> is also available via the thermorawfile Rust crate (no .NET/DLL required).</p>
+            <p>Load delimited text files with configurable separators and columns, or convert raw
+            <code>.raw</code> files through the msConvert service. <strong>Direct native
+            <code>.raw</code> import</strong> is also available via the thermorawfile Rust crate, in the
+            browser — no .NET, no DLL, with a metadata pass that bounds every filter by what the file
+            actually holds.</p>
         </div>
-        <div class="card">
-            <h3>💾 Portable sessions</h3>
-            <p>Export and import the complete pipeline as JSON, with session versioning and faithful restoration of the data structures.</p>
-        </div>
+
         <div class="card">
             <h3>↩️ Risk-free experimentation</h3>
-            <p>Undo and redo every action through a complete history, tune parameters and compare the results of your scenarios.</p>
+            <p>Undo and redo every action through a complete history, tune parameters and compare the
+            results of your scenarios.</p>
         </div>
-        <div class="card">
-            <h3>🎯 Exhaustive attribution</h3>
-            <p>A mixed-radix sieve enumerates every combination of your groups inside a ppm window — no sampling, no heuristic — and keeps the best distinct readings per peak, ranked by log-probability.</p>
-        </div>
-        <div class="card">
-            <h3>🌲 Measurement network</h3>
-            <p>Link peaks whose gaps match reference masses, take the minimum spanning forest, cut it on the weight curve, merge trees by their stoichiometric difference and propagate formulas from any root you click.</p>
-        </div>
-        <div class="card">
-            <h3>🎛️ Mass calibration</h3>
-            <p>Fit an error surface (m/z × intensity) from the attribution's own ppm errors and apply the correction to every linked spectrum, with residuals and the fitted surface on screen.</p>
-        </div>
+
         <div class="card">
             <h3>💬 Room chat</h3>
-            <p>A chat node joins a WebSocket room — by default the page's own host — for discussing a session with whoever else is looking at it.</p>
+            <p>A chat node joins a WebSocket room — by default the page's own host — for discussing a
+            session with whoever else is looking at it.</p>
         </div>
+
+        <div class="card">
+            <h3>💾 Portable sessions</h3>
+            <p>Export and import the complete pipeline as JSON, with session versioning and faithful
+            restoration of the data structures.</p>
+        </div>
+
     </div>
 
     <h2>A pipeline approach</h2>
-    <p class="pipeline">
-        <code>Raw file (.raw)</code> → <code>msConvert</code> or <code>native import</code> → <code>XY</code> →
-        Attributor node pipeline → <code>Attribution (Rust/WASM)</code> → <code>Calibration</code> → <code>Plots &amp; export</code>
+
+    <div class="flow">
+        <div class="flow-row">
+            <span class="flow-step">Raw <code>.raw</code></span>
+            <span class="flow-op">msConvert <em>or</em> native import</span>
+            <span class="flow-step">XY</span>
+            <span class="flow-op">Attributor node pipeline</span>
+            <span class="flow-step hot">Attribution <em>Rust/WASM</em></span>
+            <span class="flow-step hot">Calibration</span>
+            <span class="flow-step">Plots &amp; export</span>
+        </div>
+    </div>
+
+    <p class="flow-note">
+        A pipeline is a set of nodes, not a fixed recipe. Beside the linear path above, these are the
+        nodes a decision can come from — each answers one question the sieve cannot answer by itself.
     </p>
+    <div class="features">
+        <div class="card small">
+            <h3>⚗️ Mass Calculator</h3>
+            <p>Which formula, and what does it weigh — with its isotopic envelope.</p>
+        </div>
+        <div class="card small">
+            <h3>🔬 Peak picking</h3>
+            <p>Which of these points are peaks, at the instrument's resolution scale?</p>
+        </div>
+        <div class="card small">
+            <h3>🕸️ Hough Transform</h3>
+            <p>Which elemental difference is this spectrum made of?</p>
+        </div>
+        <div class="card small">
+            <h3>🌲 Measurement network</h3>
+            <p>How are these peaks chained, and from which root do formulas propagate?</p>
+        </div>
+        <div class="card small">
+            <h3>🧬 Formula Collection</h3>
+            <p>What came out — read, annotate, cluster and split it.</p>
+        </div>
+    </div>
 
     <h2>Ecosystem</h2>
     <div class="features">
@@ -287,7 +592,7 @@
 
         <h3>Global conventions</h3>
 
-        <h4>Wave data layout</h4>
+        <h5>Wave data layout</h5>
         <p>
             A <code>Wave</code> is a typed-array container. Its <code>dims</code> property lists the size of
             each dimension, and <code>degree</code> is the number of dimensions. The core is stored
@@ -309,7 +614,7 @@ index(i, 1)          // Y of point i</pre>
             A 1D wave is declared as <code>new Wave(n)</code> and its core is simply <code>[y0, y1, ...]</code>.
         </p>
 
-        <h4>Compute layer</h4>
+        <h5>Compute layer</h5>
         <ul>
             <li>Numerical kernels are written in Rust and compiled to WebAssembly.</li>
             <li>Kernels run inside dedicated workers, never on the main thread.</li>
@@ -318,40 +623,54 @@ index(i, 1)          // Y of point i</pre>
             <li>A JavaScript fallback implements the same semantics if WebAssembly or workers are unavailable.</li>
         </ul>
 
+        <details class="catalogue">
+            <summary><strong>Node catalogue</strong> — every menu entry, and the anchors it has</summary>
+            <p>
+                The flow menu creates nodes by category. Each one is documented on its own card below.
+            </p>
+            <table class="spec">
+                <tr>
+                    <th style="width:130px">Menu</th>
+                    <th>Entry</th>
+                    <th>Reads</th>
+                    <th>Writes</th>
+                </tr>
+                <tr><td>Data</td><td><strong>Delimited text</strong></td><td>— (file dropped on the node)</td><td>1 wave</td></tr>
+                <tr><td>Data</td><td><strong>Thermo .raw file</strong></td><td>— (file dropped on the node)</td><td>one wave per scan</td></tr>
+                <tr><td>Operation</td><td><strong>Trimmer</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — trimmed wave per input</td></tr>
+                <tr><td>Operation</td><td><strong>Peak picking</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — peak list per input</td></tr>
+                <tr><td>Operation</td><td><strong>Hough Transform</strong></td><td>1 anchor — XY waves, accumulated</td><td>1 — the (slope, intercept) surface</td></tr>
+                <tr><td>Operation</td><td><strong>Calibration</strong></td><td>2 — collections, then spectra</td><td>1 — corrected wave per input</td></tr>
+                <tr><td>Display</td><td><strong>Simple XY plot</strong></td><td>1 anchor — waves to draw</td><td>— (display only)</td></tr>
+                <tr><td>Display</td><td><strong>F-KMD</strong></td><td>1 anchor — XY waves</td><td>1 — defect wave per input</td></tr>
+                <tr><td>Chemistry</td><td><strong>Formula collections</strong></td><td>1 — FormulaCollections</td><td>1 — the current collection</td></tr>
+                <tr><td>Chemistry</td><td><strong>Attribution</strong></td><td>1 anchor — XY waves</td><td>2 — attributions, network trees</td></tr>
+                <tr><td>Tools</td><td><strong>Mass Calculator</strong></td><td>— (formula typed or clicked)</td><td>— (dialog only)</td></tr>
+                <tr><td>Tools</td><td><strong>Chat</strong></td><td>— (WebSocket)</td><td>—</td></tr>
+            </table>
+            <p>
+                The <em>Flow</em> menu holds commands rather than nodes: <em>Resolve</em>,
+                <em>Arrange nodes</em>, <em>Select all</em> / <em>Clear selection</em>, and
+                <em>Save selection as pattern…</em> / <em>Paste pattern…</em>, which store the selected
+                nodes — their type, settings and wiring, never their data — under a name, for reuse in this
+                session or another one.
+            </p>
+        </details>
+
         <h3>Node reference</h3>
-
-        <h4>Node catalogue</h4>
-        <p>
-            The flow menu creates nodes by category. The table lists every entry with the shape of its
-            anchors; each node is documented in the subsections that follow.
-        </p>
-        <table class="spec">
-            <tr>
-                <th style="width:130px">Menu</th>
-                <th>Entry</th>
-                <th>Reads</th>
-                <th>Writes</th>
-            </tr>
-            <tr><td>Data</td><td><strong>Delimited text</strong></td><td>— (file dropped on the node)</td><td>1 wave</td></tr>
-            <tr><td>Data</td><td><strong>Thermo .raw file</strong></td><td>— (file dropped on the node)</td><td>one wave per scan</td></tr>
-            <tr><td>Operation</td><td><strong>Trimmer</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — trimmed wave per input</td></tr>
-            <tr><td>Operation</td><td><strong>Peak picking</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — peak list per input</td></tr>
-            <tr><td>Operation</td><td><strong>Calibration</strong></td><td>2 — collections, then spectra</td><td>1 — corrected wave per input</td></tr>
-            <tr><td>Display</td><td><strong>Simple XY plot</strong></td><td>1 anchor — waves to draw</td><td>— (display only)</td></tr>
-            <tr><td>Display</td><td><strong>F-KMD</strong></td><td>1 anchor — XY waves</td><td>1 — defect wave per input</td></tr>
-            <tr><td>Chemistry</td><td><strong>Formula collections</strong></td><td>1 — FormulaCollections</td><td>1 — the current collection</td></tr>
-            <tr><td>Chemistry</td><td><strong>Attribution</strong></td><td>1 anchor — XY waves</td><td>2 — attributions, network trees</td></tr>
-            <tr><td>Tools</td><td><strong>Chat</strong></td><td>— (WebSocket)</td><td>—</td></tr>
-        </table>
-        <p>
-            The <em>Flow</em> menu holds commands rather than nodes: <em>Resolve</em>,
-            <em>Arrange nodes</em>, <em>Select all</em> / <em>Clear selection</em>, and
-            <em>Save selection as pattern…</em> / <em>Paste pattern…</em>, which store the selected
-            nodes — their type, settings and wiring, never their data — under a name, for reuse in this
-            session or another one.
+        <p class="docs-lede">
+            One card per node, in the order the flow menu offers them. Search below, or filter by
+            category — the cards that match are the ones that stay.
         </p>
 
-        <h4>Delimited text <span class="badge">import</span></h4>
+        <div class="node-toolbar" id="nodeToolbar">
+            <input type="search" id="nodeSearch" placeholder="Search the nodes — otsu, hough, mz, clustering, envelope…" aria-label="Search the node reference" />
+            <div class="chipset" id="nodeChips"></div>
+            <span class="node-count" id="nodeCount"></span>
+        </div>
+        <p class="node-empty" id="nodeEmpty">No node matches. Clear the search, or pick another category.</p>
+
+        <h4 data-node="delimitedText" data-menu="Data" data-keys="import csv tsv txt text file columns separator mz intensity source">Delimited text <span class="badge">import</span></h4>
         <p>
             The text importer: drop or select a file, choose the line and column separators, read the
             two previews (the raw text, then the first parsed pairs), press <em>Load</em>. Every line
@@ -386,7 +705,7 @@ index(i, 1)          // Y of point i</pre>
             </tr>
         </table>
 
-        <h4>Thermo .raw file <span class="badge">native</span> <span class="badge">no .NET</span></h4>
+        <h4 data-node="thermoRaw" data-menu="Data" data-keys="native thermo raw file scan centroid profile rt ms level bytes no dotnet">Thermo .raw file <span class="badge">native</span> <span class="badge">no .NET</span></h4>
         <p>
             The native Thermo importer: the file is parsed in the browser by the
             <code>thermorawfile</code> Rust crate compiled to WebAssembly — no msConvert, no .NET, no
@@ -428,7 +747,7 @@ index(i, 1)          // Y of point i</pre>
             </tr>
         </table>
 
-        <h4>Peak picking <span class="badge">H0</span> <span class="badge">width filter</span></h4>
+        <h4 data-node="peakPicking" data-menu="Operation" data-keys="peak picking persistent homology h0 superlevel sublevel union find birth death persistence diagram classifier slope width ppm half height mad anti-radio resolution noise baseline multiplex">Peak picking <span class="badge">H0</span> <span class="badge">width filter</span></h4>
         <p>
             Answers one question — <em>which of these points are peaks</em> — in two stages, both in Rust.
             The first is 0D persistent homology: it detects sub- and superlevel structures, pairs each
@@ -494,7 +813,7 @@ index(i, 1)          // Y of point i</pre>
             </tr>
         </table>
 
-        <h4>Stage 1 — 0D persistent homology</h4>
+        <h5>Stage 1 — 0D persistent homology</h5>
         <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
             <li>The kernel reads the Y block of the input core directly (no copy, no interleaving).</li>
             <li>
@@ -519,7 +838,7 @@ index(i, 1)          // Y of point i</pre>
             </li>
         </ol>
 
-        <h4>Stage 2 — anti-radio, a width test on the raw profile</h4>
+        <h5>Stage 2 — anti-radio, a width test on the raw profile</h5>
         <p>
             A Fourier-transform peak is narrow at the instrument's resolution scale; a broad structure —
             background, an isotope shoulder, an extended chemical background — is not. The
@@ -580,7 +899,7 @@ index(i, 1)          // Y of point i</pre>
             of the range.
         </p>
 
-        <h4>Choosing <code>z</code></h4>
+        <h5>Choosing <code>z</code></h5>
         <p>
             The <code>z</code> is a threshold in units of the robust spread, and there are two ways to
             arrive at one.
@@ -621,7 +940,7 @@ index(i, 1)          // Y of point i</pre>
             so a session saved before it existed is read as <code>convention</code>, which is what it was.
         </p>
 
-        <h4>Interactive behaviour</h4>
+        <h5>Interactive behaviour</h5>
         <ul>
             <li>
                 The persistence diagram shows kept pairs in green and discarded pairs in grey, on a
@@ -656,7 +975,7 @@ index(i, 1)          // Y of point i</pre>
             </li>
         </ul>
 
-        <h4>Error conditions</h4>
+        <h5>Error conditions</h5>
         <ul>
             <li>
                 <span class="badge req">error</span>
@@ -684,7 +1003,7 @@ index(i, 1)          // Y of point i</pre>
             </li>
         </ul>
 
-        <h4>Session behaviour</h4>
+        <h5>Session behaviour</h5>
         <p>
             The classifier slope, its marker position, the filtration mode, the <code>z</code> and the
             <code>zSource</code> are serialised with the session and restored on reload, so a fitted slope
@@ -699,7 +1018,7 @@ index(i, 1)          // Y of point i</pre>
             filter would run twice.
         </p>
 
-        <h4>Multiplexing</h4>
+        <h5>Multiplexing</h5>
         <p>
             Several links on input <code>0</code>, or one link carrying several waves, are the same
             request: <em>treat these data the same way</em>. What decides is not the number of cables
@@ -746,7 +1065,7 @@ index(i, 1)          // Y of point i</pre>
             </li>
         </ul>
 
-        <h4>Data flow</h4>
+        <h5>Data flow</h5>
         <pre>input wave core
    → kernel: persistent_homology_0d_waves(mode, stride)
    → births, deaths, pointsX, pointsY, birthIndices, defaultSlope
@@ -764,7 +1083,303 @@ index(i, 1)          // Y of point i</pre>
             allocates nothing, for the same reason the trimmer's does — the shell only needs the value.
         </p>
 
-        <h4>Trimmer <span class="badge">intensity</span></h4>
+        <h4 data-node="hough" data-menu="Operation" data-keys="hough transform pattern detection votes slope intercept voting plane ridges otsu threshold between class variance isotopologue isotope signature element parity valence second order kendrick defect accumulation mahalanobis bandwidth anisotropic smoothing surface 3d">Hough Transform <span class="badge">pattern detection</span> <span class="badge">Otsu</span></h4>
+        <p>
+            Asks a question no other node asks: <strong>which elemental difference is this spectrum
+            made of?</strong> Rather than proposing formulas, the Hough node works on the
+            <em>differences</em> between peaks and looks for the repeated one. It takes every pair of
+            peaks of the input, draws the line they define in the <strong>(mass, Kendrick defect)</strong>
+            plane, and votes for the <strong>slope</strong> of that line. Peaks differing by a constant
+            stoichiometric step draw parallel lines: a ridge in the vote count is a chemistry.
+        </p>
+
+        <h5>The geometry — why a slope is an element</h5>
+        <p>
+            Two peaks separated by <em>n</em> atoms of element <strong>E</strong> at charge <em>z</em> are
+            separated by <code>Δm = A(E)/z = k + ε</code>, where <em>k</em> is an integer and
+            <em>ε</em> the fractional part. The mass defect of a point is <code>m − round(m)</code>, so
+            adding <code>k + ε</code> moves the mass by <code>k + ε</code> but the defect by
+            <strong>only ε</strong> — provided <em>k</em> ≥ 1, so that the mass crosses an integer.
+        </p>
+        <pre>Δmass   = k + ε          (k ≥ 1, so the mass crosses an integer boundary)
+Δdefect = ε
+slope   = Δdefect / Δmass = ε / (k + ε)   — the same value for every peak of that series
+
+hence  A(E)/z ≈ k / (1 − slope)</pre>
+        <p>
+            That is why the search is a <strong>comparison and not an optimisation</strong>: for a
+            candidate element and a candidate multiple <code>k</code>, the measured slope and the
+            predicted slope are two numbers, and the node looks for the ones that coincide.
+        </p>
+        <p>
+            It also explains the method's blind spots, which are stated here because they are
+            properties of the geometry, not bugs. <strong>Hydrogen is deliberately invisible</strong>:
+            <code>A/z = 1.00783</code> gives <code>s ≈ 7.8 × 10⁻³</code>, well outside the default
+            window, because <code>k = 1</code> and <code>ε = 0.00783</code> leave the defect nearly
+            untouched. Conversely, <strong>P, S, Cl, Ar, K and Si</strong> pack their signatures into
+            roughly <code>1.6 × 10⁻⁴</code> of slope, and separating them demands a fine grid.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>1 input</strong> — any number of 2D XY waves (X = mass, Y = intensity). All
+                    of them are accumulated into <strong>one single voting surface</strong>: several
+                    spectra are one bigger evidence set, not N answers.<br>
+                    <span class="badge">several links</span>
+                    only XY waves are read; anything else is counted and reported in the readout rather
+                    than dropped silently.
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> — the voting surface as a 3-column wave
+                    <code>[nx, ny, 3]</code> labelled <code>slope / intercept / intensity</code>, with
+                    <strong>x</strong> and <strong>y</strong> mapped linearly onto
+                    <code>[−1, 1]</code> and the slope/intercept box carried in the metadata so the
+                    normalisation is reversible. Refusals and kernel errors publish
+                    <strong>zeros</strong>, and the metadata names which case it is.
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>gridX</code> / <code>gridY</code> (default 256) — the (slope, intercept)
+                    sampling.<br>
+                    <code>slopeMin</code> / <code>slopeMax</code> (<code>−0.001 … 0.008</code>),
+                    <code>interceptMin</code> / <code>interceptMax</code> (<code>−5 … 0.2</code>) —
+                    the window: a pair outside it <strong>never votes</strong>, which is how the search is
+                    narrowed rather than how results are filtered.<br>
+                    <code>keep</code> (0 = all) — cap on the number of peaks fed to the kernel.<br>
+                    <code>neighbours</code> (2) and <code>bandwidth</code> (0.5) — the smoothing.<br>
+                    <code>signatureCharges</code> — the charges whose signatures are tested.<br>
+                    <code>secondOrderMaxMultiple</code>, <code>secondOrderMaxElements</code> — the
+                    second-order expansion.<br>
+                    <code>colormap</code>, <code>heightScale</code>, <code>heightScaleLog</code>,
+                    <code>showScatter</code> — display only.
+                </td>
+            </tr>
+        </table>
+
+        <h5>The algorithm — three Rust kernels</h5>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li>
+                <strong><code>hough_prepare</code></strong> — splits the flat core in half, drops every
+                non-finite or non-positive mass, computes the defect
+                <code>m − round(m)</code>, sorts by rising mass and truncates to <code>keep</code>.
+            </li>
+            <li>
+                <strong><code>hough_accumulate</code> — the O(n²) heart.</strong> For every
+                <em>ordered pair</em> of surviving peaks it forms <code>slope = Δdefect/Δmass</code> and
+                <code>intercept = defect<sub>i</sub> − slope × mass<sub>i</sub></code>, discards the pair
+                if either coordinate is outside the window, and accumulates its weight
+                <code>I<sub>i</sub> + I<sub>j</sub></code> into the cell. The vote is written as a
+                <strong>bilinear splat</strong> over the four surrounding cells rather than a single
+                one, so the grid does not quantise the answer to its own resolution.
+            </li>
+            <li>
+                <strong><code>hough_smooth</code> — an anisotropic, local kernel.</strong> Around each
+                occupied cell it takes the <code>k</code> nearest neighbours, forms the
+                <strong>local covariance</strong> of that neighbourhood, adds <code>bandwidth²</code> as
+                a variance floor, inverts it, and re-weights each neighbour by an elliptical Gaussian of
+                the <strong>Mahalanobis distance</strong>. Anisotropy is the point: a chemical relation
+                is <em>narrow in slope and wide in intercept</em>, i.e. a line, and an isotropic kernel
+                would smear it into a blob. <code>neighbours</code> therefore sets the number of sides
+                the blobs have.
+            </li>
+        </ol>
+        <p>
+            <code>hough_transform</code> chains the last two and copies the <strong>unsmoothed</strong>
+            tail through verbatim — bounds, vote count, surviving pairs — because smoothing moves a peak
+            between cells, and a mass gap read off a blurred grid would be the gap of a blur.
+        </p>
+
+        <h5>From ridges to elements</h5>
+        <p>
+            The smoothed surface is reduced to a <strong>slope profile</strong> (the tallest cell per
+            slope column), whose maxima are the candidate signatures. Two details matter: peaks within
+            <strong>3 columns</strong> are merged, because the smoothing spreads one relation over
+            several columns by construction; and the peak's position is the <strong>basin
+            centroid</strong> above half the maximum, not the tallest cell, because a bilinear splat
+            puts the vote off-centre by construction. The local-maximum test is strict on one side: a
+            non-strict test makes a flat surface yield one "element" per column — a full periodic table
+            the data does not contain.
+        </p>
+        <p>
+            Every surviving pair is then tested against every element signature
+            (<code>scorePairs</code>), in three steps:
+        </p>
+        <ul>
+            <li>
+                <strong>Nearest predicted slope.</strong> Each pair's measured slope is matched to the
+                slope of the theoretical signature <code>ε/(k+ε)</code> by binary search — no tolerance,
+                because the two numbers are supposed to be equal, not near.
+            </li>
+            <li>
+                <strong>The integer test.</strong> <code>round(Δm) % round(A/z)</code> must be
+                <strong>exactly zero</strong>. This is the test that separates chemistry from
+                coincidence, and it is where the parity rules live: an element of <em>odd</em> default
+                valence (H = 1, N = 3, Cl = 1) may only vote through <code>1</code> or an
+                <strong>even</strong> multiple — H<sub>2</sub> yes, H<sub>3</sub> no — while an even
+                valence (C = 4, O = 2) admits any multiple. Noble gases and other species without a
+                default valence never vote at all.
+            </li>
+            <li>
+                <strong>Weight by the residue.</strong> A candidate scores
+                <code>1 / (|Δm − n·A/z| + 1e-12)</code>: the inverse of the pure residue, with no
+                <code>Δm</code> factor. Scores are <strong>summed, not counted</strong>, so a handful of
+                excellent matches outrank a crowd of mediocre ones.
+            </li>
+        </ul>
+
+        <h5>Second order</h5>
+        <p>
+            A first-order signature only sees steps of a <em>known</em> element. When none is convincing,
+            the node synthesises <strong>composite</strong> steps from the elements themselves —
+            homonuclear <code>X₁…X<sub>n</sub></code> and heteronuclear
+            <code>X<sub>i</sub><sup>n1</sup>X<sub>j</sub><sup>n2</sup></code> — keeping only those whose
+            total valence is <strong>even</strong>, since an odd electron count cannot be a neutral
+            fragment. Candidates are scored the same way, through a binned Δmass index that makes the
+            lookup O(1) instead of O(N). The second-order signatures are drawn as
+            <span class="badge" style="color:#FF8C00;border-color:rgba(255,140,0,0.5)">orange walls</span>
+            on the same surface, and only for signatures that fall inside the current window: an
+            out-of-box signature draws nothing, because no pair could have voted for it.
+        </p>
+
+        <h5>Otsu's method — the automatic cut</h5>
+        <p>
+            The node does not just surface ridges: it must decide <strong>how many of them are real</strong>,
+            and that decision is made by <strong>Otsu's method</strong>, not by a multiple of a spread.
+        </p>
+        <p>
+            The candidates arrive as a list of scores. <strong>Otsu's method walks every possible cut
+            between two consecutive descending scores</strong> and keeps the one that maximises the
+            <strong>between-class variance</strong> <code>w₀·w₁·(μ₀ − μ₁)²</code> — the classic criterion:
+            the split that makes the two classes differ most in mean. The stored threshold is the
+            <strong>midpoint of the winning gap</strong>, not the score at the cut, so a boundary placed
+            between two candidates never lands on one of them.
+        </p>
+        <p>
+            Two properties make this the right criterion here, and they are worth stating:
+        </p>
+        <ul>
+            <li>
+                <strong>It is unimodal-free.</strong> A <code>k·MAD</code> cut needs a population to have
+                a median and a spread — which is exactly what is missing when a spectrum contains one
+                obvious element and six coincidences. Otsu needs no prior scale, only the scores
+                themselves.
+            </li>
+            <li>
+                <strong>It returns a class size, not just a threshold.</strong> <code>nGood</code> — the
+                number of candidates above the cut — drives the framing of the score graph
+                (<code>3 × nGood</code> rows are shown) so a dragged cursor moves the line without
+                making the graph jump under the pointer.
+            </li>
+        </ul>
+        <p>
+            The previous approach (median and <code>k·MAD</code> for k ∈ {1, 2, 4}) is what this replaced:
+            three arbitrary lines on a graph whose only meaningful line is the one that separates the
+            candidates. It survives in the code as <code>lines</code> in the same return value, for
+            comparison, and is no longer drawn.
+        </p>
+        <p>
+            <strong>Automatic until you decide.</strong> The effective threshold is Otsu's until a value
+            is typed or dragged onto the graph; the hand value wins from then on, and the Otsu line
+            stays drawn in a different style so the reader can always see where <em>Guess</em> would send
+            the bar back. The hand threshold is an <strong>instance field and is deliberately not
+            serialised</strong> — a threshold saved with the session and re-applied to a freshly
+            recomputed score distribution would be a threshold applied to other data. It is clamped into
+            the axis range, so a stale value cannot paint outside the frame.
+        </p>
+
+        <h5>Reading the surface</h5>
+        <ul>
+            <li>
+                The surface is drawn by a <strong>WebGL</strong> <code>Plot3D</code>, orthographic,
+                opening <strong>face-on</strong>: the votes lie on a vertical plane of the cube, so the
+                camera belongs in the horizontal one. The signature walls are drawn in a transparent
+                <strong>SVG overlay</strong> rather than in the 3D scene — a WebGL wall is invisible from
+                the viewpoint the node opens in.
+            </li>
+            <li>
+                <strong>Log or linear height</strong> is a trace option, so switching re-lays the same
+                wave rather than rebuilding it; the log mode is what makes the ridges visible, the
+                linear one what preserves peak height.
+            </li>
+            <li>
+                The colour range is anchored on the <strong>data's own min and max</strong>, so changing
+                the grid resolution cannot silently change what a colour means.
+            </li>
+            <li>
+                The readout reports the grid size, the vote range, the number of peaks fed, the number of
+                <em>pairs voting</em>, the kernel settings, the number of signatures tested, the domain,
+                the refusals and the skipped inputs — the numbers a detection is judged on.
+            </li>
+        </ul>
+
+        <h5>Error conditions</h5>
+        <ul>
+            <li>
+                <span class="badge warn">refused</span>
+                fewer than 2 usable peaks. The zeros on the surface are then <strong>the kernel's
+                answer</strong>, not a relation, and the readout says so.
+            </li>
+            <li>
+                <span class="badge req">error</span>
+                the kernel itself failed. <code>startResolve</code> never rejects: a failure becomes a
+                node status and a readout line, never an unhandled rejection in another node's
+                <code>.then()</code>.
+            </li>
+            <li>
+                <span class="badge warn">not XY</span>
+                an input that is not a 2D XY wave is skipped and counted.
+            </li>
+            <li>
+                <span class="badge warn">fallback</span>
+                WebAssembly or workers unavailable, or a stale <code>pkg</code> build: the JavaScript
+                twin of all three kernels runs instead, with identical decision rules, so a stale build
+                filters the same way.
+            </li>
+        </ul>
+
+        <h5>Session behaviour</h5>
+        <p>
+            The grid sizes, the window, the smoothing, the signature charges, the second-order limits, the
+            colour map, the display flags and the <strong>3D camera</strong> are serialised. The two
+            hand-set score thresholds are <strong>not</strong>, for the reason given above. The surface,
+            the detection and the answer are recomputed on the next resolve, and the camera is restored
+            best-effort afterwards — a rejecting camera must not abort the session import or skip the
+            downstream resolve.
+        </p>
+
+        <h5>Data flow</h5>
+        <pre>XY waves (all accumulated)
+    → kernel: hough_prepare(core, keep)        [Rust]
+    → masses[], defects[], intensities[], count
+    → kernel: hough_accumulate(nx, ny, bounds)  [Rust]
+    → grid[nx*ny], used, (slope, Δm) × survivors
+    → kernel: hough_smooth(neighbours, bandwidth)  [Rust]
+    → smoothed grid
+    → output wave [nx, ny, 3] on [-1,1]², metadata: bounds, zMin, zMax, prepared, pairs
+    → slopeProfile → slopePeaks(mergeRadius 3)        → the slope ridges
+    → scorePairs(table, pairs, charges)               → first-order candidates
+    → Otsu on the scores  (scoreCutoffs)              → threshold + nGood
+    → scoreSecondOrder(candidates above the cut, …)   → composite candidates
+    → score graphs, signature walls, readout</pre>
+        <p>
+            The kernel answers <strong>once</strong> per resolve. The slope profile and the pair-driven
+            detection both re-read the same answer rather than calling it again: recounting pairs is
+            O(n²) over every peak couple, and the array is already in hand. A monotonic ticket guards the
+            resolve, so a late answer from a superseded run never repaints an old surface over a new one.
+        </p>
+
+        <h4 data-node="trimmer" data-menu="Operation" data-keys="trimmer cut crop intensity threshold bounds cursor noise mad residual moving average histogram passthrough k sigma window log scale trim multiplex">Trimmer <span class="badge">intensity</span></h4>
         <p>
             Removes the points of an input wave whose intensity falls outside a pair of bounds, and
             emits the surviving points as a new wave. The two bounds are the node's own state: they are
@@ -826,7 +1441,7 @@ index(i, 1)          // Y of point i</pre>
                 </td>
             </tr>
         </table>
-        <h4>Multiplexing</h4>
+        <h5>Multiplexing</h5>
         <p>
             Several links on input <code>0</code>, or one link carrying several waves, are the same
             request: <em>treat these data the same way</em>. What decides is not the number of cables
@@ -862,7 +1477,7 @@ index(i, 1)          // Y of point i</pre>
                 came out.
             </li>
         </ul>
-        <h4>Methods</h4>
+        <h5>Methods</h5>
         <p>
             All three share the same contract: they return <strong>the value the lower cursor should be
             seeded at</strong>, or an infinite bound meaning “no opinion”. The cut itself does not know
@@ -897,7 +1512,7 @@ index(i, 1)          // Y of point i</pre>
             </tr>
         </table>
 
-        <h4>Algorithm — k·MAD on the moving-average residual</h4>
+        <h5>Algorithm — k·MAD on the moving-average residual</h5>
         <p>
             The method is a <strong>relative</strong> rejection test on the intensity axis. It proceeds in
             three steps, all in Rust.
@@ -944,7 +1559,7 @@ index(i, 1)          // Y of point i</pre>
             <code>k = 5</code> is deliberately far more conservative, which suits spectra whose signal is
             sparse.
         </p>
-        <h4>Histogram</h4>
+        <h5>Histogram</h5>
         <p>
             The frame displays the distribution of the input intensities, computed on the Y block before
             any trimming: the cursors are placed on the input distribution, not on the already-cut one.
@@ -973,7 +1588,7 @@ index(i, 1)          // Y of point i</pre>
             </li>
         </ul>
 
-        <h4>Interactive behaviour</h4>
+        <h5>Interactive behaviour</h5>
         <ul>
             <li>
                 The frame shows the histogram plus the two cursors, each carrying a numeric field on its
@@ -1003,7 +1618,7 @@ index(i, 1)          // Y of point i</pre>
             </li>
         </ul>
 
-        <h4>Error conditions</h4>
+        <h5>Error conditions</h5>
         <ul>
             <li>
                 <span class="badge req">error</span>
@@ -1020,13 +1635,13 @@ index(i, 1)          // Y of point i</pre>
             </li>
         </ul>
 
-        <h4>Session behaviour</h4>
+        <h5>Session behaviour</h5>
         <p>
             The method, the two bounds, the method parameters and the display scale are serialised with
             the session and restored on reload, so a hand-adjusted trim is never silently recomputed.
         </p>
 
-        <h4>Data flow</h4>
+        <h5>Data flow</h5>
         <pre>input wave core
    → kernel: trim_histogram(core, stride, bins, scale)
    → centres, counts, dropped          (frame, no cut)
@@ -1044,7 +1659,7 @@ index(i, 1)          // Y of point i</pre>
         </p>
 
 
-        <h4>F-KMD <span class="badge">Kendrick</span> <span class="badge warn">defect axis</span></h4>
+        <h4 data-node="fkmd" data-menu="Display" data-keys="kendrick f-kmd mass defect homologous series rescale reference formula notation isotope adduct">F-KMD <span class="badge">Kendrick</span> <span class="badge warn">defect axis</span></h4>
         <p>
             Rescales a spectrum around a reference <strong>m/z</strong> that you obtain by typing a
             chemical formula, and reports the <strong>mass defect</strong> of every peak on that new
@@ -1109,7 +1724,7 @@ index(i, 1)          // Y of point i</pre>
             </tr>
         </table>
 
-        <h4>Writing the formula</h4>
+        <h5>Writing the formula</h5>
         <p>
             The formula is written as a <strong>composition</strong>, optionally followed by an
             <strong>ionisation</strong> in square brackets. The composition says which atoms are present;
@@ -1156,7 +1771,7 @@ index(i, 1)          // Y of point i</pre>
             formula that reads as something else is worse than one that is refused.
         </p>
 
-        <h4>What the transform does</h4>
+        <h5>What the transform does</h5>
         <p>
             The reference m/z defines a scaling factor, <code>round(mz) / m/z</code>, which is computed
             once and applied to every mass. The mass defect is then read on the <strong>rescaled</strong>
@@ -1199,7 +1814,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             unchanged, and the output <em>Y</em> is simply the plain mass defect.
         </p>
 
-        <h4>Interactive behaviour</h4>
+        <h5>Interactive behaviour</h5>
         <ul>
             <li>
                 The readout shows the formula as it is read — composition, charge and m/z — so a
@@ -1221,7 +1836,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             </li>
         </ul>
 
-        <h4>Error conditions</h4>
+        <h5>Error conditions</h5>
         <ul>
             <li>
                 <span class="badge req">error</span>
@@ -1245,14 +1860,14 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             </li>
         </ul>
 
-        <h4>Session behaviour</h4>
+        <h5>Session behaviour</h5>
         <p>
             The formula is serialised with the session and restored on reload. The products are not: they
             are recomputed from the formula and the input waves when the pipeline next runs, so a restored
             session can never display products made from a different reference.
         </p>
 
-        <h4>Reading the result</h4>
+        <h5>Reading the result</h5>
         <p>
             The output is a <strong>derived product</strong>: it exists on the mass axis alone, and it is
             meant to be examined on its own. The mass defect is a property of the mass, not of the peak —
@@ -1274,7 +1889,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             </li>
         </ul>
 
-        <h4>Attribution <span class="badge">exhaustive</span> <span class="badge">mixed-radix</span></h4>
+        <h4 data-node="attribution" data-menu="Chemistry" data-keys="attribution formula sieve enumerate exhaustive mixed radix odometer counter canonical form dependence log probability ppm error best matches group brick adduct charge combinatory ionising plan worker wasm fallback">Attribution <span class="badge">exhaustive</span> <span class="badge">mixed-radix</span></h4>
         <p>
             Given a spectrum (XY peaks), a list of <strong>combining groups</strong> (neutral bricks:
             CH<sub>2</sub>, O, NH, C…) and a list of <strong>ionising groups</strong> (adducts:
@@ -1351,7 +1966,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             </tr>
         </table>
 
-        <h4>The enumeration — mixed-radix counter (odometer)</h4>
+        <h5>The enumeration — mixed-radix counter (odometer)</h5>
         <p>
             The combining groups and ionising groups each define a <strong>radix</strong> (the number of
             allowed counts for that group, from <code>min</code> to <code>max</code>). A combination is a
@@ -1399,7 +2014,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             because it avoids the visited-set overhead and is faster for full-window enumeration.
         </p>
 
-        <h4>Why not naïve brute force?</h4>
+        <h5>Why not naïve brute force?</h5>
         <p>
             A naïve Cartesian product of all group counts explodes combinatorially. With 4 combining groups
             each allowed 0..50 and 1 adduct 1..1, the raw space is 51⁴ ≈ 6.7 million combinations — but
@@ -1411,7 +2026,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             exhaustion for an unbounded product.
         </p>
 
-        <h4>Interactive behaviour</h4>
+        <h5>Interactive behaviour</h5>
         <ul>
             <li>The panel shows <strong>two tables</strong> (combining / ionising) with inline editing of
                 min, max, ratio per row. A text field above each table adds a new row (Enter applies).</li>
@@ -1429,7 +2044,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
                 <strong>same plan</strong> but its own peak list. The readout sums across the batch.</li>
         </ul>
 
-        <h4>Error conditions</h4>
+        <h5>Error conditions</h5>
         <ul>
             <li><span class="badge req">error</span> no periodic table loaded (awaited on demand).</li>
             <li><span class="badge req">error</span> the plan has zero items (empty group lists).</li>
@@ -1442,7 +2057,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
                 node turns red only if <em>all</em> spectra failed.</li>
         </ul>
 
-        <h4>Session behaviour</h4>
+        <h5>Session behaviour</h5>
         <p>
             The two group tables (combining, ionising), global ratio, charge min/max, bestMatches, ppm,
             and the stale flag are serialised. The network's intentions travel too — the link list, the
@@ -1454,7 +2069,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             on the next resolve, so a restored session always reflects the current data.
         </p>
 
-        <h4>Data flow</h4>
+        <h5>Data flow</h5>
         <pre>input XY waves (per wave)
     → buildPlan(combining[], ionising[], ratio, chargeMin, chargeMax, table)
     → plan: itemMasses[], itemCharges[], logProbs[], fixed[], caps[], dependence?
@@ -1479,7 +2094,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             exists but is not used by default.
         </p>
 
-        <h4>Measurement network <span class="badge">minimum spanning forest</span> <span class="badge">second right panel</span></h4>
+        <h4 data-node="network" data-menu="Chemistry" data-keys="measurement network forest graph minimum spanning tree kruskal union find links gaps references merge propagation root force directed overview stoichiometric difference weight curve cut suggestion reticles">Measurement network <span class="badge">minimum spanning forest</span> <span class="badge">second right panel</span></h4>
         <p>
             A second panel on the right — <em>Attribution (network)</em> — builds a graph over the
             <strong>measured points</strong> of each spectrum, links two of them when the m/z gap
@@ -1489,7 +2104,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             links, <code>kruskal4mass</code> for the tree, <code>CompteTribue</code> for the groups.
         </p>
 
-        <h4>Data flow</h4>
+        <h5>Data flow</h5>
         <pre>combining[], ionising[], ratio, table
     → buildPlan(...)                       // the attribution's OWN plan, left panel
 forestGroups[]                             // the panel on the right, INDEPENDENT
@@ -1689,13 +2304,35 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             </tr>
         </table>
 
-        <h4>Calibration <span class="badge">error surface</span> <span class="badge">least squares</span></h4>
+        <h4 data-node="calibration" data-menu="Operation" data-keys="calibration error surface mz intensity 2d 3d least squares gauss jordan coefficients rmse residuals heat grid correction drift polynomial linear quadratic cubic reference points">Calibration <span class="badge">error surface</span> <span class="badge">least squares</span></h4>
         <p>
             Where the attribution says <em>how far off</em> each matched peak is, the calibration node
             says <em>why</em> — and fixes it. Input 0 carries <strong>FormulaCollections</strong> (their
             entries hold a measured peak, its formula and the <code>errorPpm</code> between them), input 1
             carries the <strong>XY spectra</strong> to correct, and the single output publishes each
             spectrum with a rewritten mass axis. The intensities are never touched: only X moves.
+        </p>
+        <p>
+            The reason a plain 1D curve is not enough is that in this kind of measurement the m/z error
+            is <strong>not a function of m/z alone</strong>. It drifts along the axis, and it drifts
+            again with how much signal the peak carries — a strong peak sits on a better-determined
+            centroid than a weak one, and its position is pulled differently by the space-charge and
+            detector effects. So the node's own mode is an <strong>error surface</strong>:
+        </p>
+        <pre>error (ppm)  =  f( m/z , intensity )        ← a surface, not a curve</pre>
+        <p>
+            <strong>Intensity is a fitted variable, on equal footing with m/z.</strong> It is read from
+            the same reference point as the error, it is a mandatory field — a row whose intensity is
+            missing cannot become a reference point at all — and it is a column of the design matrix,
+            exactly like m/z. The consequence is immediate: <strong>two peaks at the same m/z but
+            different heights do not receive the same correction</strong>, which is precisely what a
+            1D calibration cannot express and why the 2D modes exist.
+        </p>
+        <p>
+            The surface is then applied as a <strong>relative</strong> offset,
+            <code>x′ = x / (1 + errorPpm/10⁶)</code>, so one fitted surface covers the whole mass range
+            and the whole dynamic range of the acquisition — and it is fitted in <em>ppm</em>, so it stays
+            meaningful from one end of the range to the other.
         </p>
 
         <table class="spec">
@@ -1732,21 +2369,35 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                 </td>
             </tr>
             <tr>
+                <td>Modes</td>
+                <td>
+                    <strong>2D modes — the error surface</strong>, fitted on
+                    <code>(m, w)</code> = (m/z, intensity) and predicting <code>errorPpm</code>:<br>
+                    <code>linear2d</code> — <code>a·m + b·w + c</code>, 3 coefficients.<br>
+                    <code>quadratic2d</code> — <code>a·m² + b·w² + c·m·w + d·m + e·w + f</code>,
+                    6 coefficients.<br>
+                    <code>cubic2d</code> — full third order, 10 coefficients.<br>
+                    <strong>1D legacy modes</strong>, fitting <code>measured → true</code> directly and
+                    <em>ignoring intensity</em>: <code>linear</code> (<code>a·x + b</code>),
+                    <code>quadratic</code> (3 coefficients), <code>cubic</code>
+                    (<code>a·x³ + b·x² + c·x + d</code>). <code>cubic</code> is the mode the node
+                    starts in; switch to a <code>…2d</code> mode to get the surface, and the 3D view
+                    becomes available.
+                </td>
+            </tr>
+            <tr>
                 <td>Parameters</td>
                 <td>
-                    <code>calibrationMode</code> — <code>linear2d</code> (default:
-                    <code>a·x + b·y + c</code>), <code>quadratic2d</code> (6 coefficients),
-                    <code>cubic2d</code> (full 3rd order, 10 coefficients), or the legacy 1D
-                    <code>linear</code>, <code>quadratic</code>, <code>cubic</code>.<br>
+                    <code>calibrationMode</code> — the six modes above.<br>
                     <code>useCollectionErrors</code> (default on) — read the <code>errorPpm</code> the
                     attribution already stored; off, the references are recomputed by nearest
                     neighbour.<br>
-                    <code>showRaw</code>, <code>showCorrected</code>, <code>showResiduals</code>,
-                    <code>showErrorSurface</code> — what the graph draws.
+                    <code>show3DSurface</code> (default off) — swap the 2D frame for the WebGL
+                    surface; only offered on the <code>…2d</code> modes.
                 </td>
             </tr>
         </table>
-        <h4>Reference points</h4>
+        <h5>Reference points</h5>
         <p>
             A reference point is one attribution result: the <strong>true</strong> m/z of the formula,
             the <strong>measured</strong> m/z of its peak, that peak's intensity, and the
@@ -1769,26 +2420,35 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
         <p>
             Fewer than <strong>3 usable reference points</strong> and the node refuses to fit: a plane
             through two points is not a calibration, and three is the least that can be checked. The
-            message says so instead of drawing a confident line through nothing.
+            message says so instead of drawing a confident line through nothing. Note that
+            <strong>intensity is one of the required fields</strong>: an entry whose matched target
+            carries no intensity cannot become a reference point, because without it the 2D design matrix
+            has a hole where a column should be.
         </p>
 
-        <h4>The fit, and what it does</h4>
+        <h5>The fit, and what it does</h5>
         <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
             <li>
                 <strong>Least squares in Rust.</strong> The design matrix is built from the mode's powers
-                of mass and intensity, the normal equations are solved by Gaussian elimination, and the
-                kernel returns the coefficients with the RMSE of the fit. A singular system falls back to
-                the identity <code>[1, 0]</code> rather than to noise.
+                of mass and intensity, the normal equations are solved by Gauss-Jordan elimination with
+                partial pivoting, and the kernel returns the coefficients with the RMSE of the fit. A
+                singular system falls back to the identity rather than to noise.
             </li>
             <li>
                 <strong>1D modes fit positions</strong>: <code>measured → true</code> directly, and the
-                corrected axis is the polynomial evaluated at each point.
+                corrected axis is the polynomial evaluated at each point. Intensity plays no part.
             </li>
             <li>
                 <strong>2D modes fit the error surface</strong>: the polynomial predicts
-                <code>errorPpm</code> from (m/z, intensity), and the correction is applied as
-                <code>x′ = x / (1 + errorPpm/10<sup>6</sup>)</code> — the error is a <em>relative</em>
-                offset, so one surface applies across the whole range.
+                <code>errorPpm</code> from <code>(m, w)</code> = (m/z, intensity), and the correction is
+                applied as <code>x′ = x / (1 + errorPpm/10<sup>6</sup>)</code> — the error is a
+                <em>relative</em> offset, so one surface applies across the whole range <em>and</em>
+                across the whole intensity span.
+            </li>
+            <li>
+                <strong>RMSE in the units that matter</strong>: ppm for the 2D modes (the residual of the
+                predicted against the observed error), Da for the 1D modes (the residual of the
+                predicted against the true m/z).
             </li>
             <li>
                 <strong>Apply in the worker.</strong> The corrected X comes back from
@@ -1797,19 +2457,33 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                 produce a misaligned core.
             </li>
         </ol>
-        <h4>Interactive behaviour</h4>
+        <h5>Reading the surface</h5>
         <ul>
             <li>
-                The graph overlays four things, each with its own toggle: the <strong>raw</strong>
-                spectrum (grey), the <strong>corrected</strong> one (green), the
-                <strong>residuals</strong> — one red dashed stick per reference, from measured to
-                corrected — and, for 2D modes, the <strong>error surface</strong> as a 30 × 20 heat grid
-                over the reference extent.
+                The 2D frame draws the <strong>error surface as a 30 × 20 heat grid</strong> — m/z on x,
+                <strong>intensity on y</strong>, colour by predicted ppm — over the extent actually
+                covered by the reference points, with the <strong>residuals</strong> as one red dashed
+                stick per reference, from measured to corrected. A surface that shows structure the
+                residuals do not explain is a surface overfitted; one that is flat next to scattered
+                residuals is a surface that has fitted nothing.
             </li>
             <li>
-                The readout shows the fitted <strong>coefficients</strong>, the <strong>RMSE in
-                ppm</strong> and the <strong>number of reference points</strong> — the three numbers that
-                decide whether the fit can be trusted.
+                Ticking <strong>3D surface</strong> swaps the frame for a WebGL surface whose three axes
+                are literally <code>m/z</code>, <code>intensity</code> and <code>error (ppm)</code>,
+                with the reference points overlaid as a scatter — the reference cloud and the fitted
+                sheet in the same frame, which is the one view that shows whether the surface is
+                supported.
+            </li>
+            <li>
+                The 3D view is built <strong>once and lazily</strong>, and only for the <code>…2d</code>
+                modes: browsers cap the number of live WebGL contexts and drop the oldest, so spending
+                one permanently hidden context is not acceptable.
+            </li>
+            <li>
+                The readout shows the fitted <strong>coefficients</strong> — labelled by their monomials
+                (<code>m², w², m·w, m, w, d</code>), so the m/z and intensity terms are never confused
+                — the <strong>RMSE</strong> and the <strong>number of reference points</strong>: the three
+                numbers that decide whether the fit can be trusted.
             </li>
             <li>
                 Multiplexed, the mode selector and <em>Recompute refs</em> go <strong>grey</strong> (one
@@ -1821,7 +2495,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             </li>
         </ul>
 
-        <h4>Error conditions</h4>
+        <h5>Error conditions</h5>
         <ul>
             <li>
                 <span class="badge req">error</span>
@@ -1848,24 +2522,27 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             </li>
         </ul>
 
-        <h4>Session behaviour</h4>
+        <h5>Session behaviour</h5>
         <p>
-            The mode, the fitted coefficients, the reference-source toggle and the four display flags
-            are serialised with the session, so a reload comes back with the same fit on screen; the
-            spectra are re-corrected from those coefficients on the next resolve, never assumed.
+            The mode, the fitted coefficients, the reference-source toggle, the 3D-surface flag and the
+            <strong>3D camera</strong> are serialised with the session, so a reload comes back with the
+            same fit and the same viewpoint; the camera is applied after the first resolve rather than
+            before, because framing needs the data box, which does not exist until then. The spectra
+            themselves are re-corrected from those coefficients on the next resolve, never assumed.
         </p>
 
-        <h4>Data flow</h4>
+        <h5>Data flow</h5>
         <pre>FormulaCollection[] (input 0)      XY waves (input 1)
    → extractReferencePoints(collection, x, y)
    → trueMz[], measuredMz[], intensity[], errorPpm[]
-   → kernel: calibrationFit2D(measuredMz, intensity, errorPpm, mode)   [2D]
-   → kernel: calibrationFit(measuredMz, trueMz, mode)                  [1D]
-   → coeffs[], rmse
+   → kernel: calibrationFit2D(measuredMz, intensity, errorPpm, mode)   [2D — the surface]
+   → kernel: calibrationFit(measuredMz, trueMz, mode)                  [1D — legacy]
+   → coeffs[], rmse        (ppm for 2D, Da for 1D)
    → kernel: calibrationApply2D(x, y, coeffs, mode)   → x′
-   → output wave [X′…, Y…]   (per input wave, Y untouched)</pre>
+   → output wave [X′…, Y…]   (per input wave, Y untouched)
+   → optional: 3D surface wave [40, 32, 3] over the references' (m/z, intensity) box</pre>
 
-        <h4>FormulaCollection <span class="badge">named set</span> <span class="badge">ppm matching</span> <span class="badge">molecule folding</span></h4>
+        <h4 data-node="formulaCollection" data-menu="Chemistry" data-keys="collection browse edit annotate molecule fold isotopologue clustering kmeans k-means spectral partitioning ng jordan weiss affinity knn graph sigma pca principal component projection standardisation partition sub-collection van krevelen barycentric csv export notes">FormulaCollection <span class="badge">named set</span> <span class="badge">ppm matching</span> <span class="badge">molecule folding</span></h4>
         <p>
             A <strong>FormulaCollection</strong> is a named, deduplicated set of formulas with their
             measured peaks attached. It is the <strong>currency of attribution</strong>: the Attribution
@@ -1948,7 +2625,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             </tr>
         </table>
 
-        <h4>FormulaCollectionNode — the reader</h4>
+        <h5>FormulaCollectionNode — the reader</h5>
         <p>
             A flow node that receives one or more FormulaCollections (from AttributionNode or a parent
             node), lets the user browse, filter, fold, annotate, add/delete formulas, create/rename/delete
@@ -2016,7 +2693,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             </tr>
         </table>
 
-        <h4>Interactive behaviour</h4>
+        <h5>Interactive behaviour</h5>
         <ul>
             <li><strong>Write line</strong> always visible at the top of the list. Type a formula
                 (<code>C6H12O6 [H+]</code>), press <kbd>Enter</kbd> → added to the current local
@@ -2033,7 +2710,222 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                 full collection as JSON (session-compatible descriptor).</li>
         </ul>
 
-        <h4>Error conditions</h4>
+        <h5>Clustering <span class="badge">k-means</span> <span class="badge">spectral</span> <span class="badge">PCA</span></h5>
+        <p>
+            An attributed collection is a cloud of points, and the interesting question about a cloud is
+            rarely <em>where are the outliers</em> — it is <em>how many populations are in there</em>.
+            Chemical families, adduct series, saturation plateaus and matrix background all show up as
+            structure in a collection that a flat list cannot reveal. The reader node therefore carries a
+            <strong>clustering engine</strong> that partitions the collection and paints the partition
+            back onto the list, the graph and the cluster centres.
+        </p>
+        <p>
+            There are exactly <strong>two algorithms</strong>, and they are not variants of one another:
+            k-means looks for compact, roughly spherical groups; spectral partitioning looks for groups
+            separated by the <em>shape</em> of the data, whether or not they are round.
+        </p>
+
+        <h6>Before the algorithm — what a point is</h6>
+        <p>
+            Clustering operates on <strong>points</strong>, and which points depends on the source you
+            pick. Both sources are numeric feature vectors over the <em>measured</em> quantities — there
+            is deliberately no chemistry-aware similarity measure in the node, so nothing pretends to
+            know what two formulas "have in common".
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:170px">Source</th>
+                <th>The point</th>
+            </tr>
+            <tr>
+                <td><code>Targets</code> <span class="badge">3D</span> (default)</td>
+                <td>
+                    One point per <strong>matched target</strong>, i.e. per measured peak:
+                    <code>[m/z, intensity, errorPpm]</code>. Non-finite intensity or error is substituted
+                    with <code>0</code>, and targets are filtered exactly the way the current graph mode
+                    requires them.
+                </td>
+            </tr>
+            <tr>
+                <td><code>Graph traces</code> <span class="badge">2D</span></td>
+                <td>
+                    One point per <strong>plotted position</strong> read off the live WebGL traces of the
+                    graph. In van Krevelen or barycentric mode this is a point in a
+                    <strong>elemental-ratio space</strong> (O/C against H/C, say) — which is precisely
+                    where chemical families separate.
+                </td>
+            </tr>
+        </table>
+        <p>
+            Every feature is then <strong>standardised</strong>: centred by its mean, divided by its
+            sample standard deviation (a constant feature staying at 1). This step is not cosmetic.
+            Intensities span six orders of magnitude and ppm errors span one; without it the
+            <em>distance between two points</em> <em>is</em> the distance between their intensities, and
+            the intensity axis alone decides every partition.
+        </p>
+
+        <h6>PCA — the optional rotation</h6>
+        <p>
+            Before either algorithm, the points may be rotated by <strong>principal component
+            analysis</strong>, which centres the data, builds the full feature covariance and extracts
+            eigenvectors by <strong>power iteration with deflation</strong> from a deterministic start
+            vector. Three settings:
+        </p>
+        <ul>
+            <li><code>0</code> (default) — keep <strong>every</strong> component. This is a pure
+                rotation: the geometry is preserved, distances are unchanged, and only the axes are
+                relabelled. Useful as a sanity check, not as a projection.</li>
+            <li><code>N &gt; 0</code> — keep the <em>N</em> leading components. This <strong>denoises</strong>
+                by discarding the directions the data barely occupies, which is what makes a structure
+                visible when the dominant axes are noise.</li>
+            <li><code>−1</code> — PCA off.</li>
+        </ul>
+        <p>
+            One caveat worth knowing: the session restore currently resets a stored <code>−1</code> to
+            the default, so a PCA-off session does not round-trip. Everything else — mode, cluster count,
+            seeds, iteration cap, source — is serialised; the <em>assignments</em> are not, and are
+            recomputed on the next run, since they depend on data a session does not carry.
+        </p>
+
+        <h6>Algorithm 1 — K-means</h6>
+        <p>
+            Lloyd's algorithm on the squared Euclidean distance, seeded <strong>k-means++</strong>:
+            the first centroid is drawn at random, and each following one is drawn with probability
+            proportional to its squared distance from the nearest chosen centroid. Centroids are then
+            reassigned until no point changes cluster, or until <code>maxIter</code>
+            (default 100) is reached. A cluster emptied by a reassignment is <strong>re-seeded on a random
+            point</strong> rather than left empty — the alternative is a silently smaller
+            <code>k</code>.
+        </p>
+        <p>
+            The kernel also returns, per cluster, the mean and the <strong>sample variance</strong> of
+            each feature — the numbers behind "is this group really tighter than that one".
+        </p>
+        <p>
+            <strong>What k-means is good at</strong>: compact, well-separated populations, and fast —
+            <code>O(maxIter · n · k · f)</code>, cheap enough to re-run on every control change.<br>
+            <strong>What it is bad at</strong>: it assumes round clusters and is <strong>seed-sensitive</strong>.
+            Two runs with different <code>seed</code> values on a smeared collection can return different
+            partitions of the same points, and nothing in the output says which one is better — there is
+            no silhouette or elbow diagnostic. On an elongated family — a homologous series, or a van
+            Krevelen streak — k-means will cut it in half along its length rather than follow it.
+        </p>
+
+        <h6>Algorithm 2 — Spectral partitioning (Ng–Jordan–Weiss)</h6>
+        <p>
+            The data is turned into a <strong>graph</strong> whose edge weights express affinity, the
+            graph is normalised, its leading eigenvectors are computed, and the <em>rows</em> of those
+            eigenvectors are clustered. The step that matters is the last one: because the partitioning
+            is done in <em>eigenvector space</em>, it recovers groups that are <strong>not convex</strong> —
+            two rings around a centre, or interleaved classes, where k-means would cut straight through
+            the middle.
+        </p>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li>
+                <strong>Affinity.</strong> A radial basis kernel, <code>exp(−d²/2σ²)</code>.
+                <code>sigma = 0</code> means <em>estimate it</em>: the median distance to the 5th nearest
+                neighbour over a sample of at most 100 points — a scale read from the data rather than
+                typed by the user.
+            </li>
+            <li>
+                <strong>Graph construction, by size.</strong> Above 500 points the node builds a
+                <strong>k-NN graph</strong> in CSR form rather than a dense affinity matrix: at 5000
+                points the dense version would be 191 MiB of mostly zeros, and the k-NN version keeps the
+                same <code>O(n²)</code> distance pass while dropping the memory to what is actually
+                stored. At or below 500 points the full dense affinity is built, because it is small and
+                exact.
+            </li>
+            <li>
+                <strong>Normalisation.</strong> <code>M = D<sup>−1/2</sup>·A·D<sup>−1/2</sup></code> and
+                <code>L = I − M</code>, then a sparse eigen-decomposition. The power iteration runs on
+                <strong>M</strong>, not on L: spectral partitioning wants the <em>smallest</em>
+                eigenvalues of <code>L</code> — that is, the <em>largest</em> of <code>M</code> — and
+                iterating on <code>L</code> returned high-frequency modes that partition nothing.
+            </li>
+            <li>
+                <strong>Embed, then cluster the embedding.</strong> Rows of the eigenvector matrix are
+                L2-normalised and passed to k-means with <strong>evenly spaced starting centroids and no
+                random draw at all</strong>. Spectral partitioning is therefore <strong>deterministic</strong>
+                where k-means is not: the same data gives the same partition, every run, and
+                <code>seed</code> is irrelevant. Cluster centres are reported in the <em>original</em>
+                feature space, not in the embedding.
+            </li>
+        </ol>
+        <p>
+            <strong>What spectral partitioning is good at</strong>: non-convex structure, nested or
+            interleaved populations, and <strong>reproducibility</strong>.<br>
+            <strong>What it is bad at</strong>: it is the slower of the two (a quadratic distance pass
+            plus a sparse eigensolve), and it is sensitive to <code>sigma</code> and
+            <code>kNeighbors</code> in a way that is not obvious from the picture — too small a kernel
+            and the graph fragments, too large and it collapses to one blob.
+        </p>
+
+        <h6>Controls</h6>
+        <table class="spec">
+            <tr>
+                <th style="width:170px">Control</th>
+                <th>Specification</th>
+            </tr>
+            <tr><td><strong>Enable</strong></td><td>Off by default; disabled until a collection is
+                selected. Turning it on runs immediately; turning it off clears the partition.</td></tr>
+            <tr><td><strong>Clusters</strong></td><td><code>nClusters</code>, 2…20, default 2. Typed by
+                the user — there is no automatic estimate of <em>k</em>.</td></tr>
+            <tr><td><strong>Mode</strong></td><td><code>kmeans</code> or <code>spectral</code>.</td></tr>
+            <tr><td><strong>Source</strong></td><td><code>targets</code> or <code>graph</code>.</td></tr>
+            <tr><td><strong>PCA components</strong></td><td><code>−1 … 50</code>, default <code>0</code>
+                (all).</td></tr>
+            <tr><td><strong>Sigma</strong></td><td><code>0</code> = auto-estimate. Only shown for spectral.</td></tr>
+            <tr><td><strong>k-NN</strong></td><td><code>1 … 50</code>, default 10. Only shown for
+                spectral.</td></tr>
+            <tr><td><strong>Max iterations</strong></td><td><code>10 … 1000</code>, default 100. Only shown
+                for k-means.</td></tr>
+            <tr><td><strong>Seed</strong></td><td>Default 42. Affects k-means only; spectral ignores it by
+                construction.</td></tr>
+            <tr><td><strong>Run</strong></td><td>Every control re-runs on change. A burst of changes is
+                coalesced: the pipeline is re-entered at most once per settle, not once per click.</td></tr>
+        </table>
+
+        <h6>Reading the result</h6>
+        <ul>
+            <li>
+                The graph recolours per cluster from a fixed eight-colour palette, drawn as squares for
+                the <strong>centres</strong> on every mode. Clicking a centre selects its cluster; the
+                <strong>Cluster Manager</strong> panel lists each cluster with its size and its centre
+                coordinates, and clicking a row jumps the formula list to that cluster's first member.
+            </li>
+            <li>
+                Formulas inherit their cluster from their <strong>first</strong> assigned target, not
+                from the <em>i-th point</em> — the point list and the formula list are not the same index
+                space, and conflating them would colour formulas by their neighbours' cluster.
+            </li>
+            <li>
+                <strong>Partition into sub-collections</strong> materialises each cluster as its own
+                <code>FormulaCollection</code> named <code>«collection» - Cluster N</code>, which is how
+                a partition leaves the node and reaches the rest of the pipeline — Calibration, an
+                export, another attribution. It stores the <strong>notation</strong>, never the
+                <code>key</code>: a group adduct's key does not read back to the formula it came from.
+                It requires the <code>targets</code> source.
+            </li>
+            <li>
+                There is <strong>no export of the partition itself</strong>. Assignments live in memory
+                and in the sub-collections they produce; what travels with the session is the
+                <em>parameters</em>.
+            </li>
+            <li>Fewer points than <code>k × features</code> and the run declines, saying so — a k-means on
+                two points with three features has no solution to find.</li>
+        </ul>
+
+        <h6>Compute</h6>
+        <p>
+            Three Rust kernels — <code>pca</code>, <code>kmeans</code>, <code>spectral</code> — run in the
+            worker pool and exchange flat <code>Float64Array</code> buffers only. Each has a JavaScript
+            mirror implementing the same decision rules, used when WebAssembly or workers are
+            unavailable; parity tests compare them on real and synthetic data, including the concentric
+            rings that spectral partitioning exists to separate. The node's own bottleneck is
+            re-colouring the graph, not the kernel.
+        </p>
+
+        <h5>Error conditions</h5>
         <ul>
             <li><span class="badge warn">nothing readable</span> input matched none of the accepted
                 shapes.</li>
@@ -2043,7 +2935,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                 a different formula — reported per entry.</li>
         </ul>
 
-        <h4>Session behaviour</h4>
+        <h5>Session behaviour</h5>
         <p>
             Local collections (names, formulas with notes, fold states, filter/sort/view settings,
             current collection, selection) are serialised. Inherited collections are NOT serialised —
@@ -2051,7 +2943,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             from the origin at runtime.
         </p>
 
-        <h4>Data flow</h4>
+        <h5>Data flow</h5>
         <pre>AttributionNode (per wave)
     → FormulaCollection (addAll + setPoints + match)
     → output[0] = FormulaCollection[]
@@ -2062,7 +2954,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
     → Graph renders currentCollection.toPairs() (mode-dependent transform)
     → output[0] = currentCollection (for downstream)</pre>
 
-        <h4>Simple XY plot <span class="badge">display</span> <span class="badge">no output</span></h4>
+        <h4 data-node="simpleXYPlot" data-menu="Display" data-keys="plot display webgl xy trace axes linear log zoom pan canvas svg markers sticks colours legend">Simple XY plot <span class="badge">display</span> <span class="badge">no output</span></h4>
         <p>
             The terminal display node: every wave reaching its single input becomes a trace on a WebGL
             frame that fills the central dialog, and an inspector in the right panel drives the drawing.
@@ -2115,7 +3007,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             <strong>resolved</strong> with at least one trace, <strong>error</strong> when a resolve
             produced none.
         </p>
-        <h4>Chat <span class="badge">tools</span> <span class="badge warn">WebSocket</span></h4>
+        <h4 data-node="chat" data-menu="Tools" data-keys="chat websocket room nick server message reconnect dialog">Chat <span class="badge">tools</span> <span class="badge warn">WebSocket</span></h4>
         <p>
             A chat room for discussing a session with whoever else is looking at it. The node carries no
             flow anchors: it opens a draggable, foldable dialog — a <code>Dialog</code>, not an
@@ -2173,6 +3065,173 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             </tr>
         </table>
 
+        <h4 data-node="massCalculator" data-menu="Tools" data-keys="mass calculator formula parser periodic table isotopes monoisotopic average mass mz envelope isotopologue isotopologues stoichiometry charge ratio tooltip bar plot click table">Mass Calculator <span class="badge">no flow</span> <span class="badge">isotopic envelope</span></h4>
+        <p>
+            The reference instrument of the platform: a formula in, <strong>monoisotopic mass, average
+            mass, m/z and the full isotopic envelope</strong> out. It is the node you reach for when a
+            formula has to be checked before it enters a group table, and it is deliberately a
+            <strong>leaf with no anchors</strong> — it neither consumes nor publishes anything into the
+            flow. What it produces is a dialog.
+        </p>
+        <p>
+            The interesting part is not the arithmetic, which is exact, but the <strong>envelope</strong>:
+            the full distribution of isotopologues of the formula, each one with its own m/z and its own
+            probability, plotted as a stick spectrum. That envelope is what tells you whether a group
+            table entry will resolve — or whether the series you are looking for is going to be buried
+            under the isotopic pattern of something already assigned.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs / Outputs</td>
+                <td><strong>none</strong> — the node is a floating leaf; its result is its own dialog,
+                registered on the channel as <code>«label» mass calc</code>.</td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    <code>formula</code> — the composition, optionally followed by an ionisation group
+                    (<code>C6H12O6 [H+]</code>), exactly the notation the F-KMD node reads.<br>
+                    <code>charge</code> — <code>−5 … 5</code>; when non-zero it <strong>overrides</strong>
+                    the bracket group rather than composing with it.<br>
+                    <code>ratio</code> (default <code>0.01</code>) — the isotopic probability threshold,
+                    <em>relative to the most probable peak</em>. <code>0</code> keeps every isotopologue;
+                    <code>1</code> keeps the monoisotopic one only. This is the control that sets how much
+                    of the tail is drawn, and it is the same convention as the <code>ratio</code> column of
+                    the attribution group tables.
+                </td>
+            </tr>
+        </table>
+
+        <h5>How a formula is built</h5>
+        <p>
+            Three ways in, all landing on the same state, and all reversible through the same text field:
+        </p>
+        <ul>
+            <li>
+                <strong>Typing.</strong> The formula bar accepts the full notation — composition and
+                bracketed ionisation — on a 300&nbsp;ms debounce, so a formula typed character by
+                character is parsed once the typing pauses, not once per keystroke. <kbd>Enter</kbd>
+                commits immediately.
+            </li>
+            <li>
+                <strong>Clicking the periodic table.</strong> The on-screen table is laid out from the
+                atomic number alone, and each button is tinted and accented by chemical family. A
+                <strong>left click adds one atom</strong>, a <strong>right click removes one</strong>,
+                and the button label carries the running count (<code>C</code>, <code>C2</code>). The
+                table is a layout, not a data source: it is computed from <em>Z</em> and knows nothing
+                about your formula.
+            </li>
+            <li>
+                <strong>Pinning isotopes.</strong> Holding <kbd>Ctrl</kbd>, <kbd>Alt</kbd> or
+                <kbd>Cmd</kbd> while hovering an element opens its <strong>isotope band</strong>: one
+                round button per isotope, left/right click to add or remove that exact isotope
+                independently. This is how <code>13C</code> is entered as <em>13C</em> rather than as a
+                mass number on a symbol, and why the same convention governs the attribution group rows.
+            </li>
+        </ul>
+        <p>
+            Modifying an element works on the isotope the <strong>current isotope rule</strong> selects
+            (most probable by default) while preserving any isotope you pinned by hand. Composition
+            changes are clamped at zero — except through the isotope band, which is the one path to a
+            negative count, on purpose.
+        </p>
+
+        <h5>What is computed</h5>
+        <ul>
+            <li>
+                <strong>Monoisotopic mass</strong> — the formula's own stoichiometric mass, using the
+                isotopes currently selected, which is a different number as soon as one of them is
+                pinned.
+            </li>
+            <li>
+                <strong>Average mass</strong> — the abundance-weighted sum over the periodic table,
+                minus the electron mass per unit charge, so the <strong>charge is accounted for</strong>
+                rather than ignored.
+            </li>
+            <li>
+                <strong>m/z</strong> — the mass for the current charge state, and the number the F-KMD
+                node would use for the same notation.
+            </li>
+            <li>
+                <strong>The canonical formula</strong> — the composition re-serialised in a canonical
+                order, written back into the input field, so what you see is always what is being
+                computed rather than what you typed.
+            </li>
+        </ul>
+        <p>
+            The <strong>envelope</strong> is enumerated from the stoichiometry with the
+            <code>ratio</code> threshold applied relative to the most probable peak, and capped at 200
+            entries. Probabilities are normalised to the maximum, so the tallest bar is always the
+            monoisotopic-or-most-probable one, and isotopologues whose log-probability falls below
+            <code>−20</code> — roughly <code>10<sup>−9</sup></code> of the base peak — are left out
+            entirely rather than drawn as invisible slivers.
+        </p>
+
+        <h5>Reading the envelope</h5>
+        <ul>
+            <li>
+                Bars are 3&nbsp;px sticks with a vertical gradient, and the <strong>tallest bar carries a
+                soft glow</strong> — the monoisotopic peak is the reference everything else is read
+                against.
+            </li>
+            <li>
+                Each bar has an invisible full-height hover column, bounded by the gap to its
+                neighbours so the hit areas never overlap, driving a tooltip that reads out the
+                <strong>isotopic notation, m/z, mass, abundance percentage</strong> and the charge.
+            </li>
+            <li>
+                The plot redraws on zoom, pan and resize — the bars are painted as an overlay
+                <em>inside</em> the redraw, so they survive every camera move instead of being left
+                behind on a stale layer.
+            </li>
+        </ul>
+
+        <h5>Error and degenerate conditions</h5>
+        <ul>
+            <li>
+                <span class="badge warn">negative counts</span>
+                a formula with a negative net count has <strong>no physical envelope</strong>. The plot
+                is cleared and says <em>Envelope suppressed: negative counts (mass only)</em> — the mass
+                is still reported. The notice is a dedicated element: replacing the plot container's
+                content would detach the live plot while the object still holds a reference to it.
+            </li>
+            <li>
+                <span class="badge warn">no isotopologues</span>
+                the ratio threshold excluded everything. The plot clears and says so, rather than
+                showing an empty frame.
+            </li>
+            <li>
+                <span class="badge warn">parse error</span>
+                an unreadable formula is caught and warned about, leaving the previous state untouched:
+                a mistyped symbol does not erase a formula you were working on.
+            </li>
+            <li>
+                <span class="badge">no table</span>
+                the periodic table (<code>elements.json</code>) is fetched once and cached; a failed
+                fetch is reported with its HTTP status.
+            </li>
+        </ul>
+
+        <h5>Session behaviour</h5>
+        <p>
+            The formula, the charge and the ratio are serialised; the stoichiometry, the plotted envelope
+            and the isotope band are not — they are rebuilt from those three fields, and the dialog is
+            not reopened on reload.
+        </p>
+
+        <h5>Data flow</h5>
+        <pre>formula text / periodic table clicks / isotope band
+   → Formula.parse(text, table)          → Stoichiometry
+   → mono mass, average mass (Σ avg·n − z·mₑ), m/z
+   → isotopologues({ratio, limit 200})   → normalised probabilities
+   → WebGL stick plot + per-bar hover tooltips
+   (no worker, no kernel: exact arithmetic, pure JS)</pre>
+
     </div>
 
 </main>
@@ -2190,5 +3249,127 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
     </span>
 </footer>
 
+<script>
+(function(){
+    "use strict";
+    var docs = document.querySelector(".docs");
+    var search = document.getElementById("nodeSearch");
+    var chipsBox = document.getElementById("nodeChips");
+    var count = document.getElementById("nodeCount");
+    var empty = document.getElementById("nodeEmpty");
+    if(!docs || !search) return;
+
+    // ---- one card per [data-node] heading, each gathering its own following siblings ----
+    // Two passes on purpose. Appending a card as soon as it is built would move the remaining
+    // headings to the end of .docs — and the last card, having no further heading to stop at,
+    // would then gather every already-built card into itself.
+    var headings = Array.prototype.slice.call(docs.querySelectorAll("h4[data-node]"));
+    var sections = headings.map(function(h){
+        var section = document.createElement("section");
+        section.className = "node";
+        section.id = "node-" + h.dataset.node;
+
+        var moved = [h];
+        for(var n = h.nextElementSibling; n && !(n.tagName === "H4" && n.hasAttribute("data-node")); n = n.nextElementSibling){
+            moved.push(n);
+        }
+        moved.forEach(function(el){ section.appendChild(el); });
+        return section;
+    });
+    sections.forEach(function(section){ docs.appendChild(section); });
+
+    var nodes = headings.map(function(h, i){
+        var section = sections[i];
+
+        // every card says which menu it belongs to, so no node sits outside the others
+        var menu = h.dataset.menu || "Other";
+        var tag = document.createElement("span");
+        tag.className = "node-menu";
+        tag.textContent = menu;
+        h.insertBefore(tag, h.firstChild.nextSibling);
+
+        // index = title + menu + declared keys + the card's own text. Same recipe for every node.
+        var title = h.textContent.replace(menu, "").trim();
+        var index = (title + " " + menu + " " + (h.dataset.keys || "") + " " + section.textContent).toLowerCase();
+
+        return { el: section, menu: menu, title: title, index: index };
+    });
+
+    // ---- category chips, in the order the flow menu shows them ----
+    var order = ["Data", "Operation", "Chemistry", "Display", "Tools"];
+    var menus = [];
+    nodes.forEach(function(n){ if(menus.indexOf(n.menu) < 0) menus.push(n.menu); });
+    menus.sort(function(a, b){
+        var ia = order.indexOf(a), ib = order.indexOf(b);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    var active = new Set();
+    menus.forEach(function(m){
+        var chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "chip";
+        chip.textContent = m + " (" + nodes.filter(function(n){ return n.menu === m; }).length + ")";
+        chip.setAttribute("aria-pressed", "false");
+        chip.addEventListener("click", function(){
+            if(active.has(m)) active.delete(m); else active.add(m);
+            chip.setAttribute("aria-pressed", active.has(m) ? "true" : "false");
+            apply();
+        });
+        chipsBox.appendChild(chip);
+    });
+
+    function clearMarks(scope){
+        var marks = scope.querySelectorAll("mark");
+        Array.prototype.forEach.call(marks, function(m){
+            var parent = m.parentNode;
+            if(!parent) return;
+            parent.replaceChild(document.createTextNode(m.textContent), m);
+        });
+        scope.normalize();
+    }
+
+    function highlight(scope, q){
+        clearMarks(scope);
+        if(!q) return;
+        var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null);
+        var hits = [], node;
+        while((node = walker.nextNode())){
+            if(!node.parentNode || node.parentNode.nodeName === "SCRIPT") continue;
+            var i = node.nodeValue.toLowerCase().indexOf(q);
+            if(i >= 0) hits.push([node, i]);
+        }
+        hits.forEach(function(pair){
+            var text = pair[0], i = pair[1];
+            if(!text.parentNode) return;
+            var rest = text.splitText(i);        // text = [0, i),  rest = [i, end)
+            rest.splitText(q.length);            // rest = the query, next = the remainder
+            var mark = document.createElement("mark");
+            mark.textContent = rest.nodeValue;
+            rest.parentNode.replaceChild(mark, rest);
+        });
+    }
+
+    function apply(){
+        var q = search.value.trim().toLowerCase();
+        var shown = 0;
+        nodes.forEach(function(n){
+            var ok = (!q || n.index.indexOf(q) >= 0) && (!active.size || active.has(n.menu));
+            n.el.style.display = ok ? "" : "none";
+            if(ok) shown++;
+            highlight(n.el, ok ? q : "");
+        });
+        count.textContent = shown + " / " + nodes.length + " nodes";
+        empty.style.display = shown ? "none" : "block";
+    }
+
+    var timer = null;
+    search.addEventListener("input", function(){
+        clearTimeout(timer);
+        timer = setTimeout(apply, 120);   // highlighting on every keystroke is wasted work
+    });
+    apply();
+})();
+</script>
 </body>
 </html>
+
