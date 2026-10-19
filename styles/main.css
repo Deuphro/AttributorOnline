@@ -779,6 +779,51 @@ input[type=checkbox]{
     display:grid;
     gap:4px;
 }
+/* The private-room button is the one that starts a 1-to-1 session with the AI,
+   so it gets the accent colour: it is a different action from "Create", not
+   just another label. */
+.chat-bar button.private-ai{
+    border-color:var(--accent-soft);
+    color:var(--accent-soft);
+}
+
+/* Sources cited by the doc-aware AI: a collapsible block under the answer. */
+.chat-sources{
+    margin-top:4px;
+    border:1px solid var(--border);
+    border-radius:4px;
+    background:var(--bg-elevated);
+    overflow:hidden;
+}
+.sources-toggle{
+    width:100%;
+    padding:4px 8px;
+    background:none;
+    border:none;
+    color:var(--accent-soft);
+    font-size:0.8em;
+    text-align:left;
+    cursor:pointer;
+}
+.sources-toggle:hover{
+    background:var(--accent-soft);
+    color:var(--bg);
+}
+.sources-panel{
+    padding:4px 8px;
+    font-size:0.75em;
+    color:var(--text-dim);
+}
+.source-item{
+    padding:2px 0;
+    border-bottom:1px solid var(--border);
+}
+.source-item:last-child{
+    border-bottom:none;
+}
+.source-item[cursor="pointer"]:hover{
+    color:var(--accent-soft);
+}
 
 /* ---- Quadrillage du flux ---- */
 .flow.container{

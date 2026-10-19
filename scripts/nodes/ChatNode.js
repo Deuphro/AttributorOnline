@@ -13,6 +13,11 @@ export class ChatNode extends Node{
         this.parameters.url=""
         this.parameters.nick=""
         this.parameters.room=""
+        /* The server hands out a session id at connect and keeps the private
+           rooms keyed by it. It belongs to the browser, not to the visit, so
+           it is serialised: without it a reloaded session would come back and
+           find its own private room "privée". */
+        this.parameters.sessionId=""
         this.socket=null
         /* The backoff is exponential, as in the prototype, and CAPPED: a server
            that is down must not leave a retry loop running in a background tab
@@ -117,27 +122,28 @@ export class ChatNode extends Node{
         const createButton=CE("button",{type:"button"},["Create"])
         createButton.title="Create the room named in the room field, then join it"
         createButton.addEventListener("click",()=>{
-            const nick=this.parameters.nick.trim()
-            if(!nick){
-                this.append("Choose a nick first.","system")
-                return
-            }
-            const room=this.parameters.room.trim()
-            if(!room){
-                this.append("Type a room name first.","system")
-                return
-            }
-            if(!this.socket||this.socket.readyState!==WebSocket.OPEN){
-                this.pendingCreate=room
-                this.disconnect()
-                this.reconnectAttempt=0
-                this.connect({joinOnOpen:false})
-                return
-            }
-            this.createRoom(room)
+            this.requestCreate(false)
         })
+        /* The private room: created hidden, owned by this browser, and it comes
+           with its own AI. The user types a name in the room field exactly as
+           for a normal room — the difference is that nobody else ever sees it
+           in the list, and leaving it kills the AI and erases the conversation. */
+        const privateButton=CE("button",{type:"button",className:"private-ai"},["New private AI"])
+        privateButton.title="Create a hidden room with its own AI, visible only to you"
+        privateButton.addEventListener("click",()=>{
+            this.requestCreate(true)
+        })
+        const leaveButton=CE("button",{type:"button"},["Leave"])
+        leaveButton.title="Leave the room. If the AI was alone, it is shut down and the conversation erased."
+        leaveButton.addEventListener("click",()=>{
+            if(this.parameters.room.trim()){
+                this.transmit({type:"leave_room"})
+            }
+        })
+        this.leaveButton=leaveButton
         const bar=CE("div",{className:"chat-bar"},[
-            this.statusLabel,urlField,nickField,roomField,joinButton,createButton
+            this.statusLabel,urlField,nickField,roomField,
+            joinButton,createButton,privateButton,leaveButton
         ])
         /* --- the log ------------------------------------------------------- */
         this.log=CE("div",{className:"chat-log"},[])
@@ -171,6 +177,47 @@ export class ChatNode extends Node{
         line.textContent=text
         this.log.appendChild(line)
         //stick to the bottom, the way a log reads
+        this.log.scrollTop=this.log.scrollHeight
+    }
+    /* Sources returned by the doc-aware AI: shown as a collapsible block under
+       the answer so the user can verify what the model was given. */
+    renderSources(sources){
+        if(!this.log || !sources.length) return;
+        const block=CE("div",{className:"chat-sources"},[])
+        const toggle=CE("button",{type:"button",className:"sources-toggle"},[
+            `Sources (${sources.length})`
+        ])
+        const panel=CE("div",{className:"sources-panel"},[])
+        panel.style.display="none"
+        for(const src of sources){
+            const item=CE("div",{className:"source-item"},[])
+            const parts=[]
+            if(src.node){
+                parts.push(`Node: ${src.node}`)
+            }
+            if(src.title){
+                parts.push(src.title)
+            }
+            if(src.coverage){
+                parts.push(`couverture ${src.coverage}%`)
+            }
+            item.textContent=parts.join(" — ")
+            if(src.anchor){
+                item.title=`Open in FRONTPAGE: ${src.anchor}`
+                item.style.cursor="pointer"
+                item.addEventListener("click",()=>{
+                    window.open(`${location.origin}/FRONTPAGE/index.html${src.anchor}`,'_blank')
+                })
+            }
+            panel.appendChild(item)
+        }
+        toggle.addEventListener("click",()=>{
+            const open=panel.style.display!=="none"
+            panel.style.display=open?"none":"block"
+            toggle.textContent=open?`Sources (${sources.length})`:`Masquer les sources`
+        })
+        block.append(toggle,panel)
+        this.log.appendChild(block)
         this.log.scrollTop=this.log.scrollHeight
     }
     setStatus(text,connected){
@@ -207,9 +254,9 @@ export class ChatNode extends Node{
         socket.addEventListener("open",()=>{
             this.reconnectAttempt=0
             if(this.pendingCreate){
-                const room=this.pendingCreate
+                const create=this.pendingCreate
                 this.pendingCreate=null
-                this.createRoom(room)
+                this.createRoom(create.room,create.hidden)
                 return
             }
             /* A named room is joined straight away; with no room, the server
@@ -265,17 +312,47 @@ export class ChatNode extends Node{
             this.connect()
         },delay)
     }
-    /* Create-then-join in one gesture: the server answers room_created and
-       onServerMessage joins it. If it already exists, join it directly. */
-    createRoom(room){
+    /* Create-then-join in one gesture, shared by the public and the private
+       button: the server answers room_created and onServerMessage joins it. If
+       it already exists, join it directly. */
+    requestCreate(hidden){
+        const nick=this.parameters.nick.trim()
+        if(!nick){
+            this.append("Choose a nick first.","system")
+            return
+        }
+        const room=this.parameters.room.trim()
+        if(!room){
+            this.append("Type a room name first.","system")
+            return
+        }
+        if(!this.socket||this.socket.readyState!==WebSocket.OPEN){
+            /* Remember the intent — including whether it was private — and
+               reconnect: the socket has to exist before the server can be told
+               to make anything. */
+            this.pendingCreate={room,hidden}
+            this.disconnect()
+            this.reconnectAttempt=0
+            this.connect({joinOnOpen:false})
+            return
+        }
+        this.createRoom(room,hidden)
+    }
+    createRoom(room,hidden=false){
         const nick=this.parameters.nick.trim()
         if(!nick||!room){
             return
         }
         this.pendingJoinOnCreated=room
-        this.transmit({type:"create_room",room})
+        this.transmit({type:"create_room",room,hidden})
     }
     onServerMessage(data){
+        if(data.type==="hello"){
+            /* Remembered across reloads: this id is what proves to the server
+               that the private rooms in the directory below are ours. */
+            this.parameters.sessionId=data.sessionId??""
+            return
+        }
         if(data.type==="rooms"){
             this.renderRoomList(data.rooms??[])
             return
@@ -292,15 +369,29 @@ export class ChatNode extends Node{
             for(const message of data.messages??[]){
                 this.append(`${message.user} : ${message.text}`)
             }
-            this.setStatus(`#${data.room}`,true)
+            this.setStatus(`#${data.room}${data.ai?" — IA":""}`,true)
+            return
+        }
+        if(data.type==="room_left"){
+            /* Back to the directory. The room field is emptied too: leaving a
+               room and staying on its name would make the next Enter try to
+               rejoin a room that a private session has just destroyed. */
+            this.parameters.room=""
+            this.log?.replaceChildren()
+            this.setStatus("Room left",false)
+            this.append(`You left #${data.room}.`,"system")
             return
         }
         if(data.type==="users"){
-            this.setStatus(`#${this.parameters.room} — ${(data.users??[]).length} connected`,true)
+            this.setStatus(`#${this.parameters.room} — ${(data.users??[]).length} connected${data.ai?" + IA":""}`,true)
             return
         }
         if(data.type==="message"){
+            const sources = data.message.sources;
             this.append(`${data.message.user} : ${data.message.text}`)
+            if(sources && sources.length){
+                this.renderSources(sources)
+            }
             return
         }
         if(data.type==="system"){
@@ -329,7 +420,7 @@ export class ChatNode extends Node{
         const list=CE("div",{className:"chat-rooms"},[])
         for(const room of rooms){
             const button=CE("button",{type:"button"},[
-                `#${room.name} — ${room.users} connected`
+                `#${room.name} — ${room.users} connected${room.ai?" + IA":""}${room.mine?" (private)":""}`
             ])
             button.addEventListener("click",()=>{
                 this.parameters.room=room.id
@@ -379,7 +470,10 @@ export class ChatNode extends Node{
         return {
             url:this.parameters.url,
             nick:this.parameters.nick,
-            room:this.parameters.room
+            room:this.parameters.room,
+            /* The server's per-browser id. It is what makes a private room
+               still ours after a reload, so it is part of the session. */
+            sessionId:this.parameters.sessionId
         }
     }
     restoreState(state){
@@ -389,6 +483,7 @@ export class ChatNode extends Node{
         this.parameters.url=state.url??""
         this.parameters.nick=state.nick??""
         this.parameters.room=state.room??""
+        this.parameters.sessionId=state.sessionId??""
         /* The chat is NOT reopened on a reload: a page that starts talking to a
            server on its own is a page that cannot be opened quietly. The node
            returns with its room and nick filled in, and the user presses
