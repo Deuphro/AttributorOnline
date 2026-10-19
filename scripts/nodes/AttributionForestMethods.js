@@ -3505,27 +3505,31 @@ commitForestNumber(name,raw,low,high,integer=false){
             /* Construire la FormulaCollection avec les formules propagées. */
             const name=`${batch.title??"attribution"} tree #${rank}`
             const collection=new FormulaCollection({name,table:this.loadedTable,ppm})
-            for(const row of result.rows){
-                const formula=row.formula
-                if(!formula) continue
-                collection.addAll([{
-                    formula,
-                    sourceText:row.notation
-                }])
-            }
             /* Points: les pics du spectre correspondant aux vertices de l'arbre.
                row.mass = masse du vertex (mesurée), row.mz = mz de la formule.
                setPoints/match calcule l'erreur : (measured - formula.mz)/formula.mz * 1e6
                L'intensité vient du vertex du graphe. */
             const points=[]
+            const items=[]
             const intensityByIndex=new Map(graph.vertices.map(v=>[v.index,v.intensity]))
             for(const row of result.rows){
                 const formula=row.formula
+                if(!formula) continue
+                items.push({formula,sourceText:row.notation})
                 const measuredMz=row.mass
                 if(!Number.isFinite(measuredMz)||measuredMz<=0) continue
                 const intensity=intensityByIndex.get(row.index)??0
                 points.push({mz:measuredMz,key:formula.key,intensity})
             }
+            /* UN SEUL `addAll` POUR TOUT L'ARBRE, jamais un par ligne:
+               `match()` est en O(n log n) — il retrie TOUTES les entrées et
+               réapplique TOUS les points. Appeler `addAll([une formule])` dans
+               la boucle faisait passer le coût de O(n log n) à O(N² log N), et
+               c'était la seule chose qui rendait la première image lente sur un
+               arbre de 3000 pics (l'animation, elle, ne refait rien de tout ça
+               et restait fluide). Le résultat est identique: `match()` est
+               idempotent. */
+            collection.addAll(items)
             collection.setPoints(points)
             collections.push(collection)
         }
