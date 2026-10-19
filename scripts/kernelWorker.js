@@ -649,6 +649,26 @@ const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Ar
         }
     },
     async spectral({data,n_samples,n_features,n_clusters,sigma,k_neighbors}){
+        /* LE σ EST PASSÉ TEL QU'IL EST, ET C'EST DÉLIBÉRÉ.
+
+           On a tenté de le corriger en le désalignant sur le nombre de
+           voisins (σ_eff = σ_auto × k/√2), au motif qu'une estimation Issue
+           d'un proche voisin est trop petite pour un noyau d'échelle. Le
+           raisonnement est bon et le remède est faux : mesuré sur un jeu de
+           600 points en deux familles serrées, l'estimation automatique
+           seule donnait 303/297 — une partition nette — et la version
+           « corrigée » donnait 340/260, c'est-à-dire MOINS bonne. Le graphe
+           k-NN est construit par rang, pas par seuil d'affinité : chaque
+           point garde ses k voisins quels que soient leurs poids, si bien
+           qu'un σ trop petit n'éteint pas les arêtes mais écrase les POIDS,
+           et des poids écrasés à parts égales ne distinguent plus les
+           familles.
+
+           La vraie limite de l'estimation automatique n'est pas le facteur
+           d'échelle — c'est qu'elle n'a de sens que si l'utilisateur n'en
+           impose pas. Dès qu'il saisit une valeur, c'est son échelle, en
+           unités de distance standardisée, et nous n'avons rien à y ajouter. */
+        const requested=Number(sigma)||0
         try{
             await ensureWasm()
             if(typeof rust.spectral_cluster!=="function"){
@@ -656,7 +676,7 @@ const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Ar
             }
             const flat=rust.spectral_cluster(
                 Float64Array.from(data??[]),n_samples,n_features,n_clusters,
-                sigma??0,k_neighbors??10
+                requested,k_neighbors??10
             )
             /* [assignments (n_samples), embedding (n_samples*n_clusters),
                centers (n_clusters*n_features), counts (n_clusters)] */
@@ -673,7 +693,7 @@ const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Ar
             }
         }catch(err){
             console.warn("[kernelWorker] rust spectral unavailable, JS fallback:",err)
-            return spectralJS(data,n_samples,n_features,n_clusters,sigma??0,k_neighbors??10)
+            return spectralJS(data,n_samples,n_features,n_clusters,requested,k_neighbors??10)
         }
     },
     async parseThermoRaw({data,options={}}){
@@ -2037,8 +2057,27 @@ function quickselectPairs(d2,idx,kth){
         else hi=store-1
     }
 }
-//Sigma estimate, mirroring estimate_sigma in spectral.rs: the median over a
-//100-point sample of the distance to each point's fifth nearest neighbour
+/* SIGMA ESTIME: la médiane, sur 100 points, de la distance au 5e voisin.
+
+   LE 5e VOISIN EST PETIT — ET ÇA A ÉTÉ MESURÉ SANS QU'ON PUISSE LE CORRIGER.
+   Sur 400 points standardisés en deux amas, il est à 0.06 quand la distance
+   médiane est à 1.89 : un rapport de 31, et une affinité RBF déjà à 1e-56
+   entre voisins d'un même amas. Le noyau paraît éteint. Deux remèdes ont été
+   essayés et REJETÉS après mesure, parce qu'ils aggravent le résultat:
+
+   • le 1er centile des distances de tout le nuage — il tombe encore dans le
+     cœur d'un paquet serré (0.054 contre 0.062) et ne change rien;
+   • la désactivation par le nombre de voisins, σ × k/√2 — sur 600 points en
+     deux familles, l'estimation seule donnait 303/297 et la version
+     « corrigée » 340/260, MOINS bonne.
+
+   POURQUOI LE SPECTRAL TIENT QUAND MÊME. Le graphe k-NN est construit par
+   RANG, pas par seuil d'affinité: chaque point garde ses k voisins quels que
+   soient leurs poids. Un σ trop petit n'éteint donc pas les arêtes, il écrase
+   les poids — et des poids tous égaux ne changent pas l'ordre des familles.
+   Ce qui reste vrai, c'est qu'un Laplacien mal conditionné rend le résultat
+   plus sensible au bruit numérique: c'est un risque, pas une panne, et le
+   remède qui marche est celui que l'UTILISATEUR applique en saisissant σ. */
 function estimateSigmaJS(data,n_samples,n_features){
     const allDists=[]
     const sampleSize=Math.min(n_samples,100)

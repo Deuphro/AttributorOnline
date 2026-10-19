@@ -1222,7 +1222,17 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             maxIter:100, // for k-means
             seed:42, // for reproducibility
             results:null, // cached clustering results per collection
-            dataSource:"targets" // "targets" = 3D from entries, "graph" = 2D from plotted traces
+            /* LA SOURCE PAR DÉFAUT EST LE GRAPHE, et plus les cibles.
+
+               « Targets » cluster en 3D sur [m/z, intensité, erreur ppm] des
+               cibles de chaque formule. « Graph » cluster en 2D sur les points
+               réellement à l'écran. Le second est le défaut parce que c'est
+               celui que l'utilisateur VOIT : les clusters qu'il regarde sont
+               ceux du nuage affiché, et non un nuage invisible calculé sur une
+               projection qu'il n'a pas demandée. Les deux affichent les mêmes
+               couleurs, mais seul le second peut plus jamais contredire l'image
+               — il en est la source. */
+            dataSource:"graph" // "targets" = 3D from entries, "graph" = 2D from plotted traces
         }
         //runtime only, rebuilt by every resolve
         this.collections=[]
@@ -1372,26 +1382,46 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             const anchor=svg.select(".anchor")
             if(anchor.empty()) return
             const clust=this.parameters.clustering
-            /* CLUSTER MEANS ARE DRAWN IN EVERY MODE, as a SQUARE. A cluster is
+            /* CLUSTER MEANS ARE DRAWN IN EVERY MODE, as a RING. A cluster is
                computed almost independently of what is drawn — the point cloud
                below is the selected graph type (error, intensity, van Krevelen
                or barycentric), coloured by the clusters, and the means are
-               squares so a mean is never mistaken for a point. A targets-source
+               rings so a mean is never mistaken for a point. A targets-source
                cluster only has an m/z and an intensity/error to place, so on a
                van Krevelen or barycentric axis those means fall off the data
                (clusterCenterXY returns NaN) and are simply not drawn there —
                which is correct, not a bug: run the clustering on the graph
-               traces to get means that sit on a ratio plot. */
-            if(!clust.enabled||!clust.results||!clust.results.centers) return
-            const nClusters=clust.results.nClusters
+               traces to get means that sit on a ratio plot.
+
+               ROND ET NON CARRÉ: les autres marques du graphique sont des
+               points ronds, et un carré se lit comme un changement de nature
+               alors qu'il n'y en a pas — le rectangle disait « mesuré » là où
+               le cercle dit « moyen ». Un disque plein collé au nuage se
+               confondait avec un point de données; le cercle creux garde la
+               distinction de taille et de trait qu'un carré donnait, sans
+               l'angle droit qui avait l'air d'une erreur d'affichage. */
+            /* RIEN À DESSINER N'EST UN CAS LÉGITIME, PAS UNE RAISON DE SORTIR.
+
+               Le retrait doit avoir lieu même quand il n'y a plus rien à
+               tracer. Retourner ici laissait les groupes `g.cluster-centroid`
+              restaient dans le DOM après le décochage: d3 n'a jamais eu l'occasion
+               de voir une sélection vide, donc rien n'est sorti, et les
+               étiquettes restaient peintes sur un graphique qui ne portait plus
+               aucun cluster. `drawVkCentroids` et `drawBarycentricPoles` ne
+               tombent pas dans le piège parce qu'ils construisent une liste
+               `visible` vide et laissent `exit().remove()` faire son travail —
+               c'est la forme à imiter. */
+            const live=!!(clust.enabled&&clust.results&&clust.results.centers)
             const pairs=[]
-            for(let i=0;i<nClusters;i++){
-                const [x,y]=this.clusterCenterXY(i)
-                if(Number.isFinite(x)&&Number.isFinite(y)){
-                    pairs.push({x,y,index:i})
+            if(live){
+                const nClusters=clust.results.nClusters
+                for(let i=0;i<nClusters;i++){
+                    const [x,y]=this.clusterCenterXY(i)
+                    if(Number.isFinite(x)&&Number.isFinite(y)){
+                        pairs.push({x,y,index:i})
+                    }
                 }
             }
-            if(!pairs.length) return
             const self=this
             const centroidGroup=anchor.selectAll("g.cluster-centroid")
                 .data(pairs,d=>d.index)
@@ -1403,21 +1433,19 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 .attr("transform",d=>`translate(${xScale(d.x)},${yScale(d.y)})`)
                 .each(function(d){
                     const g=d3.select(this)
-                    const color=self.getClusterColor(d.index,nClusters)
+                    const color=self.getClusterColor(d.index,clust.results.nClusters)
                     g.selectAll("*").remove()
-                    /* THE SQUARE: a mean, not a measurement. Square outline in the
-                       cluster colour, the index inside, so it never reads as a
-                       point of the cloud beside it. */
-                    g.append("rect")
-                        .attr("x",-11).attr("y",-11)
-                        .attr("width",22).attr("height",22)
+                    /* LE ROND: un moyen, pas une mesure. Couronne creuse dans
+                       la couleur du cluster, l'index au centre, pour qu'il ne
+                       se confonde jamais avec un point du nuage voisin. */
+                    g.append("circle")
+                        .attr("r",11)
                         .attr("fill","none")
                         .attr("stroke",color)
                         .attr("stroke-width",3)
                         .attr("opacity",0.9)
-                    g.append("rect")
-                        .attr("x",-7).attr("y",-7)
-                        .attr("width",14).attr("height",14)
+                    g.append("circle")
+                        .attr("r",7)
                         .attr("fill",color)
                         .attr("stroke","white")
                         .attr("stroke-width",2)
@@ -3577,10 +3605,30 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             style:{justifySelf:"end",fontSize:"0.85em"}
         },[clust.results?`${clust.results.nClusters} clusters, ${clust.results.nPoints} points`:""])
         /* Build rows */
-        const modeRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        /* UNE LIGNE PAR SÉLECTEUR, ET CHACUNE À SA LARGEUR.
+
+           Trois réglages sur une ligne, c'est trois occasions de tronquer: à
+           la largeur du panneau, la plus longue des options — « Targets (3D:
+           mz,intensity,error) », « Spectral Partitioning » — mange les deux
+           autres, qui disparaissent derrière un `minmax(0,1fr)` qu'elles ne
+           peuvent pas remplir. Une ligne par réglage rend la troncature
+           impossible sans rien retirer à personne.
+
+           LE MODE SEUL SUR SA LIGNE PARCE QU'IL VAUT PLUS QUE LES DEUX
+           AUTRES: c'est lui qui change le résultat le plus, et c'est le seul
+           des trois dont le changement ne se voie pas immédiatement — une
+           partition spectrale se distingue d'une k-means à la forme des
+           groupes, pas à l'affichage du panneau. */
+        const modeRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"minmax(0,1fr)",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
         modeRow.append(
-            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Mode:"]),this.clustModeSelect]),
-            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Source:"]),this.clustDataSourceSelect]),
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Mode:"]),this.clustModeSelect])
+        )
+        const sourceRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"minmax(0,1fr)",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        sourceRow.append(
+            CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Source:"]),this.clustDataSourceSelect])
+        )
+        const nClustersRow=CE("div",{className:"pp-row",style:{gridTemplateColumns:"auto minmax(0,1fr) auto",fontSize:"0.95em",alignItems:"center",gap:"4px"}},[])
+        nClustersRow.append(
             CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Clusters:"]),this.clustNClusters]),
             this.clustReadout
         )
@@ -3601,14 +3649,27 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Seed:"]),this.clustSeed])
         )
         if(clust.mode!=="kmeans") kmeansRow.style.display="none"
-        /* Cluster manager list */
+        /* LE CONTENEUR NE DÉFILE QUE EN VERTICAL.
+
+           Il portait `overflow:auto`, qui ouvre une barre horizontale dès qu'un
+           enfant dépasse — et un enfant dépasse toujours ici, parce que le
+           centre du cluster est du monospace qu'on a interdit de rétrécir.
+           Le défilement vertical reste (six clusters ne tiennent pas en
+           150 px); l'horizontal disparaît, parce qu'aucune information ne se
+           trouve à droite du bord: ce qui ne tient pas doit se tronquer ou
+           disparaître, pas rendre le panneau scrollable de côté pour aller
+           chercher deux chiffres. */
         this.clustManager=CE("div",{
-            style:{marginTop:"6px",maxHeight:"150px",overflow:"auto",border:"1px solid var(--border)",borderRadius:"3px",padding:"4px",fontSize:"0.85em",display:"none"}
+            style:{marginTop:"6px",maxHeight:"150px",overflowY:"auto",overflowX:"hidden",
+                border:"1px solid var(--border)",borderRadius:"3px",padding:"4px",
+                fontSize:"0.85em",display:"none"}
         },[])
         this.clusteringOptions.append(
             CE("div",{className:"pp-caption"},["Clustering"]),
             enableRow,
             modeRow,
+            sourceRow,
+            nClustersRow,
             pcaRow,
             spectralRow,
             kmeansRow,
@@ -3639,13 +3700,35 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                     display:"flex",alignItems:"center",gap:"4px",
                     padding:"2px 4px",marginBottom:"2px",
                     background:color+"20",border:"1px solid "+color+"60",borderRadius:"3px",
-                    cursor:"pointer",transition:"background 0.1s"
+                    cursor:"pointer",transition:"background 0.1s",
+                    /* `minWidth:0` ET `maxWidth:100%` SUR LA LIGNE, parce que
+                       ses trois enfants s'additionnent: swatch (fixe), libellé
+                       (élastique) et centre (fixe). Sans la borne, la
+                       largeur minimale de la ligne est la somme des deux
+                       parties fixes — et le conteneur, qui a une bordure, la
+                       déborde de deux pixels, ce qui suffit à faire apparaître
+                       l'ascenseur horizontal sur une liste de six lignes dont
+                       aucune n'a de quoi le mériter. */
+                    minWidth:"0",maxWidth:"100%",boxSizing:"border-box"
                 },
                 title:`Cluster ${c+1}: ${count} points (click to select the first formula of the cluster)\nCenter: (${Number.isFinite(cx)?cx.toFixed(3):"?"}, ${Number.isFinite(cy)?cy.toFixed(3):"?"})`
             },[])
             const swatch=CE("div",{style:{width:"12px",height:"12px",borderRadius:"50%",background:color,flex:"none",border:"1px solid #fff"}},[])
             const label=CE("span",{style:{flex:"1",minWidth:"0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, [`Cluster ${c+1} (${count} pts)`])
-            const centerText=CE("span",{style:{opacity:"0.7",fontFamily:"monospace",fontSize:"0.8em",flex:"none"}}, [`(${Number.isFinite(cx)?cx.toFixed(2):"?"}, ${Number.isFinite(cy)?cy.toFixed(2):"?"})`])
+            /* LE CENTRE, ET C'EST LUI QUI PROVOQUE LE DÉBORDEMENT. Il était
+               `flex:"none"`, donc sa largeur était un plancher: deux fois cinq
+               chiffres en monospace plus les parenthèses, et la ligne ne
+               pouvait plus rétrécir — elle poussait le conteneur bordered de
+               quelques pixels, ce qui suffisait à faire apparaître
+               l'ascenseur horizontal. Il peut maintenant perdre ses décimales
+               les moins utiles (`toFixed(1)`) et se tronquer si le panneau
+               devient vraiment étroit: le titre de la ligne, lui, garde les
+               trois décimales, donc rien n'est perdu — c'est le cas typique du
+               texte secondaire qu'on rétrécit en premier. */
+            const centerText=CE("span",{
+                style:{opacity:"0.7",fontFamily:"monospace",fontSize:"0.8em",
+                    flex:"0 1 auto",minWidth:"0",whiteSpace:"nowrap",overflow:"hidden"}
+            }, [`(${Number.isFinite(cx)?cx.toFixed(1):"?"}, ${Number.isFinite(cy)?cy.toFixed(1):"?"})`])
             row.append(swatch,label,centerText)
             row.addEventListener("mouseenter",()=>row.style.background=color+"40")
             row.addEventListener("mouseleave",()=>row.style.background=color+"20")
@@ -3654,9 +3737,31 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         }
         /* Partition button */
         if(results.nClusters>0){
+            /* LE BOUTON EST UN BOUTON, PAS UNE AFFICHE.
+
+           Il était `background:var(--accent)` — ce vert acide du thème, posé
+           en pleine largeur dans le coin du panneau — et il criait plus fort
+           que le graphique qu'il était censé concerner, alors qu'il ne fait
+           qu'écrire six sous-collections. Aucune couleur d'accent, aucun
+           aplat : les mêmes fond, texte et bordure que les autres boutons du
+           programme, avec juste une bordure pour marquer la clique. Un
+           élément qui attire l'œil doit mériter qu'on le regarde ; celui-là
+           décrit son action dans son texte. */
             const partitionBtn=CE("button",{
                 type:"button",
-                style:{marginTop:"6px",width:"100%",padding:"4px 8px",cursor:"pointer",fontSize:"0.85em",background:"var(--accent)",color:"var(--accent-text)",border:"none",borderRadius:"3px"},
+                style:{marginTop:"6px",padding:"4px 8px",cursor:"pointer",
+fontSize:"0.85em",background:"var(--bg)",
+                    color:"inherit",border:"1px solid var(--border)",borderRadius:"3px",
+                    /* PLEINE LARGEUR, ET C'EST BIEN. Le bouton est la seule
+                       action de la boîte: le laisser à sa largeur naturelle le
+                       ferait flotter au milieu de la liste au lieu de la
+                       clore. `boxSizing:border-box` EXPLICITE pour que les
+                       100 % se mesurent sur la bordure comprise — sans quoi le
+                       bouton dépasse d'un pixel de chaque côté et se fait
+                       rogner par l'`overflow-x:hidden` du conteneur. C'est le
+                       seul endroit du fichier où la largeur pleine et la
+                       bordure ne sont pas compatibles sans cela. */
+                    width:"100%",boxSizing:"border-box"},
                 title:"Split the current collection into sub-collections, one per cluster"
             },["Partition into Sub-collections"])
             partitionBtn.addEventListener("click",()=>this.partitionCollectionByClusters())
@@ -3917,10 +4022,24 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 counts.set(graphCounts)
             }
             // Map assignments back to entries (for targets data source)
+/* LE -1 EST UN INDEX VALIDÉ ET IL FAUT L'IGNORER.
+
+               En source graph, `extractPointsFromGraphTraces` ne sait pas
+               quelle formule a produit quel point et inscrit -1. Écrire
+               `entryAssignments[-1]` ne lève rien: c'est une propriété
+               NOMMEe d'un tableau, hors des elements, que rien ne relira
+               jamais. Le tableau restait donc entièrement à -1, et chaque
+               écriture sur `entryCounts` se faisait sur le même trou
+               noir — le décompte des entrées par cluster restait nul sans
+               qu'aucune erreur ne le dise.
+
+               Le garde ici n'est pas une précaution: sans lui, la source
+               graph produit une table de répartition vide et muette. */
             const entryAssignments=new Array(collection.entries.length).fill(-1)
             const entryCounts=new Array(collection.entries.length).fill(0)
             for(let i=0;i<entryIndices.length;i++){
                 const entryIdx=entryIndices[i]
+                if(!Number.isInteger(entryIdx)||entryIdx<0||entryIdx>=entryAssignments.length) continue
                 const assign=result.assignments[i]
                 if(entryAssignments[entryIdx]===-1) entryAssignments[entryIdx]=assign
                 entryCounts[entryIdx]++
@@ -3979,6 +4098,14 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 collectionName:collection.name,
                 nClusters:clust.nClusters,
                 nPoints:n_samples,
+                /* LES COORDONNÉES BRUTES DU CLOUD, pour la source graph.
+                   `pointKeys` ne les porte pas — c'est un nom de trace et un
+                   rang dans la trace — et le découpage a besoin de (x, y) pour
+                   remonter à la formule qui a produit le point. Les garder
+                   coûte une copie de tableau déjà en mémoire, et évite au
+                   découpage de relire un graphique qui a pu changer depuis. */
+                graphPoints:clust.dataSource==="graph"?Array.from(points):null,
+                n_features,
                 assignments:Array.from(result.assignments),
                 pointKeys,
                 entryAssignments,
@@ -4028,31 +4155,115 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.updateClusterManager()
         this.refreshGraph()
     }
+    /* L'ENTRÉE D'UN POINT DU GRAPHE, À PARTIR DU POINT LUI-MÊME.
+
+       C'est la question que le découpage doit pouvoir poser, et elle se pose
+       par la MESURE parce que le graphique est construit par cible : dans les
+       modes m/z-erreur et m/z-intensité, chaque point est le couple
+       (target.mz, target.errorPpm|intensity), donc le (x, y) qu'on voit
+       désigne une cible, et la cible désigne son entrée. En van Krevelen et
+       barycentric, en revanche, chaque point est une FORMULE projetée sur un
+       ratio, pas une cible: il n'y a rien à retrouver, et la fonction rend
+       `null` — le découpage sait alors qu'il ne peut pas fonctionner et le
+       dit, au lieu de répartir les formules au hasard.
+
+       L'INDEX SE RESSERRE: une entrée a quelques cibles, pas des centaines, et
+       la comparer à chaque point d'un nuage de plusieurs milliers coûterait
+       des millions de tests par clic. On filtre donc d'abord sur le m/z —
+       un seul accès par point — et on ne regarde le contenu que des rares
+       entrées qui tombent juste. */
+    buildGraphPointEntryIndex(collection){
+        /* m/z → la liste des (entrée, cible) qui la portent. Deux cibles
+           peuvent partager un m/z, et le m/z seul ne suffit donc pas à les
+           départager — la seconde coordonnée le fera. */
+        const byMz=new Map()
+        for(let e=0;e<collection.entries.length;e++){
+            const targets=collection.entries[e]?.targets??[]
+            for(let t=0;t<targets.length;t++){
+                const mz=targets[t]?.mz
+                if(!Number.isFinite(mz)) continue
+                let bucket=byMz.get(mz)
+                if(!bucket){ bucket=[]; byMz.set(mz,bucket) }
+                bucket.push([e,t,targets[t]])
+            }
+        }
+        return {byMz,entryOf:(x,y)=>{
+            const bucket=byMz.get(x)
+            if(!bucket||bucket.length===0) return -1
+            if(bucket.length===1) return bucket[0][0]
+            /* PLUSIEURS CIBLES AU MÊME m/z: on ne garde que celles dont la
+               seconde coordonnée est celle du graphique, et il ne doit en
+               rester qu'une. Deux cibles qui collent ambas, la formule reste
+               ambiguë et l'on ne l'attribue à personne. */
+            let found=-1
+            let matches=0
+            for(const [e,t,target] of bucket){
+                if(target.errorPpm===y||target.intensity===y){ found=e; matches++ }
+            }
+            return matches===1?found:-1
+        }}
+    }
+
+    /* LE DÉCOUPAGE PAR CLUSTERS, POUR LES DEUX SOURCES.
+
+       Le verrou sur « targets » venait d'un fait réel mais mal formulé : en
+       source graph, les points clustering n'étaient rattachés à aucune entrée.
+       Le verrou bloquait donc un cas où l'information existait bel et bien
+       dans le graphique affiché — il suffisait de la remonter. On la remonte
+       par la mesure (voir `buildGraphPointEntryIndex`), donc le découpage
+       marche dans les deux sources ; seul un graphique de RATIO, où un point
+       est une formule et non une cible, reste réellement impossible — et là
+       on le dit clairement, au lieu d'un message qui ne s'explique pas. */
     async partitionCollectionByClusters(){
         const clust=this.parameters.clustering
         if(!clust.results||!this.currentCollection) return
         const results=clust.results
         const collection=this.currentCollection
         if(results.collectionName&&results.collectionName!==collection.name) return
-        if(results.dataSource==="graph"){
-            this.origin?.notice?.("Not available","Partitioning requires 'Targets' data source (3D). Switch data source and re-run clustering.")
+        /* UNE SEULE LECTURE DU MODE, ET ELLE DIT SI LE DÉCOUPAGE EST
+           POSSIBLE: chaque point du cluster doit être rattachable à une
+           formule, donc le graphique doit être un graphique de cibles. */
+        const mode=this.parameters.graphMode??FormulaCollectionNode.GRAPH_MODE_DEFAULT
+        const byEntry=mode==="error"||mode==="intensity"
+        if(!byEntry){
+            this.origin?.notice?.("Not available on a ratio plot",
+                "A van Krevelen or barycentric point is a FORMULA projected on a ratio, "+
+                "not a measured target: there is nothing to map back to a formula. "+
+                "Switch the graph to Error or Intensity to split by cluster.")
             return
         }
-        const assignments=results.entryAssignments
-        /* ONE RESOLVE FOR THE WHOLE PARTITION. Each sub-collection used to be
-           created on its own and WITHOUT being awaited, so all of them raced
-           for whichever collection happened to be current when their formulas
-           landed — every cluster ended up inside the last one — and each
-           formula paid a full resolve of its own. The groups are built first,
-           the local collections are registered in one pass over
-           parameters.localCollections (the same array createCollection
-           writes), and the node resolves once at the end. */
+        /* UNE TABLE D'ENTRÉE PAR POINT, ET ON LA REMPLIT EN UNE PASSE.
+           `clusterOf` répond « quel cluster pour CETTE formule »; on le remplit
+           en parcourant les POINTS, parce que la source graph nous donne un
+           point et pas une formule — l'inverse. Une formule peut avoir ses
+           cibles réparties sur deux clusters: elle rejoint le PREMIER, et
+           l'autre cluster garde le reste de ses points. C'est le seul choix
+           possible, une formule ne pouvant être dans deux sous-collections à
+           la fois; le dire ici évite d'y revenir. */
+        const clusterOf=new Int32Array(collection.entries.length).fill(-1)
+        const n_features=results.n_features??(results.dataSource==="graph"?2:3)
+        const points=results.graphPoints
+        const assignments=results.assignments
+        if(results.dataSource==="graph"&&points&&points.length){
+            const {entryOf}=this.buildGraphPointEntryIndex(collection)
+            for(let i=0;i<assignments.length&&i<points.length/n_features;i++){
+                const assign=assignments[i]
+                if(assign<0||assign>=results.nClusters) continue
+                const e=entryOf(points[i*n_features],points[i*n_features+1])
+                if(e>=0&&clusterOf[e]===-1) clusterOf[e]=assign
+            }
+        }else{
+            const byEntryAssignments=results.entryAssignments
+            for(let e=0;e<byEntryAssignments.length&&e<collection.entries.length;e++){
+                clusterOf[e]=byEntryAssignments[e]
+            }
+        }
         const groups=[]
         for(let c=0;c<results.nClusters;c++){
             const texts=[]
-            for(let i=0;i<assignments.length&&i<collection.entries.length;i++){
-                if(assignments[i]!==c) continue
-                const entry=collection.entries[i]
+            for(let e=0;e<collection.entries.length;e++){
+                if(clusterOf[e]!==c) continue
+                const entry=collection.entries[e]
                 //the notation, not the key: a group adduct's key does not
                 //read back to the same formula (see localFormula)
                 const text=entry.notation??entry.key
@@ -4061,7 +4272,10 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             if(texts.length) groups.push({name:`${collection.name} - Cluster ${c+1}`,texts})
         }
         if(!groups.length){
-            this.origin?.notice?.("No formulas to partition","No formulas assigned to clusters (check clustering ran on 'Targets' source).")
+            this.origin?.notice?.("No formulas to partition",
+                "No formula matched a point of the clusters. A point is matched to a formula "+
+                "through its measured m/z and its error or intensity, so a collection whose "+
+                "points carry neither cannot be split.")
             return
         }
         const created=[]
