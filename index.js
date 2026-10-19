@@ -81,7 +81,7 @@ function serveStaticFileLimited(req, res) {
     //module (scripts/app/, scripts/core/, scripts/flow/, ...) was a 404 or
     //a hang waiting to happen. Only these public roots are servable — no
     //.git, no node_modules, no uploads (served by serveUploadsFile), no src/.
-    const publicRoots = ['/scripts/', '/styles/', '/resources/', '/data/', '/XOP/rust-extension/pkg/'];
+    const publicRoots = ['/scripts/', '/styles/', '/resources/', '/data/', '/XOP/rust-extension/pkg/', '/FRONTPAGE/'];
     const exactFiles = new Set(['/index.html', '/TOOLS/index.html']);
     const allowed = exactFiles.has(urlPath) || publicRoots.some(root => urlPath.startsWith(root));
     console.log("This file is served by serveStaticFileLimited: ", req.url)
