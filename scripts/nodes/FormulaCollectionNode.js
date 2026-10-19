@@ -2028,20 +2028,24 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             if(!table){
                 console.warn("[FormulaCollectionNode] no periodic table for barycentric")
             }else{
-                /* Build global element order across all visible collections. */
-                const elementOrder=new Map()
-                let elementIndex=0
+                /* Build global element order across all visible collections.
+                   Stable order: atomic number Z ascending, then symbol as tie-breaker,
+                   so the same elements always occupy the same poles. */
+                const elementSet=new Set()
                 for(const collection of this.collections){
                     if(!this.collectionState(collection.name).inGraphs) continue
                     for(const entry of collection.entries){
                         const formula=entry.formula
                         if(!formula) continue
                         for(const [el] of formula.counts){
-                            if(!elementOrder.has(el)){
-                                elementOrder.set(el,elementIndex++)
-                            }
+                            elementSet.add(el)
                         }
                     }
+                }
+                const sortedElements=[...elementSet].sort((a,b)=>(a.Z??0)-(b.Z??0)||String(a.symbol??"").localeCompare(String(b.symbol??"")))
+                const elementOrder=new Map()
+                for(let i=0;i<sortedElements.length;i++){
+                    elementOrder.set(sortedElements[i],i)
                 }
                 const k=elementOrder.size
                 if(k<3){
@@ -2630,13 +2634,12 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
     /* Projects compositions onto unit circle poles.
        Input: flat Float64Array [n0, n1, ..., nk-1, n0, n1, ...] for n_compositions
        Output: flat array [Rx0, Ry0, Rx1, Ry1, ..., px0, py0, px1, py1, ...]
-       Poles are at theta_i = 2π*i/k + π/2 on unit circle. */
+       Poles are at theta_i = 2π*i/k on unit circle. */
     static barycentricProjectJS(flat,n_compositions,k){
         if(n_compositions===0||k<3||flat.length!==n_compositions*k){
             return new Float64Array(0)
         }
         const twoPi=2*Math.PI
-        const halfPi=Math.PI/2
         const result=new Float64Array((n_compositions+k)*2)
 
         for(let comp=0;comp<n_compositions;comp++){
@@ -2651,7 +2654,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
             let rx=0, ry=0
             for(let i=0;i<k;i++){
                 const xi=flat[offset+i]/sum
-                const theta=twoPi*i/k+halfPi
+                const theta=twoPi*i/k
                 rx+=xi*Math.cos(theta)
                 ry+=xi*Math.sin(theta)
             }
@@ -2661,7 +2664,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
 
         const poleStart=n_compositions*2
         for(let i=0;i<k;i++){
-            const theta=twoPi*i/k+halfPi
+            const theta=twoPi*i/k
             result[poleStart+i*2]=Math.cos(theta)
             result[poleStart+i*2+1]=Math.sin(theta)
         }
@@ -3006,16 +3009,98 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
 
            C'est le même défaut que celui du producteur, corrigé du même côté :
            l'appariement se fait une fois, à la fin, sur l'ensemble terminé. */
-        collection.addAll((formulas??[]).map(formula=>({
-            formula,
-            /* Le TEXTE, parce que `addAll` refuse une formule sans source: une
-               formule qui porte un adduit ne se relit pas depuis sa clé, et la
-               source est ce qui rend le round-trip exact. `String(formula)` est
-               cette notation — celle que `add` aurait reconstruite en interne
-               depuis l'objet, donc aucun changement de contenu. */
-            sourceText:String(formula)
-        })))
+        /* Les entrées peuvent être :
+           - des instances de Formula / Stoichiometry (collections locales)
+           - des objets plats {key, notation, mz, ...} publiés par un autre nœud
+           - des chaînes (texte tapé)
+
+           Les objets plats ne sont PAS des instances de Formula, donc `addAll`
+           les rejetterait en silence. On les convertit via Formula.parse()
+           avant de les lui passer, afin qu'une chaîne de deux nœuds
+           FormulaCollectionNode relaye bien ses formules. */
+        const prepared=(formulas??[]).map(formula=>{
+            if(formula instanceof Formula||formula instanceof Stoichiometry){
+                return {formula, sourceText:String(formula)}
+            }
+            if(typeof formula==="string"){
+                if(!this.loadedTable){
+                    diagnostics.push(`${name}: the periodic table is not ready, cannot read "${formula}"`)
+                    return null
+                }
+                try{
+                    const parsed=Formula.parse(formula,this.loadedTable)
+                    return {formula:parsed, sourceText:formula}
+                }catch(e){
+                    diagnostics.push(`${name}: cannot read "${formula}" — ${e.message}`)
+                    return null
+                }
+            }
+            if(formula&&typeof formula==="object"){
+                const notation=formula.notation??formula.key??String(formula)
+                if(!this.loadedTable){
+                    diagnostics.push(`${name}: the periodic table is not ready, cannot read "${notation}"`)
+                    return null
+                }
+                try{
+                    const parsed=Formula.parse(notation,this.loadedTable)
+                    return {formula:parsed, sourceText:notation}
+                }catch(e){
+                    diagnostics.push(`${name}: cannot read "${notation}" — ${e.message}`)
+                    return null
+                }
+            }
+            diagnostics.push(`${name}: cannot read formula entry`)
+            return null
+        }).filter(Boolean)
+        collection.addAll(prepared)
+        /* On apparie d'ABORD, puis on restaure — et non l'inverse.
+
+           `setPoints` appelle `match()`, et `match()` remet À ZÉRO targets,
+           target, errorPpm et intensity de CHAQUE entrée avant de les
+           recalculer depuis `this.points` (chemistry.js:2455 et 2482-2487).
+           Or `publishOutput` ne relaie QUE `{name, formulas}`, jamais les
+           points qui ont produit ces erreurs — donc `this.points` est vide,
+           `match()` n'apparie rien, et tout retombe à null/0/[]. Une
+           restauration placée AVANT `setPoints` était donc écrasée dans la
+           seconde qui suivait: les erreurs perdues en cours de route.
+
+           On ne comble que les LACUNES: si `match()` a trouvé une cible avec
+           les points de CE nœud, c'est elle qui fait foi — une mesure fraîche
+           vaut mieux qu'un instantané du producteur, calculé sous une autre
+           fenêtre ppm. Les chaînes et les instances de Formula ne portent pas
+           ces champs — seuls les objets plats {key, errorPpm, ...} en ont. */
         collection.setPoints(points??[])
+        const sourceByKey=new Map()
+        for(const raw of formulas??[]){
+            if(raw&&typeof raw==="object"&&raw.key) sourceByKey.set(raw.key,raw)
+        }
+        for(const entry of collection.entries){
+            /* Appariée ici, sur les points de ce nœud: rien à restaurer. */
+            if(entry.targets.length) continue
+            const src=sourceByKey.get(entry.key)
+            if(!src) continue
+            if(Array.isArray(src.targets)&&src.targets.length){
+                entry.targets=src.targets.map(t=>({...t}))
+                let best=null
+                for(const t of entry.targets){
+                    if(!Number.isFinite(t.errorPpm)) continue
+                    if(!best||Math.abs(t.errorPpm)<Math.abs(best.errorPpm)) best=t
+                }
+                entry.target=best??null
+            }
+            /* La cible reconstituée porte la même erreur que celle du
+               producteur (même formule, même nearestTarget): inutile de la
+               deviner à deux endroits. */
+            if(entry.errorPpm===null){
+                entry.errorPpm=entry.target
+                    ?entry.target.errorPpm
+                    :(Number.isFinite(src.errorPpm)?src.errorPpm:null)
+            }
+            /* On n'arrive ici que si `match()` n'a rien apparié (le `continue`
+               plus haut l'a garantie): l'intensité locale est donc un 0 vide,
+               et celle du producteur fait foi. */
+            if(Number.isFinite(src.intensity)) entry.intensity=src.intensity
+        }
         for(const entry of collection.entries) entry.note=state.notes[entry.key]??""
         //`local` is the one thing the class cannot know: a collection this node
         //made can be written to and deleted, a collection a parent made is

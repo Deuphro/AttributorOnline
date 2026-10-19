@@ -30,7 +30,7 @@ pub fn barycentric_project(
 
         for i in 0..k {
             let xi = compositions[offset + i] as f64 / sum_f;
-            let theta = two_pi * i as f64 / k as f64 + std::f64::consts::FRAC_PI_2;
+            let theta = two_pi * i as f64 / k as f64;
             rx += xi * theta.cos();
             ry += xi * theta.sin();
         }
@@ -40,7 +40,7 @@ pub fn barycentric_project(
     }
 
     for i in 0..k {
-        let theta = two_pi * i as f64 / k as f64 + std::f64::consts::FRAC_PI_2;
+        let theta = two_pi * i as f64 / k as f64;
         output.push(theta.cos());
         output.push(theta.sin());
     }
@@ -77,7 +77,7 @@ pub fn barycentric_project_f64(
 
         for i in 0..k {
             let xi = compositions[offset + i] / sum;
-            let theta = two_pi * i as f64 / k as f64 + std::f64::consts::FRAC_PI_2;
+            let theta = two_pi * i as f64 / k as f64;
             rx += xi * theta.cos();
             ry += xi * theta.sin();
         }
@@ -87,7 +87,7 @@ pub fn barycentric_project_f64(
     }
 
     for i in 0..k {
-        let theta = two_pi * i as f64 / k as f64 + std::f64::consts::FRAC_PI_2;
+        let theta = two_pi * i as f64 / k as f64;
         output.push(theta.cos());
         output.push(theta.sin());
     }
