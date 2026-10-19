@@ -175,6 +175,12 @@ export class AttributionNode extends NodeWithAccordion{
            Les deux sont persistés dans serializeState/restoreState. */
         this.forestSelected=new Set()
         this.forestMinSize=1
+        /* COLORCODE DES SEGMENTS DU RÉSEAU: "nature" (la brique) ou "error"
+           (l'écart de masse du lien, en ppm). Volontairement hors des
+           paramètres — c'est une question de lecture, pas de calcul: le
+           réseau, ses formules et ses erreurs sont les mêmes dans les deux
+           cas, seul le découpage des segments en tas de couleur change. */
+        this.forestSegmentColour="nature"
         /* LE MONO TONIQUE DU RÉSEAU, comme celui du resolve.
 
            Un réseau lancé à la main sur trois spectres peut se croiser avec un

@@ -492,6 +492,162 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        ferait un graphique qui ne ressemble à rien du reste de l'application. */
     static FOREST_FORMULA_COLOURS=["#78b4ff","#aef22e","#ffb02e","#ff6363","#c58cff"]
 
+    /* LE SEGMENT COLORÉ PAR ERREUR A BESOIN D'UN ppm, ET LE LIEN N'EN PORTE
+       QU'UN EN DA.
+
+       `link.weight` est l'écart ABSOLU entre la différence de deux pics et la
+       masse de la brique attendue (forest.js:548) — il n'a pas de sens tout
+       seul: 5 mDa sont un lien excellent sur un pic de 40 et un lien affreux
+       sur un pic de 2000. Le ramener en ppm exige donc un dénominateur, et le
+       seul qui ait du sens est l'ION PARENT — celui dont le pic est le plus
+       léger des deux, `link.u`. C'est la convention de la formule
+       forestière : une perte se juge sur la masse qui l'a subie, pas sur celle
+       qu'elle a perdue. Renvoyer l'écart sur le poids DU TERRITOIRE et non
+       sur sa propre masse donnerait à un lien de 0.3 % le même nombre qu'un
+       lien de 30 %, parce que tous deux pèsent 0.003 Da.
+
+       Le dénominateur est donc la MASSE MESURÉE du parent, pas sa masse
+       théorique : la formule du sommet n'est pas encore attribuée au moment où
+       le graphe est dessiné, et une attribution absente ne doit pas faire
+       disparaître l'erreur. `null` — pas `0`, pas `NaN` — quand le parent est
+       introuvable ou de masse nulle, parce que `null` se teste et que `0` se
+       multiplie. */
+    forestLinkErrorPpm(graph,link){
+        const table=this.forestPpmByGraph(graph)
+        if(!table) return null
+        const key=link
+        /* LE CACHE EST FAIT SUR L'IDENTITÉ DU LIEN, pas sur son poids: deux
+           liens distincts peuvent porter le même écart, et les confondre
+           donnerait à l'un la couleur de l'autre. Une clé `${u}:${v}`
+           suffirait — les deux sens d'un même couple donnent le même parent,
+           donc le même ppm — mais l'objet lui-même est gratuit et exact. */
+        if(table.has(key)) return table.get(key)
+        const ppm=this.forestLinkErrorPpmUncached(graph,link)
+        table.set(key,ppm)
+        return ppm
+    }
+
+    /* LE VRAI CALCUL, et il ne s'exécute qu'une fois par lien.
+
+       Il était linéaire en `vertices` pour trouver la masse du parent: called
+       deux fois par lien et par frame (une pour l'échelle, une pour le tracé),
+       c'était un scan de la liste des sommets à chaque fois. Sur un arbre de
+       3000 pics et 3000 liens, ça voulait dire quelques millions de
+       comparaisons PAR FRAME — et c'est exactement ce qui rendait l'animation
+       du mode « error » visiblement plus lente que celle du mode « nature »,
+       alors que les deux dessinent exactement le même nombre de segments.
+
+       Un graphe est IMMUABLE une fois rendu : ses sommets et ses liens ne
+       changent plus, seuls leurs positions bougent. Le ppm, qui ne dépend
+       que des masses et des poids, ne peut donc pas changer pendant
+       l'animation — le mettre en cache n'est pas une approximation, c'est un
+       constat. La `WeakMap` le prouve : le cache disparaît avec le graphe
+       sans qu'aucune invalidation soit nécessaire, donc aucune invalidation
+       ne peut être oubliée.
+
+       LE MODE « NATURE » N'APPELLE PAS CE CODE et n'a donc jamais payé ce
+       scan : la lenteur était propre à « error », pas au colorcode en tant
+       que tel. */
+    forestLinkErrorPpmUncached(graph,link){
+        /* LE PARENT EST CELUI DES DEUX DONT LE NUMÉRO EST LE PLUS PETIT: les
+           pics sont rangés par masse croissante, donc le parent est l'ion dont
+           la perte est mesurée. Prendre `u` seul serait correct pour tout
+           graphe construit par le noyau — le tri de `candidates` garantit
+           `u<v` — mais cette garantie n'est pas visible depuis ici, et elle ne
+           doit pas l'être: le jour où un graphe arrive réordonné, `u<v` ne
+           tient plus et le ppm bascule silencieusement sur la mauvaise masse. */
+        const parentIndex=Math.min(Number(link?.u),Number(link?.v))
+        const parent=(graph?.vertices??[]).find(v=>v.index===parentIndex)
+        const reference=Number(parent?.mass)
+        if(!Number.isFinite(reference)||reference<=0) return null
+        const weight=Number(link?.weight)
+        if(!Number.isFinite(weight)) return null
+        return weight/reference*1e6
+    }
+
+    /* LE CACHE, UNE TABLE PAR GRAPHE, CRÉÉE À LA DEMANDE.
+
+       `null` si le graphe n'a pas de liens: rien à calculer, et surtout rien à
+       stocker — une `WeakMap` qui grossit sur des graphes vides est une fuite
+       déguisée. */
+    forestPpmByGraph(graph){
+        if(!graph?.links?.length) return null
+        this._forestPpmCache??=new WeakMap()
+        let table=this._forestPpmCache.get(graph)
+        if(!table){
+            table=new Map()
+            this._forestPpmCache.set(graph,table)
+        }
+        return table
+    }
+
+    /* L'ÉCHELLE DE COULEUR DES SEGMENTS, et elle est FIGÉE À CHAQUE DESSIN.
+
+       Fenêtre ppm si l'utilisateur en a donné une, sinon le pire lien du
+       lot — le même repli que celui des anneaux, mais appliqué à la bonne
+       grandeur. Elle est mémorisée parce que le survol d'un segment doit
+       retrouver EXACTEMENT la teinte qui lui a été peinte : recalculer
+       l'échelle au survol, sur un sous-ensemble de liens, donnerait un swatch
+       qui ne correspond plus au segment qu'il annonce. Un calcul identique
+       fait deux fois dans deux contextes différents finit toujours par
+       diverger — c'est la règle, pas un risque. */
+    forestLinkErrorScale(groups){
+        const window=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):null
+        if(window!==null) return window
+        let scale=0
+        for(const {graph} of groups??[]) scale=Math.max(scale,this.forestWorstLinkPpm(graph))
+        return scale>0?scale:null
+    }
+
+    /* LE PIRE LIEN D'UN GRAPHE, CALCULÉ UNE SEULE FOIS.
+
+       L'échelle demande le maximum des ppm de tous les liens affichés, et la
+       frame d'animation la redemande à chaque tick: sans mémoïsation, c'était
+       un parcours complet de tous les liens du lot, soixante fois par
+       seconde, pour ABOUTIR AU MÊME RÉSULTAT — le pire lien d'un graphe ne
+       change pas parce qu'un sommet a bougé de trois pixels.
+
+       On mémorise donc par graphe, comme le ppm lui-même, et le maximum final
+       ne porte plus que sur le NOMBRE D'ARBRES visibles: de O(sommets) par
+       frame à O(arbres). Le repli à 0 distingue « pas un lien » de « un graphe
+       dont aucun lien n'a de ppm », cas que la fenêtre ppm de l'utilisateur
+       rattrape de toute façon. */
+    forestWorstLinkPpm(graph){
+        if(!graph?.links?.length) return 0
+        this._forestWorstCache??=new WeakMap()
+        const known=this._forestWorstCache.get(graph)
+        if(known!==undefined) return known
+        let worst=0
+        for(const link of graph.links){
+            const ppm=this.forestLinkErrorPpm(graph,link)
+            if(Number.isFinite(ppm)&&ppm>worst) worst=ppm
+        }
+        this._forestWorstCache.set(graph,worst)
+        return worst
+    }
+
+    /* LE COLORCODE DES SEGMENTS, ET IL EST RÉGLABLE.
+
+       `nature` par défaut, parce que c'est ce que le réseau montre
+       habituellement : quelle brique relie ces deux pics. Mais un graphe dont
+       les segments sont tous de la même famille n'est pas encore un graphe
+       d'attribution, c'est une liste — l'erreur du lien est précisément ce qui
+       distingue une déduction d'une coïncidence, et elle était déjà calculée
+       et déjà affichée au survol, jamais PEINTE. Le basculement se fait par le
+       sélecteur posé dans la légende, pas par un paramètre caché : c'est une
+       question de lecture, donc elle appartient à la lecture. */
+    setForestSegmentColour(mode){
+        const next=mode==="error"?"error":"nature"
+        if(next===this.forestSegmentColour) return
+        this.forestSegmentColour=next
+        /* LE DESSIN, PAS LA DONNÉE: ni le graphe ni les formules n'ont bougé,
+           seul le découpage des segments en tas change. On redessine donc le
+           layout courant — un simple `drawForestLayout`, pas un
+           `renderForestPlot`, qui repartirait sur le cache animé et ferait
+           clignoter l'arbre pour un simple changement de couleur. */
+        this.drawForestLayout(this.forestLayout)
+    }
+
     /* `await`, CAR LE MODE ANIMÉ PASSE PAR LE WORKER: `forestOverviewLayout`
        retourne alors une PROMESSE de layout. Sans cet appel asynchrone on
        dessinerait la promesse elle-même (`layout.groups` inexistant). */
@@ -564,16 +720,32 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             }))
         }
 
-        /* LA NATURE DU SEGMENT, ET PAS SON ERREUR.
+        /* COMMENT UN SEGMENT EST PEINT, ET LE CHOIX EST À L'UTILISATEUR.
 
-           Le poids d'un lien est déjà lu dans la liste des liens et dans la
-           courbe des poids; ici un segment dit PAR QUOI il relie deux formules
-           — `link.label`, la différence de briques — et sa couleur vient de la
-           palette des briques, indexée par `link.standard`: la même briques
-           porte la même couleur d'un arbre à l'autre. Une trace par nature,
-           opacité uniforme — la trancher par poids serait revenir au gris de
-           tout à l'heure. */
+           `nature` — la BRICQUE (`link.label`), indexée par `link.standard` : une
+           même brique porte la même couleur d'un arbre à l'autre, et c'est ce
+           qu'on veut quand on cherche « où est passé le deutérium ».
+
+           `error` — l'ÉCART DE MASSE du lien, en ppm. Les deux se lisent sur la
+           même image mais ne répondent pas à la même question : la nature dit
+           ce que le lien PERD, l'erreur dit s'il est CRÉDIBLE. Forcer l'un
+           obligerait à sacrifier l'autre, alors que les deux tiennent dans la
+           même boucle — d'où le sélecteur, dans la légende.
+
+           L'ÉCHELLE EST LA SIENNE et elle ne se partage pas avec celle des
+           anneaux : une erreur de lien et une erreur de formule ne sont pas la
+           même grandeur, et les Aligner sur une rampe unique donnerait deux
+           jiomètres différents la même teinte. Fenêtre ppm si l'utilisateur en
+           a donné une, sinon le pire lien du lot — exactement le repli des
+           anneaux, appliqué à la bonne grandeur. */
         const palette=this.constructor.FOREST_FORMULA_COLOURS
+        const byError=this.forestSegmentColour==="error"
+        /* Les huit tranches, comme pour les anneaux — même fabrique de couleur,
+           donc les deuxrampe se lisent de la même façon. */
+        const segSteps=this.constructor.FOREST_COLOR_STEPS
+        /* L'ÉCHELLE EST FIGÉE ICI et réutilisée telle quelle au survol. */
+        const segScale=this.forestLinkErrorScale(groups)
+        this.forestSegmentScale=segScale
         const natureSlots=new Map()   // clé → rang d'apparition (repli)
         const natureBuckets=new Map() // clé → {label,colour,xs,ys,count}
         for(const {graph,rank} of groups){
@@ -581,20 +753,63 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 const from=at(rank,link.u)
                 const to=at(rank,link.v)
                 if(!from||!to) continue
-                const key=Number.isInteger(link.standard)
-                    ?`s${link.standard}`
-                    :`l${link.label??"?"}`
+                /* La clé du tas, et elle change de SENS avec le mode: `s3` est la brique
+                   n°3 en mode nature, c'est la tranche 3 en mode erreur. Deux
+                   espaces de noms disjoints (`s`/`l` d'un côté, `x`/`x-none` de
+                   l'autre) pour que le cache de la frame ne puisse pas servir
+                   un segment à la mauvaise couleur juste parce que les deux
+                   modes se partagent la Map. */
+                let key=null
+                let step=-1
+                const ppm=byError?this.forestLinkErrorPpm(graph,link):null
+                const scaled=byError&&ppm!==null&&segScale>0
+                if(byError){
+                    if(!scaled){
+                        key="x-none"
+                    }else{
+                        step=Math.floor(Math.abs(ppm)/segScale*segSteps)
+                        if(step<0) step=0
+                        if(step>=segSteps) step=segSteps-1
+                        key=`x${step}`
+                    }
+                }else if(Number.isInteger(link.standard)){
+                    key=`s${link.standard}`
+                }else{
+                    key=`l${link.label??"?"}`
+                }
                 let bucket=natureBuckets.get(key)
                 if(!bucket){
+                    /* LE LIBELLÉ ET LA TEINTE NE SONT FABRIQUÉS QU'ICI, et c'est
+                       le seul endroit où c'est nécessaire: ils décrivent la
+                       TRANCHE, pas le lien. Les recomposer pour chacun des
+                       milliers de liens de la frame — deux `formatPPM`, une
+                       interpolation, un `forestErrorColor` — revenait à
+                       fabriquer huit chaînes des milliers de fois pour n'en
+                       garder que huit. C'est le mode « error » qui le paie,
+                       puisque « nature » n'a qu'une étiquette à fabriquer par
+                       brique. */
                     const slot=natureSlots.size
                     natureSlots.set(key,slot)
-                    const colour=Number.isInteger(link.standard)
-                        ?palette[link.standard%palette.length]
-                        :palette[slot%palette.length]
-                    bucket={
-                        label:link.label??(Number.isInteger(link.standard)?`#${link.standard}`:"link"),
-                        colour,xs:[],ys:[],count:0
+                    let label=null
+                    let colour=null
+                    if(byError){
+                        if(step<0){
+                            label="link (no ppm scale)"
+                            /* LE GRIS, ET IL DIT « JE NE SAIS PAS ». Le bleu de
+                               la rampe signifierait « erreur nulle », ce qui est
+                               une affirmation: on ne l'a pas. */
+                            colour="#8a94a6"
+                        }else{
+                            label=`${this.formatPPM(step/segSteps*segScale)}–${this.formatPPM((step+1)/segSteps*segScale)} ppm`
+                            colour=this.constructor.forestErrorColor((step+0.5)/segSteps)
+                        }
+                    }else{
+                        label=link.label??(Number.isInteger(link.standard)?`#${link.standard}`:"link")
+                        colour=Number.isInteger(link.standard)
+                            ?palette[link.standard%palette.length]
+                            :palette[slot%palette.length]
                     }
+                    bucket={label,colour,xs:[],ys:[],count:0}
                     natureBuckets.set(key,bucket)
                 }
                 bucket.xs.push(from.x,to.x)
@@ -766,7 +981,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         /* LA LÉGENDE SUIT LA FRAME: natures de segment + échelle d'erreur.
            Elle ne reconstruit du DOM qu'à SIGNATURE changée — les frames
            d'animation, qui se répètent, ne paient rien. */
-        this.drawForestLegend([...natureBuckets.values()],colored>0?errorScale:null)
+        this.drawForestLegend([...natureBuckets.values()],
+            colored>0?errorScale:null,segScale)
         /* FORMULES DES RACINES PRÈS DE CHAQUE SOMMET RACINE. */
         this.hookForestLabelZoom(plot)
         this.drawForestCellTitles(groups,layout,plot)
@@ -1288,15 +1504,29 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             if(segmentHit){
                 const {link,graph,rank}=segmentHit
                 const palette=this.constructor.FOREST_FORMULA_COLOURS
-                const colour=Number.isInteger(link.standard)
-                    ?palette[link.standard%palette.length]
-                    :palette[0]
+                /* LE SWATCH SUIT LE MODE, sinon il mentirait: en mode "error"
+                   le segment est bleu et le swatch orange. */
+                const ppm=this.forestLinkErrorPpm(graph,link)
+                /* `forestErrorColor` borne son argument, donc un swatch bleu
+                   pour un ppm illisible est un mensonge de moins qu'un
+                   swatch qui suivrait une échelle recalculée ailleurs. On
+                   garde la teinte d'attente explicite quand le ppm n'existe
+                   pas, et on ne la fait passer pour aucune des huit. */
+                const scale=this.forestSegmentScale
+                const colour=this.forestSegmentColour==="error"
+                    ?(ppm!==null&&Number.isFinite(scale)&&scale>0
+                        ?this.constructor.forestErrorColor(ppm/scale)
+                        :"#8a94a6")
+                    :(Number.isInteger(link.standard)
+                        ?palette[link.standard%palette.length]
+                        :palette[0])
                 this.forestSegmentInfoHost.style.display="flex"
                 this.forestSegmentInfoHost.replaceChildren()
                 const lines=[
                     `Segment: ${link.label??`#${link.standard}`}`,
                     `Nature: ${link.label??`standard ${link.standard}`}`,
-                    `Error: ${link.weight.toFixed(4)} Da`,
+                    `Error: ${link.weight.toFixed(4)} Da`
+                        +(Number.isFinite(ppm)?` (${ppm.toFixed(1)} ppm)`:""),
                     `Vertices: ${link.u} ↔ ${link.v}`
                 ]
                 for(const line of lines){
@@ -1665,24 +1895,69 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        compte — et l'ÉCHELLE d'erreur des anneaux, le dégradé borné par le ppm
        de la fenêtre. La signature (nature:couleur:compte + échelle) décide si
        le DOM est retouché: à frame égale, rien ne bouge. */
-    drawForestLegend(natures,errorScale){
+    drawForestLegend(natures,errorScale,segmentScale){
         const host=this.forestLegendHost
         if(!host) return
         const ramp=Number.isFinite(errorScale)&&errorScale>0
+        /* UNE RAMPE DEUXIÈME, ET ELLE N'EST PAS LA MÊME. Les anneaux gardent
+           l'échelle de leurs erreurs de formule; quand les segments sont
+           colorés par erreur, ils ont besoin de la LEUR, sous une étiquette
+           qui le dit — sinon deux dégradés blues-rouges côte à côte, dont
+           personne ne sait lequel est lequel. */
+        const segmentRamp=this.forestSegmentColour==="error"
+            &&Number.isFinite(segmentScale)&&segmentScale>0
         const signature=natures.map(n=>`${n.label}:${n.colour}:${n.count}`).join("|")
             +(ramp?`#ramp:${errorScale}`:"")
+            +(segmentRamp?`#sramp:${segmentScale}`:"")
+            +(this.forestSegmentColour?`#mode:${this.forestSegmentColour}`:"")
         if(host.dataset.signature===signature) return
         host.dataset.signature=signature
         host.replaceChildren()
-        const empty=!natures.length&&!ramp
-        host.style.display=empty?"none":"flex"
-        if(empty) return
         const row=()=>{
             const line=CE("div",{},[])
             stylize(line,{display:"flex",alignItems:"center",gap:"5px",
                 whiteSpace:"nowrap",fontSize:"0.7em",opacity:"0.92"})
             return line
         }
+
+        /* LE SÉLECTEUR DE COLORCODE, EN TÊTE DE LÉGENDE, ET IL EST TOUJOURS
+           LA. Même quand la légende n'a rien à afficher — un plot vide reste
+           un plot, et un contrôle qui disparaît avec ses données oblige à
+           deviner s'il est encore disponible. Deux boutons radio de vrais,
+           pour être atteignables au clavier et annoncés tels; le seul défaut
+           du div cliquable imitant un bouton est de n'être ni l'un ni l'autre.
+           `stopPropagation` parce que cette légende est posée sur le plot :
+           sans lui, un clic de réglage serait aussi un clic de sélection de
+           sommet et changerait la racine du graphe. */
+        const modes=row()
+        modes.style.gap="4px"
+        modes.style.marginBottom="2px"
+        modes.appendChild(CE("span",{},["segments:"]))
+        for(const [value,label] of [["nature","nature"],["error","error"]]){
+            const active=this.forestSegmentColour===value
+            const option=CE("label",{},[])
+            stylize(option,{display:"flex",alignItems:"center",gap:"3px",
+                cursor:"pointer",opacity:active?"1":"0.62",
+                fontWeight:active?"600":"400"})
+            const input=CE("input",{},[])
+            input.type="radio"
+            input.name=`${this.title}:forest:segment-colour`
+            input.checked=active
+            stylize(input,{margin:"0",width:"auto",height:"auto",accentColor:"#78b4ff"})
+            input.addEventListener("click",(e)=>e.stopPropagation())
+            input.addEventListener("change",()=>this.setForestSegmentColour(value))
+            option.appendChild(input)
+            option.appendChild(CE("span",{},[label]))
+            modes.appendChild(option)
+        }
+        host.appendChild(modes)
+
+        const empty=!natures.length&&!ramp&&!segmentRamp
+        if(empty){
+            host.style.display="flex"
+            return
+        }
+        host.style.display="flex"
         for(const nature of natures){
             const line=row()
             const swatch=CE("div",{},[])
@@ -1704,6 +1979,20 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             line.appendChild(bar)
             line.appendChild(CE("span",{},[
                 `error 0–${this.formatPPM(errorScale)} ppm`
+            ]))
+            host.appendChild(line)
+        }
+        if(segmentRamp){
+            const line=row()
+            const bar=CE("div",{},[])
+            const stops=[0,0.5,1]
+                .map(t=>this.constructor.forestErrorColor(t)).join(", ")
+            stylize(bar,{width:"44px",height:"7px",borderRadius:"3px",
+                flex:"0 0 auto",background:`linear-gradient(90deg, ${stops})`,
+                boxShadow:"0 0 0 1px rgba(0,0,0,0.35)"})
+            line.appendChild(bar)
+            line.appendChild(CE("span",{},[
+                `segment 0–${this.formatPPM(segmentScale)} ppm`
             ]))
             host.appendChild(line)
         }
@@ -1870,9 +2159,16 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         /* LA LÉGENDE, ANCRÉE DANS LA BOÎTE DU PLOT: absolue, donc elle ne
            déplace rien — le plot a déjà mesuré sa boîte à la construction. */
         this.forestLegendHost=CE("div",{},[])
+        /* `pointerEvents:"auto"`, EXCEPTION À LA RÈGLE DU COIN. Les deux autres
+           panneaux du coin sont purement affichés et n'interceptent rien —
+           ici la légende porte le sélecteur de colorcode, donc elle CAPTE le
+           pointeur. Le prix est un rectangle de quelques dizaines de pixels
+           devant le coin haut-gauche du graphique; acceptable, parce que ce
+           coin ne portait déjà rien d'autre et parce qu'un contrôle visible
+           qu'on ne peut pas cliquer serait pire. */
         stylize(this.forestLegendHost,{
             position:"absolute",top:"4px",left:"6px",zIndex:"1",
-            pointerEvents:"none",display:"flex",flexDirection:"column",gap:"2px",
+            pointerEvents:"auto",display:"flex",flexDirection:"column",gap:"2px",
             color:"inherit",textShadow:"0 1px 2px rgba(0,0,0,0.75)",
             maxWidth:"60%"
         })
