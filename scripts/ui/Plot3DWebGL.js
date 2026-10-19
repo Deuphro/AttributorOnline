@@ -1134,11 +1134,23 @@ export class Plot3DWebGL{
                 /* Binner les x projetés (taille du bin ~ largeur pastille). */
                 const binSize=24
                 const xBin=Math.round(cx/binSize)*binSize
-                /* Stack vertical par bin x : garde les labels alignés sur leur pente. */
-                const stack=labelSlots.get(xBin)??{x:xBin,y:topY}
+                /* Stack vertical par bin x. */
+                let stack=labelSlots.get(xBin)
+                if(!stack){
+                    stack={x:xBin,y:topY}
+                    labelSlots.set(xBin,stack)
+                }
                 cy=stack.y-r-4
+                /* Vérifier TOUS les bins pour Y-overlap global (pas seulement voisins). */
+                for(const [bin,other] of labelSlots){
+                    if(bin===xBin) continue
+                    const minY=other.y-other.r-4
+                    if(cy>minY+r+4){
+                        cy=minY-r-8
+                    }
+                }
+                console.log("[drawRules ortho]", {label:rule.label, cx, xBin, topY, cy, stackY:stack.y, bins:labelSlots.size})
                 stack.y=cy-r-8
-                labelSlots.set(xBin,stack)
             }else{
                 /* Perspective : centre du mur + anti-chevauchement circulaire. */
                 const mid={x:(corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4,
