@@ -375,6 +375,284 @@ pub fn hough_transform(
     out
 }
 
+/// Combined transform from raw core: prepare + accumulate + smooth in one call.
+/// Avoids round-trip and data copying between separate WASM calls.
+///
+/// Returns the same layout as `hough_transform` PLUS the slope profile (column sums)
+/// appended at the end: [grid (nx*ny), slope_min, slope_max, intercept_min, intercept_max,
+/// pairs_used, pair_slope (2 * survivors), pair_count, slope_profile (nx)].
+#[wasm_bindgen]
+pub fn hough_transform_from_core(
+    core: &[f64],
+    nx: usize,
+    ny: usize,
+    keep: usize,
+    slope_min: f64,
+    slope_max: f64,
+    intercept_min: f64,
+    intercept_max: f64,
+    neighbours: usize,
+    bandwidth: f64,
+) -> Vec<f64> {
+    let n = core.len() / 2;
+    if n < 2 || nx < 2 || ny < 2 {
+        return Vec::new();
+    }
+    if !(slope_max > slope_min) || !(intercept_max > intercept_min) {
+        return Vec::new();
+    }
+    if !slope_min.is_finite()
+        || !slope_max.is_finite()
+        || !intercept_min.is_finite()
+        || !intercept_max.is_finite()
+    {
+        return Vec::new();
+    }
+
+    // Prepare: extract peaks from core
+    let mut rows: Vec<(f64, f64, f64)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mass = core[i];
+        let intensity = core[n + i];
+        if !mass.is_finite() || mass <= 0.0 || !intensity.is_finite() {
+            continue;
+        }
+        rows.push((mass, mass - mass.round(), intensity));
+    }
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let limit = if keep == 0 { rows.len() } else { keep.min(rows.len()) };
+    rows.truncate(limit);
+
+    let count = rows.len();
+    if count < 2 {
+        // Return empty grid with metadata but no pairs
+        let mut out = vec![0.0f64; nx * ny];
+        out.extend_from_slice(&[slope_min, slope_max, intercept_min, intercept_max, 0.0]);
+        out.extend_from_slice(&[] as &[f64]); // no voting pairs
+        out.push(0.0); // pair count
+        out.extend_from_slice(&vec![0.0f64; nx]); // slope profile (zeros)
+        return out;
+    }
+
+    // Split into separate arrays for accumulate
+    let mut mass = Vec::with_capacity(count);
+    let mut defect = Vec::with_capacity(count);
+    let mut intensity = Vec::with_capacity(count);
+    for (m, d, i) in rows {
+        mass.push(m);
+        defect.push(d);
+        intensity.push(i);
+    }
+
+    // Accumulate
+    let mut grid = vec![0.0f64; nx * ny];
+    let mut voting = Vec::with_capacity(count.saturating_mul(8));
+    let mut used = 0.0f64;
+    let slope_span = slope_max - slope_min;
+    let intercept_span = intercept_max - intercept_min;
+
+    for i in 0..count {
+        for j in (i + 1)..count {
+            let dm = mass[j] - mass[i];
+            if dm == 0.0 || !dm.is_finite() {
+                continue;
+            }
+            let dd = defect[j] - defect[i];
+            if !dd.is_finite() {
+                continue;
+            }
+            let slope = dd / dm;
+            let intercept = defect[i] - slope * mass[i];
+            if !slope.is_finite() || !intercept.is_finite() {
+                continue;
+            }
+            if slope < slope_min || slope > slope_max || intercept < intercept_min || intercept > intercept_max {
+                continue;
+            }
+            let wi = intensity[i];
+            let wj = intensity[j];
+            if !wi.is_finite() || !wj.is_finite() {
+                continue;
+            }
+            let weight = wi + wj;
+            if !(weight > 0.0) {
+                continue;
+            }
+            used += 1.0;
+
+            voting.push(slope);
+            voting.push(dm);
+
+            let u = (slope - slope_min) / slope_span * (nx - 1) as f64;
+            let v = (intercept - intercept_min) / intercept_span * (ny - 1) as f64;
+            let u0 = u.floor() as isize;
+            let v0 = v.floor() as isize;
+            let fu = u - u0 as f64;
+            let fv = v - v0 as f64;
+            let u0c = u0.clamp(0, nx as isize - 2);
+            let v0c = v0.clamp(0, ny as isize - 2);
+            let fu = fu.clamp(0.0, 1.0);
+            let fv = fv.clamp(0.0, 1.0);
+
+            for (di, wi0) in [(0isize, 1.0 - fu), (1isize, fu)] {
+                if wi0 <= 0.0 {
+                    continue;
+                }
+                let cx = (u0c + di) as usize;
+                for (dj, wj0) in [(0isize, 1.0 - fv), (1isize, fv)] {
+                    if wj0 <= 0.0 {
+                        continue;
+                    }
+                    let cy = (v0c + dj) as usize;
+                    grid[cy * nx + cx] += weight * wi0 * wj0;
+                }
+            }
+        }
+    }
+
+    // Smooth
+    let cells = nx * ny;
+    let k = neighbours.max(2);
+    let bw2 = bandwidth * bandwidth;
+    if !bandwidth.is_finite() || bandwidth <= 0.0 {
+        // Smoothing impossible, return accumulated grid with metadata
+        let mut out = grid;
+        out.extend_from_slice(&[slope_min, slope_max, intercept_min, intercept_max, used]);
+        out.extend_from_slice(&voting);
+        out.push((voting.len() / 2) as f64);
+        out.extend_from_slice(&vec![0.0f64; nx]); // slope profile placeholder
+        return out;
+    }
+
+    let source = &grid[..cells];
+    let mut occupied: Vec<(usize, usize, f64)> = Vec::new();
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let v = source[iy * nx + ix];
+            if v != 0.0 && v.is_finite() {
+                occupied.push((ix, iy, v));
+            }
+        }
+    }
+    if occupied.is_empty() {
+        let mut out = source.to_vec();
+        out.extend_from_slice(&[slope_min, slope_max, intercept_min, intercept_max, used]);
+        out.extend_from_slice(&voting);
+        out.push((voting.len() / 2) as f64);
+        out.extend_from_slice(&vec![0.0f64; nx]);
+        return out;
+    }
+    let occupied = occupied;
+
+    let mut out_grid = vec![0.0f64; cells];
+    let mut scratch: Vec<(f64, usize)> = Vec::with_capacity(k);
+
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let own = source[iy * nx + ix];
+            scratch.clear();
+            let reach = ((bw2 * 9.0).sqrt() as isize).max(3);
+            let x0 = (ix as isize - reach).max(0) as usize;
+            let x1 = (ix as isize + reach).min(nx as isize - 1) as usize;
+            let y0 = (iy as isize - reach).max(0) as usize;
+            let y1 = (iy as isize + reach).min(ny as isize - 1) as usize;
+            for cy in y0..=y1 {
+                for cx in x0..=x1 {
+                    let v = source[cy * nx + cx];
+                    if v == 0.0 || !v.is_finite() {
+                        continue;
+                    }
+                    let dx = (cx as isize - ix as isize) as f64;
+                    let dy = (cy as isize - iy as isize) as f64;
+                    let d2 = dx * dx + dy * dy;
+                    if d2 <= bw2 * 9.0 {
+                        scratch.push((d2, cy * nx + cx));
+                    }
+                }
+            }
+            if scratch.len() < 2 {
+                out_grid[iy * nx + ix] = own;
+                continue;
+            }
+            scratch.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let take = k.min(scratch.len()).max(2);
+
+            let mut mx = 0.0;
+            let mut my = 0.0;
+            for (_, idx) in scratch.iter().take(take) {
+                let cx = (*idx % nx) as f64;
+                let cy = (*idx / nx) as f64;
+                mx += cx;
+                my += cy;
+            }
+            mx /= take as f64;
+            my /= take as f64;
+            let mut sxx = 0.0;
+            let mut syy = 0.0;
+            let mut sxy = 0.0;
+            for (_, idx) in scratch.iter().take(take) {
+                let cx = (*idx % nx) as f64;
+                let cy = (*idx / nx) as f64;
+                let dx = cx - mx;
+                let dy = cy - my;
+                sxx += dx * dx;
+                syy += dy * dy;
+                sxy += dx * dy;
+            }
+            let denom = (take as f64 - 1.0).max(1.0);
+            sxx /= denom;
+            syy /= denom;
+            sxy /= denom;
+            sxx += bw2;
+            syy += bw2;
+
+            let det = sxx * syy - sxy * sxy;
+            let (ixx, iyy, ixy) = if det > 1e-12 {
+                (syy / det, sxx / det, -sxy / det)
+            } else {
+                (1.0 / bw2, 1.0 / bw2, 0.0)
+            };
+
+            let mut acc = 0.0;
+            let mut total = 0.0;
+            for (_, idx) in scratch.iter().take(take) {
+                let v = source[*idx];
+                let dx = ((*idx % nx) as f64) - (ix as f64);
+                let dy = ((*idx / nx) as f64) - (iy as f64);
+                let q = ixx * dx * dx + 2.0 * ixy * dx * dy + iyy * dy * dy;
+                if q < 0.0 || !q.is_finite() {
+                    continue;
+                }
+                let w = (-0.5 * q).exp();
+                if !w.is_finite() {
+                    continue;
+                }
+                acc += w * v;
+                total += w;
+            }
+            out_grid[iy * nx + ix] = if total > 0.0 { acc / total } else { own };
+        }
+    }
+
+    // Compute slope profile (column sums) from smoothed grid
+    let mut slope_profile = vec![0.0f64; nx];
+    for iy in 0..ny {
+        for ix in 0..nx {
+            slope_profile[ix] += out_grid[iy * nx + ix];
+        }
+    }
+
+    // Build final output: smoothed grid + metadata + voting pairs + slope profile
+    let mut out = out_grid;
+    out.extend_from_slice(&[slope_min, slope_max, intercept_min, intercept_max, used]);
+    out.extend_from_slice(&voting);
+    out.push((voting.len() / 2) as f64);
+    out.extend_from_slice(&slope_profile);
+
+    out
+}
+
 /// The peak list a Hough accumulator needs: masses, their Kendrick defects, and
 /// their intensities, sorted by rising mass and stripped of anything unusable.
 ///

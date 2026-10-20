@@ -472,15 +472,24 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
        la FRÉQUENCE d'apparition d'une signature, mesurée par le noyau lui-même
        et non estimée par la suite.
 
-       Why this and not a peak list: the accumulator's peak in slope is the
-       thing to count, and a column sum is that count already smoothed by the
-       grid. A peak finder on the surface would answer the same question while
-       depending on the bandwidth and the neighbour count the user just
-       changed. */
+Why this and not a peak list: the accumulator's peak in slope is the
+        thing to count, and a column sum is that count already smoothed by the
+        grid. A peak finder on the surface would answer the same question while
+        depending on the bandwidth and the neighbour count the user just
+        changed. */
     slopeProfile(){
         const answer=this.lastAnswer
-        if(!(answer?.grid instanceof Float64Array)) return null
+        if(!answer) return null
         const {nx,ny}=this.gridSize()
+        /* Use precomputed slope profile from kernel if available. */
+        if(answer.slopeProfile instanceof Float64Array && answer.slopeProfile.length===nx){
+            const profile=answer.slopeProfile
+            let max=0
+            for(const v of profile) if(v>max) max=v
+            return {profile,max}
+        }
+        /* Fallback: compute from grid (for JS fallback path or stale kernel). */
+        if(!(answer?.grid instanceof Float64Array)) return null
         if(answer.grid.length!==nx*ny) return null
         const profile=new Float64Array(nx)
         for(let iy=0;iy<ny;iy++){
@@ -1273,9 +1282,9 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         this.renderReadout()
     }
     /* ONE FLAT [masses…, intensities…] CORE — the layout `houghPrepare` splits
-       in half. A single XY wave is already columnar that way, but concatenating
-       N wave cores would interleave the two planes, so the halves are rebuilt
-       per wave through `index()`, the only accessor the layout guarantees. */
+in half. A single XY wave is already columnar that way, but concatenating
+        N wave cores would interleave the two planes, so the halves are rebuilt
+        per wave through `index()`, the only accessor the layout guarantees. */
     houghCore(){
         let total=0
         for(const wave of this.collectedWaves) total+=Math.floor(wave.core.length/2)
@@ -1283,9 +1292,12 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         let offset=0
         for(const wave of this.collectedWaves){
             const n=Math.floor(wave.core.length/2)
+            // Wave layout for dims [n,2] is [x0..xn-1, y0..yn-1]; cum=[1,n]
+            // So index(i,0)=i, index(i,1)=n+i — avoid function call in hot loop
+            const half=wave.core
             for(let i=0;i<n;i++){
-                core[offset+i]=wave.core[wave.index(i,0)]
-                core[total+offset+i]=wave.core[wave.index(i,1)]
+                core[offset+i]=half[i]
+                core[total+offset+i]=half[n+i]
             }
             offset+=n
         }

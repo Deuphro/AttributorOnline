@@ -230,7 +230,7 @@ const kernels={
             return {core:fkmdJS(core,params?.mz??0)}
         }
     },
-    async houghTransform({core,params}){
+async houghTransform({core,params}){
         /* One kernel, three steps, because they are three decisions and the
            caller is allowed to see each: how many peaks survive (prepare), where
            they vote (accumulate), and how the shape of the vote is estimated
@@ -248,40 +248,33 @@ const kernels={
         /* THE TAIL, DECODED ONCE. The voting pairs come straight from the kernel
            at a fixed offset, and the caller never has to know the offset because
            nothing outside this function reads the raw array. */
+        const cells=nx*ny
         const unpack=(flat)=>{
-            const cells=nx*ny
-            const count=flat[flat.length-1]??0
+            const count=flat[cells+4]??0
             /* TWO COMPONENTS PER PAIR, `(slope, dm)`. Copied rather than a
                subarray view: the transfer list below is allowed to hand over an
                owned buffer, and a view of `flat` is not one. */
             const pairs=flat.slice(cells+5,cells+5+2*count)
+            /* Slope profile (column sums) at the end: nx values. */
+            const slopeProfile=flat.slice(cells+5+2*count, cells+5+2*count+nx)
             return {
                 grid:flat.slice(0,cells),
-                count:flat[cells+4]??0,
-                pairs
+                count,
+                pairs,
+                slopeProfile
             }
         }
         const flat=Float64Array.from(core??[])
         try{
             await ensureWasm()
-            if(typeof rust.hough_transform!=="function"){
-                throw new Error("rust hough_transform is missing (stale pkg build?)")
+            if(typeof rust.hough_transform_from_core!=="function"){
+                throw new Error("rust hough_transform_from_core is missing (stale pkg build?)")
             }
-const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Array(0),
+ const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Array(0),
+                slopeProfile:new Float64Array(nx),
                 bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
-            const prepared=toFloat64(rust.hough_prepare(flat,keep))
-            const count=prepared.length?prepared[prepared.length-1]:0
-            if(!count||count<2){
-                //and an EMPTY plane, present and empty: a caller that reads it
-                //on a refused run must find nothing there rather than undefined,
-                // and "no pair voted" is not the same output as "no plane".
-                return {...empty}
-            }
-            const mass=prepared.slice(0,count)
-            const defect=prepared.slice(count,count*2)
-            const intensity=prepared.slice(count*2,count*3)
-            const grid=toFloat64(rust.hough_transform(
-                mass,defect,intensity,nx,ny,
+            const grid=toFloat64(rust.hough_transform_from_core(
+                flat,nx,ny,keep,
                 slopeMin,slopeMax,interceptMin,interceptMax,
                 neighbours,bandwidth
             ))
@@ -294,20 +287,15 @@ const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Ar
                floor is checked, and then the tail is checked against the count
                it carries, which catches a torn plane on its own. */
             if(grid.length<nx*ny+6){
-                throw new Error(`hough_transform returned ${grid.length} values, expected at least `+
+                throw new Error(`hough_transform_from_core returned ${grid.length} values, expected at least `+
                     `${nx*ny+6} — stale pkg build? (the voting pairs are missing)`)
             }
-            const survivors=grid[grid.length-1]??0
-            if(grid.length!==nx*ny+5+2*survivors+1){
-                throw new Error(`hough_transform says ${survivors} pairs but carries `+
-                    `${(grid.length-nx*ny-6)/2} — the tail does not match its own count`)
+            const survivors=grid[nx*ny+5+2*Math.trunc(grid[nx*ny+4])]??0
+            if(grid.length!==nx*ny+5+2*survivors+1+nx){
+                throw new Error(`hough_transform_from_core says ${survivors} pairs but carries `+
+                    `${(grid.length-nx*ny-6-nx)/2} — the tail does not match its own count`)
             }
-            //slice, not subarray: a copy owns its buffer, which is what the
-            //transfer list below is allowed to hand over. The pair count lives
-            //at the END of the grid (grid[nx*ny+4]) — indexing `prepared` there
-            //instead read a mass/defect/intensity value whenever the planes
-            //were longer than the grid, i.e. for every real peak count.
-            return {...unpack(grid),prepared:count,
+            return {...unpack(grid),prepared:Math.trunc(grid[cells+4]??0),
                 bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
         }catch(err){
             console.warn("[kernelWorker] rust hough unavailable, JS fallback:",err)
@@ -323,8 +311,15 @@ const empty={grid:new Float64Array(nx*ny),count:0,prepared:0,pairs:new Float64Ar
                 nx,ny,slopeMin,slopeMax,interceptMin,interceptMax,
                 neighbours,bandwidth
             )
+            // JS fallback: compute slope profile manually
+            const slopeProfile=new Float64Array(nx)
+            for(let iy=0;iy<ny;iy++){
+                for(let ix=0;ix<nx;ix++){
+                    slopeProfile[ix]+=grid[iy*nx+ix]
+                }
+            }
             return {...unpack(grid),prepared:count,
-                bounds:[slopeMin,slopeMax,interceptMin,interceptMax]}
+                bounds:[slopeMin,slopeMax,interceptMin,interceptMax],slopeProfile}
         }
     },
     async barycentric({compositions,n,k}){
