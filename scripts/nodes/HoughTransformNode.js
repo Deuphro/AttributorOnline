@@ -4,7 +4,7 @@ import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
 import {Plot2D} from "../ui/Plot2D.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
-import {scorePairs,scoreCutoffs,scoreSecondOrder} from "../chemistry.js"
+import {scorePairs,scoreCutoffs,scoreSecondOrder,FormulaCollection,Stoichiometry} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 
 /* LA COULEUR DU SEUIL, au niveau module : c'est elle qui départage les
@@ -653,6 +653,33 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         }
     }
 
+    /* Build FormulaCollection from selected 2nd order patterns (above threshold). */
+    async buildSecondOrderOutput(){
+        const cached=this._scoreOverlay2
+        if(!cached||!Number.isFinite(cached.threshold)||!this.detection2?.length){
+            return []
+        }
+        const {rows,threshold}=cached
+        const selected=rows.filter(r=>Number.isFinite(r.score)&&r.score>=threshold)
+        if(!selected.length){
+            return []
+        }
+        const table=await this.table()
+        if(!table){
+            return []
+        }
+        const collection=new FormulaCollection({name:"Hough 2nd order",table,ppm:10})
+        for(const row of selected){
+            /* row.elements is [{sym, n}, ...] e.g. [{sym:"C",n:2},{sym:"H",n:4}]
+               Build a stoichiometry string like "C2H4" from it. */
+            const formulaStr=row.elements.map(e=>e.sym+(e.n>1?e.n:"")).join("")
+            if(formulaStr){
+                collection.add(formulaStr)
+            }
+        }
+        return [collection]
+    }
+
     /* PAS DE renderDetection : la liste écrite des candidats a été retirée —
        le graphe de score EST le classement (une barre par rang, symbole au-
        dessus, seuil déplacable), et une copie texte ne faisait qu'en diverger. */
@@ -765,6 +792,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         console.log("[HoughTransformNode] recomputeSecondOrder done", {detection2Len:this.detection2?.length, effectiveThreshold, manual:this.scoreThreshold, otsu:cached.otsuScore})
         this.renderScoreGraph2()
         this.applySecondOrderRules()
+        await this.updateSecondOrderOutput()
     }
     /* TOUT LE MOBILIER DU GRAPHE, REPEINT D'UN SEUL COUP : les BARRES
        (dégradé PAR BARRE — blanc opaque au sommet, #46BEFF à 50 % au milieu,
@@ -924,6 +952,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             window.removeEventListener("pointercancel",stopDrag)
             window.removeEventListener("blur",stopDrag)
             this._scoreDragCleanup=null
+            this.updateSecondOrderOutput()
         }
         const onMove=(moveEvent)=>{
             this.scoreThreshold=toThreshold(moveEvent.clientY)
@@ -940,6 +969,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
     guessScoreThreshold(){
         this.scoreThreshold=null
         this.renderScoreGraph()
+        this.updateSecondOrderOutput()
     }
     /* CE QUE LA LECTURE DIT DU SEUIL, à côté du bouton Guess : l'Otsu quand
        il est suivi, la valeur à la main ET l'Otsu de référence quand le
@@ -1123,6 +1153,7 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
             window.removeEventListener("pointercancel",stopDrag)
             window.removeEventListener("blur",stopDrag)
             this._scoreDragCleanup2=null
+            this.updateSecondOrderOutput()
         }
         const onMove=(moveEvent)=>{
             this.scoreThreshold2=toThreshold(moveEvent.clientY)
@@ -1137,6 +1168,12 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
     guessScoreThreshold2(){
         this.scoreThreshold2=null
         this.renderScoreGraph2()
+        this.updateSecondOrderOutput()
+    }
+    /* Fast update of 2nd order output + child resolve, without re-running Hough transform. */
+    async updateSecondOrderOutput(){
+        this.outputs[0] = await this.buildSecondOrderOutput()
+        this.resolveChildren()
     }
     updateThresholdReadout2(){
         if(!this.thresholdReadout2) return
@@ -1203,7 +1240,6 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         }else{
             this._dmBinCache=null
         }
-        this.outputs[0]=[this.surfaceWave]
         this.setStatus(this.kernelErrors.length?"error"
             :this.collectedWaves.length?"resolved":"floating")
         this.applyTraces()
@@ -1232,6 +1268,8 @@ export class HoughTransformNode extends NodeWithRightAccordionGraph{
         if(run!==this.resolveRun) return
         this.renderScoreGraph2()
         this.applySecondOrderRules()
+        /* Output selected 2nd order patterns as a FormulaCollection */
+        this.outputs[0] = await this.buildSecondOrderOutput()
         this.renderReadout()
     }
     /* ONE FLAT [masses…, intensities…] CORE — the layout `houghPrepare` splits
