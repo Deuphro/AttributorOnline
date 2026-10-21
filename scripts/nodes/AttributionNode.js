@@ -939,7 +939,7 @@ export class AttributionNode extends NodeWithAccordion{
                        the same reason, and the two must agree. */
                     if(!Number.isFinite(mz)||mz===0) continue
                     const key=bestKeyFor.get(i)
-                    points.push(key?{mz,key,intensity:peakList.y[i]??0}:{mz,intensity:peakList.y[i]??0})
+                    points.push({mz,key,index:i,intensity:peakList.y[i]??0})
                 }
             }
             collection.setPoints(points)

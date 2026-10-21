@@ -2436,6 +2436,20 @@ class FormulaCollection{
        opérations déciderait du contenu de la collection. */
     setPoints(points){
         this.points=(points??[]).filter(point=>point&&typeof point==="object")
+        /* point → formule indexé, pour que n'importe quel noeud puisse retrouver
+           la formule d'un pic par son index, sans re-parcourir la collection. */
+        this.pointToFormula=new Map()
+        for(let i=0;i<this.points.length;i++){
+            const p=this.points[i]
+            if(p.index!=null&&p.index>=0&&p.index<this.points.length){
+                let entry=typeof p.key==="string"?this.find(p.key):null
+                if(!entry){
+                    const sorted=[...this.entries].sort((a,b)=>a.mz-b.mz)
+                    entry=nearestByMz(sorted,Number(p.mz??p.mass),this.ppm)
+                }
+                if(entry) this.pointToFormula.set(p.index,entry)
+            }
+        }
         this.match()
         return this
     }
