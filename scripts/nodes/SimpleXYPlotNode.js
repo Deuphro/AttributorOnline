@@ -124,7 +124,8 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         const syncInfo={
             ...info,
             traceTitle:trace?.title??info.traceTitle,
-            sourceWaveTitle:trace?.wave?.metadata?.sourceWave??trace?.title
+            sourceWaveTitle:trace?.wave?.metadata?.sourceWave??trace?.title,
+            pointSelected:true
         }
         dispatchEvent(this.events.broadcast.pinSync(syncInfo))
         // on n'émet pas POINT_SELECTED pour les suppressions locales,
@@ -136,6 +137,7 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
                 pointId,
                 traceId:info.traceId,
                 pointIndex:info.tracePoint,
+                mass:info.x,
                 traceTitle:trace.title,
                 sourceWaveTitle:trace.wave?.metadata?.sourceWave??trace.title
             })

@@ -220,6 +220,7 @@ export class AttributionNode extends NodeWithAccordion{
         this.run=0
         this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
         this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.listen.POINT_SELECTED=this.handlePointSelected.bind(this)
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]){
             inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity). Each is attributed separately.</title>'
@@ -240,12 +241,21 @@ export class AttributionNode extends NodeWithAccordion{
         this.applyPinSync(e.detail.msg)
     }
     applyPinSync(info){
+        if(info.pointSelected) return
         //update Probe field with the clicked mass (x value)
         if(this.massInput && Number.isFinite(info.x)){
             this.massInput.value=info.x.toFixed(5)
             this.parameters.probeMass=info.x
             this.probeMass(info.x)
         }
+    }
+    handlePointSelected(e){
+        if(e.detail.emitter===this) return
+        const mass=e.detail.msg?.mass
+        if(!Number.isFinite(mass)||mass<=0) return
+        this.parameters.probeMass=mass
+        if(this.massInput) this.massInput.value=mass.toFixed(5)
+        this.probeMass(mass)
     }
 
     /* The periodic table, ONCE and on demand.
