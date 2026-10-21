@@ -139,14 +139,29 @@ export class Dialog{
             height:windowStyle.height,
             minHeight:windowStyle.minHeight,
             resize:windowStyle.resize,
-            bottom:windowStyle.bottom
+            bottom:windowStyle.bottom,
+            gridTemplateRows:windowStyle.gridTemplateRows
         }
+        /* LE CONTENU DOIT DISPARAÎTRE, ET PAS SEULEMENT ÊTRE "CACHÉ".
+
+           `hidden` ne suffit pas: `AttributionForestMethods` pose un
+           `display:"grid"` EN LIGNE sur ce même bloc, et une propriété en ligne
+           bat la règle `[hidden]{display:none}` du navigateur. Le contenu
+           restait donc visible — et, avec son `height:100%`, il continuait de
+           nourrir la hauteur `auto` de la fenêtre: la fenêtre repliée
+           CONTINUAIT DE GRANDIR au lieu de se réduire à sa barre de titre.
+
+           Le masque effectif est donc porté par la feuille de style
+           (`.popup.container.folded > .popup.content{display:none!important}`),
+           qui, elle, bat la propriété en ligne — et qui se retire tout seul au
+           dépliement, sans avoir à se rappeler la valeur du display. */
         this.DOMelt.content.hidden=true
         this.DOMelt.window.classList.add("folded")
         windowStyle.height="auto"
         windowStyle.minHeight="0"
         windowStyle.bottom="auto"
         windowStyle.resize="none"
+        windowStyle.gridTemplateRows="auto"
         this.setFolderFoldedState(true)
     }
     unfold(){
@@ -154,12 +169,64 @@ export class Dialog{
         this.folded=false
         const windowStyle=this.DOMelt.window.style
         this.DOMelt.content.hidden=false
+        /* LE MASQUE EFFECTIF EST PORTÉ PAR LA FEUILLE DE STYLE, ET PAS PAR LE
+           `display` en ligne: le contenu peut être stylé en ligne (le graphe
+           d'attribution pose `display:grid`), et un `display` en ligne
+           écarté ici serait écrasé ou désaligné. `.folded` retiré, la feuille
+           rend la main au style du contenu. */
         this.DOMelt.window.classList.remove("folded")
         windowStyle.height=this.unfoldedSize.height
         windowStyle.minHeight=this.unfoldedSize.minHeight
         windowStyle.bottom=this.unfoldedSize.bottom
         windowStyle.resize=this.unfoldedSize.resize
+        windowStyle.gridTemplateRows=this.unfoldedSize.gridTemplateRows
         this.setFolderFoldedState(false)
+        /* LE CONTENU REVIENT AVEC DES DIMENSIONS RÉELLES, ET LES GRAPHES
+           DOIVENT LE RELEVOIR.
+
+           Pendant le repli, le contenu était en `display:none`: le conteneur
+           d'un graphe mesurait donc 0×0, et son `drawGraph` sortait
+           aussitôt — le SVG et le canvas gardaient donc la taille du dernier
+           état visible, ou le néant si le graphe n'avait jamais été dessiné.
+
+           Le `ResizeObserver` de l'application voit bien le changement de
+           taille (0 → N) et redessine, mais c'est une observation, pas une
+           garantie: elle se produit au mieux au cadre suivant, et elle peut
+           être manquée si l'élément n'était pas encore observé. On demande
+           donc le redessin explicitement, ici, sur le bloc qui vient de
+           réapparaître. */
+        requestAnimationFrame(()=>this.notifyContentResized())
+    }
+    /* APPELLE LES GESTIONNAIRES DE REDIMENSIONNEMENT DU CONTENU.
+
+       `handleResize` est le crochet que le projet pose sur les éléments
+       observés (`Plot2D`, `Plot2DWebGL`): l'entrée de l'observateur n'est
+       utilisée que pour son `target`, un objet factice suffit donc. La
+       FENÊTRE elle-même est écartée: son crochet repositionne la fenêtre
+       dans son panneau, ce qui n'a rien à faire avec un dépliement. */
+    notifyContentResized(){
+        const root=this.DOMelt.content
+        if(!root) return
+        const walk=(elt)=>{
+            for(const child of elt.children){
+                if(child.handleResize){
+                    try{
+                        child.handleResize({target:child})
+                    }catch(error){
+                        console.error("Dialog: the redraw of a folded graph failed",error)
+                    }
+                    /* PAS DE RÉCURSION SOUS UN ÉLÉMENT QUI A DÉJÀ UN CROCHET:
+                       ce crochet est censé avertir les descendants (le cadre du
+                       graphe d'attribution appelle lui-même le redessin du
+                       `Plot2DWebGL` qu'il contient) — le descendre une
+                       deuxième fois redessinerait deux fois le même
+                       graphique. */
+                    continue
+                }
+                walk(child)
+            }
+        }
+        walk(root)
     }
     toggleFolded(){
         if(this.folded){
@@ -187,7 +254,18 @@ export class Dialog{
                     resize:windowStyle.resize
                 }
             }
+            /* LE DÉPLIEMENT DU MAXIMISE NE DOIT PAS GÂTER LA TAILLE
+               ENREGISTRÉE.
+
+               `unfold()` enregistre les styles COURANTS comme taille dépliée:
+               or, ici, on déplie une fenêtre REPLIÉE, dont les styles
+               sont justement ceux du repli ("auto", "0px", "none"). La
+               sauvegarde serait donc écrasée, et le prochain dépliement
+               rendrait une fenêtre à hauteur `auto` — le symptôme que
+               l'on vient justement de corriger. */
+            const keptUnfoldedSize=this.unfoldedSize?{...this.unfoldedSize}:null
             if(this.folded) this.unfold()
+            if(keptUnfoldedSize) this.unfoldedSize=keptUnfoldedSize
             this.maximized=true
             this.DOMelt.window.classList.add("maximized")
             windowStyle.top="0px"
@@ -208,13 +286,32 @@ export class Dialog{
                 windowStyle[property]=value
             }
             if(saved.folded){
+                /* LE CONTENU REPART MASQUÉ: la feuille de style fait le masque
+                   effectif (le `display` en ligne du graphe d'attribution
+                   battrait `[hidden]`), et `.folded` la remet en place.
+
+                   Les dimensions EN LIGNE sont remises ici aussi: `unfold()`
+                   les avait restaurées au dépliement, et une fenêtre repliée
+                   qui garderait `grid-template-rows: auto 1fr` garderait une
+                   rangée pour un contenu masqué. La hauteur `auto`, elle,
+                   revient à la seule barre de titre. */
                 this.DOMelt.content.hidden=true
                 this.DOMelt.window.classList.add("folded")
                 this.folded=true
+                windowStyle.height="auto"
+                windowStyle.minHeight="0"
+                windowStyle.bottom="auto"
+                windowStyle.resize="none"
+                windowStyle.gridTemplateRows="auto"
                 this.setFolderFoldedState(true)
             }else{
+                this.DOMelt.content.hidden=false
                 this.folded=false
                 this.setFolderFoldedState(false)
+                /* LA FENÊTRE RETROUVE SA TAILLE D'AVANT LE MAXIMISE: le
+                   contenu, lui, vient de changer de dimensions — les graphes
+                   doivent s'y remettre. */
+                requestAnimationFrame(()=>this.notifyContentResized())
             }
         }
     }

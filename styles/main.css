@@ -384,6 +384,18 @@ div{
 .popup.container.folded{
     grid-template-rows:auto;
 }
+/* LE CONTENU D'UNE FENÊTRE REPLIÉE DISPARAÎT VRAIMENT.
+
+   `hidden` seul ne suffit pas: le graphe d'attribution pose un
+   `display:grid` EN LIGNE sur ce bloc, et une propriété en ligne bat la règle
+   `[hidden]{display:none}` du navigateur. Le contenu restait donc en place —
+   et, avec son `height:100%`, il nourrissait la hauteur `auto` de la fenêtre:
+   la fenêtre repliée CONTINUAIT DE GRANDIR au lieu de se réduire à sa barre
+   de titre. `!important` est ici nécessaire, et c'est le seul endroit du
+   projet qui s'en sert. */
+.popup.container.folded > .popup.content{
+    display:none !important;
+}
 .popup.container.maximized{
     resize:none;
 }
