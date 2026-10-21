@@ -4,6 +4,7 @@ import {
     AttributionNode,
     CalibrationNode,
     ChatNode,
+    DataCollectionImportNode,
     DelimitedTextNode,
     FKMDNode,
     FormulaCollectionNode,
@@ -131,6 +132,15 @@ export class MainFlowMenu extends Menu{
                                 node.updateLabel(source.fileName)
                                 node.loadRawFile().then(()=>node.renderAccordion?.())
                             }
+                            break
+                        }
+                        case "dataCollectionImport": {
+                            node = new DataCollectionImportNode(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
                             break
                         }
                         case "random": {

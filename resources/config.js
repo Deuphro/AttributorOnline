@@ -20,6 +20,7 @@ const defaultMenu={
                 //JSON:(e)=>{},
                 "Delimited Text":(e)=>{dispatchEvent(new CustomEvent('importDelimitedText',{detail:{msg:""}}))},
                 "Thermo .raw":(e)=>{dispatchEvent(new CustomEvent('importThermoRaw',{detail:{msg:""}}))},
+                "Data collection import":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Data collection import',type:'dataCollectionImport'}}}))},
             },
             hr:{},
             'Use msConvert':(e)=>{dispatchEvent(new CustomEvent('msConvert',{detail:{msg:""}}))}
@@ -34,6 +35,7 @@ const defaultMenu={
         "Data":{
             "Delimited text":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Delimited text',type:'delimitedText'}}}))},
             "Thermo .raw file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Thermo .raw file',type:'thermoRaw'}}}))},
+            "Data collection import":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Data collection import',type:'dataCollectionImport'}}}))},
         },
         "Operation":{
             "Trimmer":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Trimmer',type:'trimmer'}}}))},

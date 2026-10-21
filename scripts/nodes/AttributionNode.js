@@ -14,8 +14,8 @@ import {AttributionForestMethods} from "./AttributionForestMethods.js"
 
 export class AttributionNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
-        //one multiplexed input (XY waves), two outputs: attributions + forest FormulaCollections
-        super(title,[[]],[[],[]],origin,destinationFlow,position)
+        //one multiplexed input (XY waves), one input for pattern FormulaCollections, two outputs: attributions + forest FormulaCollections
+        super(title,[[],[]],[[],[]],origin,destinationFlow,position)
         this.status="floating"
         /* THE TWO LISTS, as text. Text rather than formulas, for the same
            reason the reader does it: a session must not carry the periodic table
@@ -148,6 +148,11 @@ export class AttributionNode extends NodeWithAccordion{
            courte rend les liens de la ligne de groupe lisibles. On l'ajoute
            depuis le champ, au-dessus des bornes. */
         this.parameters.forestGroups=[{group:"CH2"}]
+        /* GARDE DES PATTERNS D'ENTRÉE : false jusqu'à ce qu'une collection
+           de formules en amant ait remplacé les défauts. Posé à true par
+           `applyExtractedGroups` après la première application, et par
+           `restoreState` après une restauration de session. */
+        this._patternsFromInput=false
         /* la liste de références du dernier calcul, et les arbres par entrée */
         this.forestPlan=null
         this.forestGraphsOf=null
@@ -456,6 +461,131 @@ export class AttributionNode extends NodeWithAccordion{
         }
         return {waves:accepted,skipped:skipped+refused}
     }
+    /* Collect FormulaCollection objects from the PATTERN input anchor (inputs[1]).
+       Walks the same three-level Map structure as wavesFromInput.
+       Accepts both FormulaCollection instances and plain {name, formulas}
+       literals — the latter is what FormulaCollectionNode publishes, because
+       serialising thousands of Formula tables inside a session would be
+       prohibitive. */
+    collectInputCollections(){
+        const collections=[]
+        const anchor=this.inputs[1]
+        if(anchor instanceof Map){
+            for(const values of anchor.values()){
+                for(const linkOutputs of values instanceof Array?values:[values]){
+                    for(const value of linkOutputs instanceof Array?linkOutputs:[linkOutputs]){
+                        if(value instanceof FormulaCollection){
+                            collections.push(value)
+                        }else if(value&&typeof value==="object"&&Array.isArray(value.formulas)){
+                            collections.push({name:value.name||"",entries:value.formulas})
+                        }
+                    }
+                }
+            }
+        }
+        return collections
+    }
+    /* Extract combining/ionising groups from FormulaCollection entries.
+       Parses each formula core with Formula.parse (same as FormulaCollectionNode)
+       and reads its element counts, instead of a hand-rolled regex. */
+    async extractGroupsFromCollections(collections){
+        if(!collections?.length) return {combining:null,ionising:null}
+        if(!this.loadedTable) return {combining:null,ionising:null}
+        const combiningCounts=new Map()
+        const ionisingCounts=new Map()
+        for(const collection of collections){
+            for(const entry of collection.entries??[]){
+                const notation=entry.notation??String(entry.formula?? "")
+                if(!notation) continue
+                /* Split into core and ionisation parts. */
+                const parts=notation.split(/\[([^\]]+)\]/)
+                const core=parts[0]?.trim()
+                /* Ionisation groups are in brackets. */
+                for(let i=1;i<parts.length;i+=2){
+                    const ion=parts[i]?.trim()
+                    if(ion){
+                        ionisingCounts.set(ion,(ionisingCounts.get(ion)||0)+1)
+                    }
+                }
+                /* Neutral groups: parse the core with Formula.parse and read counts. */
+                if(core){
+                    let counts
+                    try{
+                        counts=Formula.parse(core,this.loadedTable).counts
+                    }catch{
+                        /* Notation illisible: on saute cette entrée. */
+                        continue
+                    }
+                    /* Accumulate element totals from the parsed formula. */
+                    let c=0,h=0,n=0,o=0
+                    for(const [el,count] of counts){
+                        switch(el.symbol){
+                            case "C": c=count;break
+                            case "H": h=count;break
+                            case "N": n=count;break
+                            case "O": o=count;break
+                        }
+                    }
+                    /* Extract CH2 units (min of C and H/2). */
+                    const ch2=Math.min(c,Math.floor(h/2))
+                    if(ch2>0) combiningCounts.set("CH2",(combiningCounts.get("CH2")||0)+1)
+                    /* Extract NH units (min of N and H). */
+                    const nh=Math.min(n,h)
+                    if(nh>0) combiningCounts.set("NH",(combiningCounts.get("NH")||0)+1)
+                    /* Remaining O. */
+                    if(o>0) combiningCounts.set("O",(combiningCounts.get("O")||0)+1)
+                    /* Remaining C. */
+                    const cRem=c-ch2
+                    if(cRem>0) combiningCounts.set("C",(combiningCounts.get("C")||0)+1)
+                    /* Remaining H (as H2). */
+                    const hRem=h-ch2*2-nh
+                    if(hRem>=2) combiningCounts.set("H2",(combiningCounts.get("H2")||0)+1)
+                }
+            }
+        }
+        /* Tous les groupes extraits sont conservés, quelle que soit leur
+           fréquence dans les formules d'entrée. La Map garantit déjà
+           l'unicité (chaque groupe apparaît une fois dans le résultat),
+           donc aucun filtre de fréquence n'est nécessaire : une Formule
+           Collection Node ne filtre pas ses formules par occurrence, ce
+           nœud ne doit pas filtrer ses groupes non plus. */
+        const combining=[...combiningCounts.entries()]
+            .sort((a,b)=>b[1]-a[1])
+            .map(([g])=>g)
+        const ionising=[...ionisingCounts.entries()]
+            .sort((a,b)=>b[1]-a[1])
+            .map(([g])=>g)
+        return {
+            combining:combining.length?combining:null,
+            ionising:ionising.length?ionising:null
+        }
+    }
+    /* Apply extracted groups to parameters, replacing defaults if present.
+
+       Called on EVERY resolve: when an upstream FormulaCollectionNode has
+       published collections, the groups they contain replace the CH2/C/NH/O
+       defaults. Without upstream collections the defaults stay untouched.
+       `this._patternsFromInput` is set to true after the first application
+       (and by `restoreState` after a session restore) for readout display. */
+    applyExtractedGroups(groups){
+        if(!groups) return false
+        let changed=false
+        if(groups.combining?.length){
+            this.parameters.combining=groups.combining.map(g=>({group:g,min:0,max:Infinity,ratio:1}))
+            changed=true
+        }
+        /* L'ionisation garde son défaut [H+]: un extrait de collection ne
+           doit pas imposer d'adduct exotique sur tous les spectres. */
+        this.parameters.ionising=[{group:"[H+]",min:1,max:1,ratio:1}]
+        changed=true
+        if(changed){
+            this._patternsFromInput=true
+            this.markStale("patterns from input collection")
+            this.renderGroupTables()
+            this.renderReadout()
+        }
+        return changed
+    }
 
     /* ONE spectrum -> ONE attribution list.
 
@@ -657,6 +787,8 @@ export class AttributionNode extends NodeWithAccordion{
         const run=++this.run
         const {waves,skipped}=this.collectInputWaves()
         this.skippedInputs=skipped
+        /* Les patterns ont déjà été appliqués dans startResolve, AVANT buildPlan().
+           Ici on utilise simplement le plan déjà construit. */
         if(!this.plan?.items?.length||!waves.length){
             this.attributions=[]
             this.kernelErrors=[]
@@ -917,6 +1049,14 @@ export class AttributionNode extends NodeWithAccordion{
            chose à lire pendant que ça tourne. */
         this.renderReadout()
         await this.table()
+        /* APPLIQUE LES PATTERNS DE L'ENTRÉE patterns AVANT de bâtir le plan.
+           Les groupes extraits des FormulaCollections en amont remplacent les
+           défauts, puis buildPlan() verrouille les fenêtres. */
+        const collections=this.collectInputCollections()
+        if(collections?.length){
+            const groups=await this.extractGroupsFromCollections(collections)
+            this.applyExtractedGroups(groups)
+        }
         this.buildPlan()
         await this.resolveAttributions()
         /* `renderAll` est désormais async — il attend la table. On l'attend donc
@@ -1932,6 +2072,10 @@ export class AttributionNode extends NodeWithAccordion{
         }else{
             lines.push("no plan yet")
         }
+        /* Indicate if patterns were imported from input FormulaCollection. */
+        if(this.parameters._patternsFromInput){
+            lines.push(`patterns from input: ${this.parameters._patternsFromInput.combining?.join(", ")||"–"} | ${this.parameters._patternsFromInput.ionising?.join(", ")||"–"}`)
+        }
         for(const line of this.diagnostics??[]) lines.push(line)
         for(const line of this.kernelErrors??[]) lines.push(`kernel: ${line}`)
         if(this.skippedInputs) lines.push(`${this.skippedInputs} input(s) skipped: not an XY wave`)
@@ -2079,6 +2223,10 @@ export class AttributionNode extends NodeWithAccordion{
                 this.parameters[name]=state[name]
             }
         }
+        /* L'état restauré reflète déjà les réglages (patterns appliqués ou pas).
+           On pose le garde pour qu'un re-resolve après restauration ne vienne
+           pas écraser ces valeurs avec une nouvelle extraction de patterns. */
+        this._patternsFromInput=true
         /* LES LISTES PASSENT PAR `groupList`, et c'est la migration.
 
            Une session d'avant les bornes porte `"CH2\nNH"`; celle d'aujourd'hui

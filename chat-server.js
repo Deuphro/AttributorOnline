@@ -81,12 +81,12 @@ function createRoom(id, { hidden = false, ownerSession = null, botMode = null } 
     messages: [],
     _emptyTimer: null
   };
-  if (botMode) {
+if (botMode) {
     /* One AiBot per room. Same model, same Ollama process, separate history —
        this is what lets a public room and three private conversations share a
        single loaded model without mixing their turns. */
-    room.bot = new AiBot({ name: BOT_NAME, useDocs: true });
-  }
+    room.bot = new AiBot({ name: BOT_NAME, useDocs: true, strictDocs: false });
+}
   rooms.set(id, room);
   return room;
 }

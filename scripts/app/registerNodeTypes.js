@@ -3,6 +3,7 @@ import {
     AttributionNode,
     CalibrationNode,
     ChatNode,
+    DataCollectionImportNode,
     DelimitedTextNode,
     FKMDNode,
     FormulaCollectionNode,
@@ -37,7 +38,8 @@ export function registerNodeTypes(){
         ChatNode,
         CalibrationNode,
         MassCalculatorNode,
-        HoughTransformNode
+        HoughTransformNode,
+        DataCollectionImportNode
     })
     for(const NodeType of [
         DelimitedTextNode,
@@ -51,7 +53,8 @@ export function registerNodeTypes(){
         AttributionNode,
         CalibrationNode,
         MassCalculatorNode,
-        HoughTransformNode
+        HoughTransformNode,
+        DataCollectionImportNode
     ]){
         SELF_SHAPED_NODES.add(NodeType)
     }

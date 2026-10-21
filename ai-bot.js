@@ -36,21 +36,26 @@ Tu réponds de manière concise et utile, en français.
 Tu es dans un salon de chat, réponds naturellement sans trop de formatage.`;
 
 const DOC_SYSTEM_PROMPT = `Tu es ${BOT_NAME}, l'assistant de la documentation Attributor.
-Tu ne connais RIEN d'autre que les extraits fournis ci-dessous.
-Réponds UNIQUEMENT à partir de cette documentation. Si elle ne contient pas la
-réponse, dis-le franchement : "La documentation Attributor ne couvre pas ce
-point." Ne complète jamais, n'invente jamais un paramètre, un nœud ou une
-fonctionnalité qui n'est pas écrit dans les extraits.
-Réponds dans la langue de la question. Garde les identifiants de nœuds, noms
-de paramètres et noms de menus tels quels.`;
+Tu as accès aux extraits de documentation ci-dessous pour répondre aux questions sur Attributor.
+Utilise cette documentation comme source PRINCIPALE pour les questions sur Attributor (nœuds, paramètres, workflows, etc.).
+Si la documentation ne couvre PAS le point, tu PEUX répondre à partir de tes connaissances générales, mais indique-le clairement.
+Ne complète jamais, n'invente jamais un paramètre, un nœud ou une fonctionnalité Attributor qui n'est pas écrit dans les extraits.
+Réponds dans la langue de la question. Garde les identifiants de nœuds, noms de paramètres et noms de menus tels quels.`;
+
+const RELAXED_DOC_SYSTEM_PROMPT = `Tu es ${BOT_NAME}, un assistant IA pour Attributor et le développement en général.
+Tu as accès à la documentation Attributor (extraits ci-dessous) ET à tes connaissances générales.
+Pour les questions sur Attributor : privilégie la documentation fournie. Si elle ne couvre pas le point, complète avec tes connaissances en le signalant.
+Pour les autres sujets (code, science, général) : réponds normalement avec tes connaissances.
+Sois concis, utile, et réponds en français.`;
 
 class AiBot {
-    constructor({name=BOT_NAME,model=DEFAULT_MODEL,systemPrompt=DEFAULT_SYSTEM_PROMPT,timeout=DEFAULT_TIMEOUT,useDocs=false}={}){
+    constructor({name=BOT_NAME,model=DEFAULT_MODEL,systemPrompt=DEFAULT_SYSTEM_PROMPT,timeout=DEFAULT_TIMEOUT,useDocs=false,strictDocs=false}={}){
         this.name=name
         this.model=model
         this.baseSystemPrompt=systemPrompt
         this.timeout=timeout
         this.useDocs=useDocs
+        this.strictDocs=strictDocs
         this.history=[]
         /* Serialises this bot's own calls. Two messages typed in the same
            second must not produce two answers racing to be appended in the
@@ -61,7 +66,12 @@ class AiBot {
     /* The conversation as Ollama wants it, trimmed so a long chat cannot grow
        the prompt until the context window overflows. */
     ollamaMessages(){
-        const sys = this.useDocs ? DOC_SYSTEM_PROMPT : this.baseSystemPrompt;
+        let sys
+        if(this.useDocs){
+            sys = this.strictDocs ? DOC_SYSTEM_PROMPT : RELAXED_DOC_SYSTEM_PROMPT
+        }else{
+            sys = this.baseSystemPrompt
+        }
         return [
             {role:"system",content:sys},
             ...this.history.slice(-MAX_HISTORY_MESSAGES)
@@ -76,20 +86,30 @@ class AiBot {
         }
         let docContext = null;
         let sources = null;
+        let docsFound = false;
         if(this.useDocs){
             const results = search(question);
-            if(!results){
-                return { answer: "La documentation Attributor ne couvre pas ce point.", sources: null };
+            if(results){
+                docsFound = true;
+                docContext = context(results, question);
+                sources = results.map(r => ({
+                    node: r.chunk.node,
+                    title: r.chunk.title,
+                    anchor: r.chunk.anchor,
+                    coverage: Math.round(r.coverage * 100)
+                }));
             }
-            docContext = context(results, question);
-            sources = results.map(r => ({
-                node: r.chunk.node,
-                title: r.chunk.title,
-                anchor: r.chunk.anchor,
-                coverage: Math.round(r.coverage * 100)
-            }));
         }
-        const finalQuestion = docContext ? `${docContext}\n\nQuestion : ${question}` : question;
+        let finalQuestion
+        if(docContext){
+            finalQuestion = `${docContext}\n\nQuestion : ${question}`
+        }else if(this.useDocs && this.strictDocs){
+            // Strict mode: refuse if no docs match
+            return { answer: "La documentation Attributor ne couvre pas ce point.", sources: null };
+        }else{
+            // Relaxed mode or no docs mode: just ask the question
+            finalQuestion = question
+        }
         /* The queue is chained, not awaited in a loop: several messages can be
            waiting and each still resolves with its own answer. */
         const run=this.queue.then(()=>this.callOllama(finalQuestion))
@@ -162,4 +182,4 @@ class AiBot {
     }
 }
 
-module.exports={AiBot,BOT_NAME,DEFAULT_SYSTEM_PROMPT,OLLAMA_URL}
+module.exports={AiBot,BOT_NAME,DEFAULT_SYSTEM_PROMPT,DOC_SYSTEM_PROMPT,RELAXED_DOC_SYSTEM_PROMPT,OLLAMA_URL}
