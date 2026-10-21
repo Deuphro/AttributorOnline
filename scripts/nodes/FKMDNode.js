@@ -202,12 +202,13 @@ export class FKMDNode extends NodeWithAccordion{
                 const pointCount=core.length/2
                 const x=core.subarray(0,pointCount)
                 const y=core.subarray(pointCount)
+                const inputTitle=wave.metadata?.title??"input"
                 products.push(Wave.fromCoordinates(x,y,{
-                    title:`${this.title} (F-KMD)`,
+                    title:`${inputTitle} \u2192 ${this.title} (F-KMD)`,
                     "f-kmd":true,
                     key:this.parameters.notation,
                     mz,
-                    sourceWave:wave.metadata?.title??"unknown",
+                    sourceWave:inputTitle,
                     traceMode:"points"
                 },["x","y"]))
             }catch(err){
