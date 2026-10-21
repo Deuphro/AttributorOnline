@@ -2300,6 +2300,10 @@ export class AttributionNode extends NodeWithAccordion{
         this.renderReadout()
     }
     suicide(options={}){
+        this.stopForestAnimation()
+        terminateForestWorker()
+        this.forestPlot?.dispose?.()
+        this.forestPlot=null
         /* LE PANNEAU DU RÉSEAU EST TUÉ AVEC LE NŒUD.
 
            `NodeWithAccordion.suicide` ne tue que le panneau gauche: sans cette
@@ -2312,9 +2316,6 @@ export class AttributionNode extends NodeWithAccordion{
            muet, et que plus rien ne repeint. */
         this.forestDialog?.suicide()
         this.forestDialog=null
-        /* Arrête le worker de layout forestier si actif. */
-        this.stopForestAnimation()
-        terminateForestWorker()
         super.suicide(options)
     }
 

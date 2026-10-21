@@ -1522,7 +1522,6 @@ in half. A single XY wave is already columnar that way, but concatenating
             if(this.scorePlot2.zoomGestureTimer) clearTimeout(this.scorePlot2.zoomGestureTimer)
             this.scoreWrapper2?.remove()
         }
-        this.graph?.dispose?.()
         super.suicide(options)
     }
 }

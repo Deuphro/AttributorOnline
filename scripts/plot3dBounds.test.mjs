@@ -462,6 +462,22 @@ test("CalibrationNode holds no private 3D GPU state any more",()=>{
         `suicide() must release the 3D plot: NodeWithAccordion only frees the accordion (got ${JSON.stringify(suicide.slice(-90))})`)
 })
 
+test("AttributionNode releases its forest plot when deleted",()=>{
+    const attribution=readFileSync(join(here,"nodes/AttributionNode.js"),"utf8")
+    const suicide=methodBodyOf(attribution,"suicide")
+    ok(suicide.includes("forestPlot?.dispose?.()"),
+        "suicide() must release the forest plot's WebGL context")
+})
+
+test("HoughTransformNode delegates graph disposal to its base",()=>{
+    const hough=readFileSync(join(here,"nodes/HoughTransformNode.js"),"utf8")
+    const suicide=methodBodyOf(hough,"suicide")
+    ok(!suicide.includes("this.graph?.dispose?.()"),
+        "NodeWithRightAccordionGraph already disposes graph before Node.suicide()")
+    ok(suicide.includes("super.suicide(options)"),
+        "HoughTransformNode must call its graph-owning base")
+})
+
 /* The COLORMAPS table is module-level, so its body is a constant and can be
    read out of the file and evaluated. The glow is specified to the decimal —
    transparent white at the base, white opaque at 3/4, Cherenkov blue at half
