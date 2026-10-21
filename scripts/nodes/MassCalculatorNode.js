@@ -22,6 +22,49 @@ export class MassCalculatorNode extends Node{
         this.isotopeBandElement=null
         this._hoveredBtn=null
         this._isoModifierInstalled=false
+        this.events.listen.formulaSelectSync=this.handleFormulaSelectSync.bind(this)
+        this.events.broadcast.massCalcTraceSync=this.createMassCalcTraceSyncEvent.bind(this)
+    }
+    handleFormulaSelectSync(e){
+        if(e.detail.emitter===this) return
+        const info=e.detail.msg
+        if(info.notation){
+            this.setFormula(info.notation,info.charge||0)
+        }
+    }
+    createMassCalcTraceSyncEvent(info){
+        return new CustomEvent("massCalcTraceSync",{
+            detail:{
+                msg:info,
+                emitter:this
+            }
+        })
+    }
+    broadcastMassCalcTrace(trace,isotopologues){
+        //Create a sync event with the trace data for other nodes to display
+        const event=this.events.broadcast.massCalcTraceSync({
+            trace:{
+                id:trace.id,
+                title:trace.title,
+                wave:{
+                    core:trace.wave.core,
+                    size:trace.wave.size,
+                    dims:trace.wave.dims,
+                    labels:trace.wave.labels,
+                    metadata:trace.wave.metadata
+                },
+                options:trace.options
+            },
+            isotopologues:isotopologues.map(iso=>({
+                mz:iso.mz,
+                mass:iso.mass,
+                notation:iso.notation,
+                logProbability:iso.logProbability,
+                charge:iso.charge
+            })),
+            sourceFormula:this.currentStoich?.toString()
+        })
+        dispatchEvent(event)
     }
 
     /* Un seul observateur keydown global, installé une fois: si le pointeur est
@@ -611,6 +654,14 @@ export class MassCalculatorNode extends Node{
             console.warn("Formula parse error:",err)
         }
     }
+    //External API: set formula from another node (e.g. FormulaCollectionNode)
+    async setFormula(formulaText,charge=0){
+        this.parameters.formula=formulaText
+        this.parameters.charge=charge
+        if(this.formulaInput) this.formulaInput.value=formulaText
+        if(this.chargeInput) this.chargeInput.value=charge
+        await this.updateFromFormula()
+    }
 
     updateAll(){
         this.updatePeriodicTable()
@@ -725,6 +776,8 @@ export class MassCalculatorNode extends Node{
                     line:{size:0}
                 }
             })
+            //Broadcast the synthesized masses to other nodes for display
+            this.broadcastMassCalcTrace(trace,isotopologues)
 
             if(!this.plot){
                 if(!(this.plotContainer.clientWidth>0&&this.plotContainer.clientHeight>0)){

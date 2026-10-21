@@ -8,7 +8,7 @@ import {PAN_DBLCLICK_GUARD} from "../ui/Plot2D.js"
 
 export class PeakPickingNode extends NodeWithAccordion{
 
-    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(
             title,
             [[]],  // 1 input: 1D or 2D wave
@@ -22,7 +22,7 @@ export class PeakPickingNode extends NodeWithAccordion{
             position
         )
         this.status="floating"
-        //classifier: a line through the origin, death = slope Ã— birth; null
+        //classifier: a line through the origin, death = slope × birth; null
         //until the first data (then fitted to keep every pair) or a click
         this.parameters.slope=null
         this.parameters.slopeAnchorBirth=null // where the marker sits on the line
@@ -37,6 +37,9 @@ export class PeakPickingNode extends NodeWithAccordion{
         this.dragDebounceTimer=null
         this.graph=null
         this.radioResult=null
+        this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
+        this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
         /* MULTIPLEX. Several links on input 0, or one link carrying several
            waves, are the same question: "treat them all the same way". The count
            is read at every resolve and is NOT state — the number of cables is the
@@ -78,7 +81,54 @@ export class PeakPickingNode extends NodeWithAccordion{
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: the picked peaks — one wave per input Wave</title>'
     }
-
+    createPinSyncEvent(info){
+        return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
+    }
+    handlePinSync(e){
+        if(e.detail.emitter===this) return
+        this.applyPinSync(e.detail.msg)
+    }
+    onGraphPinChange(info){
+        dispatchEvent(this.events.broadcast.pinSync(info))
+    }
+    applyPinSync(info){
+if(!this.graph) return
+        const trace=this.graph.traces.find(t=>t.id===info.traceId)
+        if(!trace) return
+        if(info.added){
+            this.graph.addPickPin({trace, tracePoint:info.tracePoint, x:info.x, y:info.y, px:0, py:0})
+        }else{
+            const pin=this.graph.pickPins.find(p=>p.traceId===info.traceId && p.tracePoint===info.tracePoint)
+            if(pin) this.graph.removePickPin(pin)
+        }
+    }
+    handleMassCalcTraceSync(e){
+        if(e.detail.emitter===this) return
+        this.applyMassCalcTrace(e.detail.msg)
+    }
+    applyMassCalcTrace(info){
+        if(!this.graph || !info.trace) return
+        //Reconstruct wave from canonical core layout [x0..xN, y0..yN]
+        const traceData=info.trace
+        const core=traceData.wave.core
+        const count=traceData.wave.dims[0]
+        const x=new Float64Array(count)
+        const y=new Float64Array(count)
+        for(let i=0;i<count;i++){
+            x[i]=core[i]
+            y[i]=core[i+count]
+        }
+        const wave=Wave.fromCoordinates(x,y,traceData.wave.metadata,traceData.wave.labels)
+        const trace=new XYTrace({
+            id:traceData.id,
+            title:traceData.title,
+            wave,
+            options:traceData.options
+        })
+        this.graph.traces=this.graph.traces.filter(t=>!t.id.startsWith("masscalc:"))
+        this.graph.traces.push(trace)
+        this.graph.drawGraph()
+    }
     registered(e){
         if(e.detail.msg.caster !== this || this.accordion){
             return
@@ -212,7 +262,7 @@ export class PeakPickingNode extends NodeWithAccordion{
         content.append(phSection, graphContainer, this.buildAntiRadioSection())
 
         // 3. Plot2DWebGL instance
-        this.graph = new Plot2DWebGL([], `${this.title} graph`, this.origin, graphContainer)
+        this.graph = new Plot2DWebGL([], `${this.title} graph`, this.origin, graphContainer,{onPinChange:this.onGraphPinChange.bind(this)})
         this.graph.parameters.axis.bottom.label = "Birth"
         this.graph.parameters.axis.bottom.autoLabel = false
         this.graph.parameters.axis.left.label = "Death"

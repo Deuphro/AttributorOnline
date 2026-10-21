@@ -222,10 +222,25 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                is this? », and the detail panel is what answers it. */
             this.parameters.selection=this.selectionKeyOf(row)
             this.selectedEntry=row.entry??null
+            //Broadcast formula selection to other nodes (e.g. MassCalculatorNode)
+            if(this.selectedEntry){
+                dispatchEvent(this.events.broadcast.formulaSelectSync({
+                    notation:this.selectedEntry.notation,
+                    charge:this.selectedEntry.charge||0,
+                    formula:this.selectedEntry.formula
+                }))
+            }
         }
         this.origin?.saveSessionSoon?.()
         this.renderRows()
         this.renderSelection()
+    }
+    createFormulaSelectSyncEvent(info){
+        return new CustomEvent("formulaSelectSync",{detail:{msg:info,emitter:this}})
+    }
+    handleFormulaSelectSync(e){
+        if(e.detail.emitter===this) return
+        //FormulaCollectionNode doesn't need to react to other FormulaCollectionNodes
     }
     /* The keyboard path. The list is a scroll box, so a page-down there is the
        list's own business — but the ARROWS are this node's, because moving
@@ -1145,26 +1160,26 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
     }
 
     /* --- the three panels ------------------------------------------------ */
-    constructor(title,origin,destinationFlow,position={x:180,y:10}){
+constructor(title,origin,destinationFlow,position={x:180,y:10}){
         //ONE input, and it is multiplexed: Flow.parentSynapse gathers every
         //link landing on that single anchor into one Map, so a hundred
         //collections arrive on one socket instead of a hundred sockets.
         /* TWO outputs now, and they are TWINS: the same collections, the same
            entries, the same order of collections — read two ways.
 
-             0  the collections themselves, as data
-             1  the same collections as XY waves, one per collection
+            0  the collections themselves, as data
+            1  the same collections as XY waves, one per collection
 
-           Why the second one: a collection is an object graph. Nothing that reads
-           spectra can take it — not a plot, not the trimmer, not the attribution
-           node. So the numbers the list is showing could not be LOOKED at, only
-           read. Wiring output 1 into a plot makes the list checkable: what the
-           panel claims, and what the data says, side by side.
+          Why the second one: a collection is an object graph. Nothing that reads
+          spectra can take it — not a plot, not the trimmer, not the attribution
+          node. So the numbers the list is showing could not be LOOKED at, only
+          read. Wiring output 1 into a plot makes the list checkable: what the
+          panel claims, and what the data says, side by side.
 
-           A second anchor, not a second list on the first: the collections and
-           the waves are different kinds of thing and a consumer should say which
-           it wants. Index 0 is untouched, so every link a session already has
-           keeps its socket. */
+          A second anchor, not a second list on the first: the collections and
+          the waves are different kinds of thing and a consumer should say which
+          it wants. Index 0 is untouched, so every link a session already has
+          keeps its socket. */
         super(title,[[]],[[],[]],origin,destinationFlow,position)
         this.status="floating"
         /* formula = one row per measurable formula.
@@ -1242,6 +1257,11 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
         this.loadedTable=null
         this.list=null
         this.rows=[]
+        this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
+        this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.broadcast.formulaSelectSync=this.createFormulaSelectSyncEvent.bind(this)
+        this.events.listen.formulaSelectSync=this.handleFormulaSelectSync.bind(this)
+        this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
         /* THE TABLE IS ASKED FOR HERE, AT CONSTRUCTION, and not on first use.
 
            A node that waits to be asked is a node that answers "loading…" to a
@@ -1288,6 +1308,54 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                spectrum, and it is the opposite: it is the list, in numbers. */
             outputAnchors[1].innerHTML='<title>Output: one XY wave per ticked collection — m/z against the intensity its match gave it. Unmatched formulas are at 0, so a flat row means "no match", not "no signal"</title>'
         }
+    }
+    createPinSyncEvent(info){
+        return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
+    }
+    handlePinSync(e){
+        if(e.detail.emitter===this) return
+        this.applyPinSync(e.detail.msg)
+    }
+    onGraphPinChange(info){
+        dispatchEvent(this.events.broadcast.pinSync(info))
+    }
+    applyPinSync(info){
+        if(!this.graph) return
+        const trace=this.graph.traces.find(t=>t.id===info.traceId)
+        if(!trace) return
+        if(info.added){
+            this.graph.addPickPin({trace, tracePoint:info.tracePoint, x:info.x, y:info.y, px:0, py:0})
+        }else{
+            const pin=this.graph.pickPins.find(p=>p.traceId===info.traceId && p.tracePoint===info.tracePoint)
+            if(pin) this.graph.removePickPin(pin)
+        }
+    }
+    handleMassCalcTraceSync(e){
+        if(e.detail.emitter===this) return
+        this.applyMassCalcTrace(e.detail.msg)
+    }
+    applyMassCalcTrace(info){
+        if(!this.graph || !info.trace) return
+        //Reconstruct wave from canonical core layout [x0..xN, y0..yN]
+        const traceData=info.trace
+        const core=traceData.wave.core
+        const count=traceData.wave.dims[0]
+        const x=new Float64Array(count)
+        const y=new Float64Array(count)
+        for(let i=0;i<count;i++){
+            x[i]=core[i]
+            y[i]=core[i+count]
+        }
+        const wave=Wave.fromCoordinates(x,y,traceData.wave.metadata,traceData.wave.labels)
+        const trace=new XYTrace({
+            id:traceData.id,
+            title:traceData.title,
+            wave,
+            options:traceData.options
+        })
+        this.graph.traces=this.graph.traces.filter(t=>!t.id.startsWith("masscalc:"))
+        this.graph.traces.push(trace)
+        this.graph.drawGraph()
     }
     registered(e){
         if(e.detail.msg.caster!==this||this.accordionRight){

@@ -31,8 +31,13 @@ export class NodeWithAccordionGraph extends Node{
         this.graph=new Plot2DWebGL([],
             `${label} graph`,
             this.origin,
-            this.graphDialog.DOMelt.content
+            this.graphDialog.DOMelt.content,
+            {onPinChange:this.onGraphPinChange?.bind(this)}
         )
+        this.graph.sourceNode=this
+    }
+    onGraphPinChange(info){
+        //override in subclasses
     }
     serializeState(){
         if(!this.graph){

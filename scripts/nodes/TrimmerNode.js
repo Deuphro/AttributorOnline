@@ -48,10 +48,61 @@ export class TrimmerNode extends NodeWithAccordion{
         this.skippedInputs=0
         /* the totals of the LAST multiplexed resolve, for the readout */
         this.multiplexTotals=null
+        this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
+        this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D), or several at once — each is then trimmed on its own data</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: one trimmed Wave per input Wave</title>'
+    }
+    createPinSyncEvent(info){
+        return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
+    }
+    handlePinSync(e){
+        if(e.detail.emitter===this) return
+        this.applyPinSync(e.detail.msg)
+    }
+    onGraphPinChange(info){
+        dispatchEvent(this.events.broadcast.pinSync(info))
+    }
+    applyPinSync(info){
+        if(!this.graph) return
+        const trace=this.graph.traces.find(t=>t.id===info.traceId)
+        if(!trace) return
+        if(info.added){
+            this.graph.addPickPin({trace, tracePoint:info.tracePoint, x:info.x, y:info.y, px:0, py:0})
+        }else{
+            const pin=this.graph.pickPins.find(p=>p.traceId===info.traceId && p.tracePoint===info.tracePoint)
+            if(pin) this.graph.removePickPin(pin)
+        }
+    }
+    handleMassCalcTraceSync(e){
+        if(e.detail.emitter===this) return
+        this.applyMassCalcTrace(e.detail.msg)
+    }
+    applyMassCalcTrace(info){
+        if(!this.graph || !info.trace) return
+        //Reconstruct wave from canonical core layout [x0..xN, y0..yN]
+        const traceData=info.trace
+        const core=traceData.wave.core
+        const count=traceData.wave.dims[0]
+        const x=new Float64Array(count)
+        const y=new Float64Array(count)
+        for(let i=0;i<count;i++){
+            x[i]=core[i]
+            y[i]=core[i+count]
+        }
+        const wave=Wave.fromCoordinates(x,y,traceData.wave.metadata,traceData.wave.labels)
+        const trace=new XYTrace({
+            id:traceData.id,
+            title:traceData.title,
+            wave,
+            options:traceData.options
+        })
+        this.graph.traces=this.graph.traces.filter(t=>!t.id.startsWith("masscalc:"))
+        this.graph.traces.push(trace)
+        this.graph.drawGraph()
     }
     registered(e){
         if(e.detail.msg.caster!==this||this.accordion){
@@ -287,7 +338,7 @@ export class TrimmerNode extends NodeWithAccordion{
             style:{position:"relative",width:"100%",height:"100%",minHeight:"200px",overflow:"hidden"}
         },[])
         content.append(graphContainer)
-        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer)
+        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer,{onPinChange:this.onGraphPinChange.bind(this)})
         //The trimmer frame holds NO traces, so Plot2D.dataBounds() is null, and
         //ensureValidScales reads a missing bound as "not strictly positive" and
         //forces EVERY log axis back to linear. The bars are binned in log, so on

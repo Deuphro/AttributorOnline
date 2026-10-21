@@ -218,6 +218,8 @@ export class AttributionNode extends NodeWithAccordion{
         /* monotonic ticket: a newer resolve forbids an older one to publish,
            otherwise two spectra launched by hand would tread on each other */
         this.run=0
+        this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
+        this.events.listen.pinSync=this.handlePinSync.bind(this)
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]){
             inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity). Each is attributed separately.</title>'
@@ -228,6 +230,21 @@ export class AttributionNode extends NodeWithAccordion{
         }
         if(outputAnchors[1]){
             outputAnchors[1].innerHTML='<title>Output 1: one FormulaCollection per selected forest tree</title>'
+        }
+    }
+    createPinSyncEvent(info){
+        return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
+    }
+    handlePinSync(e){
+        if(e.detail.emitter===this) return
+        this.applyPinSync(e.detail.msg)
+    }
+    applyPinSync(info){
+        //update Probe field with the clicked mass (x value)
+        if(this.massInput && Number.isFinite(info.x)){
+            this.massInput.value=info.x.toFixed(5)
+            this.parameters.probeMass=info.x
+            this.probeMass(info.x)
         }
     }
 

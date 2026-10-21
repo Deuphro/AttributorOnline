@@ -29,8 +29,9 @@ const GL_PICK_PIN_LIMIT=100
 const GL_UPLOAD_CHECK_ATTEMPTS=8
 
 export class Plot2DWebGL extends Plot2D{
-    constructor(data,title,origin,destination){
+    constructor(data,title,origin,destination,options={}){
         super(data,title,origin,destination)
+        this.onPinChange=options.onPinChange??null
         //the base constructor already ran a first drawGraph, whose lazy
         //bootstrap may have created the layer: never clobber it here (each
         //replacement would leak a WebGL context and an orphan canvas)
@@ -778,9 +779,29 @@ export class Plot2DWebGL extends Plot2D{
         const existing=this.pickPins.find(pin=>pin.traceId===hit.trace.id&&pin.tracePoint===hit.tracePoint)
         if(existing){
             this.removePickPin(existing)
+            this.notifyPinChange(existing,false)
             return false
         }
-        return this.addPickPin(hit)
+        const added=this.addPickPin(hit)
+        if(added){
+            const pin=this.pickPins.find(p=>p.traceId===hit.trace.id&&p.tracePoint===hit.tracePoint)
+            if(pin) this.notifyPinChange(pin,true)
+        }
+        return added
+    }
+
+    notifyPinChange(pin,added){
+        if(this.onPinChange){
+            this.onPinChange({
+                traceId:pin.traceId,
+                traceTitle:pin.group?.traceTitle??pin.traceId,
+                tracePoint:pin.tracePoint,
+                x:pin.x,
+                y:pin.y,
+                added,
+                sourceNode:this.sourceNode??null
+            })
+        }
     }
 
     addPickPin(hit){
@@ -888,13 +909,19 @@ export class Plot2DWebGL extends Plot2D{
 
     removePickPin(pin){
         const index=this.pickPins.indexOf(pin)
-        if(index>=0) this.pickPins.splice(index,1)
+        if(index>=0){
+            this.pickPins.splice(index,1)
+            this.notifyPinChange(pin,false)
+        }
         pin.group?.remove()
         pin.tip?.remove()
     }
 
     clearPickPins(){
-        for(const pin of [...this.pickPins]) this.removePickPin(pin)
+        for(const pin of [...this.pickPins]){
+            this.notifyPinChange(pin,false)
+            this.removePickPin(pin)
+        }
     }
 
     dispose(){

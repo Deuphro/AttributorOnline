@@ -31,12 +31,63 @@ export class CalibrationNode extends NodeWithAccordion{
         this.surfaceBuilt=false
         this.surfacePlot=null
         this.surfaceHost=null
+        this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
+        this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
 
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input 0: FormulaCollection(s) — reference formulas with errorPpm from attribution</title>'
         if(inputAnchors[1]) inputAnchors[1].innerHTML='<title>Input 1: XY Wave(s) — spectra to calibrate</title>'
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]) outputAnchors[0].innerHTML='<title>Output: calibrated XY Wave(s)</title>'
+    }
+    createPinSyncEvent(info){
+        return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
+    }
+    handlePinSync(e){
+        if(e.detail.emitter===this) return
+        this.applyPinSync(e.detail.msg)
+    }
+    onGraphPinChange(info){
+        dispatchEvent(this.events.broadcast.pinSync(info))
+    }
+    applyPinSync(info){
+        if(!this.graph) return
+        const trace=this.graph.traces.find(t=>t.id===info.traceId)
+        if(!trace) return
+        if(info.added){
+            this.graph.addPickPin({trace, tracePoint:info.tracePoint, x:info.x, y:info.y, px:0, py:0})
+        }else{
+            const pin=this.graph.pickPins.find(p=>p.traceId===info.traceId && p.tracePoint===info.tracePoint)
+            if(pin) this.graph.removePickPin(pin)
+        }
+    }
+    handleMassCalcTraceSync(e){
+        if(e.detail.emitter===this) return
+        this.applyMassCalcTrace(e.detail.msg)
+    }
+    applyMassCalcTrace(info){
+        if(!this.graph || !info.trace) return
+        //Reconstruct wave from canonical core layout [x0..xN, y0..yN]
+        const traceData=info.trace
+        const core=traceData.wave.core
+        const count=traceData.wave.dims[0]
+        const x=new Float64Array(count)
+        const y=new Float64Array(count)
+        for(let i=0;i<count;i++){
+            x[i]=core[i]
+            y[i]=core[i+count]
+        }
+        const wave=Wave.fromCoordinates(x,y,traceData.wave.metadata,traceData.wave.labels)
+        const trace=new XYTrace({
+            id:traceData.id,
+            title:traceData.title,
+            wave,
+            options:traceData.options
+        })
+        this.graph.traces=this.graph.traces.filter(t=>!t.id.startsWith("masscalc:"))
+        this.graph.traces.push(trace)
+        this.graph.drawGraph()
     }
 
     registered(e){
@@ -234,7 +285,7 @@ export class CalibrationNode extends NodeWithAccordion{
 
         content.append(modeSection,displaySection,this.graphContainer,this.surfaceHost)
 
-        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,this.graphContainer)
+        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,this.graphContainer,{onPinChange:this.onGraphPinChange.bind(this)})
         this.graph.parameters.axis.bottom.label="m/z"
         this.graph.parameters.axis.bottom.autoLabel=false
         this.graph.parameters.axis.left.label="Error (ppm)"
