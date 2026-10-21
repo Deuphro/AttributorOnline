@@ -7,6 +7,8 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
         this.events.listen.pinSync=this.handlePinSync.bind(this)
         this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
+        this.events.listen.POINT_SELECTED=this.handlePointSelected.bind(this)
+        this.filterCriteria=null
     }
     createPinSyncEvent(info){
         return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
@@ -41,21 +43,107 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         //Remove existing masscalc trace if any
         this.graph.traces=this.graph.traces.filter(t=>!t.id.startsWith("masscalc:"))
         this.graph.traces.push(trace)
+    }
+    handlePointSelected(e){
+        if(e.detail.emitter===this) return
+        const {msg}=e.detail
+        this.applyPointSelection(msg)
+    }
+    findSyncTrace(traceId, traceTitle, sourceWaveTitle){
+        if(!this.graph) return null
+        const byId=this.graph.traces.find(t=>t.id===traceId)
+        if(byId) return byId
+        const titles=new Set([traceTitle,sourceWaveTitle].filter(title=>typeof title==="string"&&title.length))
+        return this.graph.traces.find(t=>titles.has(t.title)||titles.has(t.wave?.metadata?.sourceWave))??null
+    }
+    setFilterCriteria(criteria){
+        this.filterCriteria=criteria
+        // si un pin existe déjà pour cette trace, vérifier qu'il est toujours
+        // acceptable sous les nouveaux critères
+        this.refreshVisiblePins()
+    }
+    applyPointSelection(msg){
+        if(!this.graph) return
+        const trace=this.findSyncTrace(msg.traceId,msg.traceTitle,msg.sourceWaveTitle)
+        if(!trace) return
+
+        const ok=this.matchesCriteria(msg, trace)
+        if(ok){
+            const traceIdForPin=trace.id
+            const knownPin=this.graph.pickPins.find(p=>p.traceId===traceIdForPin && p.tracePoint===msg.pointIndex)
+            if(!knownPin) this.graph.addPickPin({trace, tracePoint:msg.pointIndex, x:0, y:0, px:0, py:0})
+        }else{
+            this.graph.pickPins=this.graph.pickPins.filter(p=>{
+                const trace2=this.graph.traces.find(t=>t.id===p.traceId)
+                return trace2 && this.matchesCriteria({traceId:p.traceId, pointIndex:p.tracePoint}, trace2)
+            })
+        }
         this.graph.drawGraph()
     }
-    onGraphPinChange(info){
-        dispatchEvent(this.events.broadcast.pinSync(info))
+    matchesCriteria(msg, trace){
+        if(!this.filterCriteria) return true
+        const {title, minPoints, maxPoints, pointIndex}=this.filterCriteria
+        const count=trace.wave?trace.wave.dims[0]:0
+        const titleMatch=(!title || trace.title===title)
+        const sourceMatch=(!title || trace.wave?.metadata?.sourceWave===title)
+        const titleOrSource=titleMatch || sourceMatch
+        return titleOrSource
+            && (!minPoints || count>=minPoints)
+            && (!maxPoints || count<=maxPoints)
+            && (pointIndex==null || pointIndex===msg.pointIndex)
+    }
+    refreshVisiblePins(){
+        if(!this.graph) return
+        // on ne supprime que les pins sur des traces qui ne correspondent plus
+        const kept=[]
+        for(const p of this.graph.pickPins){
+            const trace=this.graph.traces.find(t=>t.id===p.traceId)
+            if(!trace) continue
+            if(this.matchesCriteria({pointIndex:p.tracePoint},trace)) kept.push(p)
+        }
+        const removed=this.graph.pickPins.filter(p=>!kept.includes(p))
+        this.graph.pickPins=kept
+        for(const p of removed) this.graph.removePickPin(p)
+        this.graph.drawGraph()
     }
     applyPinSync(info){
         if(!this.graph) return
-        const trace=this.graph.traces.find(t=>t.id===info.traceId)
+        const trace=this.findSyncTrace(info.traceId,info.traceTitle,info.sourceWaveTitle)
         if(!trace) return
         if(info.added){
+            if(!this.matchesCriteria({pointIndex:info.tracePoint},trace)) return
             this.graph.addPickPin({trace, tracePoint:info.tracePoint, x:info.x, y:info.y, px:0, py:0})
         }else{
-            const pin=this.graph.pickPins.find(p=>p.traceId===info.traceId && p.tracePoint===info.tracePoint)
+            const traceIdForPin=trace.id
+            const pin=this.graph.pickPins.find(p=>p.traceId===traceIdForPin && p.tracePoint===info.tracePoint)
             if(pin) this.graph.removePickPin(pin)
         }
+    }
+    onGraphPinChange(info){
+        const trace=this.graph?.traces.find(t=>t.id===info.traceId)
+        const syncInfo={
+            ...info,
+            traceTitle:trace?.title??info.traceTitle,
+            sourceWaveTitle:trace?.wave?.metadata?.sourceWave??trace?.title
+        }
+        dispatchEvent(this.events.broadcast.pinSync(syncInfo))
+        // on n'émet pas POINT_SELECTED pour les suppressions locales,
+        // seulement pour les ajouts de pin
+        if(info.added && trace){
+            const pointId=`${trace.title}:${info.tracePoint}`
+            const evt=this.createPointSelectedEvent({
+                type:"POINT_SELECTED",
+                pointId,
+                traceId:info.traceId,
+                pointIndex:info.tracePoint,
+                traceTitle:trace.title,
+                sourceWaveTitle:trace.wave?.metadata?.sourceWave??trace.title
+            })
+            globalThis.dispatchEvent(evt)
+        }
+    }
+    createPointSelectedEvent(msg){
+        return new CustomEvent("POINT_SELECTED",{detail:{msg,emitter:this}})
     }
     registered(e){
         if(e.detail.msg.caster !== this || this.logScaleCheckbox){
