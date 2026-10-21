@@ -2,6 +2,7 @@ import {test} from "node:test"
 import assert from "node:assert/strict"
 import {readFileSync} from "node:fs"
 import {methodBody} from "./sourceBody.mjs"
+import {isMassXAxis,matchingTracePoints,traceSourceInfo} from "./utils/plotPointSync.js"
 
 const plotSource=readFileSync(new URL("./nodes/SimpleXYPlotNode.js",import.meta.url),"utf8")
 const fkmdSource=readFileSync(new URL("./nodes/FKMDNode.js",import.meta.url),"utf8")
@@ -11,15 +12,15 @@ globalThis.removeEventListener=eventTarget.removeEventListener.bind(eventTarget)
 globalThis.dispatchEvent=eventTarget.dispatchEvent.bind(eventTarget)
 const methods={}
 for(const [name,parameters] of Object.entries({
-    findSyncTrace:["traceId","traceTitle","sourceWaveTitle"],
     matchesCriteria:["msg","trace"],
-    applyPointSelection:["msg"],
     handlePointSelected:["e"],
-    onGraphPinChange:["info"],
     createPointSelectedEvent:["msg"]
 })){
     methods[name]=new Function(...parameters,methodBody(plotSource,name))
 }
+methods.applyPointSelection=new Function("matchingTracePoints",`return function(msg){${methodBody(plotSource,"applyPointSelection")}}`)(matchingTracePoints)
+methods.onGraphPinChange=new Function("traceSourceInfo","isMassXAxis",`return function(info){${methodBody(plotSource,"onGraphPinChange")}}`)(
+    traceSourceInfo,isMassXAxis)
 
 function makePlot(title, trace, filterCriteria=null){
     const plot={}
@@ -46,7 +47,7 @@ function makePlot(title, trace, filterCriteria=null){
 }
 
 function makeTrace(id, title, metadata={}){
-    return {id,title,wave:{dims:[3],metadata}}
+    return {id,title,wave:{dims:[3],labels:["m/z","intensity"],metadata}}
 }
 
 function relay(source, receiver, pointIndex){

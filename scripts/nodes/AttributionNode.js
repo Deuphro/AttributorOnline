@@ -251,8 +251,8 @@ export class AttributionNode extends NodeWithAccordion{
     }
     handlePointSelected(e){
         if(e.detail.emitter===this) return
-        const mass=e.detail.msg?.mass
-        if(!Number.isFinite(mass)||mass<=0) return
+        const {mass,isMass}=e.detail.msg??{}
+        if(isMass!==true||!Number.isFinite(mass)||mass<=0) return
         this.parameters.probeMass=mass
         if(this.massInput) this.massInput.value=mass.toFixed(5)
         this.probeMass(mass)
@@ -949,7 +949,10 @@ export class AttributionNode extends NodeWithAccordion{
                        the same reason, and the two must agree. */
                     if(!Number.isFinite(mz)||mz===0) continue
                     const key=bestKeyFor.get(i)
-                    points.push({mz,key,index:i,intensity:peakList.y[i]??0})
+                    points.push({
+                        mz,key,index:i,intensity:peakList.y[i]??0,
+                        sourceWaveTitle:wave?.metadata?.sourceWave??wave?.metadata?.title??name
+                    })
                 }
             }
             collection.setPoints(points)
