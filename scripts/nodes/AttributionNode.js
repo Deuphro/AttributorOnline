@@ -486,78 +486,37 @@ export class AttributionNode extends NodeWithAccordion{
         return collections
     }
     /* Extract combining/ionising groups from FormulaCollection entries.
-       Parses each formula core with Formula.parse (same as FormulaCollectionNode)
-       and reads its element counts, instead of a hand-rolled regex. */
+    Formula.parse reads the full notation; its written core becomes one
+    combining group, while ionisation stays separate from the skeleton. */
     async extractGroupsFromCollections(collections){
         if(!collections?.length) return {combining:null,ionising:null}
         if(!this.loadedTable) return {combining:null,ionising:null}
         const combiningCounts=new Map()
-        const ionisingCounts=new Map()
         for(const collection of collections){
             for(const entry of collection.entries??[]){
-                const notation=entry.notation??String(entry.formula?? "")
+                const notation=typeof entry==="string"
+                    ?entry
+                    :entry?.notation??entry?.key??String(entry?.formula??"")
                 if(!notation) continue
-                /* Split into core and ionisation parts. */
-                const parts=notation.split(/\[([^\]]+)\]/)
-                const core=parts[0]?.trim()
-                /* Ionisation groups are in brackets. */
-                for(let i=1;i<parts.length;i+=2){
-                    const ion=parts[i]?.trim()
-                    if(ion){
-                        ionisingCounts.set(ion,(ionisingCounts.get(ion)||0)+1)
-                    }
+                let formula
+                try{
+                    formula=Formula.parse(notation,this.loadedTable)
+                }catch{
+                    continue
                 }
-                /* Neutral groups: parse the core with Formula.parse and read counts. */
-                if(core){
-                    let counts
-                    try{
-                        counts=Formula.parse(core,this.loadedTable).counts
-                    }catch{
-                        /* Notation illisible: on saute cette entrée. */
-                        continue
-                    }
-                    /* Accumulate element totals from the parsed formula. */
-                    let c=0,h=0,n=0,o=0
-                    for(const [el,count] of counts){
-                        switch(el.symbol){
-                            case "C": c=count;break
-                            case "H": h=count;break
-                            case "N": n=count;break
-                            case "O": o=count;break
-                        }
-                    }
-                    /* Extract CH2 units (min of C and H/2). */
-                    const ch2=Math.min(c,Math.floor(h/2))
-                    if(ch2>0) combiningCounts.set("CH2",(combiningCounts.get("CH2")||0)+1)
-                    /* Extract NH units (min of N and H). */
-                    const nh=Math.min(n,h)
-                    if(nh>0) combiningCounts.set("NH",(combiningCounts.get("NH")||0)+1)
-                    /* Remaining O. */
-                    if(o>0) combiningCounts.set("O",(combiningCounts.get("O")||0)+1)
-                    /* Remaining C. */
-                    const cRem=c-ch2
-                    if(cRem>0) combiningCounts.set("C",(combiningCounts.get("C")||0)+1)
-                    /* Remaining H (as H2). */
-                    const hRem=h-ch2*2-nh
-                    if(hRem>=2) combiningCounts.set("H2",(combiningCounts.get("H2")||0)+1)
-                }
+                const group=Formula.compositionToString(formula.written,null)
+                if(group) combiningCounts.set(group,(combiningCounts.get(group)||0)+1)
             }
         }
-        /* Tous les groupes extraits sont conservés, quelle que soit leur
-           fréquence dans les formules d'entrée. La Map garantit déjà
-           l'unicité (chaque groupe apparaît une fois dans le résultat),
-           donc aucun filtre de fréquence n'est nécessaire : une Formule
-           Collection Node ne filtre pas ses formules par occurrence, ce
-           nœud ne doit pas filtrer ses groupes non plus. */
+        /* Chaque formule entrante devient un groupe, le core tel que la
+           grammaire chimique l'a lu. Les adduits restent hors des groupes
+           combinatoires: ils décrivent l'ionisation, pas le squelette. */
         const combining=[...combiningCounts.entries()]
-            .sort((a,b)=>b[1]-a[1])
-            .map(([g])=>g)
-        const ionising=[...ionisingCounts.entries()]
             .sort((a,b)=>b[1]-a[1])
             .map(([g])=>g)
         return {
             combining:combining.length?combining:null,
-            ionising:ionising.length?ionising:null
+            ionising:null
         }
     }
     /* Apply extracted groups to parameters, replacing defaults if present.
@@ -580,7 +539,6 @@ export class AttributionNode extends NodeWithAccordion{
         changed=true
         if(changed){
             this._patternsFromInput=true
-            this.markStale("patterns from input collection")
             this.renderGroupTables()
             this.renderReadout()
         }
@@ -792,6 +750,7 @@ export class AttributionNode extends NodeWithAccordion{
         if(!this.plan?.items?.length||!waves.length){
             this.attributions=[]
             this.kernelErrors=[]
+            this.setStatus("resolved")
             this.renderReadout()
             return
         }

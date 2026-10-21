@@ -1054,6 +1054,85 @@ const readGroups=(value,kind)=>Shell.prototype.readGroups.call({
     readList:(text)=>String(text??"").split(/[\n;]/).map(l=>l.trim()).filter(l=>l.length>0)
 },value,kind)
 
+const extractStart=NAME.indexOf("/* Extract combining/ionising groups from FormulaCollection entries.")
+const extractEnd=NAME.indexOf("/* Apply extracted groups to parameters",extractStart)
+if(extractStart<0||extractEnd<extractStart){
+    console.error("extractGroupsFromCollections could not be located in AttributionNode")
+    process.exit(1)
+}
+const extractSlice=NAME.slice(extractStart,extractEnd)
+const ExtractShell=new Function("Formula",`return class { ${extractSlice} }`)(Formula)
+const extractGroups=(collections)=>ExtractShell.prototype.extractGroupsFromCollections.call({
+    loadedTable:TABLE
+},collections)
+
+await test("les formules entrantes remplacent les groupes combinatoires par leur core",async()=>{
+    const native=new FormulaCollection({name:"Hough",table:TABLE})
+    native.add("C2H4[H+]")
+    const published={name:"FormulaCollectionNode",formulas:[
+        {notation:"C6H12O6[Na+]"},
+        {notation:"13C2H4[H+]"}
+    ]}
+    const groups=await extractGroups([
+        native,
+        {name:published.name,entries:published.formulas}
+    ])
+    const expected=[
+        "13C2 1H4",
+        "12C6 1H12 16O6"
+    ]
+    ok(expected.every(group=>groups.combining.includes(group)),
+        `expected formula cores ${JSON.stringify(expected)}, got ${JSON.stringify(groups.combining)}`)
+    ok(groups.combining.length===3,
+        `each distinct formula core should become one group, got ${groups.combining.length}`)
+    ok(groups.ionising===null,"adducts must not be treated as combining groups")
+})
+
+const applyStart=NAME.indexOf("/* Apply extracted groups to parameters")
+const applyEnd=NAME.indexOf("/* ONE spectrum -> ONE attribution list",applyStart)
+const resolveStart=NAME.indexOf("/* THE RESOLVE: one attribution list per input.")
+const resolveEnd=NAME.indexOf("/* L'ÉTAT DU NŒUD",resolveStart)
+const startResolveStart=NAME.indexOf("/* The public RESOLVE: the table, the plan, then the attribution.")
+const startResolveEnd=NAME.indexOf("/* The INTERFACE, in the accordion.",startResolveStart)
+if([applyStart,applyEnd,resolveStart,resolveEnd,startResolveStart,startResolveEnd].some(index=>index<0)){
+    console.error("AttributionNode resolve methods could not be located for lifecycle testing")
+    process.exit(1)
+}
+const LifecycleShell=new Function(`return class {
+    ${NAME.slice(applyStart,applyEnd)}
+    ${NAME.slice(resolveStart,resolveEnd)}
+    ${NAME.slice(startResolveStart,startResolveEnd)}
+}`)()
+
+await test("une re-resolve après changement amont termine resolved et efface le drapeau",async()=>{
+    const node=Object.assign(Object.create(LifecycleShell.prototype),{
+        needsResolve:true,
+        staleReason:"upstream changed",
+        status:"floating",
+        statusChanges:[],
+        parameters:{combining:[{group:"CH2"}],ionising:[{group:"[H+]"}]},
+        loadedTable:TABLE,
+        run:0,
+        plan:null,
+        origin:{saveSessionSoon(){}},
+        table:async()=>TABLE,
+        collectInputCollections:()=>[{}],
+        extractGroupsFromCollections:async()=>({combining:["C2H4"],ionising:null}),
+        collectInputWaves:()=>({waves:[],skipped:0}),
+        buildPlan(){this.plan={items:[]}},
+        setStatus(status){this.status=status;this.statusChanges.push(status)},
+        renderResolveButton(){},
+        renderReadout(){},
+        renderGroupTables(){},
+        renderAll:async()=>{}
+    })
+    await node.startResolve()
+    ok(node.needsResolve===false,"applying upstream patterns must not re-arm needsResolve")
+    ok(node.status==="resolved",`expected resolved after the empty-input path, got ${node.status}`)
+    ok(node.statusChanges.at(-1)==="resolved","the final resolved status must be broadcast through setStatus")
+    ok(node.parameters.combining[0].group==="C2H4","the upstream pattern must be installed")
+})
+
 await test("une session à l'ancienne écriture se relit, et prend les défauts par liste",()=>{
     /* LA MIGRATION, et c'est elle qui évite de perdre les sessions.
 
