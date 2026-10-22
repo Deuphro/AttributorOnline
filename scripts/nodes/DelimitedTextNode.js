@@ -34,7 +34,9 @@ export class DelimitedTextNode extends NodeWithAccordion{
     }
     restoreState(state){
         if(state?.source){
-            this.parameters.source={...this.parameters.source,labels:["x","y"],...state.source}
+            const savedId=state.source.sourceWaveId
+            this.parameters.source={...this.parameters.source,...state.source,labels:["x","y"]}
+            if(savedId) this.parameters.source.sourceWaveId=savedId
         }
         this.updateLabel(this.parameters.source.fileName)
         if(this.parameters.source.pairs?.length){

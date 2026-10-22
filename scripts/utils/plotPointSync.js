@@ -66,7 +66,10 @@ export function matchingTracePoints(traces, info){
             }
         }
         const matchingTraceIds=new Set(titleMatches.map(match=>match.trace.id))
-        if(matchingTraceIds.size===1) matches.push(...titleMatches)
+        if(matchingTraceIds.size===1){
+            console.warn("[plotPointSync] Fallback to sourceWaveTitle matching — consider adding sourceWaveId to wave metadata",{sourceWaveTitle:info.sourceWaveTitle,matches:titleMatches.length})
+            matches.push(...titleMatches)
+        }
     }
     if(typeof info.formulaKey==="string"){
         for(const trace of traces??[]){

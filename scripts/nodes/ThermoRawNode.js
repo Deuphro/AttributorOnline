@@ -7,11 +7,15 @@ export class ThermoRawNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(title,[],[[]],origin,destinationFlow,position)
         this.parameters.source={
+            sourceWaveId:globalThis.crypto?.randomUUID?.()??`source-${Date.now()}-${Math.random().toString(36).slice(2)}`,
             fileName:"",
             raw:new Uint8Array(0),
             spectra:[],
             selectedScan:0
         }
+    }
+    sourceWaveId(){
+        return this.parameters.source.sourceWaveId
     }
     registered(e){
         if(e.detail.msg.caster !== this){
@@ -28,7 +32,9 @@ export class ThermoRawNode extends NodeWithAccordion{
     }
     restoreState(state){
         if(state?.source){
-            this.parameters.source={...state.source}
+            const savedId=state.source.sourceWaveId
+            this.parameters.source={...this.parameters.source,...state.source}
+            if(savedId) this.parameters.source.sourceWaveId=savedId
         }
         if(this.parameters.source.spectra?.length){
             const waves=this.parameters.source.spectra.map((spec,idx)=>{
@@ -36,7 +42,7 @@ export class ThermoRawNode extends NodeWithAccordion{
                 return Wave.fromCoordinates(
                     new Float64Array(spec.mz),
                     new Float64Array(spec.intensity),
-                    {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel},
+                    {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:this.sourceWaveId()},
                     ["m/z","intensity"]
                 )
             }).filter(w=>w!==null)
@@ -61,7 +67,7 @@ export class ThermoRawNode extends NodeWithAccordion{
             return Wave.fromCoordinates(
                 new Float64Array(spec.mz),
                 new Float64Array(spec.intensity),
-                {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel},
+                {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:this.sourceWaveId()},
                 ["m/z","intensity"]
             )
         }).filter(w=>w!==null)

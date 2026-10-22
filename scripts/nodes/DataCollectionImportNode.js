@@ -19,6 +19,7 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
         return {
             dataItems:this.parameters.dataItems.map(item=>({
                 ...item,
+                sourceWaveId:item.sourceWaveId,
                 raw:item.raw?Array.from(item.raw):undefined,
                 wave:undefined
             })),
@@ -51,12 +52,12 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
                     return Wave.fromCoordinates(
                         new Float64Array(spec.mz),
                         new Float64Array(spec.intensity),
-                        {title:item.name,fileName:item.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel},
+                        {title:item.name,fileName:item.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:item.sourceWaveId},
                         ["m/z","intensity"]
                     )
                 }).filter(w=>w!==null)
             }else if(item.type==="text"&&item.pairs){
-                item.wave=[Wave.fromPairs(item.pairs,{title:item.name,fileName:item.fileName},item.labels)]
+                item.wave=[Wave.fromPairs(item.pairs,{title:item.name,fileName:item.fileName,sourceWaveId:item.sourceWaveId},item.labels)]
             }
         }
         this.publishOutputs()
@@ -168,8 +169,10 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
         const reader=new FileReader()
         reader.onload=()=>{
             const id=crypto.randomUUID()
+            const sourceWaveId=globalThis.crypto?.randomUUID?.()??`source-${Date.now()}-${Math.random().toString(36).slice(2)}`
             const item={
                 id,
+                sourceWaveId,
                 name:file.name,
                 fileName:file.name,
                 type:isRaw?"raw":"text",
