@@ -7,6 +7,7 @@ export class DelimitedTextNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(title,[],[[]],origin,destinationFlow,position)
         this.parameters.source={
+            sourceWaveId:globalThis.crypto?.randomUUID?.()??`source-${Date.now()}-${Math.random().toString(36).slice(2)}`,
             lineSeparator:"\\r\\n|\\r|\\n",
             columnSeparator:"\\t|,|\\s",
             fileName:"",
@@ -28,13 +29,20 @@ export class DelimitedTextNode extends NodeWithAccordion{
             status:this.status
         }
     }
+    sourceWaveId(){
+        return this.parameters.source.sourceWaveId
+    }
     restoreState(state){
         if(state?.source){
-            this.parameters.source={labels:["x","y"],...state.source}
+            this.parameters.source={...this.parameters.source,labels:["x","y"],...state.source}
         }
         this.updateLabel(this.parameters.source.fileName)
         if(this.parameters.source.pairs?.length){
-            this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName},this.parameters.source.labels)]
+            this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{
+                title:this.title,
+                fileName:this.parameters.source.fileName,
+                sourceWaveId:this.sourceWaveId()
+            },this.parameters.source.labels)]
         }else{
             this.outputs[0]=[]
         }
@@ -47,7 +55,11 @@ export class DelimitedTextNode extends NodeWithAccordion{
             this.status="floating"
             return
         }
-        this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{title:this.title,fileName:this.parameters.source.fileName},this.parameters.source.labels)]
+        this.outputs[0]=[Wave.fromPairs(this.parameters.source.pairs,{
+            title:this.title,
+            fileName:this.parameters.source.fileName,
+            sourceWaveId:this.sourceWaveId()
+        },this.parameters.source.labels)]
         this.status="resolved"
     }
     setColumnLabels(labels){

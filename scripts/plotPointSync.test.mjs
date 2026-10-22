@@ -2,11 +2,15 @@ import {test} from "node:test"
 import assert from "node:assert/strict"
 import {readFileSync} from "node:fs"
 import {methodBody} from "./sourceBody.mjs"
-import {matchingTracePoints,syncGraphPin,traceSourceInfo,isMassXAxis} from "./utils/plotPointSync.js"
+import {matchingTracePoints,pointCoordinates,syncGraphPin,traceSourceInfo,isMassXAxis} from "./utils/plotPointSync.js"
 
 const simpleSource=readFileSync(new URL("./nodes/SimpleXYPlotNode.js",import.meta.url),"utf8")
 const collectionSource=readFileSync(new URL("./nodes/FormulaCollectionNode.js",import.meta.url),"utf8")
-const simpleApplyPinSync=new Function("matchingTracePoints",`return function(info){${methodBody(simpleSource,"applyPinSync")}}`)(matchingTracePoints)
+const delimitedSource=readFileSync(new URL("./nodes/DelimitedTextNode.js",import.meta.url),"utf8")
+const fkmdSource=readFileSync(new URL("./nodes/FKMDNode.js",import.meta.url),"utf8")
+const calibrationSource=readFileSync(new URL("./nodes/CalibrationNode.js",import.meta.url),"utf8")
+const simpleApplyPinSync=new Function("matchingTracePoints","pointCoordinates",`return function(info){${methodBody(simpleSource,"applyPinSync")}}`)(
+    matchingTracePoints,pointCoordinates)
 const collectionApplyPinSync=new Function("syncGraphPin",`return function(info){${methodBody(collectionSource,"applyPinSync")}}`)(syncGraphPin)
 
 function trace(id,title,metadata,labels=["m/z","intensity"],count=3){
@@ -95,6 +99,30 @@ test("SimpleXYPlot and FormulaCollection pin each other by source peak",()=>{
         {traceId:"collection:error",tracePoint:0},
         {traceId:"collection:error",tracePoint:2}
     ])
+})
+
+test("duplicate wave titles do not pin unrelated traces when source IDs differ",()=>{
+    const first=trace("first:0","Sample",{sourceWaveId:"channel-1"},["m/z","intensity"])
+    const second=trace("second:0","Sample",{sourceWaveId:"channel-2"},["m/z","intensity"])
+
+    assert.deepEqual(matchingTracePoints([first,second],{
+        sourceWaveId:"channel-2",
+        sourceWaveTitle:"Sample",
+        sourcePointIndex:1
+    }),[{trace:second,pointIndex:1}])
+    assert.deepEqual(matchingTracePoints([first,second],{
+        sourceWaveId:"missing-channel",
+        sourceWaveTitle:"Sample",
+        sourcePointIndex:1
+    }),[])
+})
+
+test("source identity is created at DelimitedText and preserved by transforms",()=>{
+    assert.match(delimitedSource,/sourceWaveId:this\.sourceWaveId\(\)/)
+    assert.match(fkmdSource,/sourceWaveId:wave\.metadata\?\.sourceWaveId/)
+    assert.match(calibrationSource,/sourceWaveId:xyWave\.metadata\?\.sourceWaveId/)
+    assert.match(collectionSource,/sourceWaveId/)
+    assert.match(collectionSource,/target\.source\?\.sourceWaveId/)
 })
 
 test("only explicitly mass-labelled x axes qualify as a mass",()=>{

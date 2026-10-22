@@ -2213,6 +2213,8 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                         const formulaKeys=validEntries.map(entry=>entry.key)
                         const sourceWave=validEntries.flatMap(entry=>entry.targets??[])
                             .map(target=>target.source?.sourceWaveTitle??target.sourceWaveTitle).find(title=>typeof title==="string")??collection.name
+                        const sourceWaveId=validEntries.flatMap(entry=>entry.targets??[])
+                            .map(target=>target.source?.sourceWaveId??target.sourceWaveId).find(id=>typeof id==="string")
                         if(clustered){
                             /* CLUSTERED: draw the pre-coloured per-cluster traces
                                built by computeClustering from these very points,
@@ -2229,7 +2231,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                                 wave:Wave.fromCoordinates(
                                     x,
                                     y,
-                                    {collection:collection.name,sourceWave,sourcePointIndices,formulaKeys,quantity:"barycentric"},
+                                    {collection:collection.name,sourceWave,sourceWaveId,sourcePointIndices,formulaKeys,quantity:"barycentric"},
                                     ["Rx","Ry"]
                                 ),
                                 options:{
@@ -2311,6 +2313,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                     const sourcePointIndices=[]
                     const formulaKeys=[]
                     let sourceWave=collection.name
+                    let sourceWaveId
                     for(const entry of collection.entries){
                         const formula=entry.formula
                         if(!formula) continue
@@ -2324,6 +2327,8 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                             formulaKeys.push(entry.key)
                             sourceWave=(entry.targets??[]).map(target=>target.source?.sourceWaveTitle??target.sourceWaveTitle)
                                 .find(title=>typeof title==="string")??sourceWave
+                            sourceWaveId=(entry.targets??[]).map(target=>target.source?.sourceWaveId??target.sourceWaveId)
+                                .find(id=>typeof id==="string")??sourceWaveId
                         }
                     }
                     if(xs.length===0) continue
@@ -2337,7 +2342,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                         wave:Wave.fromCoordinates(
                             x,
                             y,
-                            {collection:collection.name,sourceWave,sourcePointIndices,formulaKeys,quantity:"vankrevelen"},
+                            {collection:collection.name,sourceWave,sourceWaveId,sourcePointIndices,formulaKeys,quantity:"vankrevelen"},
                             [xFormula,yFormula]
                         ),
                         options:{
@@ -2375,6 +2380,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                 const sourcePointIndices=[]
                 const formulaKeys=[]
                 let sourceWave=collection.name
+                let sourceWaveId
                 for(let entryIdx=0;entryIdx<collection.entries.length;entryIdx++){
                     const entry=collection.entries[entryIdx]
                     const targets=entry.targets??[]
@@ -2392,6 +2398,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                         sourcePointIndices.push(Number.isInteger(sourcePointIndex)?sourcePointIndex:null)
                         formulaKeys.push(entry.key)
                         sourceWave=target.source?.sourceWaveTitle??target.sourceWaveTitle??sourceWave
+                        sourceWaveId=target.source?.sourceWaveId??target.sourceWaveId??sourceWaveId
                         //by KEY, not by position: this list holds fewer points
                         //than were clustered whenever a target lacks the other
                         //measurement, and a shifted index colours the wrong
@@ -2447,7 +2454,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                             wave:Wave.fromCoordinates(
                                 cx,
                                 cy,
-                                {collection:collection.name,sourceWave,sourcePointIndices:clusterSourcePoints,formulaKeys:clusterFormulaKeys,quantity:byError?"errorPpm":"intensity",cluster:assign},
+                                {collection:collection.name,sourceWave,sourceWaveId,sourcePointIndices:clusterSourcePoints,formulaKeys:clusterFormulaKeys,quantity:byError?"errorPpm":"intensity",cluster:assign},
                                 ["m/z",byError?"error (ppm)":"intensity"]
                             ),
                             options:{
@@ -2468,7 +2475,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                         wave:Wave.fromCoordinates(
                             x,
                             y,
-                            {collection:collection.name,sourceWave,sourcePointIndices:sortedSourcePointIndices,formulaKeys:sortedFormulaKeys,quantity:byError?"errorPpm":"intensity"},
+                            {collection:collection.name,sourceWave,sourceWaveId,sourcePointIndices:sortedSourcePointIndices,formulaKeys:sortedFormulaKeys,quantity:byError?"errorPpm":"intensity"},
                             ["m/z",byError?"error (ppm)":"intensity"]
                         ),
                         options:{
@@ -2827,7 +2834,8 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                     errorPpm:t.errorPpm,
                     cost:Number.isFinite(t.cost)?t.cost:null,
                     index:t.source?.index??t.index,
-                    sourceWaveTitle:t.source?.sourceWaveTitle??t.sourceWaveTitle
+                    sourceWaveTitle:t.source?.sourceWaveTitle??t.sourceWaveTitle,
+                    sourceWaveId:t.source?.sourceWaveId??t.sourceWaveId
                 }))
             }))
             published.push({name:collection.name,formulas})
@@ -2853,6 +2861,8 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
             const sourceWaveTitle=collection.points?.find(point=>typeof point.sourceWaveTitle==="string")?.sourceWaveTitle
                 ??ordered.flatMap(formula=>formula.targets).map(target=>target.sourceWaveTitle).find(title=>typeof title==="string")
                 ??collection.name
+            const sourceWaveId=collection.points?.find(point=>typeof point.sourceWaveId==="string")?.sourceWaveId
+                ??ordered.flatMap(formula=>formula.targets).map(target=>target.sourceWaveId).find(id=>typeof id==="string")
             waves.push(Wave.fromCoordinates(x,y,{
                 title:`${collection.name} (m/z, intensity)`,
                 collection:collection.name,
@@ -2863,6 +2873,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                 unmatched:unattributed,
                 dropped,
                 sourceWave:sourceWaveTitle,
+                sourceWaveId,
                 sourcePointIndices:ordered.map(formula=>formula.targets.map(target=>target.index).filter(Number.isInteger)),
                 formulaKeys:ordered.map(formula=>formula.key),
                 traceMode:"sticks-to-zero"
@@ -4041,7 +4052,7 @@ fontSize:"0.85em",background:"var(--bg)",
         if(!this.currentCollection) return
         const collection=this.currentCollection
         let points, pointKeys, entryIndices, n_features
-        let sourcePointIndices=[],formulaKeys=[],sourceWaveTitle=collection.name
+        let sourcePointIndices=[],formulaKeys=[],sourceWaveTitle=collection.name,sourceWaveId
         if(clust.dataSource==="graph"){
             const extracted=this.extractPointsFromGraphTraces(collection.name)
             points=extracted.points
@@ -4051,6 +4062,7 @@ fontSize:"0.85em",background:"var(--bg)",
             sourcePointIndices=extracted.sourcePointIndices
             formulaKeys=extracted.formulaKeys
             sourceWaveTitle=extracted.sourceWaveTitle??collection.name
+            sourceWaveId=extracted.sourceWaveId
             // For graph source, store the trace-to-cluster mapping directly
             clust.results={
                 ...clust.results,
@@ -4092,6 +4104,7 @@ fontSize:"0.85em",background:"var(--bg)",
                     sourcePointIndices.push(Number.isInteger(sourcePointIndex)?sourcePointIndex:null)
                     formulaKeys.push(entry.key)
                     sourceWaveTitle=target.source?.sourceWaveTitle??target.sourceWaveTitle??sourceWaveTitle
+                    sourceWaveId=target.source?.sourceWaveId??target.sourceWaveId??sourceWaveId
                 }
             }
             n_features=3
@@ -4211,7 +4224,7 @@ fontSize:"0.85em",background:"var(--bg)",
                         wave:Wave.fromCoordinates(
                             cx,
                             cy,
-                            {collection:collection.name,sourceWave:sourceWaveTitle,sourcePointIndices:clusterSourcePoints,formulaKeys:clusterFormulaKeys,cluster:assign},
+                            {collection:collection.name,sourceWave:sourceWaveTitle,sourceWaveId,sourcePointIndices:clusterSourcePoints,formulaKeys:clusterFormulaKeys,cluster:assign},
                             clust.results.labels??["x","y"]
                         ),
                         options:{
@@ -4309,6 +4322,7 @@ fontSize:"0.85em",background:"var(--bg)",
                    coûte une copie de tableau déjà en mémoire, et évite au
                    découpage de relire un graphique qui a pu changer depuis. */
                 graphPoints:clust.dataSource==="graph"?Array.from(points):null,
+                sourceWaveId,
                 n_features,
                 assignments:Array.from(result.assignments),
                 pointKeys,
@@ -4525,7 +4539,8 @@ fontSize:"0.85em",background:"var(--bg)",
         let n_features=2
         let xLabel="x", yLabel="y"
         let sourceWaveTitle=collectionName
-        if(!this.graph||!this.graph.traces) return {points,pointKeys,entryIndices,sourcePointIndices,formulaKeys,sourceWaveTitle,n_features,labels:[xLabel,yLabel]}
+        let sourceWaveId
+        if(!this.graph||!this.graph.traces) return {points,pointKeys,entryIndices,sourcePointIndices,formulaKeys,sourceWaveTitle,sourceWaveId,n_features,labels:[xLabel,yLabel]}
         for(const trace of this.graph.traces){
             if(!trace.wave||!trace.wave.core) continue
             const wave=trace.wave
@@ -4538,6 +4553,7 @@ fontSize:"0.85em",background:"var(--bg)",
             const traceColl=trace.id?.split(":")[0]??trace.title?.split(" — ")[0]??trace.title
             if(traceColl!==collectionName) continue
             sourceWaveTitle=metadata.sourceWave??sourceWaveTitle
+            sourceWaveId=metadata.sourceWaveId??sourceWaveId
             for(let i=0;i<count;i++){
                 const x=core[i]
                 const y=core[count+i]
@@ -4550,7 +4566,7 @@ fontSize:"0.85em",background:"var(--bg)",
                 entryIndices.push(-1)
             }
         }
-        return {points,pointKeys,entryIndices,sourcePointIndices,formulaKeys,sourceWaveTitle,n_features,labels:[xLabel,yLabel]}
+        return {points,pointKeys,entryIndices,sourcePointIndices,formulaKeys,sourceWaveTitle,sourceWaveId,n_features,labels:[xLabel,yLabel]}
     }
     suicide(options={}){
         /* The scroll list holds a ResizeObserver and a pool of rows: without

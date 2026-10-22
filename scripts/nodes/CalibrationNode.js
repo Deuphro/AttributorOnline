@@ -5,6 +5,7 @@ import {Wave,XYTrace,SurfaceTrace,Scatter3DTrace} from "../formats.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
+import {matchingTracePoints,traceSourceInfo} from "../utils/plotPointSync.js"
 
 export class CalibrationNode extends NodeWithAccordion{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -49,17 +50,25 @@ export class CalibrationNode extends NodeWithAccordion{
         this.applyPinSync(e.detail.msg)
     }
     onGraphPinChange(info){
-        dispatchEvent(this.events.broadcast.pinSync(info))
+        const trace=this.graph?.traces.find(t=>t.id===info.traceId)
+        const sourceInfo=traceSourceInfo(trace,info.tracePoint)
+        const syncInfo={
+            ...info,
+            traceTitle:trace?.title??info.traceTitle,
+            ...sourceInfo,
+            pointSelected:true
+        }
+        dispatchEvent(this.events.broadcast.pinSync(syncInfo))
     }
     applyPinSync(info){
         if(!this.graph) return
-        const trace=this.graph.traces.find(t=>t.id===info.traceId)
-        if(!trace) return
-        if(info.added){
-            this.graph.addPickPin({trace, tracePoint:info.tracePoint, x:info.x, y:info.y, px:0, py:0})
-        }else{
-            const pin=this.graph.pickPins.find(p=>p.traceId===info.traceId && p.tracePoint===info.tracePoint)
-            if(pin) this.graph.removePickPin(pin)
+        for(const {trace,pointIndex} of matchingTracePoints(this.graph.traces,info)){
+            const pin=this.graph.pickPins.find(item=>item.traceId===trace.id&&item.tracePoint===pointIndex)
+            if(info.added){
+                if(!pin) this.graph.addPickPin({trace,tracePoint:pointIndex,x:info.x,y:info.y,px:0,py:0})
+            }else if(pin){
+                this.graph.removePickPin(pin)
+            }
         }
     }
     handleMassCalcTraceSync(e){
@@ -487,8 +496,14 @@ export class CalibrationNode extends NodeWithAccordion{
 
         const correctedX=new Float64Array(result.x)
         const n=Math.min(correctedX.length,y.length)
+        const sourcePointIndices=Array.isArray(xyWave.metadata?.sourcePointIndices)
+            ?xyWave.metadata.sourcePointIndices.slice(0,n)
+            :Array.from({length:n},(_,index)=>index)
         this.outputs[0]=[Wave.fromCoordinates(new Float64Array(correctedX.subarray(0,n)),new Float64Array(y.subarray(0,n)),{
             title:`${this.title} (calibrated)`,
+            sourceWave:xyWave.metadata?.sourceWave??xyWave.metadata?.title,
+            sourceWaveId:xyWave.metadata?.sourceWaveId,
+            sourcePointIndices,
             mode:calibration.mode,
             coeffs:calibration.coeffs,
             rmse:calibration.rmse
@@ -560,8 +575,14 @@ export class CalibrationNode extends NodeWithAccordion{
 
         const correctedX=new Float64Array(result.x)
         const n=Math.min(correctedX.length,y.length)
+        const sourcePointIndices=Array.isArray(xyWave.metadata?.sourcePointIndices)
+            ?xyWave.metadata.sourcePointIndices.slice(0,n)
+            :Array.from({length:n},(_,index)=>index)
         return Wave.fromCoordinates(new Float64Array(correctedX.subarray(0,n)),new Float64Array(y.subarray(0,n)),{
             title:`${this.title} (calibrated)`,
+            sourceWave:xyWave.metadata?.sourceWave??xyWave.metadata?.title,
+            sourceWaveId:xyWave.metadata?.sourceWaveId,
+            sourcePointIndices,
             mode:calibration.mode,
             coeffs:calibration.coeffs,
             rmse:calibration.rmse,

@@ -209,6 +209,9 @@ export class FKMDNode extends NodeWithAccordion{
                     key:this.parameters.notation,
                     mz,
                     sourceWave:inputTitle,
+                    sourceWaveId:wave.metadata?.sourceWaveId,
+                    ...(Array.isArray(wave.metadata?.sourcePointIndices)
+                        ?{sourcePointIndices:wave.metadata.sourcePointIndices.slice(0,pointCount)}:{}),
                     traceMode:"points"
                 },["x","y"]))
             }catch(err){

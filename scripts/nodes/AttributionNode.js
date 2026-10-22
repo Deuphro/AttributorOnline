@@ -951,7 +951,8 @@ export class AttributionNode extends NodeWithAccordion{
                     const key=bestKeyFor.get(i)
                     points.push({
                         mz,key,index:i,intensity:peakList.y[i]??0,
-                        sourceWaveTitle:wave?.metadata?.sourceWave??wave?.metadata?.title??name
+                        sourceWaveTitle:wave?.metadata?.sourceWave??wave?.metadata?.title??name,
+                        sourceWaveId:wave?.metadata?.sourceWaveId
                     })
                 }
             }

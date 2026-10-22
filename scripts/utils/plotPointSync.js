@@ -8,6 +8,7 @@ export function traceSourceInfo(trace, tracePoint){
         ?sourcePoint.filter(Number.isInteger)
         :Number.isInteger(sourcePoint)?[sourcePoint]:[]
     return {
+        sourceWaveId:metadata.sourceWaveId,
         sourceWaveTitle:metadata.sourceWave??metadata.title??metadata.collection??trace?.title,
         ...(sourcePointList.length===1?{sourcePointIndex:sourcePointList[0]}:{}),
         ...(sourcePointList.length>1?{sourcePointIndices:sourcePointList}:{}),
@@ -21,11 +22,10 @@ export function matchingTracePoints(traces, info){
         ...(Number.isInteger(info.sourcePointIndex)?[info.sourcePointIndex]:[]),
         ...(Array.isArray(info.sourcePointIndices)?info.sourcePointIndices.filter(Number.isInteger):[])
     ])
-    if(typeof info.sourceWaveTitle==="string"&&sourcePointSet.size){
+    if(typeof info.sourceWaveId==="string"&&sourcePointSet.size){
         for(const trace of traces??[]){
             const metadata=trace.wave?.metadata??{}
-            const sourceTitle=metadata.sourceWave??metadata.title??metadata.collection??trace.title
-            if(sourceTitle!==info.sourceWaveTitle) continue
+            if(metadata.sourceWaveId!==info.sourceWaveId) continue
             const sourcePointIndices=metadata.sourcePointIndices
             if(Array.isArray(sourcePointIndices)){
                 for(let pointIndex=0;pointIndex<sourcePointIndices.length;pointIndex++){
@@ -45,11 +45,37 @@ export function matchingTracePoints(traces, info){
             }
         }
     }
-    if(typeof info.formulaKey==="string"){
+    if(!matches.length&&typeof info.sourceWaveId!=="string"&&typeof info.sourceWaveTitle==="string"&&sourcePointSet.size){
+        const titleMatches=[]
         for(const trace of traces??[]){
             const metadata=trace.wave?.metadata??{}
             const sourceTitle=metadata.sourceWave??metadata.title??metadata.collection??trace.title
-            if(typeof info.sourceWaveTitle==="string"&&sourceTitle!==info.sourceWaveTitle) continue
+            if(sourceTitle!==info.sourceWaveTitle) continue
+            const sourcePointIndices=metadata.sourcePointIndices
+            if(Array.isArray(sourcePointIndices)){
+                for(let pointIndex=0;pointIndex<sourcePointIndices.length;pointIndex++){
+                    const pointSource=Array.isArray(sourcePointIndices[pointIndex])
+                        ?sourcePointIndices[pointIndex]
+                        :[sourcePointIndices[pointIndex]]
+                    if(pointSource.some(index=>sourcePointSet.has(index))) titleMatches.push({trace,pointIndex})
+                }
+            }else{
+                for(const pointIndex of sourcePointSet){
+                    if(pointIndex>=0&&pointIndex<(trace.wave?.dims?.[0]??0)) titleMatches.push({trace,pointIndex})
+                }
+            }
+        }
+        const matchingTraceIds=new Set(titleMatches.map(match=>match.trace.id))
+        if(matchingTraceIds.size===1) matches.push(...titleMatches)
+    }
+    if(typeof info.formulaKey==="string"){
+        for(const trace of traces??[]){
+            const metadata=trace.wave?.metadata??{}
+            if(typeof info.sourceWaveId==="string"&&metadata.sourceWaveId!==info.sourceWaveId) continue
+            if(typeof info.sourceWaveId!=="string"&&typeof info.sourceWaveTitle==="string"){
+                const sourceTitle=metadata.sourceWave??metadata.title??metadata.collection??trace.title
+                if(sourceTitle!==info.sourceWaveTitle) continue
+            }
             const formulaKeys=metadata.formulaKeys
             if(!Array.isArray(formulaKeys)) continue
             for(let pointIndex=0;pointIndex<formulaKeys.length;pointIndex++){
@@ -69,13 +95,31 @@ export function matchingTracePoints(traces, info){
     return []
 }
 
+export function pointCoordinates(graph, trace, pointIndex, fallbackX, fallbackY){
+    const coordinates=graph?.readPickValue?.(trace,pointIndex)
+    if(coordinates&&Number.isFinite(coordinates.x)&&Number.isFinite(coordinates.y)){
+        return coordinates
+    }
+    const wave=trace?.wave
+    const count=wave?.dims?.[0]
+    if(wave?.core&&Number.isInteger(pointIndex)&&pointIndex>=0&&pointIndex<count){
+        return {x:wave.core[pointIndex],y:wave.core[count+pointIndex]}
+    }
+    return {x:fallbackX,y:fallbackY}
+}
+
 export function syncGraphPin(graph, info){
     if(!graph) return
     for(const {trace,pointIndex} of matchingTracePoints(graph.traces,info)){
+        const {x,y}=pointCoordinates(graph,trace,pointIndex,info.x,info.y)
         const existing=graph.pickPins.find(pin=>pin.traceId===trace.id&&pin.tracePoint===pointIndex)
         if(info.added){
             if(!existing){
-                graph.addPickPin({trace,tracePoint:pointIndex,x:info.x,y:info.y,px:0,py:0})
+                graph.addPickPin({trace,tracePoint:pointIndex,x,y,px:0,py:0})
+            }else{
+                existing.x=x
+                existing.y=y
+                graph.syncPickOverlay?.()
             }
         }else if(existing){
             graph.removePickPin(existing)

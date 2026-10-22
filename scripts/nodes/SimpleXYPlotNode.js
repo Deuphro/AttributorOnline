@@ -1,6 +1,6 @@
 ﻿import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
 import {Wave,XYTrace} from "../formats.js"
-import {matchingTracePoints,traceSourceInfo,isMassXAxis} from "../utils/plotPointSync.js"
+import {matchingTracePoints,pointCoordinates,traceSourceInfo,isMassXAxis} from "../utils/plotPointSync.js"
 
 export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     constructor(title,inputs,outputs,origin,destinationFlow,position={x:180,y:10}){
@@ -60,8 +60,9 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         if(!this.graph) return
         for(const {trace,pointIndex} of matchingTracePoints(this.graph.traces,msg)){
             if(!this.matchesCriteria({pointIndex},trace)) continue
+            const {x,y}=pointCoordinates(this.graph,trace,pointIndex,msg.x,msg.y)
             const knownPin=this.graph.pickPins.find(pin=>pin.traceId===trace.id&&pin.tracePoint===pointIndex)
-            if(!knownPin) this.graph.addPickPin({trace,tracePoint:pointIndex,x:0,y:0,px:0,py:0})
+            if(!knownPin) this.graph.addPickPin({trace,tracePoint:pointIndex,x,y,px:0,py:0})
         }
         this.graph.drawGraph()
     }
@@ -93,16 +94,26 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     }
     applyPinSync(info){
         if(!this.graph) return
-        for(const {trace,pointIndex} of matchingTracePoints(this.graph.traces,info)){
+        const matches=matchingTracePoints(this.graph.traces,info)
+        for(const {trace,pointIndex} of matches){
             if(info.added&&!this.matchesCriteria({pointIndex},trace)) continue
+            const {x,y}=pointCoordinates(this.graph,trace,pointIndex,info.x,info.y)
             const pin=this.graph.pickPins.find(item=>item.traceId===trace.id&&item.tracePoint===pointIndex)
             if(info.added){
-                if(!pin) this.graph.addPickPin({trace,tracePoint:pointIndex,x:info.x,y:info.y,px:0,py:0})
+                if(!pin){
+                    this.graph.addPickPin({trace,tracePoint:pointIndex,x,y,px:0,py:0})
+                }else{
+                    pin.x=x
+                    pin.y=y
+                    this.graph.syncPickOverlay?.()
+                }
             }else if(pin){
                 this.graph.removePickPin(pin)
             }
         }
+        this.graph.drawGraph()
     }
+
     onGraphPinChange(info){
         const trace=this.graph?.traces.find(t=>t.id===info.traceId)
         const sourceInfo=traceSourceInfo(trace,info.tracePoint)
@@ -124,6 +135,8 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
                 pointIndex:info.tracePoint,
                 ...sourceInfo,
                 ...(isMassXAxis(trace)?{mass:info.x}:{}),
+                x:info.x,
+                y:info.y,
                 traceTitle:trace.title,
                 isMass:isMassXAxis(trace)
             })
