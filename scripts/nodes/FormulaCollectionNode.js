@@ -6,7 +6,7 @@ import {computePool} from "../workerPool.js"
 import {CE,stylize,DC} from "../util.js"
 import {VirtualRowList} from "./VirtualRowList.js"
 import {segmentToggle,scaleToggle} from "../utils/index.js"
-import {syncGraphPin,traceSourceInfo,isMassXAxis} from "../utils/plotPointSync.js"
+import {matchingTracePoints,pointCoordinates,syncGraphPin,traceSourceInfo,isMassXAxis} from "../utils/plotPointSync.js"
 import {formatCount,formatMz,formatValue,prettyNotation,traceColor,isDeleteKey,FORMULA_SORTS,formulaComparator} from "./formulaCollectionHelpers.js"
 
 /* -------------------------------------------------------------------------
@@ -1260,6 +1260,8 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
         this.rows=[]
         this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
         this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.broadcast.hoverSync=this.createHoverSyncEvent.bind(this)
+        this.events.listen.hoverSync=this.handleHoverSync.bind(this)
         this.events.broadcast.formulaSelectSync=this.createFormulaSelectSyncEvent.bind(this)
         this.events.listen.formulaSelectSync=this.handleFormulaSelectSync.bind(this)
         this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
@@ -1313,9 +1315,16 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
     createPinSyncEvent(info){
         return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
     }
+    createHoverSyncEvent(info){
+        return new CustomEvent("hoverSync",{detail:{msg:info,emitter:this}})
+    }
     handlePinSync(e){
         if(e.detail.emitter===this) return
         this.applyPinSync(e.detail.msg)
+    }
+    handleHoverSync(e){
+        if(e.detail.emitter===this) return
+        this.applyHoverSync(e.detail.msg)
     }
     onGraphPinChange(info){
         const trace=this.graph?.traces.find(candidate=>candidate.id===info.traceId)
@@ -1334,6 +1343,34 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
             }
             globalThis.dispatchEvent(new CustomEvent("POINT_SELECTED",{detail:{msg,emitter:this}}))
         }
+    }
+    onGraphHoverChange(info){
+        const trace=this.graph?.traces.find(candidate=>candidate.id===info?.traceId)
+        if(!trace) return
+        const sourceInfo=traceSourceInfo(trace,info.tracePoint)
+        const syncInfo={
+            traceId:info.traceId,
+            tracePoint:info.tracePoint,
+            traceTitle:trace?.title,
+            x:info.x,
+            y:info.y,
+            px:info.px,
+            py:info.py,
+            ...sourceInfo
+        }
+        dispatchEvent(this.events.broadcast.hoverSync(syncInfo))
+    }
+    applyHoverSync(info){
+        if(!this.graph) return
+        if(info===null){
+            this.graph.hidePickHover?.()
+            return
+        }
+        const matches=matchingTracePoints(this.graph.traces,info)
+        if(!matches.length) return
+        const {trace,pointIndex}=matches[0]
+        const {x,y}=pointCoordinates(this.graph,trace,pointIndex,info.x,info.y)
+        this.graph.showPickHover?.({trace,tracePoint:pointIndex,x,y})
     }
     applyPinSync(info){
         syncGraphPin(this.graph,info)

@@ -32,6 +32,7 @@ export class Plot2DWebGL extends Plot2D{
     constructor(data,title,origin,destination,options={}){
         super(data,title,origin,destination)
         this.onPinChange=options.onPinChange??null
+        this.onHoverChange=options.onHoverChange??null
         //the base constructor already ran a first drawGraph, whose lazy
         //bootstrap may have created the layer: never clobber it here (each
         //replacement would leak a WebGL context and an orphan canvas)
@@ -732,14 +733,54 @@ export class Plot2DWebGL extends Plot2D{
             this.hidePickHover()
             return
         }
-        hover.style("display",null).attr("transform",`translate(${hit.px},${hit.py})`)
+        //même chemin que le pinning au clic : coordonnées de données -> xScale/yScale -> pixels
+        const {xScale,yScale}=this.plotScales()
+        const px=xScale(hit.x), py=yScale(hit.y)
+        if(!Number.isFinite(px)||!Number.isFinite(py)){
+            this.hidePickHover()
+            return
+        }
+        hover.style("display",null).attr("transform",`translate(${px},${py})`)
         this.pickHoverVisible=true
+        this.notifyHoverChange({...hit,px,py})
     }
 
     hidePickHover(){
         if(!this.pickHoverVisible) return
         this.pickHoverVisible=false
         this.pickHoverGroup?.style("display","none")
+        this.notifyHoverChange(null)
+    }
+
+    notifyHoverChange(hit){
+        if(this.onHoverChange){
+            this.onHoverChange(hit?{
+                traceId:hit.trace.id,
+                traceTitle:hit.trace.title,
+                tracePoint:hit.tracePoint,
+                x:hit.x,
+                y:hit.y,
+                px:hit.px,
+                py:hit.py,
+                sourceNode:this.sourceNode??null
+            }:null)
+        }
+    }
+
+    showPickHover(info){
+        //survol programmé (depuis un autre graphe via hoverSync): il doit pointer
+        //sur la même donnée qu'un pin sur ce point, donc il emprunte le même
+        //chemin : coordonnées de données -> xScale/yScale -> pixels. `pickAt`
+        //attend des coordonnées pixels, on ne l'appelle donc pas avec {trace,tracePoint}.
+        if(!this.pickEnabled||!this.glLayer||!this.pickHoverGroup) return
+        const {trace,tracePoint,x,y}=info
+        if(!trace||!Number.isFinite(x)||!Number.isFinite(y)) return
+        const {xScale,yScale}=this.plotScales()
+        const px=xScale(x), py=yScale(y)
+        if(!Number.isFinite(px)||!Number.isFinite(py)) return
+        this.pickHoverGroup.style("display",null).attr("transform",`translate(${px},${py})`)
+        this.pickHoverVisible=true
+        // Note: we don't call notifyHoverChange here to avoid feedback loops
     }
 
     handlePickLeave(){

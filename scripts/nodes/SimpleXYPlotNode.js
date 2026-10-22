@@ -1,4 +1,4 @@
-﻿import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
+import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
 import {Wave,XYTrace} from "../formats.js"
 import {matchingTracePoints,pointCoordinates,traceSourceInfo,isMassXAxis} from "../utils/plotPointSync.js"
 
@@ -6,13 +6,18 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
     constructor(title,inputs,outputs,origin,destinationFlow,position={x:180,y:10}){
         super(title,inputs,outputs,origin,destinationFlow,position)
         this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
+        this.events.broadcast.hoverSync=this.createHoverSyncEvent.bind(this)
         this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.listen.hoverSync=this.handleHoverSync.bind(this)
         this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
         this.events.listen.POINT_SELECTED=this.handlePointSelected.bind(this)
         this.filterCriteria=null
     }
     createPinSyncEvent(info){
         return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
+    }
+    createHoverSyncEvent(info){
+        return new CustomEvent("hoverSync",{detail:{msg:info,emitter:this}})
     }
     handlePinSync(e){
         if(e.detail.emitter===this) return
@@ -49,6 +54,10 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
         if(e.detail.emitter===this) return
         const {msg}=e.detail
         this.applyPointSelection(msg)
+    }
+    handleHoverSync(e){
+        if(e.detail.emitter===this) return
+        this.applyHoverSync(e.detail.msg)
     }
     setFilterCriteria(criteria){
         this.filterCriteria=criteria
@@ -710,5 +719,34 @@ export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
             }
         })
     }
-}
+    onGraphHoverChange(info){
+        const trace=this.graph?.traces.find(t=>t.id===info?.traceId)
+        if(!trace) return
+        const sourceInfo=traceSourceInfo(trace,info.tracePoint)
+        const syncInfo={
+            traceId:info.traceId,
+            tracePoint:info.tracePoint,
+            traceTitle:trace?.title,
+            x:info.x,
+            y:info.y,
+            px:info.px,
+            py:info.py,
+            ...sourceInfo
+        }
+        dispatchEvent(this.events.broadcast.hoverSync(syncInfo))
+    }
+    applyHoverSync(info){
+        if(!this.graph) return
+        if(info===null){
+            this.graph.hidePickHover?.()
+            return
+        }
+        const matches=matchingTracePoints(this.graph.traces,info)
+        if(!matches.length) return
+        const {trace,pointIndex}=matches[0]
+        const {x,y}=pointCoordinates(this.graph,trace,pointIndex,info.x,info.y)
+        this.graph.showPickHover?.({trace,tracePoint:pointIndex,x,y})
+    }
 
+
+}

@@ -29,7 +29,7 @@ export class NodeWithRightAccordionGraph extends Node{
        Hence this method: the subclass declares its plot, and the base builds
        exactly one. Override it and no 2D context is ever created here. */
     createGraph(dialog,label){
-        return new Plot2DWebGL([],`${label} graph`,this.origin,dialog.DOMelt.content,{onPinChange:this.onGraphPinChange?.bind(this)})
+        return new Plot2DWebGL([],`${label} graph`,this.origin,dialog.DOMelt.content,{onPinChange:this.onGraphPinChange?.bind(this),onHoverChange:this.onGraphHoverChange?.bind(this)})
     }
     registered(e){
         const {channel, registrationName, label, caster} = e.detail.msg

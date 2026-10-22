@@ -32,11 +32,14 @@ export class NodeWithAccordionGraph extends Node{
             `${label} graph`,
             this.origin,
             this.graphDialog.DOMelt.content,
-            {onPinChange:this.onGraphPinChange?.bind(this)}
+            {onPinChange:this.onGraphPinChange?.bind(this),onHoverChange:this.onGraphHoverChange?.bind(this)}
         )
         this.graph.sourceNode=this
     }
     onGraphPinChange(info){
+        //override in subclasses
+    }
+    onGraphHoverChange(info){
         //override in subclasses
     }
     serializeState(){

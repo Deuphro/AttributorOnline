@@ -4,6 +4,7 @@ import {Wave} from "../formats.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {TRIM_METHODS,TRIM_LOW_COLOR,TRIM_HIGH_COLOR,CURSOR_COLORS,TRIM_CURSOR_STROKE,TRIM_CURSOR_FIELD_FONT,formatCursorValue,scaleToggle,binsOfHistogram,wavesFromInput} from "../utils/index.js"
+import {matchingTracePoints,pointCoordinates,traceSourceInfo} from "../utils/plotPointSync.js"
 export class TrimmerNode extends NodeWithAccordion{
     //60 bars is enough to read a distribution at panel size, and keeps the
     //kernel payload small: 60 f64 is nothing next to the wave itself.
@@ -49,7 +50,9 @@ export class TrimmerNode extends NodeWithAccordion{
         /* the totals of the LAST multiplexed resolve, for the readout */
         this.multiplexTotals=null
         this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
+        this.events.broadcast.hoverSync=this.createHoverSyncEvent.bind(this)
         this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.listen.hoverSync=this.handleHoverSync.bind(this)
         this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]) inputAnchors[0].innerHTML='<title>Input: one Wave (XY or 1D), or several at once — each is then trimmed on its own data</title>'
@@ -59,12 +62,47 @@ export class TrimmerNode extends NodeWithAccordion{
     createPinSyncEvent(info){
         return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
     }
+    createHoverSyncEvent(info){
+        return new CustomEvent("hoverSync",{detail:{msg:info,emitter:this}})
+    }
     handlePinSync(e){
         if(e.detail.emitter===this) return
         this.applyPinSync(e.detail.msg)
     }
+    handleHoverSync(e){
+        if(e.detail.emitter===this) return
+        this.applyHoverSync(e.detail.msg)
+    }
     onGraphPinChange(info){
         dispatchEvent(this.events.broadcast.pinSync(info))
+    }
+    onGraphHoverChange(info){
+        const trace=this.graph?.traces.find(t=>t.id===info?.traceId)
+        if(!trace) return
+        const sourceInfo=traceSourceInfo(trace,info.tracePoint)
+        const syncInfo={
+            traceId:info.traceId,
+            tracePoint:info.tracePoint,
+            traceTitle:trace?.title,
+            x:info.x,
+            y:info.y,
+            px:info.px,
+            py:info.py,
+            ...sourceInfo
+        }
+        dispatchEvent(this.events.broadcast.hoverSync(syncInfo))
+    }
+    applyHoverSync(info){
+        if(!this.graph) return
+        if(info===null){
+            this.graph.hidePickHover?.()
+            return
+        }
+        const matches=matchingTracePoints(this.graph.traces,info)
+        if(!matches.length) return
+        const {trace,pointIndex}=matches[0]
+        const {x,y}=pointCoordinates(this.graph,trace,pointIndex,info.x,info.y)
+        this.graph.showPickHover?.({trace,tracePoint:pointIndex,x,y})
     }
     applyPinSync(info){
         if(!this.graph) return
@@ -338,7 +376,7 @@ export class TrimmerNode extends NodeWithAccordion{
             style:{position:"relative",width:"100%",height:"100%",minHeight:"200px",overflow:"hidden"}
         },[])
         content.append(graphContainer)
-        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer,{onPinChange:this.onGraphPinChange.bind(this)})
+        this.graph=new Plot2DWebGL([],`${this.title} graph`,this.origin,graphContainer,{onPinChange:this.onGraphPinChange.bind(this),onHoverChange:this.onGraphHoverChange.bind(this)})
         //The trimmer frame holds NO traces, so Plot2D.dataBounds() is null, and
         //ensureValidScales reads a missing bound as "not strictly positive" and
         //forces EVERY log axis back to linear. The bars are binned in log, so on
