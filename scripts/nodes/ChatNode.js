@@ -1,6 +1,7 @@
 ﻿import {Node} from "../core/index.js"
 import {Dialog} from "../ui/Dialog.js"
 import {CE,stylize} from "../util.js"
+import {exportSkeleton} from "../sessionStore.js"
 
 export class ChatNode extends Node{
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
@@ -141,9 +142,15 @@ export class ChatNode extends Node{
             }
         })
         this.leaveButton=leaveButton
+        const shareButton=CE("button",{type:"button",className:"share-flow"},["Share Flow"])
+        shareButton.title="Send your current flow/session to everyone in the room"
+        shareButton.addEventListener("click",()=>{
+            this.shareFlow()
+        })
+        this.shareButton=shareButton
         const bar=CE("div",{className:"chat-bar"},[
             this.statusLabel,urlField,nickField,roomField,
-            joinButton,createButton,privateButton,leaveButton
+            joinButton,createButton,privateButton,leaveButton,shareButton
         ])
         /* --- the log ------------------------------------------------------- */
         this.log=CE("div",{className:"chat-log"},[])
@@ -394,6 +401,10 @@ export class ChatNode extends Node{
             }
             return
         }
+        if(data.type==="share_flow"){
+            this.handleSharedFlow(data)
+            return
+        }
         if(data.type==="system"){
             this.append(data.text,"system")
             return
@@ -449,6 +460,52 @@ export class ChatNode extends Node{
             /* Cleared ONLY on a successful send: wiping the box on a dead
                socket would throw away what the user just typed. */
             this.inputField.value=""
+        }
+    }
+    shareFlow(){
+        const app=globalThis.Attributor
+        if(!app){
+            this.append("No active session to share.","system")
+            return
+        }
+        try{
+            const skeleton=exportSkeleton(app)
+            this.transmit({type:"share_flow",skeleton:JSON.parse(skeleton),from:this.parameters.nick})
+            this.append("Flow shared with the room.","system")
+        }catch(error){
+            this.append(`Failed to share flow: ${error.message}`,"system")
+            console.error("[ChatNode] shareFlow failed:",error)
+        }
+    }
+    handleSharedFlow(data){
+        const {skeleton,from}=data
+        if(!skeleton){
+            return
+        }
+        this.append(`${from} shared a flow. Click to load: `,"system")
+        const loadButton=CE("button",{type:"button"},["Load Shared Flow"])
+        loadButton.addEventListener("click",()=>{
+            this.loadSharedFlow(skeleton)
+        })
+        this.log.appendChild(loadButton)
+        this.log.scrollTop=this.log.scrollHeight
+    }
+    async loadSharedFlow(skeleton){
+        try{
+            const {restoreSession}=await import("../app/restoreSession.js")
+            const restored=restoreSession(skeleton)
+            if(restored){
+                globalThis.Attributor=restored
+                restored.applyPanelParameters()
+                restored.applyPanelOrder()
+                await restored.resolveAfterRestore()
+                this.append("Shared flow loaded successfully.","system")
+            }else{
+                this.append("Failed to load shared flow: restore returned null.","system")
+            }
+        }catch(error){
+            this.append(`Failed to load shared flow: ${error.message}`,"system")
+            console.error("[ChatNode] loadSharedFlow failed:",error)
         }
     }
     disconnect(){

@@ -364,6 +364,21 @@ function attachChatServer(server) {
         letAiAnswer(room, text);
         return;
       }
+
+      if (data.type === "share_flow") {
+        const roomId = socket.roomId;
+        if (!roomId || !socket.user) return;
+
+        const room = rooms.get(roomId);
+        if (!room) return;
+
+        const skeleton = data.skeleton;
+        const from = socket.user;
+        if (!skeleton) return;
+
+        broadcast(room, { type: "share_flow", skeleton, from });
+        return;
+      }
     });
 
     socket.on("close", () => {
