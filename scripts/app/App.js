@@ -1159,7 +1159,7 @@ export class App{
         }},[
             new OrbiSpinner(50,50),
             CE("a", {
-    href: "./FRONTPAGE/index.fr",
+    href: "./FRONTPAGE/index.html",
     target: "_blank",
     rel: "noopener noreferrer",
     style: {
@@ -1167,7 +1167,7 @@ export class App{
         textDecoration: "underline",
         cursor: "pointer"
     }
-}, ["Visiter Attributor"]),
+}, ["Go to documentation"]),
             CE("div",{},[
                 CE("div",{},["Attributor Alpha version 0.1.0"]),
                 CE("div",{},["This software is under development and may contain bugs."]),

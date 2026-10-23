@@ -26,11 +26,11 @@ import {formatCount,formatMz,formatValue,prettyNotation,traceColor,isDeleteKey,F
      - RIGHT : what a given formula IS. The unabridged key, the mass, every
                measured target with its error, and a free-text annotation.
 
-   The Formula / Stoichiometry / Peaks switch is a VIEW and never a
-   transformation. "Fold to stoichiometry" groups the leaves of a graph under
-   their root — the engine already knows that lineage, so the grouping is a
-   grouping and not a guess — and unfolding hands back every key, m/z and target
-   untouched.
+    The Formula / Stoichiometry / Peaks switch is a VIEW and never a
+    transformation. "Fold to stoichiometry" groups the leaves that share a CORE
+    — the skeleton without its ionising group — so C2H6O[H+] and C2H6O[Na+]
+    fold together under C2H6O, and unfolding hands back every key, m/z and
+    target untouched.
 
    A LINE IS FOLDABLE, and what it unfolds depends on what it IS. There is
    a HANDLE on every line that has something inside, and opening is done on
@@ -41,8 +41,8 @@ import {formatCount,formatMz,formatValue,prettyNotation,traceColor,isDeleteKey,F
      - Formula view      : the formulas are the lines, and a formula opens
                            its TARGET PEAKS — the measured mass, the intensity
                            and where the point came from. Not the formulae.
-     - Stoichiometry view: the stoichiometries are the lines, and one opens
-                           its FORMULAS.
+     - Stoichiometry view: the cores are the lines, and one opens its
+                           FORMULAS (skeleton + ionising group).
      - Peaks view        : the measured points are the lines, and one opens
                            the formula that took it.
    ------------------------------------------------------------------------- */
@@ -1592,10 +1592,10 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
     /* One list, three shapes, and the difference is only in what a row HOLDS.
 
        In "formula" view a row is a leaf. In "stoichiometry" view a row is a
-       molecule: the leaves that share a root are folded into it, and the count
-       in front says how many. The fold is a GROUPING, never a merge: the
-       formulas keep their own keys, their own m/z and their own targets, and
-       unfolding gives every one of them back exactly as it was. What is lost
+       CORE: the leaves that share it are folded under it, and the count in front
+       says how many. The fold is a GROUPING, never a merge: the formulas keep
+       their own keys, their own m/z, their own ionising group and their own
+       targets, and unfolding gives every one of them back exactly as it was. What is lost
        by folding is the noise of a thousand isotopologues competing for one
        line, and nothing else. */
     visibleRows(){
@@ -1764,17 +1764,27 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                 }
             }
         }else if(this.parameters.view==="stoichiometry"){
+            /* LE GROUPE EST LE SQUELETTE, PAS L'ION.
+
+               `moleculeKey` inclut l'adduit (C2H6O[H+] → C2H7O+), donc deux
+               protonations différentes tombaient dans deux groupes. Ici c'est
+               `coreMoleculeKey` qui décide: C2H6O regroupe C2H6O[H+] et
+               C2H6O[Na+], et le déplié montre chaque formule avec son groupe
+               ionisant. Un adduit seul n'a pas de core: il retombe sur son
+               `molecule`, qui est alors la seule identité disponible. */
             const groups=new Map()
             for(const entry of entries){
-                const key=entry.molecule??entry.key
-                if(!groups.has(key)) groups.set(key,{molecule:key,entries:[]})
+                const key=entry.coreMolecule??entry.molecule??entry.key
+                if(!groups.has(key)) groups.set(key,{core:key,entries:[]})
                 groups.get(key).entries.push(entry)
             }
             rows=[...groups.values()].map(group=>({
                 kind:"molecule",
                 depth:0,
                 parentKey:null,
-                molecule:group.molecule,
+                /* `molecule` reste le NOM DU PLI: c'est lui que `openMolecules`
+                   stocke, et il n'a pas à changer de sens pour changer d'étiquette. */
+                molecule:group.core,
                 entries:group.entries,
                 /* La clé d'une molécule est la sienne, préfixée — et non celle de
                    sa première feuille, comme c'était le cas. Deux raisons, et la
@@ -1784,42 +1794,21 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                    et « la ligne sélectionnée » devenait ambiguë dès qu'on dépliait.
                    Le préfixe rend les deux lignes distinctes, donc les deux
                    sélectionnables, donc dépliables sans que l'une mange l'autre. */
-                key:`mol:${group.molecule}`,
-                /* The group is LABELLED with the key that grouped it, not with
-                   the notation of whichever leaf happened to come first.
-
-                   `String(root)` is what this used to print, and it is wrong for
-                   every protonated or adducted species: toString writes from
-                   `written` — the core — while the grouping reads `counts`, which
-                   carries the absorbed group. So CH4;H+ is grouped as CH5+ and then
-                   LABELLED "CH4[H+]", a formula with five hydrogens written as
-                   four plus a bracket. The row said one thing and the count in
-                   front of it (×2, both spellings) said another.
-
-                   moleculeKey is the one string guaranteed to describe the whole
-                   group: it is what put these leaves in this box, and it is
-                   already a display form — Hill order, no isotope mass numbers.
-                   Printing it also makes the label independent of the ORDER of
-                   the entries, which "the first leaf" never was: the same
-                   collection could show CH4[H+] or CH5[+] on two machines that
-                   enumerated their parents differently. */
-                notation:group.molecule,
-                /* LE m/z DE LA STŒCHIOMÉTRIE, et non la moyenne de ses feuilles.
-
-                   La moyenne était un nombre que rien ne mesure: elle ne
-                   correspond ni à une masse prédite, ni à une masse observée, et
-                   elle se trouvait dans la MÊME colonne que le m/z des autres
-                   lignes — donc comparable, donc fausse. La racine, elle, a une
-                   masse à elle, calculée par la même table que les feuilles.
-
-                   Elle n'est pas toujours là: une entrée reconstruite par un
-                   adoptiveur externe peut n'avoir pas de `root`, et alors on
-                   garde la moyenne — moins juste, mais présente, ce qui vaut
-                   mieux qu'un tiret sur une ligne dont la masse est connue par
-                   ses feuilles. */
-                mz:Number.isFinite(group.entries[0].root?.mz)
-                    ?group.entries[0].root.mz
-                    :group.entries.reduce((n,e)=>n+e.mz,0)/group.entries.length,
+                key:`mol:${group.core}`,
+                /* L'ÉTIQUETTE EST LE CORE, et le déplié porte les formules
+                   complètes. C'est la distinction que la vue existe pour
+                   montrer: la ligne dit de quel squelette on parle, le contenu
+                   dit quels ions de ce squelette ont été proposés. La lire sur
+                   `group.core` — déjà en Hill, sans isotopes — la rend
+                   indépendante de l'ordre des entrées et du premier adduit
+                   rencontré. */
+                notation:group.core,
+                /* PAS DE m/z POUR UN GROUPE QUI CONTIENT PLUSIEURS IONS.
+                   La moyenne n'est ni une masse prédite ni une masse mesurée;
+                   la racine, elle, ne décrit qu'un des ions du groupe. Un tiret
+                   est la seule réponse qui ne prétend rien: le m/z de chaque ion
+                   est sur la ligne dépliée, où il a un sens. */
+                mz:null,
                 count:group.entries.length,
                 /* LES DEUX CHAMPS DE TRI D'UNE MOLÉCULE, et ils ne se moyennent
                    pas de la même façon — délibérément.
@@ -1921,14 +1910,14 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
            compte, et un « 12 / 8 » serait illisible. Les enfants se voient dans
            le pli qui les a ouverts. */
         const shown=rows.reduce((n,row)=>n+(row.depth===0?1:0),0)
-        const molecules=new Set(entries.map(e=>e.molecule??e.key)).size
+        const cores=new Set(entries.map(e=>e.coreMolecule??e.molecule??e.key)).size
         const peaks=entries.reduce((n,e)=>n+(e.targets?.length??0),0)
-        const pool=view==="stoichiometry"?molecules:view==="peaks"?peaks:entries.length
+        const pool=view==="stoichiometry"?cores:view==="peaks"?peaks:entries.length
         this.countLabel.textContent=`${formatCount(shown)} / ${formatCount(pool)}`
         this.countLabel.title=[
             `${formatCount(shown)} shown`,
             `${formatCount(entries.length)} formulas`,
-            `${formatCount(molecules)} molecules`,
+            `${formatCount(cores)} cores`,
             `${formatCount(peaks)} measured points`
         ].join(", ")
     }
@@ -2862,6 +2851,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                 mass:entry.mass,
                 charge:entry.charge,
                 molecule:entry.molecule,
+                coreMolecule:entry.coreMolecule??null,
                 errorPpm:entry.errorPpm,
                 intensity:entry.intensity,
                 note:entry.note,

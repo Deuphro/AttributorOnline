@@ -69,16 +69,18 @@ export function clipSegmentToRect(x0,y0,x1,y1,width,height){
    one cannot answer them differently.
 
    `publishedPeakY` is the Y column a classified peak is PUBLISHED with: the
-   integrated mass when the kernel gave one, the chief's intensity when it did
-   not. A stale pkg build that supplies no mass must not look like a peak of
-   area zero, hence the explicit fallback.
+   integrated mass when the kernel gave one and `sum` is on, the chief's
+   intensity when it did not (or when `sum` is off). A stale pkg build that
+   supplies no mass must not look like a peak of area zero, hence the explicit
+   fallback.
 
    `massThroughMask` walks that mass with the anti-radio mask: the filter DROPS
    peaks, so its result is SHORTER than the array it was given, and the mass has
    to be cut by the SAME mask or the two columns stop lining up — the area of
    one peak under the x of another, which is worse than no area at all. `isRadio`
    is that mask (1 = dropped) and it is aligned with the INPUT arrays. */
-export function publishedPeakY(classification){
+export function publishedPeakY(classification,sum=true){
+    if(!sum) return classification.keptPointsY
     const keptMass=classification.keptIntegratedMass
     const keptX=classification.keptPointsX
     const hasMass=keptMass&&keptMass.length===keptX.length

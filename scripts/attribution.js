@@ -843,12 +843,20 @@ readCombining(entries){
                    brique est ionisante. Une clé qui ne peut pas se relire ne peut
                    pas non plus servir de source. */
                 composition:root.composition,
-                /* ET L'ADDUCT NE GARDE QUE SA CHARGE, sinon `brackets` réécrirait
-                   un second [H+] au-dessus d'un hydrogène déjà présent: "H[H+]"
-                   pour un seul proton. La forme sans atome est ce que la formule
-                   sait rendre ([+], [2+]), et c'est celle que les chimistes
-                   écrivent quand ils ne répètent pas un atome déjà présent. */
-                ionisation:[{group:new Map(),charge:root.charge}]
+                /* L'ADDUCT GARDE SON GROUPE, et `stateToFormula` l'écrit dans
+                   les crochets. Le double comptage n'est plus possible: le
+                   squelette part dans `core`, les atomes de l'adduit restent
+                   dans `composition` (pour la masse) et dans le groupe (pour
+                   l'écriture). Un [H+] s'affiche donc [H+], et non [+].
+
+                   Une charge SEULE — [2+], [Na] absent d'atomes — n'a pas de
+                   groupe: `brackets` l'écrit alors par sa magnitude, [2+], et
+                   non [+2]. C'est la même distinction que `resolveIonisation`
+                   fait pour une formule tapée. */
+                ionisation:[{
+                    group:root.composition.size?root.composition:null,
+                    charge:root.charge
+                }]
             })
         })
     }
@@ -1656,6 +1664,15 @@ class SortedPoints{
    n'est appliqué qu'ici — une fois, au moment de la masse de l'ion. */
 function stateToFormula(plan,state){
     const composition=new Map()
+    /* LE SQUELETTE, SÉPARÉ DE LA CHARGE.
+
+       `composition` porte TOUT — squelette et atomes des adduits — parce que
+       c'est elle que `mass` pèse. Mais elle ne peut pas servir à ÉCRIRE une
+       formule à adduit: l'atome du proton y figure déjà, et les crochets le
+       répéteraient. Le squelette seul est donc accumulé à part, et devient le
+       `core` de la formule — exactement ce que fait `Formula.parse` pour une
+       formule tapée. La clé redevient alors relisible: "C6H12O6[H+]". */
+    const core=new Map()
     /* La charge et la probabilité viennent des estimateurs, pas d'un second
        calcul: c'est la sélection par point qui a déjà décidé de garder cet
        état sur la foi de CES chiffres, donc les recalculer ici risquerait de
@@ -1680,6 +1697,7 @@ function stateToFormula(plan,state){
            `mergeComposition` additionne la source dans la cible et ne l'écrit
            jamais, donc la Map du plan est partagée sans être altérée. */
         mergeComposition(composition,item.composition,times)
+        if(item.kind==="combining") mergeComposition(core,item.composition,times)
         if(item.kind==="ionising"&&item.ionisation){
             for(let k=0;k<times;k++) ionisation.push(...item.ionisation)
         }
@@ -1694,9 +1712,20 @@ function stateToFormula(plan,state){
     //ni squelette ni charge: il n'y a rien à écrire, et une formule vide
     //aurait une masse de zéro qui s'attacherait au premier point du spectre
     if(!composition.size&&!charge) return null
+    /* SANS SQUELETTE, LES GROUPES RESTENT DES CHARGES.
+
+       Un adduit seul ([H+] sans brique à combiner) n'a pas de core: ses atomes
+       sont déjà dans `composition`, donc les écrire aussi dans les crochets
+       donnerait "H[H+]". On les réduit à leur charge — "H[+]", relisible — et
+       la forme de la clé ne dépend pas d'une grammaire qui refuse une formule
+       sans composition. */
+    const hasCore=core.size>0
     const formula=new Formula({
         composition,
-        ionisation,
+        core:hasCore?core:null,
+        ionisation:hasCore
+            ?ionisation
+            :ionisation.map(term=>({...term,group:null})),
         charge,
         rule:plan.rule,
         table:plan.table
@@ -2181,7 +2210,7 @@ function copyComposition(source){
    rendue nulle, et le sommet sera compté parmi ceux que la propagation n'a pas
    atteint. Une exception sur une composition bizarre ne tue pas la propagation
    non plus: elle rend ce sommet nul, et le groupe continue autour de lui. */
-function formulaFrom(composition,charge,rootFormula,table){
+function formulaFrom(composition,charge,rootFormula,table,core=null){
     const filled=[...(composition?.values()??[])]
         .some(byA=>[...byA.values()].some(n=>n>0))
     if(!filled) return null
@@ -2190,6 +2219,13 @@ function formulaFrom(composition,charge,rootFormula,table){
     try{
         return new Formula({
             composition,
+            /* LE SQUELETTE SUIT LA MÊME ADDITION QUE LA COMPOSITION.
+               Sans lui, `written` retomberait sur la composition entière et
+               l'adduit s'écrirait deux fois — ou, s'il y a un groupe, le
+               squelette disparaîtrait. La propagation ajoute et retire des
+               briques combinatoires: ce sont elles, et elles seules, qui
+               changent le core. */
+            core:core??null,
             charge:chargeOf,
             ionisation:rootFormula?.ionisation??[],
             rule:rootFormula?.rule??"mostProbable",
@@ -2216,9 +2252,13 @@ export function propagateForest(graph,rootFormula,references,{table=null}={}){
         :vertices[0].index
     const charge=rootFormula.charge
     const rootFormulaBuilt=formulaFrom(
-        copyComposition(rootFormula.composition),charge,rootFormula,table)
+        copyComposition(rootFormula.composition),charge,rootFormula,table,
+        rootFormula.core?copyComposition(rootFormula.core):null)
     if(!rootFormulaBuilt) return null
-    const assigned=new Map([[startIndex,{formula:rootFormulaBuilt,sign:0,depth:0}]])
+    const assigned=new Map([[startIndex,{
+        formula:rootFormulaBuilt,sign:0,depth:0,
+        core:rootFormula.core?copyComposition(rootFormula.core):null
+    }]])
 
     /* LA FILE, et elle porte le SENS du lien. Chaque sommet reçoit le lien par
        lequel on l'a atteint et le signe de ce lien, donc un cycle ne peut pas
@@ -2266,9 +2306,14 @@ export function propagateForest(graph,rootFormula,references,{table=null}={}){
                l'écrire, donc la composition de la référence — celle du PLAN,
                partagée — reste intacte. */
             mergeComposition(composition,reference.composition,isU?1:-1)
-            const built=formulaFrom(composition,charge,rootFormula,table)
+            /* LE CORE SUIT LE MÊME GESTE: une brique combinatoire ajoutée ou
+               retirée modifie le squelette, jamais l'adduit, qui reste dans
+               `ionisation`. Le laisser tel quel écrirait un squelette périmé. */
+            const core=here.core?copyComposition(here.core):null
+            if(core) mergeComposition(core,reference.composition,isU?1:-1)
+            const built=formulaFrom(composition,charge,rootFormula,table,core)
             if(!built){ unattributed++; continue }
-            assigned.set(child,{formula:built,sign:isU?1:-1,depth:here.depth+1})
+            assigned.set(child,{formula:built,sign:isU?1:-1,depth:here.depth+1,core})
             edges.push({
                 u:link.u,v:link.v,standard:link.standard,
                 label:link.label??null,sign:isU?1:-1

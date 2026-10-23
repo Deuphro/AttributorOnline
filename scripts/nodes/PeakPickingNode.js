@@ -27,6 +27,11 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
         //until the first data (then fitted to keep every pair) or a click
         this.parameters.slope=null
         this.parameters.slopeAnchorBirth=null // where the marker sits on the line
+        /* Which Y a picked peak is PUBLISHED with: the summed intensity of its
+           component (true, the historical behaviour) or the chief's own
+           intensity (false). Display-only for the diagram, which plots births
+           and deaths and never intensities. */
+        this.parameters.sumPeakIntensities=true
         this.parameters.filtrationMode="superlevel" // "sublevel" or "superlevel"
         this.parameters.logLogAxes=false
         //anti-radio stage: the same z, the same source tracking, and the same
@@ -283,7 +288,30 @@ if(!this.graph) return
             style:{gridTemplateColumns:"minmax(0,1fr) auto auto auto",fontSize:"0.85em"}
         },[])
         phRow.append(this.slopeInput, guessBtn, this.logLogBtn, this.countLabel)
-        phSection.append(phRow)
+
+        /* Just above the diagram, and live in both single and multiplexed
+           modes: unlike the slope or z, this is not a reading of one spectrum
+           but how EVERY peak's intensity is published. */
+        const intensityRow=CE("label",{
+            className:"pp-row",
+            style:{
+                gridTemplateColumns:"auto minmax(0,1fr)",
+                fontSize:"0.85em",
+                cursor:"pointer",
+                userSelect:"none"
+            },
+            title:"Publish each peak with the summed intensity of all points in its component (checked), or with the single chief point's original intensity (unchecked)"
+        },[])
+        this.sumIntensitiesInput=CE("input",{
+            type:"checkbox",
+            checked:this.parameters.sumPeakIntensities!==false,
+            style:{margin:"0",cursor:"pointer"}
+        },[])
+        this.sumIntensitiesInput.addEventListener("change",()=>{
+            this.setSumPeakIntensities(this.sumIntensitiesInput.checked)
+        })
+        intensityRow.append(this.sumIntensitiesInput, CE("span",{},["Sum peak intensities"]))
+        phSection.append(phRow, intensityRow)
 
         // 2. Graph container
         const graphContainer = CE("div", {
@@ -325,6 +353,26 @@ if(!this.graph) return
         this.graph.container.addEventListener("click", (event) => this.handleClassifierClick(event))
 
         this.graph.drawGraph()
+    }
+
+    /* Switches what a peak PUBLISHES, then republishes without touching the
+       spectra: the classification is enough for a single input, while a
+       multiplexed node has N results and reruns the resolve to rewrite them
+       all. The diagram itself does not move - it plots birth against death. */
+    async setSumPeakIntensities(on){
+        this.parameters.sumPeakIntensities=!!on
+        if(this.sumIntensitiesInput) this.sumIntensitiesInput.checked=!!on
+        this.origin?.saveSessionSoon?.()
+        if(!this.persistenceBirths) return
+        try{
+            if(this.isMultiplexed()) await this.startResolve()
+            else await this.applySlopeFilter()
+            //the output was republished with the new intensity rule: every
+            //downstream node must recompute from it
+            await this.resolveChildren()
+        }catch(err){
+            this.fail(`republishing peaks failed: ${err?.message??String(err)}`)
+        }
     }
 
     /* The anti-radio section: a plain block under the plot, captioned like the
@@ -752,7 +800,7 @@ if(!this.graph) return
             centroidX:analysis.centroidX,
             params:{slope}
         })
-        const publishedY=publishedPeakY(classification)
+        const publishedY=publishedPeakY(classification,this.parameters.sumPeakIntensities!==false)
         const candidates=classification.keptPointsX.length
         let z=this.parameters.z
         let radioResult=null
@@ -781,7 +829,10 @@ if(!this.graph) return
             const masked=massThroughMask(classification.keptIntegratedMass,radioResult.isRadio,candidates)
             output=this.peaksWave(
                 radioResult.pointsX,
-                masked&&masked.length===radioResult.pointsX.length?masked:radioResult.pointsY,
+                this.parameters.sumPeakIntensities!==false
+                    &&masked&&masked.length===radioResult.pointsX.length
+                    ?masked
+                    :radioResult.pointsY,
                 radioResult.keptCount,slope,z,label
             )
         }else if(candidates){
@@ -852,7 +903,7 @@ if(!this.graph) return
         this.persistenceKeptCount=classification.keptCount
         this.persistenceKeptMass=classification.keptIntegratedMass
         this.persistenceKeptCentroidX=classification.keptCentroidX
-        this.persistencePublishedY=publishedPeakY(classification)
+        this.persistencePublishedY=publishedPeakY(classification,this.parameters.sumPeakIntensities!==false)
     }
     /* The diagram, from a classification. Extracted from applySlopeFilter so the
        multiplexed path paints the very same picture rather than a second
@@ -978,7 +1029,8 @@ if(!this.graph) return
             if(run!==undefined&&run!==this.slopeRun) return
             this.publishOutput(
                 result.pointsX,
-                filteredMass&&filteredMass.length===result.pointsX.length
+                this.parameters.sumPeakIntensities!==false
+                    &&filteredMass&&filteredMass.length===result.pointsX.length
                     ?filteredMass
                     :result.pointsY,
                 result.keptCount
@@ -1189,6 +1241,7 @@ if(!this.graph) return
         return {
             slope: this.parameters.slope,
             slopeAnchorBirth: this.parameters.slopeAnchorBirth,
+            sumPeakIntensities: this.parameters.sumPeakIntensities!==false,
             filtrationMode: this.parameters.filtrationMode,
             //both stages travel together: a session that kept the classifier but
             //lost the anti-radio settings would come back looking filtered
@@ -1202,6 +1255,9 @@ if(!this.graph) return
         if(!state) return
         if(Number.isFinite(state.slope)) this.parameters.slope = state.slope
         if(Number.isFinite(state.slopeAnchorBirth)) this.parameters.slopeAnchorBirth = state.slopeAnchorBirth
+        //a session saved before this choice existed was published with the sum
+        this.parameters.sumPeakIntensities = state.sumPeakIntensities !== false
+        if(this.sumIntensitiesInput) this.sumIntensitiesInput.checked = this.parameters.sumPeakIntensities
         if(state.filtrationMode !== undefined) this.parameters.filtrationMode = state.filtrationMode
         if(Number.isFinite(state.z)&&state.z>0) this.parameters.z = state.z
         //a session saved before the anti-radio stage existed has no zSource: it

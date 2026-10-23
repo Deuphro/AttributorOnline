@@ -319,11 +319,11 @@ await test("une attribution rend une formule, un point et une erreur",()=>{
     /* l'erreur doit être petite: on a mis le point exactement sur la formule */
     ok(Math.abs(best.errorPpm)<=5,
         `the nearest point is ${best.errorPpm} ppm away, expected <= 5`)
-    /* et la formule rendue doit être celle du monomère protoné: CH3 s'écrit
-       « CH3[+] » — le carbone, les trois hydrogènes du groupe, puis la charge
-       seule dans les crochets. C'est relisible, et c'est ce que le lecteur doit
-       lire. */
-    ok(/C/.test(best.notation)&&/H/.test(best.notation)&&best.notation.endsWith("[+]"),
+    /* et la formule rendue doit être celle du monomère protoné: CH2 + [H+]
+       s'écrit « CH2[H+] » — le squelette d'un côté, l'adduit dans ses
+       crochets. C'est relisible, et c'est ce que le lecteur doit lire: le
+       proton garde son identité au lieu d'être aplati en [+]. */
+    ok(/C/.test(best.notation)&&/H/.test(best.notation)&&best.notation.endsWith("[H+]"),
         `expected a protonated hydrocarbon, got "${best.notation}"`)
 })
 
@@ -1613,8 +1613,9 @@ await test("NEUTRES — une liste ionisante présente les ions ET les neutres",(
     ok(charges.includes(1),
         `and must keep the protonated form, charges seen: ${JSON.stringify(charges)}`)
 
-    /* ET LE PROTONÉ EST AU BON m/z, pas seulement présent. */
-    const ion=result.entries.find(entry=>entry.charge===1&&/C2H7O/.test(entry.notation))
+    /* ET LE PROTONÉ EST AU BON m/z, pas seulement présent. Le proton reste
+       dans les crochets: C2H6O[H+], et non un C2H7O[+] aplati. */
+    const ion=result.entries.find(entry=>entry.charge===1&&/C2H6O\[H\+\]/.test(entry.notation))
     ok(ion!==undefined,
         `the protonated ethanol must be proposed, got `+
         `${result.entries.map(e=>`${e.notation}(z=${e.charge})`).join(" ")||"(nothing)"}`)

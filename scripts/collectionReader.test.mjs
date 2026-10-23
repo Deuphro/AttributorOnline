@@ -366,8 +366,9 @@ const readerWith=(entries,{view="formula",sort="mz",filter="",open={}}={})=>({
 /* `targets` are the MEASURED points, written by hand because what is under test
    is the line each of them becomes; the engine's own pairing is exercised on
    real formulas further down this file. */
-const entry=(key,mz,intensity,errorPpm,molecule,targets=[])=>({
-    key,notation:key,mz,intensity,errorPpm,molecule:molecule??key,targets
+const entry=(key,mz,intensity,errorPpm,molecule,targets=[],coreMolecule=null)=>({
+    key,notation:key,mz,intensity,errorPpm,molecule:molecule??key,
+    coreMolecule,targets
 })
 const peak=(mz,intensity,errorPpm)=>({mz,intensity,errorPpm,cost:1})
 
@@ -720,22 +721,41 @@ test("une molécule affiche son nombre de formules, pas une erreur",()=>{
     eq(molecule.error.textContent,"×2","two formulas folded")
     eq(molecule.intensity.textContent,"","and no intensity, which would be a number invented here")
 })
-test("une molécule affiche la MASSE de la stœchiométrie, pas la moyenne de ses feuilles",()=>{
+test("une ligne de core n'invente pas de m/z: le groupe contient plusieurs ions",()=>{
     /* La moyenne des m/z d'un groupe n'est ni une masse prédite ni une masse
-       observée — et elle était dans la colonne des m/z, donc lisible comme si
-       elle en était une. La racine a une masse à elle, calculée par la même
-       table que les feuilles; c'est elle qui est affichée. */
+       observée, et la racine ne décrit qu'UN des ions du groupe. La ligne de
+       tête n'a donc pas de m/z: un tiret, et les m/z réels sur les lignes
+       dépliées. C'était l'ancien comportement (racine ou moyenne) qui mettait
+       un nombre comparable dans la colonne des masses. */
     const withRoot=[
-        entry("h",15,100,0.4,"CH4[H+]"),
-        entry("d",17,40,1.2,"CH4[H+]")
+        entry("h",15,100,0.4,"CH4[H+]",[],null),
+        entry("d",17,40,1.2,"CH4[H+]",[],null)
     ]
     for(const e of withRoot) e.root={mz:16.0313}
-    eq(visibleRows.call(readerWith(withRoot,{view:"stoichiometry"}))[0].mz,16.0313,
-        "the stoichiometry's own mass")
-    eq(visibleRows.call(readerWith(
-        [entry("h",15,100,0.4,"CH4[H+]"),entry("d",17,40,1.2,"CH4[H+]")],
-        {view:"stoichiometry"}))[0].mz,16,
-        "and the mean only when there is no root to ask")
+    eq(visibleRows.call(readerWith(withRoot,{view:"stoichiometry"}))[0].mz,null,
+        "a core line carries no m/z of its own")
+})
+test("la vue stoechiométrie regroupe par CORE, et le déplié garde chaque ion",()=>{
+    /* Deux adduits du même squelette sont deux groupes sous l'ancienne clé
+       (`moleculeKey` inclut l'adduit), et un seul sous la nouvelle. Le déplié
+       rend chaque formule entière — squelette + groupe ionisant — et ne perd
+       ni le proton ni le sodium. */
+    const entries=[
+        {key:"12C2 1H6 16O[H+]",notation:"C2H6O[H+]",mz:47,mass:47,charge:1,
+         intensity:10,errorPpm:0.1,molecule:"C2H7O+",coreMolecule:"C2H6O",targets:[]},
+        {key:"12C2 1H6 16O[Na+]",notation:"C2H6O[Na+]",mz:69,mass:69,charge:1,
+         intensity:5,errorPpm:0.2,molecule:"C2H6ONa+",coreMolecule:"C2H6O",targets:[]}
+    ]
+    const rows=visibleRows.call(readerWith(entries,{view:"stoichiometry"}))
+    eq(rows.length,1,"two ions of one skeleton make ONE core line")
+    eq(rows[0].notation,"C2H6O","the line is the core, not either ion")
+    eq(rows[0].count,2,"both ions are under it")
+    eq(rows[0].mz,null,"and the core has no m/z of its own")
+    const open=visibleRows.call(readerWith(entries,{
+        view:"stoichiometry",open:{openMolecules:new Set(["C2H6O"])}
+    }))
+    eq(open.map(r=>r.notation).join(" "),"C2H6O C2H6O[H+] C2H6O[Na+]",
+        "unfolding gives the full formulae, ionising group included")
 })
 
 console.log("les DEUX sorties, et le jumeau exact")

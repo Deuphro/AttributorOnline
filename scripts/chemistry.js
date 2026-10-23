@@ -242,6 +242,22 @@ function logFactorial(n){
    charge. La feuille fige des A. C'est la seule différence, et c'est
    exactement la différence entre une recette et une mesure.
    ------------------------------------------------------------------------- */
+/* HILL, POUR DES COMPTES DÉJÀ RÉDUITS.
+
+   Deux lectures en ont besoin — `moleculeKey`, qui part de la composition
+   absorbée, et `coreMoleculeKey`, qui part du squelette — et elles doivent
+   écrire dans le MÊME ordre, sinon deux clés d'une même molécule différeraient
+   par la seule typographie. C=0, H=1, puis l'ordre alphabétique des symboles:
+   c'est la convention Hill, et c'est ce que `compositionToString` applique. */
+function hillCounts(counts){
+    const rank=element=>element.symbol==="C"?0:element.symbol==="H"?1:2
+    return [...counts.entries()]
+        .filter(([,n])=>n>0)
+        .sort((a,b)=>rank(a[0])-rank(b[0])||(a[0].symbol<b[0].symbol?-1:1))
+        .map(([element,n])=>n>1?`${element.symbol}${n}`:element.symbol)
+        .join("")
+}
+
 class Stoichiometry{
     /* La masse de l'électron, en unités de masse atomique.
 
@@ -1004,16 +1020,35 @@ class Stoichiometry{
        ions différents, et les fusionner prétendrait que le protoné et le
        neutre sont la même mesure. */
     get moleculeKey(){
-        const rank=element=>element.symbol==="C"?0:element.symbol==="H"?1:2
-        const ordered=[...this.counts.entries()]
-            .sort((a,b)=>rank(a[0])-rank(b[0])||(a[0].symbol<b[0].symbol?-1:1))
-            .map(([element,n])=>n>1?`${element.symbol}${n}`:element.symbol)
-            .join("")
+        const ordered=hillCounts(this.counts)
         const charge=this.charge
         const tail=charge
             ?`${charge>0?"+":"-"}${Math.abs(charge)>1?Math.abs(charge):""}`
             :""
         return ordered+tail
+    }
+    /* LE CORE SEUL, EN MOLÉCULE: les isotopes effacés, l'ionisation effacée.
+
+       C'est la clé de regroupement de la vue « stoichiometry », et elle répond
+       à une autre question que `moleculeKey`: celle-ci dit ce que l'ion EST
+       (C2H6O[H+] → C2H7O+), celle-là dit de quel SQUELETTE il vient (C2H6O).
+       Deux adduits différents du même squelette se replient donc ensemble, et
+       le déplié montre les formules complètes, crochets compris.
+
+       Elle est lue sur `core`, la composition ÉCRITE — donc elle n'inclut jamais
+       l'atome d'un [H+], qui vit dans le groupe. Une formule sans squelette
+       (adduit seul) n'a pas de core, et rend `null`: l'appelant retombe alors
+       sur `moleculeKey`, qui est la seule identité disponible. */
+    get coreMoleculeKey(){
+        const core=this.core
+        if(!core?.size) return null
+        const counts=new Map()
+        for(const [element,byA] of core){
+            let n=0
+            for(const count of byA.values()) n+=count
+            if(n) counts.set(element,n)
+        }
+        return counts.size?hillCounts(counts):null
     }
 
 }
@@ -2424,6 +2459,10 @@ class FormulaCollection{
             //famille d'isotopologues sans qu'on ait à la transmettre
             root:formula.root,
             molecule:formula.root.moleculeKey,
+            /* LE SQUELETTE, pour la vue « stoichiometry »: le regroupement se
+               fait sur lui, et non sur l'ion entier. `null` pour un adduit seul,
+               qui n'a pas de core — l'appelant retombe alors sur `molecule`. */
+            coreMolecule:formula.root.coreMoleculeKey,
             targets:[],
             target:null,
             errorPpm:null,
@@ -2534,6 +2573,7 @@ class FormulaCollection{
                 mass:entry.mass,
                 charge:entry.charge,
                 molecule:entry.molecule,
+                coreMolecule:entry.coreMolecule??null,
                 errorPpm:entry.errorPpm,
                 intensity:entry.intensity,
                 targets:entry.targets.map(target=>({
