@@ -225,6 +225,9 @@ export class AttributionNode extends NodeWithAccordion{
         if(inputAnchors[0]){
             inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity). Each is attributed separately.</title>'
         }
+        if(inputAnchors[1]){
+            inputAnchors[1].innerHTML='<title>Input 1 (Pattern): FormulaCollection from FormulaCollectionNode. Replaces default combining/ionising groups with formulas from upstream.</title>'
+        }
         const outputAnchors=this.DOMelt.querySelectorAll('.output.anchor')
         if(outputAnchors[0]){
             outputAnchors[0].innerHTML='<title>Output 0: one attribution list per input wave</title>'
