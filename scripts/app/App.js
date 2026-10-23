@@ -1158,12 +1158,23 @@ export class App{
             "text-align":"center"
         }},[
             new OrbiSpinner(50,50),
+            CE("a", {
+    href: "./FRONTPAGE/index.fr",
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+        color: "blue",
+        textDecoration: "underline",
+        cursor: "pointer"
+    }
+}, ["Visiter Attributor"]),
             CE("div",{},[
                 CE("div",{},["Attributor Alpha version 0.1.0"]),
                 CE("div",{},["This software is under development and may contain bugs."]),
                 CE("div",{},["Please report any issues to the developers."])
             ]),
             CE("div",{},[new CycloSpinner(15)]),
+            CE("div",{},["Your work is kept in this browser only. Nothing is sent to a server, and no one else can read it. \"New session\" deletes all of it: the current session, the local copy, and the window layout. Use \"Export session\" for anything you want to keep on disk."]),
             CE("div",{},[new CycloSpinner(15),new CycloSpinner(15)])
         ]))
         /* Where the work goes, stated where somebody goes looking for it.
@@ -1172,12 +1183,6 @@ export class App{
            the machine, a durable copy can be deleted with one button, and a large
            spectrum may be refused by the browser's budget. Anything longer stops
            being read. */
-        this.notice(
-            "Where your data goes",
-            "Your work is kept in this browser only. Nothing is sent to a server, and no one else can read it. "+
-            "\"New session\" deletes all of it: the current session, the local copy, and the window layout. "+
-            "Use \"Export session\" for anything you want to keep on disk."
-        )
     }
 }
 
