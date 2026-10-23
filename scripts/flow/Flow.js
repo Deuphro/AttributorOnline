@@ -611,6 +611,66 @@ export class Flow{
             }
         }
     }
+    /* Rectangle d'un node dans le repère du SVG (même repère que anchorAbsPos). */
+    nodeSVGRect(node){
+        const p=node?.parameters?.position
+        return {
+            x:Number.isFinite(p?.x)?p.x:0,
+            y:Number.isFinite(p?.y)?p.y:0,
+            width:Number.isFinite(node?.parameters?.width)?node.parameters.width:150,
+            height:Number.isFinite(node?.nodeHeight)?node.nodeHeight:100
+        }
+    }
+
+    /* Approximation : le lien start->end passe-t-il à travers le node ? */
+    linkHitsNode(start,end,node){
+        const r=this.nodeSVGRect(node)
+        const cx=r.x+r.width/2
+        const loX=Math.min(start.x,end.x), hiX=Math.max(start.x,end.x)
+        if(cx<=loX||cx>=hiX) return false
+        const pad=r.height*0.5+8
+        const loY=Math.min(start.y,end.y)-pad
+        const hiY=Math.max(start.y,end.y)+pad
+        return r.y<hiY && r.y+r.height>loY
+    }
+
+    /* Calcule le chemin SVG d'un lien.
+       S'il n'y a pas d'obstacle : courbe de Bézier directe (comportement historique).
+       Sinon : des waypoints contournent chaque node obstacle par le haut ou le bas. */
+    linkPath(start,end,obstacles){
+        if(!obstacles||!obstacles.length){
+            const stiffness=this.parameters.field.links.stiffness
+            const handle=Math.max(
+                20,
+                Math.min(stiffness,Math.abs(end.x-start.x)*0.5)
+            )
+            const side=end.x>start.x?+handle:-handle
+            return `M ${start.x} ${start.y} C ${start.x+side} ${start.y}, ${end.x-side} ${end.y}, ${end.x} ${end.y}`
+        }
+        const obs=[...obstacles].sort((a,b)=>a.x-b.x)
+        const pts=[{x:start.x,y:start.y}]
+        for(const node of obs){
+            const r=this.nodeSVGRect(node)
+            const midX=r.x+r.width/2
+            const t=(end.x!==start.x)?(midX-start.x)/(end.x-start.x):0
+            const directY=start.y+(end.y-start.y)*t
+            //Passer au-dessus ou en dessous du node : le côté le plus éloigné du chemin direct
+            const wayY=(directY<r.y)?(r.y-16):(r.y+r.height+16)
+            pts.push({x:midX,y:wayY})
+        }
+        pts.push({x:end.x,y:end.y})
+        let d=`M ${pts[0].x} ${pts[0].y}`
+        for(let i=1;i<pts.length;i++){
+            const p0=pts[i-1]
+            const p1=pts[i]
+            const dx=Math.abs(p1.x-p0.x)
+            const handle=Math.max(20,Math.min(75,dx*0.4))
+            const side=p1.x>p0.x?+handle:-handle
+            d+=` C ${p0.x+side} ${p0.y}, ${p1.x-side} ${p1.y}, ${p1.x} ${p1.y}`
+        }
+        return d
+    }
+
     updateLinks(){
         for(let k=0;k<this.linkList.length;k++){
             const link=this.linkList[k]
@@ -620,16 +680,15 @@ export class Flow{
             if(this.nodeSet.has(link.startingNode) && this.nodeSet.has(link.endingNode)){
                 const startingPos=Node.anchorAbsPos(link.startingAnchor)
                 const endingPos=Node.anchorAbsPos(link.endingAnchor)
-                const stiffness=this.parameters.field.links.stiffness
-                const handle=Math.max(
-                    20,
-                    Math.min(stiffness,Math.abs(endingPos.x-startingPos.x)*0.5)
-                )
-                const bezierSide=link.startingNode.parameters.anchorMap.get(link.startingAnchor).type==="output"?handle:-handle
-                link.attr("d", `M ${startingPos.x} ${startingPos.y}
-                C ${startingPos.x+bezierSide} ${startingPos.y},
-                ${endingPos.x-bezierSide} ${endingPos.y},
-                ${endingPos.x} ${endingPos.y}`)
+                //Nodes tiers qui se trouvent sur le passage du lien (obstacles)
+                const obstacles=[]
+                for(const node of this.nodeSet){
+                    if(node===link.startingNode||node===link.endingNode) continue
+                    if(this.linkHitsNode(startingPos,endingPos,node)){
+                        obstacles.push(node)
+                    }
+                }
+                link.attr("d",this.linkPath(startingPos,endingPos,obstacles))
             }else{
                 this.deleteLink(k,{record:false})
                 k--

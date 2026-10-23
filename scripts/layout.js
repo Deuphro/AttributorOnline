@@ -495,61 +495,11 @@ export function layoutFlow({nodes=[],links=[],options={}}={}){
     }
 }
 
-/* --- "wire the newcomer in by itself" ---------------------------------- */
+/* --- "wire the newcomer in by itself" (désactivé) ---------------------------------- */
 
-/* A node that shows up where there is obviously room for it is connected
-   without asking: ONE dangling output in the whole flow plus a free input
-   here, and the same the other way round - which is what drops a node in the
-   middle of a chain. Two dangling ends is ambiguity, and an ambiguity resolved
-   by guessing is worse than no guess at all: the user moves one cable. */
+/* L'auto-établissement des liens a été désactivé : aucun câble n'est créé
+   automatiquement lorsqu'un nouveau node apparaît. L'utilisateur doit câbler
+   à la main. Pour réactiver, restaurer le corps de autoLinkPlan ci-dessus. */
 export function autoLinkPlan(graph,newNodeId){
-    const plan=[]
-    if(!graph.byId.has(newNodeId)){
-        return plan
-    }
-    const danglingOutputs=[]
-    const danglingInputs=[]
-    for(const id of graph.order){
-        if(id===newNodeId){
-            continue
-        }
-        for(const port of freePorts(graph,id,"output")){
-            danglingOutputs.push({node:id,port})
-        }
-        for(const port of freePorts(graph,id,"input")){
-            danglingInputs.push({node:id,port})
-        }
-    }
-    const freeInputs=freePorts(graph,newNodeId,"input")
-    const freeOutputs=freePorts(graph,newNodeId,"output")
-    const candidates=[]
-    if(danglingOutputs.length===1&&freeInputs.length){
-        candidates.push({
-            source:danglingOutputs[0].node,
-            sourcePort:danglingOutputs[0].port,
-            target:newNodeId,
-            targetPort:freeInputs[0]
-        })
-    }
-    if(danglingInputs.length===1&&freeOutputs.length){
-        candidates.push({
-            source:newNodeId,
-            sourcePort:freeOutputs[0],
-            target:danglingInputs[0].node,
-            targetPort:danglingInputs[0].port
-        })
-    }
-    /* A candidate that would close a loop is dropped: the flow would never
-       finish resolving, and the user can always draw that cable by hand. The
-       two candidates are checked AGAINST EACH OTHER as they are accepted -
-       the newcomer is exactly the node that can be dropped in the middle of a
-       chain, so s -> newcomer -> t on top of an existing t -> s is a loop
-       that neither candidate shows on its own. */
-    const accepted=[]
-    for(const proposal of candidates){
-        if(!reaches(graph,proposal.target,proposal.source,accepted)){
-            accepted.push(proposal)
-        }
-    }
-    return accepted
+    return []
 }
