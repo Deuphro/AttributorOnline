@@ -20,6 +20,7 @@ const defaultMenu={
                 //JSON:(e)=>{},
                 "Delimited Text":(e)=>{dispatchEvent(new CustomEvent('importDelimitedText',{detail:{msg:""}}))},
                 "Thermo .raw":(e)=>{dispatchEvent(new CustomEvent('importThermoRaw',{detail:{msg:""}}))},
+                "Bruker .d (BAF)":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Bruker .d (BAF)',type:'brukerBaf'}}}))},
                 "Data collection import":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Data collection import',type:'dataCollectionImport'}}}))},
             },
             hr:{},
@@ -35,6 +36,7 @@ const defaultMenu={
         "Data":{
             "Delimited text":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Delimited text',type:'delimitedText'}}}))},
             "Thermo .raw file":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Thermo .raw file',type:'thermoRaw'}}}))},
+            "Bruker .d (BAF)":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Bruker .d (BAF)',type:'brukerBaf'}}}))},
             "Data collection import":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Data collection import',type:'dataCollectionImport'}}}))},
         },
         "Operation":{

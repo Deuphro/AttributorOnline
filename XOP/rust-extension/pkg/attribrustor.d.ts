@@ -447,6 +447,17 @@ export function hough_transform_from_core(core: Float64Array, nx: number, ny: nu
 export function kmeans_cluster(data: Float64Array, n_samples: number, n_features: number, n_clusters: number, max_iter: number, seed: bigint): Float64Array;
 
 /**
+ * Parse a Bruker BAF acquisition from its three in-memory files.
+ *
+ * `baf`, `idx` and `xtr` are the contents of the `.baf`, `.baf_idx` and
+ * `.baf_xtr` files. Returns either
+ *   { spectrum: {mz, intensity}, metadata: [...], calibration: {...}, ... }
+ * or, when `options.metadataOnly` is true,
+ *   { metadata: [...], calibration: {...}, pointCount, mzMin, mzMax }.
+ */
+export function parse_bruker_baf(baf: Uint8Array, idx: Uint8Array, xtr: Uint8Array, options: any): any;
+
+/**
  * Parse a Thermo .raw file and return centroid peaks for each scan.
  * Returns flat arrays for easy WASM/JS interop.
  */
@@ -569,6 +580,7 @@ export interface InitOutput {
     readonly hough_transform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number];
     readonly hough_transform_from_core: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
     readonly kmeans_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint) => [number, number];
+    readonly parse_bruker_baf: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => [number, number, number];
     readonly parse_thermo_raw: (a: number, b: number, c: any) => [number, number, number];
     readonly pca_project: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly persistenceanalysis_birth_indices: (a: number) => [number, number];

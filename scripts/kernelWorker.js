@@ -738,6 +738,26 @@ async houghTransform({core,params}){
             result=parseThermoRawJS(data)
         }
         return result
+    },
+    /* Bruker BAF: unlike Thermo, a .d acquisition is THREE files, and there is
+       no JS fallback. If the wasm build is stale the flow must fail loudly
+       rather than silently produce an empty spectrum the user would attribute
+       against. `files` is {baf,idx,xtr}, each a Uint8Array read by the node. */
+    async parseBrukerBaf({files,options={}}){
+        await ensureWasm()
+        if(typeof rust.parse_bruker_baf!=="function"){
+            throw new Error("rust parse_bruker_baf is missing (stale pkg build?)")
+        }
+        if(!files?.baf||!files?.idx||!files?.xtr){
+            throw new Error("Bruker BAF kernel needs the .baf, .baf_idx and .baf_xtr files")
+        }
+        const toBytes=value=>value instanceof Uint8Array?value:new Uint8Array(value)
+        return rust.parse_bruker_baf(
+            toBytes(files.baf),
+            toBytes(files.idx),
+            toBytes(files.xtr),
+            options
+        )
     }
 }
 

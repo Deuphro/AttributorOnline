@@ -53,6 +53,7 @@ export const hough_smooth: (a: number, b: number, c: number, d: number, e: numbe
 export const hough_transform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number];
 export const hough_transform_from_core: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
 export const kmeans_cluster: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint) => [number, number];
+export const parse_bruker_baf: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => [number, number, number];
 export const parse_thermo_raw: (a: number, b: number, c: any) => [number, number, number];
 export const pca_project: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const persistenceanalysis_birth_indices: (a: number) => [number, number];

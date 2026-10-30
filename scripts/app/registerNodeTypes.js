@@ -5,6 +5,7 @@ import {
     ChatNode,
     DataCollectionImportNode,
     DelimitedTextNode,
+    BrukerBafNode,
     FKMDNode,
     FormulaCollectionNode,
     HoughTransformNode,
@@ -27,6 +28,7 @@ export function registerNodeTypes(){
         SimpleXYPlotNode,
         DelimitedTextNode,
         ThermoRawNode,
+        BrukerBafNode,
         Operation,
         PeakPickingNode,
         PersistentHomology0DNode:PeakPickingNode,
@@ -44,6 +46,7 @@ export function registerNodeTypes(){
     for(const NodeType of [
         DelimitedTextNode,
         ThermoRawNode,
+        BrukerBafNode,
         Operation,
         PeakPickingNode,
         TrimmerNode,

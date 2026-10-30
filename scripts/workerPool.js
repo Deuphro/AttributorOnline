@@ -152,6 +152,12 @@ function runKernelLocally(kernel,payload){
         //same shape as the worker kernels: {core: Float64Array}
         return {core:result}
     }
+    if(kernel==="parseBrukerBaf"){
+        //There is no pure-JS BAF reader, and inventing one here would be a
+        //second decoder with no reference to test against. A browser without
+        //workers cannot import BAF, and must say so instead of resolving empty.
+        throw new Error("Bruker BAF parsing requires Web Workers and the WASM build")
+    }
     if(kernel==="legacyPersistentHomology0D"){
         const {core,params}=payload
         const mode=params?.mode??"sublevel"

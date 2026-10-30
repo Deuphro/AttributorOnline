@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 mod antiradio;
 mod attribution;
 mod barycentric;
+mod bruker;
 mod calibration;
 mod fkmd;
 mod forest;
@@ -31,6 +32,10 @@ pub use persistence::{
     PersistenceClassification,
 };
 pub use thermo::parse_thermo_raw;
+//Bruker BAF (.baf/.baf_idx/.baf_xtr): a port of the RTMS reader, GPL-3. See
+//src/bruker.rs. Takes the three files as in-memory slices and returns a flat
+//m/z + intensity spectrum, the same shape the Thermo reader returns.
+pub use bruker::parse_bruker_baf;
 pub use trim::{trim_apply, trim_guess, trim_histogram, TrimHistogram, TrimResult};
 pub use barycentric::{barycentric_project, barycentric_project_f64};
 pub use pca::pca_project;

@@ -1364,6 +1364,34 @@ export function kmeans_cluster(data, n_samples, n_features, n_clusters, max_iter
 }
 
 /**
+ * Parse a Bruker BAF acquisition from its three in-memory files.
+ *
+ * `baf`, `idx` and `xtr` are the contents of the `.baf`, `.baf_idx` and
+ * `.baf_xtr` files. Returns either
+ *   { spectrum: {mz, intensity}, metadata: [...], calibration: {...}, ... }
+ * or, when `options.metadataOnly` is true,
+ *   { metadata: [...], calibration: {...}, pointCount, mzMin, mzMax }.
+ * @param {Uint8Array} baf
+ * @param {Uint8Array} idx
+ * @param {Uint8Array} xtr
+ * @param {any} options
+ * @returns {any}
+ */
+export function parse_bruker_baf(baf, idx, xtr, options) {
+    const ptr0 = passArray8ToWasm0(baf, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(idx, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(xtr, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.parse_bruker_baf(ptr0, len0, ptr1, len1, ptr2, len2, options);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Parse a Thermo .raw file and return centroid peaks for each scan.
  * Returns flat arrays for easy WASM/JS interop.
  * @param {Uint8Array} data
@@ -1632,12 +1660,20 @@ function __wbg_get_imports() {
         __wbg_log_04593d3ff637a6e0: function(arg0) {
             console.log(arg0);
         },
+        __wbg_new_1c499b98736d881b: function(arg0) {
+            const ret = new Float32Array(arg0);
+            return ret;
+        },
         __wbg_new_424e7ac060a0582f: function() {
             const ret = new Object();
             return ret;
         },
         __wbg_new_84913ceb822f272b: function(arg0) {
             const ret = new Float64Array(arg0);
+            return ret;
+        },
+        __wbg_new_9d3ab694c9e36496: function() {
+            const ret = new Array();
             return ret;
         },
         __wbg_new_ddd7075a2aa149d7: function(arg0) {
@@ -1648,8 +1684,16 @@ function __wbg_get_imports() {
             const ret = new Float64Array(arg0, arg1 >>> 0, arg2 >>> 0);
             return ret;
         },
+        __wbg_new_with_byte_offset_and_length_ae71716dc4a8aa2f: function(arg0, arg1, arg2) {
+            const ret = new Float32Array(arg0, arg1 >>> 0, arg2 >>> 0);
+            return ret;
+        },
         __wbg_new_with_byte_offset_and_length_b94cf21fc3054476: function(arg0, arg1, arg2) {
             const ret = new Uint32Array(arg0, arg1 >>> 0, arg2 >>> 0);
+            return ret;
+        },
+        __wbg_push_21bb9239c3345f03: function(arg0, arg1) {
+            const ret = arg0.push(arg1);
             return ret;
         },
         __wbg_reading_new: function(arg0) {

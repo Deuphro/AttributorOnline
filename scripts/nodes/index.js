@@ -1,5 +1,6 @@
 export {DelimitedTextNode} from "./DelimitedTextNode.js"
 export {ThermoRawNode} from "./ThermoRawNode.js"
+export {BrukerBafNode} from "./BrukerBafNode.js"
 export {TrimmerNode} from "./TrimmerNode.js"
 export {FKMDNode} from "./FKMDNode.js"
 export {AttributionNode} from "./AttributionNode.js"

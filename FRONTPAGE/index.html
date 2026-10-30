@@ -639,6 +639,7 @@ index(i, 1)          // Y of point i</pre>
                 </tr>
                 <tr><td>Data</td><td><strong>Delimited text</strong></td><td>— (file dropped on the node)</td><td>1 wave</td></tr>
                 <tr><td>Data</td><td><strong>Thermo .raw file</strong></td><td>— (file dropped on the node)</td><td>one wave per scan</td></tr>
+                <tr><td>Data</td><td><strong>Bruker .d (BAF)</strong></td><td>- (folder dropped on the node)</td><td>1 wave</td></tr>
                 <tr><td>Operation</td><td><strong>Trimmer</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — trimmed wave per input</td></tr>
                 <tr><td>Operation</td><td><strong>Peak picking</strong></td><td>1 anchor — 1D/2D waves</td><td>1 — peak list per input</td></tr>
                 <tr><td>Operation</td><td><strong>Hough Transform</strong></td><td>1 anchor — XY waves, accumulated</td><td>1 — the (slope, intercept) surface</td></tr>
@@ -745,6 +746,54 @@ index(i, 1)          // Y of point i</pre>
                     The file bytes round-trip through the session JSON as byte arrays and the parsed
                     spectra are rebuilt on reload; an empty node restores without its derived spectra
                     field rather than failing.
+                </td>
+            </tr>
+        </table>
+
+        <h4 data-node="brukerBaf" data-menu="Data" data-keys="bruker baf d folder fticr ftms calibration baf_idx baf_xtr native no dotnet">Bruker .d (BAF) <span class="badge">native</span> <span class="badge">no .NET</span></h4>
+        <p>
+            The native single-acquisition Bruker importer. Drop a <code>.d</code> folder (or select
+            it with the folder picker) and the three files it needs - <code>analysis.baf</code>,
+            <code>analysis.baf_idx</code> and <code>analysis.baf_xtr</code> - are read in the browser
+            and decoded by a Rust/WebAssembly port of the
+            <a href="https://github.com/cran/rtms" target="_blank" style="color:#aef22e;">RTMS</a>
+            BAF reader (GPL-3.0-or-later, Mary Ashley Rimmer and Nathaniel Twarog). No msConvert,
+            no .NET, no DLL.
+        </p>
+        <p>
+            A <em>metadata-only</em> pass runs as soon as the folder is read, showing the point count,
+            the m/z range, the calibration (<code>calibMode</code>, <code>frequencyHigh</code>,
+            <code>size</code>) and the acquisition metadata table before the full profile is loaded.
+            The full spectrum keeps every measured point, so it can be trimmed or peak-picked
+            downstream exactly like a Thermo profile.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr><td>Inputs</td><td><strong>none</strong> - a source node.</td></tr>
+            <tr>
+                <td>Outputs</td>
+                <td>
+                    <strong>1 output</strong> - <em>one wave</em> for the acquisition, with all
+                    <code>m/z</code>/<code>intensity</code> points sorted by m/z, exactly as
+                    <code>getBrukerBAFSpectrum()</code> returns them.
+                </td>
+            </tr>
+            <tr>
+                <td>Parameters</td>
+                <td>
+                    No filter is applied at import: the node publishes the complete profile. Use the
+                    Trimmer or Peak picking node to restrict the m/z range or reduce the point count.
+                </td>
+            </tr>
+            <tr>
+                <td>Session behaviour</td>
+                <td>
+                    The three binary files stay in memory for the current session; the parsed spectrum
+                    travels through the session state so a reload rebuilds the wave without re-reading
+                    the folder. The raw files are not embedded in the session.
                 </td>
             </tr>
         </table>
@@ -3242,6 +3291,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
     Attributor Online — Mass spectrometry & formula attribution · IPAG<br>
     <span style="font-size:0.75em;opacity:0.7;margin-top:8px;display:block;">
         Thermo <code>.raw</code> parsing via <a href="https://crates.io/crates/thermorawfile" target="_blank" style="color:#aef22e;">thermorawfile</a> (MIT OR Apache-2.0) by <strong>David Teschner</strong> (theGreatHerrLebert).<br>
+        Bruker BAF parsing via the <a href="https://github.com/cran/rtms" target="_blank" style="color:#aef22e;">RTMS</a> R toolkit (GPL-3.0-or-later) by <strong>Mary Ashley Rimmer</strong> and <strong>Nathaniel Twarog</strong> (St. Jude Children's Research Hospital), ported to Rust/WebAssembly.<br>
         Binary layout derived from <a href="https://github.com/proteinspector/unthermo" target="_blank" style="color:#aef22e;">unthermo</a> (Apache-2.0) by <strong>Pieter Kelchtermans</strong> (proteinspector),<br>
         <a href="https://github.com/Sigilweaver/OpenTFRaw" target="_blank" style="color:#aef22e;">OpenTFRaw</a> (Apache-2.0) by <strong>Nathan Riley</strong> (Sigilweaver), and <a href="https://github.com/geneselkov/unfinnigan" target="_blank" style="color:#aef22e;">unfinnigan</a> by <strong>Gene Selkov</strong>.<br>
         WebSocket server via <a href="https://github.com/websockets/ws" target="_blank" style="color:#aef22e;">ws</a> (ISC) by <strong>Einar Otto Stangvik</strong> et al.<br>

@@ -6,6 +6,7 @@ import {
     ChatNode,
     DataCollectionImportNode,
     DelimitedTextNode,
+    BrukerBafNode,
     FKMDNode,
     FormulaCollectionNode,
     HoughTransformNode,
@@ -132,6 +133,15 @@ export class MainFlowMenu extends Menu{
                                 node.updateLabel(source.fileName)
                                 node.loadRawFile().then(()=>node.renderAccordion?.())
                             }
+                            break
+                        }
+                        case "brukerBaf": {
+                            node = new BrukerBafNode(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
                             break
                         }
                         case "dataCollectionImport": {

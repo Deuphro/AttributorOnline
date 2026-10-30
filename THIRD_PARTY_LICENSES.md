@@ -271,6 +271,34 @@ The crate includes a `NOTICE` file as required by Apache-2.0 for the derived wor
 
 ---
 
+## rtms (R Toolkit for Mass Spectrometry)
+
+**Version used:** 0.2.0 (BAF reader)  
+**License:** GPL (>= 3) - GNU General Public License v3.0 or later  
+**Authors:** Mary Ashley Rimmer and Nathaniel Twarog (St. Jude Children's Research Hospital)  
+**Source:** https://github.com/cran/rtms - https://nathanieltwarog.r-universe.dev/rtms  
+**Copyright:** the RTMS authors and contributors
+
+### Usage in this project
+
+`XOP/rust-extension/src/bruker.rs` is a Rust port of the Bruker BAF reader in
+`resources/rtms/R/rtmsBrukerBAFReader.R` (index offsets, `.baf_xtr`
+calibration, header rows, metadata tables and the spectrum block). The
+algorithm and the binary layout knowledge come from RTMS; only the language
+and the input mechanism (in-memory slices instead of R file connections)
+differ.
+
+Because this module is a derivative work of RTMS, `src/bruker.rs` is
+distributed under the **GNU General Public License, version 3 or later**
+(GPL-3.0-or-later). The full license text is available at
+https://www.gnu.org/licenses/gpl-3.0.txt and must be shipped with any
+distribution that includes this module.
+
+The RTMS source files are kept, unmodified, in `resources/rtms/` and carry
+their own `DESCRIPTION` file stating `License: GPL (>= 3)`.
+
+---
+
 ## This Project's License
 
 The Attributor Online application itself (the JavaScript/TypeScript/Rust code in this repository) is licensed under its own terms. The third-party dependencies above are used as libraries and their licenses apply only to those specific components.
