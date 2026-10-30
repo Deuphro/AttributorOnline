@@ -1,4 +1,4 @@
-import {CE,stylize} from "../util.js"
+﻿import {CE,stylize} from "../util.js"
 import {Wave} from "../formats.js"
 import {Accordion} from "../ui/Accordion.js"
 import {NodeWithAccordionGraph} from "./NodeWithAccordionGraph.js"
@@ -13,6 +13,7 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
         this.parameters.dataItems=[]
         this.parameters.selectedForOutput=null
         this.parameters.selectedForMultiplex=[]
+this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollectionImportNode
     }
     serializeState(){
         const graphState=super.serializeState?.()??{}
@@ -24,6 +25,7 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
                 wave:undefined
             })),
             selectedForOutput:this.parameters.selectedForOutput,
+            enabledScans:this.parameters.enabledScans,
             selectedForMultiplex:this.parameters.selectedForMultiplex,
             status:this.status,
             ...graphState
@@ -40,6 +42,7 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
         }))||[]
         this.parameters.selectedForOutput=state.selectedForOutput??null
         this.parameters.selectedForMultiplex=state.selectedForMultiplex??[]
+        this.parameters.enabledScans=state.enabledScans??{}
         this.setStatus(state.status??"floating")
         this.rebuildWaves()
         this.renderAccordion()
@@ -47,8 +50,10 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
     rebuildWaves(){
         for(const item of this.parameters.dataItems){
             if(item.type==="raw"&&item.spectra){
+                const enabledIdx=this.parameters.enabledScans[item.id]||{}
                 item.wave=item.spectra.map((spec,idx)=>{
                     if(!spec.mz||spec.mz.length===0) return null
+                    if(enabledIdx[idx]===false) return null
                     return Wave.fromCoordinates(
                         new Float64Array(spec.mz),
                         new Float64Array(spec.intensity),
@@ -105,12 +110,16 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
                 item.spectra=result.spectra.map(s=>({
                     mz:s.mz,intensity:s.intensity,scanNumber:s.scan_number,rt:s.rt,msLevel:s.ms_level
                 }))
+                // Initialise enabledScans pour cet item (tous à true par défaut)
+                this.parameters.enabledScans[item.id]=result.spectra.map(()=>true)
             }else{
                 item.spectra=[]
+                this.parameters.enabledScans[item.id]={}
             }
         }catch(err){
             console.error("Failed to parse Thermo .raw file:",err)
             item.spectra=[]
+            this.parameters.enabledScans[item.id]={}
         }
     }
     registered(e){
@@ -224,6 +233,7 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
         const isSelectedMultiplex=this.parameters.selectedForMultiplex.includes(item.id)
         const isSelectedOutput=this.parameters.selectedForOutput===item.id
         const row=CE("div",{style:{display:"grid",gridTemplateColumns:"24px 24px 1fr auto",gap:"6px",alignItems:"center",padding:"4px",border:"1px solid #333",borderRadius:"3px",background:isSelectedOutput?"rgba(120,180,255,0.15)":"transparent"}},[])
+        // Checkbox multiplex (tous les scans de l'item)
         const checkMultiplex=CE("input",{type:"checkbox",checked:isSelectedMultiplex,style:{width:"18px",height:"18px",cursor:"pointer"}},[])
         checkMultiplex.addEventListener("change",()=>{
             if(checkMultiplex.checked){
@@ -233,12 +243,14 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
             }
             this.publishOutputs()
         })
+        // Radio single output
         const radioOutput=CE("input",{type:"radio",name:`dc-single-output-${this._dcId}`,checked:isSelectedOutput,style:{width:"18px",height:"18px",cursor:"pointer"}},[])
         radioOutput.addEventListener("change",()=>{
             this.parameters.selectedForOutput=item.id
             this.publishOutputs()
             this.renderAccordion()
         })
+        // Infos du fichier
         let infoText=`${item.name} — `
         if(item.type==="raw"){
             const totalPeaks=item.spectra?.reduce((sum,s)=>sum+(s.mz?.length||0),0)||0
@@ -248,6 +260,7 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
             infoText+=`${item.pairs?.length||0} point(s)`
         }
         const info=CE("div",{style:{fontSize:"13px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},[infoText])
+        // Bouton supprimer
         const removeBtn=CE("button",{type:"button",title:"Remove this file"},["✕"])
         stylize(removeBtn,{
             fontSize:"0.8em",lineHeight:"1",padding:"2px",cursor:"pointer",
@@ -263,7 +276,25 @@ export class DataCollectionImportNode extends NodeWithAccordionGraph{
             this.rebuildWaves()
             this.renderAccordion()
         })
+        // Affichage des scans pour les items raw
+        let scanList=null
+        if(item.type==="raw"&&item.spectra){
+            const enabledIdx=this.parameters.enabledScans[item.id]||{}
+            scanList=CE("div",{style:{display:"grid",gap:"3px",marginTop:"4px"}},[])
+            item.spectra.forEach((spec,idx)=>{
+                const isEnabled=enabledIdx[idx]!==false
+                const scanLabel=CE("span",{style:{fontSize:"11px",color:"#666",marginRight:"6px"}},[`scan ${idx+1}`])
+                const scanCb=CE("input",{type:"checkbox",checked:isEnabled,style:{width:"14px",height:"14px",cursor:"pointer"}},[])
+                scanCb.addEventListener("change",()=>{
+                    this.parameters.enabledScans[item.id][idx]=scanCb.checked
+                    this.rebuildWaves()
+                    this.renderAccordion()
+                })
+                scanList.appendChild(CE("div",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"12px"}},[scanLabel,scanCb]))
+            })
+        }
         row.append(checkMultiplex,radioOutput,info,removeBtn)
+        if(scanList) row.appendChild(scanList)
         return row
     }
     /* L'ÉTAT DU NŒUD, diffusé comme dans les nœuds voisins (DelimitedTextNode,
