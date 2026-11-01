@@ -451,9 +451,11 @@ export function kmeans_cluster(data: Float64Array, n_samples: number, n_features
  *
  * `baf`, `idx` and `xtr` are the contents of the `.baf`, `.baf_idx` and
  * `.baf_xtr` files. Returns either
- *   { spectrum: {mz, intensity}, metadata: [...], calibration: {...}, ... }
+ *   { spectrum: {mz, intensity}, maxima: {...}, metadata: [...], ... }
  * or, when `options.metadataOnly` is true,
- *   { metadata: [...], calibration: {...}, pointCount, mzMin, mzMax }.
+ *   { metadata: [...], maxima: {...}, calibration: {...}, pointCount, ... }.
+ * When `options.peakList` is true the result carries `peakList` (the 2500
+ * peaks stored by the acquisition software) instead of the full profile.
  */
 export function parse_bruker_baf(baf: Uint8Array, idx: Uint8Array, xtr: Uint8Array, options: any): any;
 

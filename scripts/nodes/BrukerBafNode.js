@@ -123,6 +123,7 @@ export class BrukerBafNode extends NodeWithAccordion{
             spectra:[],
             metadata:[],
             calibration:null,
+            maxima:null,
             pointCount:0,
             mzMin:null,
             mzMax:null,
@@ -342,6 +343,7 @@ export class BrukerBafNode extends NodeWithAccordion{
             source.spectra=[]
             source.metadata=[]
             source.calibration=null
+            source.maxima=null
             source.pointCount=0
             source.mzMin=null
             source.mzMax=null
@@ -366,6 +368,7 @@ export class BrukerBafNode extends NodeWithAccordion{
             })
             this.parameters.source.metadata=result.metadata??[]
             this.parameters.source.calibration=result.calibration??null
+            this.parameters.source.maxima=result.maxima??null
             this.parameters.source.pointCount=result.pointCount??0
             this.parameters.source.mzMin=result.mzMin??null
             this.parameters.source.mzMax=result.mzMax??null
@@ -382,31 +385,36 @@ export class BrukerBafNode extends NodeWithAccordion{
             return
         }
         try{
+            const usePeakList=source.mode==="peaks"
             const result=await computePool.run("parseBrukerBaf",{
                 files:source.files,
-                options:{}
+                options:usePeakList?{peakList:true}:{}
             })
-            const spectrum=result.spectrum
-            if(spectrum){
+            const data=usePeakList?result.peakList:result.spectrum
+            if(data){
                 source.spectra=[{
                     /* Typed arrays stay in memory: a BAF profile can hold 15M
                        points, and Array.from would box every one of them just
                        to hand them to Wave, which takes the typed array as is.
                        serializeState converts only when a session is written. */
-                    mz:spectrum.mz,
-                    intensity:spectrum.intensity,
-                    pointCount:spectrum.pointCount,
-                    maxIntensity:spectrum.maxIntensity
+                    mz:data.mz,
+                    intensity:data.intensity,
+                    pointCount:data.pointCount,
+                    maxIntensity:data.maxIntensity
                 }]
-                source.maxIntensity=spectrum.maxIntensity
+                source.maxIntensity=data.maxIntensity
             }else{
                 source.spectra=[]
             }
             source.metadata=result.metadata??source.metadata
             source.calibration=result.calibration??source.calibration
+            /* pointCount stays the profile count from the metadata scan: the
+               mode selector uses it to label the "Full profile" option even
+               when the published wave is the peak list. The m/z range follows
+               the data actually loaded, which differs between the two. */
             source.pointCount=result.pointCount??source.pointCount
-            source.mzMin=result.mzMin??source.mzMin
-            source.mzMax=result.mzMax??source.mzMax
+            source.mzMin=data?.mzMin??result.mzMin??source.mzMin
+            source.mzMax=data?.mzMax??result.mzMax??source.mzMax
             await this.startResolve()
         }catch(err){
             console.error("Failed to parse Bruker BAF files:",err)
