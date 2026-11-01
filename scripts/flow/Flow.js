@@ -649,30 +649,44 @@ export class Flow{
         if(!this._drawingLink){
             return
         }
-        /* Relâchement dans le vide depuis une SORTIE : menu ComfyUI pour créer
-           un node dont une entrée accepte le type de la sortie d'origine. */
+        /* Relâchement dans le vide depuis une ancre : menu ComfyUI pour créer
+           un node compatible avec le type de l'ancre d'origine. */
         const anchorInfo=draft.startingNode.parameters.anchorMap.get(draft.startingAnchor)
-        if(anchorInfo&&anchorInfo.type==="output" && this._linkDragPos){
-            const outputIndex=Number(draft.startingAnchor.id)
-            const outputType=draft.startingNode.outputTypes?.[outputIndex]
-            const dragPos=this._linkDragPos  /* sauvegardé avant _cancelDraft qui le remet à null */
-            if(outputType){
-                this._cancelDraft(draft)
-                this._showNodeMenuFromOutput(draft.startingNode, outputIndex, outputType, dragPos)
-                return
+        const dragPos=this._linkDragPos  /* sauvegardé avant _cancelDraft qui le remet à null */
+        if(anchorInfo && dragPos){
+            const anchorIndex=Number(draft.startingAnchor.id)
+            if(anchorInfo.type==="output"){
+                const outputType=draft.startingNode.outputTypes?.[anchorIndex]
+                if(outputType){
+                    this._cancelDraft(draft)
+                    this._showNodeMenu(draft.startingNode, anchorIndex, outputType, "output", dragPos)
+                    return
+                }
+            }else if(anchorInfo.type==="input"){
+                const inputType=draft.startingNode.inputTypes?.[anchorIndex]
+                if(inputType){
+                    this._cancelDraft(draft)
+                    this._showNodeMenu(draft.startingNode, anchorIndex, inputType, "input", dragPos)
+                    return
+                }
             }
         }
         this._cancelDraft(draft)
     }
-    /* Affiche un menu flottant listant les nœuds compatibles avec le type de
-       sortie donné. Choisir un nœud le crée et le relie automatiquement. */
-    _showNodeMenuFromOutput(sourceNode, outputIndex, outputType, pos){
+    /* Affiche un menu flottant listant les nœuds compatibles avec le type donné.
+       direction === "output" : on tire depuis une sortie, le nouveau node doit
+       avoir une ENTRÉE compatible.
+       direction === "input"  : on tire depuis une entrée, le nouveau node doit
+       avoir une SORTIE compatible. */
+    _showNodeMenu(sourceNode, anchorIndex, anchorType, direction, pos){
         const compatible=[]
         for(const [name, Constructor] of Object.entries(NODE_CONSTRUCTORS)){
             const types=Constructor.socketTypes
-            if(!types||!Array.isArray(types.inputs)) continue
-            for(const inputType of types.inputs){
-                if(socketCompatible(outputType, inputType)){
+            if(!types) continue
+            const candidates = direction === "output" ? types.inputs : types.outputs
+            if(!Array.isArray(candidates)) continue
+            for(const candidateType of candidates){
+                if(socketCompatible(anchorType, candidateType)){
                     compatible.push({name, Constructor})
                     break
                 }
@@ -723,22 +737,19 @@ export class Flow{
             item.onmouseleave=()=>{item.style.background="transparent"}
             item.onclick=()=>{
                 close()
-                this._createNodeFromMenu(Constructor, displayName, {x,y}, sourceNode, outputIndex)
+                this._createNodeFromMenu(Constructor, displayName, {x,y}, sourceNode, anchorIndex, direction)
             }
             menu.appendChild(item)
         }
         this.container.appendChild(menu)
     }
-    /* Crée le node choisi, le place à la position du curseur et relie la sortie
-       d'origine à sa première entrée compatible. */
-    _createNodeFromMenu(Constructor, displayName, pos, sourceNode, sourceOutputIndex){
+    /* Crée le node choisi, le place à la position du curseur et relie
+       automatiquement selon la direction du drag. */
+    _createNodeFromMenu(Constructor, displayName, pos, sourceNode, anchorIndex, direction){
         if(!Constructor) return
-        /* Retrouver la clé du registre pour le type du node */
         const name=Object.entries(NODE_CONSTRUCTORS).find(([,C])=>C===Constructor)?.[0]
         if(!name) return
         const types=Constructor.socketTypes
-        /* Construire des slots vides selon les types déclarés, pour que le
-           constructeur classique reçoive des tableaux de la bonne longueur. */
         const inputs=types?.inputs?.map(()=>[])??[]
         const outputs=types?.outputs?.map(()=>[])??[]
         const node=buildNode(
@@ -747,16 +758,37 @@ export class Flow{
             this
         )
         this.origin.channel.register("node",node,node.title)
-        /* Relier la sortie d'origine à l'entrée 0 du nouveau node (si compatible) */
-        if(inputs.length>0){
-            this.linkNodes({
-                source: sourceNode,
-                sourceIndex: sourceOutputIndex,
-                target: node,
-                targetIndex: 0,
-                record: true,
-                relayout: true
-            })
+        if(direction === "output"){
+            /* Drag depuis une SORTIE : le nouveau node est la CIBLE (input).
+               Relier la sortie d'origine → entrée 0 du nouveau node. */
+            if(inputs.length>0){
+                this.linkNodes({
+                    source: sourceNode,
+                    sourceIndex: anchorIndex,
+                    target: node,
+                    targetIndex: 0,
+                    record: true,
+                    relayout: true
+                })
+            }
+        } else {
+            /* Drag depuis une ENTRÉE : le nouveau node est la SOURCE (output).
+               Chercher la première sortie du nouveau node compatible avec le
+               type de l'entrée d'origine, et relier → entrée d'origine. */
+            const inputType = sourceNode.inputTypes?.[anchorIndex]
+            if(inputType && types?.outputs){
+                const outputIndex = types.outputs.findIndex((t) => socketCompatible(t, inputType))
+                if(outputIndex >= 0){
+                    this.linkNodes({
+                        source: node,
+                        sourceIndex: outputIndex,
+                        target: sourceNode,
+                        targetIndex: anchorIndex,
+                        record: true,
+                        relayout: true
+                    })
+                }
+            }
         }
         this.autoLayout()
     }
