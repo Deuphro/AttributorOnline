@@ -30,6 +30,7 @@ export class Flow{
         this.linkList=[]
         this.selection=new Set()
         this.lastSelected=null
+        this._drawingLink=false
         this.container.addEventListener("click",(event)=>{
             if(event.target.closest(".node, .link, .anchor")){
                 return
@@ -480,41 +481,40 @@ export class Flow{
         }
     }
     startBuildingLink(e){
+        if(this._drawingLink){
+            this._cancelIfStillDrawing(this.linkList.at(-1))
+        }
+        this._drawingLink=true
         const startingPos=Node.anchorAbsPos(e.detail.msg.starter)
-        this.linkList.push(d3.create("svg:g").attr('class','link').append('path').style('pointer-events','none')
+        const draft=d3.create("svg:g").attr('class','link').append('path').style('pointer-events','none')
             .attr("d", `M ${startingPos.x} ${startingPos.y} L ${startingPos.x} ${startingPos.y}`)
-            .attr("class", "link"))
-        this.linkList.at(-1).startingAnchor=e.detail.msg.starter
-        this.linkList.at(-1).startingNode=e.detail.emitter
-        this.field.node().appendChild(this.linkList.at(-1).node())
+            .attr("class", "link")
+        this.linkList.push(draft)
+        draft.startingAnchor=e.detail.msg.starter
+        draft.startingNode=e.detail.emitter
+        this.field.node().appendChild(draft.node())
         let bezierSide=e.detail.emitter.parameters.anchorMap.get(e.detail.msg.starter).type==="output"?+this.parameters.field.links.stiffness:-this.parameters.field.links.stiffness
         document.onmousemove=(e)=>{
             e.preventDefault()
             const rect = this.field.node().getBoundingClientRect()
             const x = e.clientX - rect.left
             const y = e.clientY - rect.top
-            this.linkList.at(-1).attr("d", `M ${startingPos.x} ${startingPos.y}
+            draft.attr("d", `M ${startingPos.x} ${startingPos.y}
                 C ${startingPos.x+bezierSide} ${startingPos.y},
                 ${x-bezierSide} ${y},
                 ${x} ${y}`)
         }
         document.onmouseup=(e)=>{
-            e.preventDefault();
-            const draft=this.linkList.at(-1)
-            if(draft?.endingAnchor){
-                const source=draft.inputNode
-                const target=draft.outputNode
-                const sourceIndex=Number(draft.inputAnchor.id)
-                const targetIndex=Number(draft.outputAnchor.id)
-                draft.node().remove()
-                this.linkList.pop()
-                this.linkNodes({source,sourceIndex,target,targetIndex})
-            }else{
-                draft?.node().remove()
-                this.linkList.pop()
-            }
-            document.onmousemove=null;
-            document.onmouseup=null;
+            e.preventDefault()
+            document.onmousemove=null
+            document.onmouseup=null
+            // L'annulation effective est différée (setTimeout) pour laisser à
+            // stopBuildingLink (déclenché par le CustomEvent sur l'ancre cible)
+            // le temps de s'exécuter avant que le brouillon ne soit détruit.
+            // Cela élimine la race condition entre le mouseup natif sur document
+            // et l'événement custom stopLinkDrawing, qui varie d'un navigateur
+            // à l'autre (stable sous Firefox, instable sous Chrome).
+            setTimeout(()=>this._cancelIfStillDrawing(draft),0)
         }
     }
     createLink(inputNode,inputIndex,outputNode,outputIndex){
@@ -594,22 +594,55 @@ export class Flow{
         }
     }
     stopBuildingLink(e){
-        if(this.linkList.at(-1).startingNode.parameters.anchorMap.get(this.linkList.at(-1).startingAnchor).type!=
-            e.detail.emitter.parameters.anchorMap.get(e.detail.msg.stopper).type){
-            this.linkList.at(-1).endingAnchor=e.detail.msg.stopper
-            this.linkList.at(-1).endingNode=e.detail.emitter
-            if(this.linkList.at(-1).endingAnchor.classList.contains('input')){
-                this.linkList.at(-1).inputNode=this.linkList.at(-1).startingNode
-                this.linkList.at(-1).outputNode=this.linkList.at(-1).endingNode
-                this.linkList.at(-1).inputAnchor=this.linkList.at(-1).startingAnchor
-                this.linkList.at(-1).outputAnchor=this.linkList.at(-1).endingAnchor
-            }else{
-                this.linkList.at(-1).inputNode=this.linkList.at(-1).endingNode
-                this.linkList.at(-1).outputNode=this.linkList.at(-1).startingNode
-                this.linkList.at(-1).inputAnchor=this.linkList.at(-1).endingAnchor
-                this.linkList.at(-1).outputAnchor=this.linkList.at(-1).startingAnchor
-            }
+        if(!this._drawingLink){
+            return
         }
+        const draft=this.linkList.at(-1)
+        if(!draft){
+            this._drawingLink=false
+            return
+        }
+        if(draft.startingNode.parameters.anchorMap.get(draft.startingAnchor).type!=
+            e.detail.emitter.parameters.anchorMap.get(e.detail.msg.stopper).type){
+            draft.endingAnchor=e.detail.msg.stopper
+            draft.endingNode=e.detail.emitter
+            if(draft.endingAnchor.classList.contains('input')){
+                draft.inputNode=draft.startingNode
+                draft.outputNode=draft.endingNode
+                draft.inputAnchor=draft.startingAnchor
+                draft.outputAnchor=draft.endingAnchor
+            }else{
+                draft.inputNode=draft.endingNode
+                draft.outputNode=draft.startingNode
+                draft.inputAnchor=draft.endingAnchor
+                draft.outputAnchor=draft.startingAnchor
+            }
+            const source=draft.inputNode
+            const target=draft.outputNode
+            const sourceIndex=Number(draft.inputAnchor.id)
+            const targetIndex=Number(draft.outputAnchor.id)
+            draft.node().remove()
+            this.linkList.pop()
+            this.linkNodes({source,sourceIndex,target,targetIndex})
+        }
+        this._drawingLink=false
+        document.onmousemove=null
+        document.onmouseup=null
+    }
+    /* Annule le brouillon de lien en cours si stopBuildingLink n'a pas
+       finalisé le dessin (relâchement hors d'une ancre, ou document.onmouseup
+       arrivé avant le CustomEvent stopLinkDrawing sur certains navigateurs). */
+    _cancelIfStillDrawing(draft){
+        if(!this._drawingLink){
+            return
+        }
+        if(this.linkList.at(-1)===draft){
+            draft.node().remove()
+            this.linkList.pop()
+        }
+        this._drawingLink=false
+        document.onmousemove=null
+        document.onmouseup=null
     }
     /* Rectangle d'un node dans le repère du SVG (même repère que anchorAbsPos). */
     nodeSVGRect(node){
