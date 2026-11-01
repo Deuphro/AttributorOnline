@@ -516,12 +516,7 @@ export class TrimmerNode extends NodeWithAccordion{
             if(ticket!==this.trimRun) return
             this.trimResult=result
             this.outputs[0]=result.keptCount
-                ?[Wave.fromCoordinates(result.pointsX,result.pointsY,{
-                    title:`${this.title} (trimmed)`,
-                    method:this.parameters.method,
-                    kept:result.keptCount,
-                    total:result.totalCount
-                },["x","y"])]
+                ?[this.trimmedWave(inputWave,result)]
                 :[]
             this.status="resolved"
             //repaint: the kept/total readout and the cursor fields are derived
@@ -1095,12 +1090,7 @@ export class TrimmerNode extends NodeWithAccordion{
             })
             this.trimResult=result
             this.outputs[0]=result.keptCount
-                ?[Wave.fromCoordinates(result.pointsX,result.pointsY,{
-                    title:`${this.title} (trimmed)`,
-                    method:this.parameters.method,
-                    kept:result.keptCount,
-                    total:result.totalCount
-                },["x","y"])]
+                ?[this.trimmedWave(inputWave,result)]
                 :[]
             this.status="resolved"
         }catch(err){
@@ -1170,16 +1160,10 @@ export class TrimmerNode extends NodeWithAccordion{
                 keptCount+=result.keptCount
                 totalCount+=result.totalCount
                 if(result.keptCount){
-                    products.push(Wave.fromCoordinates(result.pointsX,result.pointsY,{
-                        title:`${this.title} (trimmed)`,
-                        method:this.parameters.method,
-                        kept:result.keptCount,
-                        total:result.totalCount,
-                        //WHICH spectrum this is. They all share the node's title,
-                        //and a consumer reading the metadata has no other way to
-                        //tell three products apart.
-                        source:label
-                    },["x","y"]))
+                    //WHICH spectrum this is. They all share the node's title,
+                    //and a consumer reading the metadata has no other way to
+                    //tell three products apart.
+                    products.push(this.trimmedWave(wave,result,{source:label}))
                 }
             }catch(err){
                 errors.push(`${label}: ${err?.message??String(err)}`)
@@ -1192,6 +1176,33 @@ export class TrimmerNode extends NodeWithAccordion{
         this.status=errors.length&&!products.length?"error":"resolved"
         if(errors.length) console.error("[TrimmerNode] some inputs failed:",errors)
         this.refreshTrimmerUI()
+    }
+    /* Builds the trimmed output wave, propagating the sync chain the input
+       carries. Without this the trimmed wave has no sourceWaveId, every
+       downstream consumer (Attribution, FormulaCollection) copies undefined,
+       and plotPointSync falls back to fragile title matching ("Trimmer
+       (trimmed)") — which refuses as soon as several traces share the title.
+       sourcePointIndices maps each kept point back to its index in the ORIGINAL
+       source, composing through the input's own sourcePointIndices when the
+       input was itself derived. keptIndices from the kernel are indices into
+       the input wave, not into the original source. */
+    trimmedWave(inputWave,result,extra={}){
+        const inputSourcePointIndices=Array.isArray(inputWave.metadata?.sourcePointIndices)
+            ?inputWave.metadata.sourcePointIndices
+            :null
+        const sourcePointIndices=Array.from(result.keptIndices,index=>
+            Number.isInteger(inputSourcePointIndices?.[index])
+                ?inputSourcePointIndices[index]
+                :index)
+        return Wave.fromCoordinates(result.pointsX,result.pointsY,{
+            title:`${this.title} (trimmed)`,
+            method:this.parameters.method,
+            kept:result.keptCount,
+            total:result.totalCount,
+            sourceWaveId:inputWave.metadata?.sourceWaveId,
+            sourcePointIndices,
+            ...extra
+        },["x","y"])
     }
     /* The histogram kernel call, with the binning the AXIS scale asks for: on a
        log axis the bars must be evenly spaced in decades, otherwise every point

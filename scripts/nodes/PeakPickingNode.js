@@ -833,10 +833,12 @@ if(!this.graph) return
                     &&masked&&masked.length===radioResult.pointsX.length
                     ?masked
                     :radioResult.pointsY,
-                radioResult.keptCount,slope,z,label
+                radioResult.keptCount,slope,z,label,
+                radioResult.indices,inputWave
             )
         }else if(candidates){
-            output=this.peaksWave(classification.keptPointsX,publishedY,candidates,slope,z,label)
+            output=this.peaksWave(classification.keptPointsX,publishedY,candidates,slope,z,label,
+                classification.keptIndices,inputWave)
         }
         return {
             wave:inputWave,
@@ -1011,7 +1013,7 @@ if(!this.graph) return
         if(!profile||!px?.length){ this.publishOutput(px,publishedY,0); return }
         if(!(profile.degree===2&&profile.dims[1]===2)){
             this.radioResult=null
-            this.publishOutput(px,publishedY,px.length)
+            this.publishOutput(px,publishedY,px.length,indices)
             this.renderRadioReadout(null,px.length)
             return
         }
@@ -1033,7 +1035,8 @@ if(!this.graph) return
                     &&filteredMass&&filteredMass.length===result.pointsX.length
                     ?filteredMass
                     :result.pointsY,
-                result.keptCount
+                result.keptCount,
+                result.indices
             )
             this.renderRadioReadout(result,px.length)
         }catch(err){
@@ -1041,7 +1044,7 @@ if(!this.graph) return
             //result is still valid, and hiding it would lose real work
             console.error("[PeakPickingNode] anti-radio failed, publishing the classified peaks:",err)
             this.radioResult=null
-            this.publishOutput(px,publishedY,px.length)
+            this.publishOutput(px,publishedY,px.length,indices)
             this.renderRadioReadout(null,px.length)
         }
     }
@@ -1055,9 +1058,25 @@ if(!this.graph) return
        `slope` and `z` are PARAMETERS: while multiplexed, they are that
        spectrum's own readings and not the node's settings, and the metadata has
        to say which. `source` names the spectrum, because N products otherwise
-       all carry the same title. */
-    peaksWave(pointsX,pointsY,kept,slope=this.parameters.slope,z=this.parameters.z,source=null){
+       all carry the same title.
+
+       `keptIndices` are the original input-wave positions of the kept peaks.
+       They become sourcePointIndices, composed through the input's own
+       sourcePointIndices when the input was itself derived — without this
+       plotPointSync cannot map a peak back to its source point and falls back
+       to fragile title matching. */
+    peaksWave(pointsX,pointsY,kept,slope=this.parameters.slope,z=this.parameters.z,source=null,keptIndices=null,inputWave=null){
         if(!kept||!pointsX?.length) return null
+        const ref=inputWave??this.lastInputWave
+        const inputSourcePointIndices=Array.isArray(ref?.metadata?.sourcePointIndices)
+            ?ref.metadata.sourcePointIndices
+            :null
+        const sourcePointIndices=keptIndices
+            ?Array.from(keptIndices,index=>{
+                if(Number.isInteger(inputSourcePointIndices?.[index])) return inputSourcePointIndices[index]
+                return Number.isInteger(index)?index:null
+            })
+            :null
         return Wave.fromCoordinates(pointsX,pointsY,{
             title:`${this.title} (peaks)`,
             slope,
@@ -1065,7 +1084,9 @@ if(!this.graph) return
             kept,
             total:this.persistenceKeptCount??kept,
             source,
-            sourceWave:source??this.lastInputWave?.metadata?.title??"unknown",
+            sourceWave:source??ref?.metadata?.title??"unknown",
+            sourceWaveId:ref?.metadata?.sourceWaveId,
+            ...(sourcePointIndices?{sourcePointIndices}:{}),
             traceMode:"sticks-to-zero"
         },["x","y"])
     }
@@ -1073,8 +1094,8 @@ if(!this.graph) return
        ending. The multiplexed path does NOT come through here: it has N results
        and a slot that must hold all of them at once, so it collects them and
        writes the slot once, at the end. */
-    publishOutput(pointsX,pointsY,kept){
-        const wave=this.peaksWave(pointsX,pointsY,kept)
+    publishOutput(pointsX,pointsY,kept,keptIndices=null){
+        const wave=this.peaksWave(pointsX,pointsY,kept,this.parameters.slope,this.parameters.z,null,keptIndices)
         this.outputs[0]=wave?[wave]:[]
     }
 
