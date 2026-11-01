@@ -6,8 +6,14 @@ import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
 import {matchingTracePoints,pointCoordinates,traceSourceInfo} from "../utils/plotPointSync.js"
+import {SOCKET} from "../socketTypes.js"
 
 export class CalibrationNode extends NodeWithAccordion{
+    static menuTitle="Calibration"
+    static socketTypes={
+        inputs:[SOCKET.FORMULA_COLLECTION,SOCKET.WAVE],
+        outputs:[SOCKET.WAVE]
+    }
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(
             title,

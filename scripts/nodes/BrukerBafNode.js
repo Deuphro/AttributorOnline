@@ -2,12 +2,18 @@ import {CE} from "../util.js"
 import {Wave} from "../formats.js"
 import {NodeWithAccordion} from "../core/index.js"
 import {computePool} from "../workerPool.js"
+import {SOCKET} from "../socketTypes.js"
 
 /* Import a Bruker BAF acquisition (.d folder holding .baf + .baf_idx +
    .baf_xtr). Unlike the Thermo node, the source is THREE files: the browser
    cannot hand a path to the worker, so the node reads them as ArrayBuffers and
    passes them together. The decoding itself lives in src/bruker.rs. */
 export class BrukerBafNode extends NodeWithAccordion{
+    static menuTitle="Bruker BAF"
+    static socketTypes={
+        inputs:[],
+        outputs:[SOCKET.WAVE]
+    }
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(title,[],[[]],origin,destinationFlow,position)
         this.parameters.source={

@@ -6,8 +6,14 @@ import {CE,stylize} from "../util.js"
 import {CONVENTIONAL_Z,clampClassifierSlope,formatSlope,keepAllSlopeFromFlat,clipSegmentToRect,publishedPeakY,massThroughMask,scaleToggle,wavesFromInput} from "../utils/index.js"
 import {PAN_DBLCLICK_GUARD} from "../ui/Plot2D.js"
 import {matchingTracePoints,pointCoordinates,traceSourceInfo} from "../utils/plotPointSync.js"
+import {SOCKET} from "../socketTypes.js"
 
 export class PeakPickingNode extends NodeWithAccordion{
+    static menuTitle="Peak Picking"
+    static socketTypes={
+        inputs:[SOCKET.WAVE],
+        outputs:[SOCKET.WAVE]
+    }
 
 constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(

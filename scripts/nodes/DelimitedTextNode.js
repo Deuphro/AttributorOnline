@@ -2,8 +2,14 @@ import {CE,stylize} from "../util.js"
 import {Wave} from "../formats.js"
 import {NodeWithAccordion} from "../core/index.js"
 import {Table} from "../ui/index.js"
+import {SOCKET} from "../socketTypes.js"
 
 export class DelimitedTextNode extends NodeWithAccordion{
+    static menuTitle="Delimited Text"
+    static socketTypes={
+        inputs:[],
+        outputs:[SOCKET.WAVE]
+    }
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(title,[],[[]],origin,destinationFlow,position)
         this.parameters.source={

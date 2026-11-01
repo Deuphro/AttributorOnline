@@ -4,7 +4,8 @@ import {layoutFlow,LAYOUT_DEFAULTS,buildGraph,autoLinkPlan} from "../layout.js"
 import {DEFAULT_LINK_TOLERANCE,growForest,suggestWeightCut,forestComponents,componentLine,forestGraph,forestRoot,layoutForests,forestStandards} from "../forest.js"
 import {Node} from "../core/index.js"
 import {Command,History,nodeRestoreData,createNodeForHistory} from "../core/index.js"
-import {buildNode} from "../utils/index.js"
+import {buildNode,NODE_CONSTRUCTORS} from "../utils/index.js"
+import {SOCKET,socketCompatible} from "../socketTypes.js"
 
 export class Flow{
     constructor(title,origin,destination){
@@ -31,6 +32,7 @@ export class Flow{
         this.selection=new Set()
         this.lastSelected=null
         this._drawingLink=false
+        this._linkDragPos=null
         this.container.addEventListener("click",(event)=>{
             if(event.target.closest(".node, .link, .anchor")){
                 return
@@ -499,6 +501,7 @@ export class Flow{
             const rect = this.field.node().getBoundingClientRect()
             const x = e.clientX - rect.left
             const y = e.clientY - rect.top
+            this._linkDragPos={x,y}
             draft.attr("d", `M ${startingPos.x} ${startingPos.y}
                 C ${startingPos.x+bezierSide} ${startingPos.y},
                 ${x-bezierSide} ${y},
@@ -632,10 +635,7 @@ export class Flow{
     /* Annule le brouillon de lien en cours si stopBuildingLink n'a pas
        finalisé le dessin (relâchement hors d'une ancre, ou document.onmouseup
        arrivé avant le CustomEvent stopLinkDrawing sur certains navigateurs). */
-    _cancelIfStillDrawing(draft){
-        if(!this._drawingLink){
-            return
-        }
+    _cancelDraft(draft){
         if(this.linkList.at(-1)===draft){
             draft.node().remove()
             this.linkList.pop()
@@ -643,6 +643,122 @@ export class Flow{
         this._drawingLink=false
         document.onmousemove=null
         document.onmouseup=null
+        this._linkDragPos=null
+    }
+    _cancelIfStillDrawing(draft){
+        if(!this._drawingLink){
+            return
+        }
+        /* Relâchement dans le vide depuis une SORTIE : menu ComfyUI pour créer
+           un node dont une entrée accepte le type de la sortie d'origine. */
+        const anchorInfo=draft.startingNode.parameters.anchorMap.get(draft.startingAnchor)
+        if(anchorInfo&&anchorInfo.type==="output" && this._linkDragPos){
+            const outputIndex=Number(draft.startingAnchor.id)
+            const outputType=draft.startingNode.outputTypes?.[outputIndex]
+            const dragPos=this._linkDragPos  /* sauvegardé avant _cancelDraft qui le remet à null */
+            if(outputType){
+                this._cancelDraft(draft)
+                this._showNodeMenuFromOutput(draft.startingNode, outputIndex, outputType, dragPos)
+                return
+            }
+        }
+        this._cancelDraft(draft)
+    }
+    /* Affiche un menu flottant listant les nœuds compatibles avec le type de
+       sortie donné. Choisir un nœud le crée et le relie automatiquement. */
+    _showNodeMenuFromOutput(sourceNode, outputIndex, outputType, pos){
+        const compatible=[]
+        for(const [name, Constructor] of Object.entries(NODE_CONSTRUCTORS)){
+            const types=Constructor.socketTypes
+            if(!types||!Array.isArray(types.inputs)) continue
+            for(const inputType of types.inputs){
+                if(socketCompatible(outputType, inputType)){
+                    compatible.push({name, Constructor})
+                    break
+                }
+            }
+        }
+        if(compatible.length===0) return
+        const {x,y}=pos
+        const menu=CE("div",{
+            className:"node-menu",
+            style:{
+                position:"absolute",
+                left:Math.round(x)+"px",
+                top:Math.round(y)+"px",
+                minWidth:"160px",
+                background:"#1e1e1e",
+                color:"#eee",
+                border:"1px solid #444",
+                borderRadius:"6px",
+                boxShadow:"0 4px 12px rgba(0,0,0,0.5)",
+                zIndex:1000,
+                fontFamily:'sans-serif',
+                fontSize:"13px",
+                maxHeight:"260px",
+                overflowY:"auto"
+            }
+        },[])
+        const close=()=>{
+            menu.remove()
+            document.removeEventListener("mousedown",_closeOnOutside)
+        }
+        const _closeOnOutside=(e)=>{
+            if(!this.container.contains(e.target)) close()
+        }
+        document.addEventListener("mousedown",_closeOnOutside)
+        for(const {name, Constructor} of compatible){
+            const displayName=Constructor.menuTitle??name
+            const item=CE("div",{
+                className:"node-menu-item",
+                textContent:displayName,
+                style:{
+                    padding:"6px 10px",
+                    cursor:"pointer",
+                    borderBottom:"1px solid #333",
+                    userSelect:"none"
+                }
+            },[])
+            item.onmouseenter=()=>{item.style.background="#333"}
+            item.onmouseleave=()=>{item.style.background="transparent"}
+            item.onclick=()=>{
+                close()
+                this._createNodeFromMenu(Constructor, displayName, {x,y}, sourceNode, outputIndex)
+            }
+            menu.appendChild(item)
+        }
+        this.container.appendChild(menu)
+    }
+    /* Crée le node choisi, le place à la position du curseur et relie la sortie
+       d'origine à sa première entrée compatible. */
+    _createNodeFromMenu(Constructor, displayName, pos, sourceNode, sourceOutputIndex){
+        if(!Constructor) return
+        /* Retrouver la clé du registre pour le type du node */
+        const name=Object.entries(NODE_CONSTRUCTORS).find(([,C])=>C===Constructor)?.[0]
+        if(!name) return
+        const types=Constructor.socketTypes
+        /* Construire des slots vides selon les types déclarés, pour que le
+           constructeur classique reçoive des tableaux de la bonne longueur. */
+        const inputs=types?.inputs?.map(()=>[])??[]
+        const outputs=types?.outputs?.map(()=>[])??[]
+        const node=buildNode(
+            {type:name, title:displayName, inputs, outputs, position:pos},
+            this.origin,
+            this
+        )
+        this.origin.channel.register("node",node,node.title)
+        /* Relier la sortie d'origine à l'entrée 0 du nouveau node (si compatible) */
+        if(inputs.length>0){
+            this.linkNodes({
+                source: sourceNode,
+                sourceIndex: sourceOutputIndex,
+                target: node,
+                targetIndex: 0,
+                record: true,
+                relayout: true
+            })
+        }
+        this.autoLayout()
     }
     /* Rectangle d'un node dans le repère du SVG (même repère que anchorAbsPos). */
     nodeSVGRect(node){

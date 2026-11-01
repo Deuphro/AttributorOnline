@@ -11,8 +11,14 @@ import {forestStandards,forestComponents,componentLine,growForest,suggestWeightC
 import {windowFor,wavesFromInput} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 import {AttributionForestMethods} from "./AttributionForestMethods.js"
+import {SOCKET} from "../socketTypes.js"
 
 export class AttributionNode extends NodeWithAccordion{
+    static menuTitle="Attribution"
+    static socketTypes={
+        inputs:[SOCKET.WAVE,SOCKET.FORMULA_COLLECTION],
+        outputs:[SOCKET.FORMULA_COLLECTION,SOCKET.FORMULA_COLLECTION]
+    }
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         //one multiplexed input (XY waves), one input for pattern FormulaCollections, two outputs: attributions + forest FormulaCollections
         super(title,[[],[]],[[],[]],origin,destinationFlow,position)

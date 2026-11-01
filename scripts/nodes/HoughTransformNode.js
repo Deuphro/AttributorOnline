@@ -6,6 +6,7 @@ import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
 import {scorePairs,scoreCutoffs,scoreSecondOrder,FormulaCollection,Stoichiometry} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
+import {SOCKET} from "../socketTypes.js"
 
 /* LA COULEUR DU SEUIL, au niveau module : c'est elle qui départage les
    candidats (et non plus une k·MAD parmi d'autres), et trois endroits
@@ -70,6 +71,11 @@ function rowLabel(row){
    node owns what it asks for rather than inheriting it. */
 
 export class HoughTransformNode extends NodeWithRightAccordionGraph{
+    static menuTitle="Hough Transform"
+    static socketTypes={
+        inputs:[SOCKET.WAVE],
+        outputs:[SOCKET.WAVE]
+    }
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         //one multiplexed input, one grid output
         super(title,[[]],[[]],origin,destinationFlow,position)

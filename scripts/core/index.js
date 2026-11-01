@@ -11,6 +11,7 @@ import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKern
 import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,layoutForests,DEFAULT_LINK_TOLERANCE} from "../forest.js"
 import {LAYOUT_DEFAULTS,autoLinkPlan,buildGraph,layoutFlow} from "../layout.js"
 import {buildNode} from "../utils/index.js"
+import {SOCKET} from "../socketTypes.js"
 import {
     clearLocalSession,
     debounce,
@@ -112,6 +113,12 @@ export class Node{
         this.title=title
         this.inputs=inputs
         this.outputs=outputs
+        /* TYPES DE SOCKETS — déclarés statiquement sur chaque classe de node
+           (ex: AttributionNode.socketTypes). Fallback "Any" pour ne rien casser
+           sur les nodes qui n'ont pas encore déclaré leurs types. */
+        const declared=this.constructor.socketTypes
+        this.inputTypes=declared?.inputs??inputs.map(()=>SOCKET.ANY)
+        this.outputTypes=declared?.outputs??outputs.map(()=>SOCKET.ANY)
         this.origin=origin
         this.destination=destinationFlow
         this.destination.nodeSet.add(this)

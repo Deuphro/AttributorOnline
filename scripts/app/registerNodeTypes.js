@@ -31,8 +31,6 @@ export function registerNodeTypes(){
         BrukerBafNode,
         Operation,
         PeakPickingNode,
-        PersistentHomology0DNode:PeakPickingNode,
-        AntiRadioNode:PeakPickingNode,
         TrimmerNode,
         FKMDNode,
         FormulaCollectionNode,

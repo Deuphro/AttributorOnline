@@ -5,10 +5,16 @@ import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
 import {TRIM_METHODS,TRIM_LOW_COLOR,TRIM_HIGH_COLOR,CURSOR_COLORS,TRIM_CURSOR_STROKE,TRIM_CURSOR_FIELD_FONT,formatCursorValue,scaleToggle,binsOfHistogram,wavesFromInput} from "../utils/index.js"
 import {matchingTracePoints,pointCoordinates,traceSourceInfo} from "../utils/plotPointSync.js"
+import {SOCKET} from "../socketTypes.js"
 export class TrimmerNode extends NodeWithAccordion{
     //60 bars is enough to read a distribution at panel size, and keeps the
     //kernel payload small: 60 f64 is nothing next to the wave itself.
     static HISTOGRAM_BINS=60
+    static menuTitle="Trimmer"
+    static socketTypes={
+        inputs:[SOCKET.WAVE],
+        outputs:[SOCKET.WAVE]
+    }
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         super(title,[[]],[[]],origin,destinationFlow,position)
         this.status="floating"

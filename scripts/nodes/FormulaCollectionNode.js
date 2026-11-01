@@ -8,6 +8,7 @@ import {VirtualRowList} from "./VirtualRowList.js"
 import {segmentToggle,scaleToggle} from "../utils/index.js"
 import {matchingTracePoints,pointCoordinates,syncGraphPin,traceSourceInfo,isMassXAxis} from "../utils/plotPointSync.js"
 import {formatCount,formatMz,formatValue,prettyNotation,traceColor,isDeleteKey,FORMULA_SORTS,formulaComparator} from "./formulaCollectionHelpers.js"
+import {SOCKET} from "../socketTypes.js"
 
 /* -------------------------------------------------------------------------
    FormulaCollectionNode — a READER for collections of Formula.
@@ -47,6 +48,11 @@ import {formatCount,formatMz,formatValue,prettyNotation,traceColor,isDeleteKey,F
                            the formula that took it.
    ------------------------------------------------------------------------- */
 export class FormulaCollectionNode extends NodeWithAccordionGraph{
+    static menuTitle="Formula Collection"
+    static socketTypes={
+        inputs:[SOCKET.FORMULA_COLLECTION],
+        outputs:[SOCKET.FORMULA_COLLECTION,SOCKET.WAVE]
+    }
     /* CE QUE LE GRAPHE MONTRE PAR DÉFAUT. */
     static GRAPH_MODE_DEFAULT="error"
     //one line of the list. Fixed, and the reason the windowing is cheap. It

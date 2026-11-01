@@ -4,6 +4,7 @@ import {Wave} from "../formats.js"
 import {NodeWithAccordion} from "../core/index.js"
 import {CE,stylize} from "../util.js"
 import {wavesFromInput} from "../utils/index.js"
+import {SOCKET} from "../socketTypes.js"
 
 /* ----------------------------------------------------------------
    FKMDNode — one input anchor, one output anchor.
@@ -13,6 +14,11 @@ import {wavesFromInput} from "../utils/index.js"
    today it only copies the input XY through (see kernelWorker.js).
    ---------------------------------------------------------------- */
 export class FKMDNode extends NodeWithAccordion{
+    static menuTitle="FKMD"
+    static socketTypes={
+        inputs:[SOCKET.WAVE],
+        outputs:[SOCKET.WAVE]
+    }
     constructor(title,origin,destinationFlow,position={x:180,y:10}){
         //one input (XY wave: X=mass, Y=intensity), one output
         super(title,[[]],[[]],origin,destinationFlow,position)

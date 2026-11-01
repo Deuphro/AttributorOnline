@@ -1,8 +1,13 @@
 import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
 import {Wave,XYTrace} from "../formats.js"
 import {matchingTracePoints,pointCoordinates,traceSourceInfo,isMassXAxis} from "../utils/plotPointSync.js"
+import {SOCKET} from "../socketTypes.js"
 
 export class SimpleXYPlotNode extends NodeWithRightAccordionGraph{
+    static menuTitle="XY Plot"
+    static socketTypes={
+        inputs:[SOCKET.WAVE]
+    }
     constructor(title,inputs,outputs,origin,destinationFlow,position={x:180,y:10}){
         super(title,inputs,outputs,origin,destinationFlow,position)
         this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
