@@ -3191,9 +3191,17 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            exact n'a pas de logarithme, et le plateau du FT-ICR doit quand même se
            voir — au plancher, ce qui est honnête plutôt que flatteur. */
         const positive=weights.filter(weight=>Number.isFinite(weight)&&weight>0)
-        const smallest=positive.length?Math.min(...positive):1e-6
+        /* Math.min(...array) et Math.max(...array) éclatent le tableau en
+           arguments individuels: au-delà de quelques dizaines de milliers de
+           points, le moteur JS lève « RangeError: too many function arguments ».
+           On parcourt donc le tableau en boucle, sans limite d'arguments. */
+        let smallest=Infinity
+        for(const w of positive){ if(w<smallest) smallest=w }
+        if(!positive.length) smallest=1e-6
         const floor=smallest/10
-        const top=Math.max(...positive,smallest*10)
+        let top=-Infinity
+        for(const w of positive){ if(w>top) top=w }
+        if(!positive.length||smallest*10>top) top=smallest*10
         const decades=Math.max(1,Math.log10(top/floor))
         const yOf=weight=>{
             const value=Number.isFinite(weight)&&weight>0?weight:floor
