@@ -42,7 +42,7 @@ export class ThermoRawNode extends NodeWithAccordion{
                 return Wave.fromCoordinates(
                     new Float64Array(spec.mz),
                     new Float64Array(spec.intensity),
-                    {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:this.sourceWaveId()},
+                    {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:`${this.sourceWaveId()}:scan-${spec.scanNumber??idx}`},
                     ["m/z","intensity"]
                 )
             }).filter(w=>w!==null)
@@ -67,7 +67,7 @@ export class ThermoRawNode extends NodeWithAccordion{
             return Wave.fromCoordinates(
                 new Float64Array(spec.mz),
                 new Float64Array(spec.intensity),
-                {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:this.sourceWaveId()},
+                {title:this.title,fileName:this.parameters.source.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:`${this.sourceWaveId()}:scan-${spec.scanNumber??idx}`},
                 ["m/z","intensity"]
             )
         }).filter(w=>w!==null)

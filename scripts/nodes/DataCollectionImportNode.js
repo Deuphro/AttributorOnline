@@ -57,7 +57,7 @@ this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollecti
                     return Wave.fromCoordinates(
                         new Float64Array(spec.mz),
                         new Float64Array(spec.intensity),
-                        {title:item.name,fileName:item.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:item.sourceWaveId},
+                        {title:item.name,fileName:item.fileName,scanNumber:spec.scanNumber,rt:spec.rt,msLevel:spec.msLevel,sourceWaveId:`${item.sourceWaveId}:scan-${spec.scanNumber??idx}`},
                         ["m/z","intensity"]
                     )
                 }).filter(w=>w!==null)
