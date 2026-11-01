@@ -33,6 +33,7 @@ export class Flow{
         this.lastSelected=null
         this._drawingLink=false
         this._linkDragPos=null
+        this._linkDraftActive=false
         this.container.addEventListener("click",(event)=>{
             if(event.target.closest(".node, .link, .anchor")){
                 return
@@ -487,6 +488,7 @@ export class Flow{
             this._cancelIfStillDrawing(this.linkList.at(-1))
         }
         this._drawingLink=true
+        this._linkDraftActive=true   /* le draft n'a pas encore été consommé par stopBuildingLink */
         const startingPos=Node.anchorAbsPos(e.detail.msg.starter)
         const draft=d3.create("svg:g").attr('class','link').append('path').style('pointer-events','none')
             .attr("d", `M ${startingPos.x} ${startingPos.y} L ${startingPos.x} ${startingPos.y}`)
@@ -600,6 +602,7 @@ export class Flow{
         if(!this._drawingLink){
             return
         }
+        this._linkDraftActive=false   /* le draft a été traité par stopBuildingLink */
         const draft=this.linkList.at(-1)
         if(!draft){
             this._drawingLink=false
@@ -646,7 +649,7 @@ export class Flow{
         this._linkDragPos=null
     }
     _cancelIfStillDrawing(draft){
-        if(!this._drawingLink){
+        if(!this._drawingLink || !this._linkDraftActive){
             return
         }
         /* Relâchement dans le vide depuis une ancre : menu ComfyUI pour créer
