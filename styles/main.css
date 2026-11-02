@@ -1006,6 +1006,10 @@ body.menu-open .flow.workspace .child{
 
 .flow.field{
     fill:#141921;
+    /* inline par défaut: le line box réserve le descender sous la baseline,
+       donc SVG de hauteur clientHeight + ~4px → scrollbar fantôme Chrome,
+       pas Firefox. display:block sort le champ du layout inline. */
+    display:block;
 }
 
 .anchor.linked{

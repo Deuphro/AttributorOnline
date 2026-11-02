@@ -235,11 +235,20 @@ export class Flow{
         if(!this.field){
             return
         }
-        const box=this.container.getBoundingClientRect()
+        /* clientWidth/clientHeight, PAS getBoundingClientRect + Math.round.
+
+           getBoundingClientRect rend des tailles FRACTIONNELLES (847.5) et
+           Math.round arrondit au-dessus: le SVG devenait 1px plus large que
+           la zone de contenu du conteneur overflow:auto — scrollbar fantôme
+           sous Chrome, qui arrondit le layout autrement que Firefox.
+
+           clientWidth/clientHeight sont déjà des entiers et excluent la
+           scrollbar: le champ remplit exactement la boîte sans déborder, et
+           ne grandit que si le dessin (contentBounds) dépasse vraiment. */
         const content=bounds??this.contentBounds()
         this.field
-            .attr("width",Math.max(Math.round(box.width),Math.ceil(content.width)))
-            .attr("height",Math.max(Math.round(box.height),Math.ceil(content.height)))
+            .attr("width",Math.max(this.container.clientWidth,Math.ceil(content.width)))
+            .attr("height",Math.max(this.container.clientHeight,Math.ceil(content.height)))
     }
     contentBounds(){
         let maxX=0
