@@ -1848,6 +1848,31 @@ export class AttributionNode extends NodeWithAccordion{
            déclarerait toujours différente, et le moindre clic relancerait pour rien. */
         const before=JSON.stringify(this.groupList(kind))
         this.parameters[kind]=groups
+        const changed=JSON.stringify(this.groupList(kind))!==before
+        /* LE PLAN DES BLOCS EST RECONSTRUIT ICI, et c'est le correctif du
+           décalage d'indices après suppression.
+
+           `renderGroupTables` ne reconstruit le plan que s'il MANQUE: un plan
+           d'un resolve précédent restait donc en place, avec des `groupIndex`
+           (`combining#0…`) calés sur l'ANCIENNE liste. Après une suppression,
+           la rangée i affichait les blocs isotopiques du groupe qui occupait
+           autrefois l'indice i — `prettyNotation` « n'importe quoi » jusqu'au
+           prochain Resolve.
+
+           Les blocs isotopiques ne dépendent QUE des listes de groupes (pas du
+           spectre): `buildPlan` est une fraction de milliseconde, et les
+           attributions restent marquées stale par `markStale` plus bas. Le
+           plan régénéré décrit la liste ACTUELLE; le crible, lui, attend le
+           bouton. */
+        if(changed){
+            try{
+                this.buildPlan()
+            }catch(error){
+                /* Même garde que `renderGroupTables`: une liste devenue
+                   illisible ne doit pas laisser un plan périmé qui ment. */
+                this.plan=null
+            }
+        }
         /* LE REDESSIN EST ICI, et pas ailleurs: la case qu'on vient de valider
            doit redevenir la case validée. Sans ça, taper « 40 » dans un champ
            laisserait « 40 » affiché pendant que le plan en compte 20. */
@@ -1855,7 +1880,7 @@ export class AttributionNode extends NodeWithAccordion{
         /* Rien n'a changé: ne pas relancer, comme `commitNumber` le fait. Deux
            saisies qui recalculent le même plan feraient clignoter le nœud pour
            un résultat identique. */
-        if(JSON.stringify(this.groupList(kind))===before){
+        if(!changed){
             this.renderReadout()
             return
         }

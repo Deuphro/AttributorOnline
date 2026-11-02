@@ -3423,7 +3423,11 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        que le nœud sait dire. */
     commitForestGroups(groups){
         this.parameters.forestGroups=groups
-        this.renderForestGroupTable()
+        /* PAS DE RENDU ICI: `refreshForestPlan` repeint déjà la table, mais
+           APRÈS `buildForestPlan` — donc avec les bons `groupIndex`. Un
+           `renderForestGroupTable` ici peindrait avec l'ancien plan (blocs
+           isotopiques décalés), puis serait écrasé par le rendu juste après:
+           du travail DOM pour un état que personne ne voit. */
         this.refreshForestPlan()
     }
 
