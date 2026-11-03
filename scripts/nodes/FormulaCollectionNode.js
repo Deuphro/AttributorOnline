@@ -235,6 +235,7 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                     notation:this.selectedEntry.notation,
                     charge:this.selectedEntry.charge||0,
                     formula:this.selectedEntry.formula,
+                    recreation:this.selectedEntry.formula?.toString?.()??this.selectedEntry.notation??this.selectedEntry.key,
                     key:this.selectedEntry.key
                 }))
             }

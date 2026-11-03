@@ -35,17 +35,14 @@ export class MassCalculatorNode extends Node{
         const info=e.detail.msg
         if(info.notation){
             this.parameters.receivedKey=info.key??null
-            /* info.notation est la clé canonique (ex: "12C7 1H6 14N2 16O2[H+]").
-               Formula.parse ne sait pas la lire — il faut la notation utilisateur
-               (ex: "C7H6N2O2[H+]"). info.formula est souvent undefined sur les
-               entrées de ligne, donc on tente d'abord info.formula, puis on
-               nettoie la clé canonique en enlevant préfixes isotopiques et espaces. */
-            let formulaText=info.formula
-            if(!formulaText){
-                formulaText=info.notation
-                    .replace(/\s*\d+(?=[A-Z])/g,'')   // 12C7 -> C7, 1H6 -> H6, etc.
-                    .replace(/\s+/g,'')                // C7 H6 N2 O2 -> C7H6N2O2
-            }
+            /* `recreation` is the producer's parseable spelling, including
+               isotopes and ionisation. Never infer it by stripping digits from
+               the canonical key: isotope mass numbers are data, not decoration. */
+            const formulaText=typeof info.recreation==="string"
+                ?info.recreation
+                :typeof info.formula==="string"
+                    ?info.formula
+                    :info.formula?.toString?.()??info.notation
             await this.setFormula(formulaText,info.charge||0)
             /* Recréation indépendante de la clé depuis la stoich parsée localement.
                Si receivedKey et recreatedKey divergent, il y a un problème de
@@ -663,6 +660,7 @@ export class MassCalculatorNode extends Node{
                 if(this.parameters.charge!==0){
                     this.currentStoich=new Stoichiometry({
                         composition:this.currentStoich.composition,
+                        core:this.currentStoich.core,
                         ionisation:this.currentStoich.ionisation,
                         charge:this.parameters.charge,
                         rule:this.currentStoich.rule,
