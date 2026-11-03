@@ -113,22 +113,37 @@ export function pointCoordinates(graph, trace, pointIndex, fallbackX, fallbackY)
 
 export function syncGraphPin(graph, info){
     if(!graph) return
+    let changed=false
     for(const {trace,pointIndex} of matchingTracePoints(graph.traces,info)){
         const {x,y}=pointCoordinates(graph,trace,pointIndex,info.x,info.y)
         const existing=graph.pickPins.find(pin=>pin.traceId===trace.id&&pin.tracePoint===pointIndex)
         if(info.added){
             if(!existing){
                 graph.addPickPin({trace,tracePoint:pointIndex,x,y,px:0,py:0})
+                changed=true
             }else{
                 existing.x=x
                 existing.y=y
-                graph.syncPickOverlay?.()
+                changed=true
             }
         }else if(existing){
             graph.removePickPin(existing)
+            changed=true
         }
     }
-    graph.drawGraph?.()
+    if(!changed) return
+    // Reposition pins using the CURRENT scales without touching axis domains.
+    // drawGraph() would re-run autoDomain() and reset the x-axis bounds — fatal
+    // in Van Krevelen mode where autoDomain is forced on and domain is nulled
+    // (FormulaCollectionNode.js:2557-2560). Pinning does not change the data,
+    // so the axes must stay stable. syncPickOverlay() exists on Plot2DWebGL
+    // (used by FormulaCollectionNode); fall back to drawGraph() only for the
+    // plain SVG Plot2D which lacks it.
+    if(graph.syncPickOverlay){
+        graph.syncPickOverlay()
+    }else{
+        graph.drawGraph?.()
+    }
 }
 
 export function isMassXAxis(trace){
