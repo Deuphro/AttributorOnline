@@ -1541,7 +1541,7 @@ export class AttributionNode extends NodeWithAccordion{
         const blocks=this.isotopeBlocks(table,index)
         const listing=CE("div",{},[
             blocks.length
-                ? blocks.map(block=>block.notation).join("  ·  ")
+                ? blocks.map(block=>`${block.notation} ${block.mass.toFixed(4)}`).join("  ·  ")
                 : "— no isotope block —"
         ])
         stylize(listing,{

@@ -3377,7 +3377,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const blocks=this.forestIsotopeBlocks(index)
         const listing=CE("div",{},[
             blocks.length
-                ? blocks.map(block=>block.notation).join("  ·  ")
+                ? blocks.map(block=>`${block.notation} ${block.mass.toFixed(4)}`).join("  ·  ")
                 : "— no isotope block —"
         ])
         stylize(listing,{
