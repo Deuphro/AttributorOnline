@@ -12,6 +12,11 @@ export class MassCalculatorNode extends Node{
         this.parameters.formula=""
         this.parameters.charge=0
         this.parameters.ratio=0.01
+        /* Clé de recréation — traçage des bugs entre la collection source et le mass calc.
+           receivedKey : la clé telle que fournie par FormulaCollectionNode via l'event
+           recreatedKey : la clé recréée localement depuis this.currentStoich.key après parsing */
+        this.parameters.receivedKey=null
+        this.parameters.recreatedKey=null
         this.dialog=null
         this.plot=null
         this.tablePromise=null
@@ -25,11 +30,27 @@ export class MassCalculatorNode extends Node{
         this.events.listen.formulaSelectSync=this.handleFormulaSelectSync.bind(this)
         this.events.broadcast.massCalcTraceSync=this.createMassCalcTraceSyncEvent.bind(this)
     }
-    handleFormulaSelectSync(e){
+    async handleFormulaSelectSync(e){
         if(e.detail.emitter===this) return
         const info=e.detail.msg
         if(info.notation){
-            this.setFormula(info.notation,info.charge||0)
+            this.parameters.receivedKey=info.key??null
+            /* info.notation est la clé canonique (ex: "12C7 1H6 14N2 16O2[H+]").
+               Formula.parse ne sait pas la lire — il faut la notation utilisateur
+               (ex: "C7H6N2O2[H+]"). info.formula est souvent undefined sur les
+               entrées de ligne, donc on tente d'abord info.formula, puis on
+               nettoie la clé canonique en enlevant préfixes isotopiques et espaces. */
+            let formulaText=info.formula
+            if(!formulaText){
+                formulaText=info.notation
+                    .replace(/\s*\d+(?=[A-Z])/g,'')   // 12C7 -> C7, 1H6 -> H6, etc.
+                    .replace(/\s+/g,'')                // C7 H6 N2 O2 -> C7H6N2O2
+            }
+            await this.setFormula(formulaText,info.charge||0)
+            /* Recréation indépendante de la clé depuis la stoich parsée localement.
+               Si receivedKey et recreatedKey divergent, il y a un problème de
+               normalisation entre la collection et le mass calc. */
+            this.parameters.recreatedKey=this.currentStoich?.key??null
         }
     }
     createMassCalcTraceSyncEvent(info){
@@ -610,14 +631,16 @@ export class MassCalculatorNode extends Node{
     }
 
     buildInfoBar(){
-        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:"4px",fontSize:"0.85em"}},[])
+        const wrap=CE("div",{style:{display:"grid",gridTemplateColumns:"repeat(5, 1fr)",gap:"4px",fontSize:"0.85em"}},[])
 
         this.monoMassEl=CE("div",{style:{color:"var(--accent)"}},["Mono: —"])
         this.avgMassEl=CE("div",{style:{color:"var(--text)"}},["Avg: —"])
         this.mzEl=CE("div",{style:{color:"var(--accent)"}},["m/z: —"])
         this.formulaEl=CE("div",{style:{color:"var(--text-muted)",fontFamily:"monospace"}},["—"])
 
-        wrap.append(this.monoMassEl,this.avgMassEl,this.mzEl,this.formulaEl)
+        this.keyEl=CE("div",{style:{color:"var(--text-muted)",fontFamily:"monospace",fontSize:"0.75em"}},[ "Key: —"])
+
+        wrap.append(this.monoMassEl,this.avgMassEl,this.mzEl,this.formulaEl,this.keyEl)
         return wrap
     }
 
@@ -712,6 +735,12 @@ export class MassCalculatorNode extends Node{
         this.avgMassEl.textContent=`Avg: ${avg.toFixed(4)}`
         this.mzEl.textContent=`m/z: ${mz.toFixed(4)}`
         this.formulaEl.textContent=this.currentStoich.toString()
+        /* Affichage des deux clés pour traçage : receivedKey vient de l'event,
+           recreatedKey est recalculée localement après parsing. */
+        if(this.keyEl){
+            const match=this.parameters.receivedKey===this.parameters.recreatedKey?"✓":"✗"
+            this.keyEl.textContent=`Key (recv/recreated): ${this.parameters.receivedKey ?? "—"} / ${this.parameters.recreatedKey ?? "—"} ${match}`
+        }
     }
 
     updatePlot(){

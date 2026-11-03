@@ -234,7 +234,8 @@ export class FormulaCollectionNode extends NodeWithAccordionGraph{
                 dispatchEvent(this.events.broadcast.formulaSelectSync({
                     notation:this.selectedEntry.notation,
                     charge:this.selectedEntry.charge||0,
-                    formula:this.selectedEntry.formula
+                    formula:this.selectedEntry.formula,
+                    key:this.selectedEntry.key
                 }))
             }
         }
