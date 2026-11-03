@@ -28,6 +28,7 @@ export class MassCalculatorNode extends Node{
         this._hoveredBtn=null
         this._isoModifierInstalled=false
         this.events.listen.formulaSelectSync=this.handleFormulaSelectSync.bind(this)
+        this.events.listen.pointSelectedSync=this.handlePointSelectedSync.bind(this)
         this.events.broadcast.massCalcTraceSync=this.createMassCalcTraceSyncEvent.bind(this)
     }
     async handleFormulaSelectSync(e){
@@ -48,6 +49,14 @@ export class MassCalculatorNode extends Node{
                Si receivedKey et recreatedKey divergent, il y a un problème de
                normalisation entre la collection et le mass calc. */
             this.parameters.recreatedKey=this.currentStoich?.key??null
+        }
+    }
+    async handlePointSelectedSync(e){
+        if(e.detail.emitter===this) return
+        const info=e.detail.msg
+        const formulaKey=info.formulaKey
+        if(formulaKey){
+            this.setFormula(formulaKey,0)
         }
     }
     createMassCalcTraceSyncEvent(info){

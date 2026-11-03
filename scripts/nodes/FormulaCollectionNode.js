@@ -1272,6 +1272,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
         this.events.listen.hoverSync=this.handleHoverSync.bind(this)
         this.events.broadcast.formulaSelectSync=this.createFormulaSelectSyncEvent.bind(this)
         this.events.listen.formulaSelectSync=this.handleFormulaSelectSync.bind(this)
+        this.events.broadcast.pointSelectedSync=this.createPointSelectedSyncEvent.bind(this)
         this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
         /* THE TABLE IS ASKED FOR HERE, AT CONSTRUCTION, and not on first use.
 
@@ -1326,6 +1327,9 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
     createHoverSyncEvent(info){
         return new CustomEvent("hoverSync",{detail:{msg:info,emitter:this}})
     }
+    createPointSelectedSyncEvent(info){
+        return new CustomEvent("pointSelectedSync",{detail:{msg:info,emitter:this}})
+    }
     handlePinSync(e){
         if(e.detail.emitter===this) return
         this.applyPinSync(e.detail.msg)
@@ -1350,6 +1354,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                 traceTitle:trace.title
             }
             globalThis.dispatchEvent(new CustomEvent("POINT_SELECTED",{detail:{msg,emitter:this}}))
+            dispatchEvent(this.events.broadcast.pointSelectedSync(msg))
         }
     }
     onGraphHoverChange(info){
