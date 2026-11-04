@@ -5,23 +5,26 @@ import {SOCKET} from "../socketTypes.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 
 /* -------------------------------------------------------------------------
-   SankeyNode — diagramme de Sankey pour collections de formules.
+   SankeyNode — Sankey diagram for formula collections.
 
-   NIVEAU 1 (gauche) : cibles du spectre (formules individuelles), triées par
-   masse croissante par défaut. Les étiquettes de molécules ne sont pas
-   affichées (le nom reste lisible au survol) : elles encombraient la colonne.
-   NIVEAU 2 (droite) : groupes de partition par éléments présents
-   (ex: C6H12O6, CH4, C2H5OH → groupe "CHO").
+   LEVEL 1 (left): spectrum targets (individual formulas), sorted by
+   ascending mass by default. Molecule labels are not drawn (the name is
+   available on hover): they crowded the column.
+   LEVEL 2 (right): partition groups by the elements present
+   (e.g. C6H12O6, CH4, C2H5OH → group "CHO").
 
-   Chaque formule relie son groupe élémentaire. L'épaisseur du flot vaut la
-   masse de la formule (configurable). Les flots sont de vrais rubans : leur
-   épaisseur est empilée le long des nœuds, donc ils ne se chevauchent pas.
+   Each formula links to its element group. The flow thickness is the
+   formula's mass (configurable). The flows are real ribbons: their width is
+   stacked along the nodes, so they do not overlap.
 
-   Entrée  : SOCKET.FORMULA_COLLECTION  (instance ou littéral {name, formulas})
-   Sortie  : SOCKET.FORMULA_COLLECTION  (pass-through des collections reçues)
+   Input : SOCKET.FORMULA_COLLECTION, multiplexed. Every parent wired to the
+           anchor is read, and each output may carry one collection or an
+           array of collections (FormulaCollection, {name, formulas|entries|
+           items}, array of formulas…).
+   Output: SOCKET.FORMULA_COLLECTION (pass-through of ALL collections)
 
-   Le graphe est un SVG D3 dessiné directement dans le contenu de la fenêtre
-   centrale (pas de contexte WebGL). Le panneau droit porte les réglages.
+   The graph is a D3 SVG drawn directly in the central window content (no
+   WebGL context). The right panel holds the settings.
    ------------------------------------------------------------------------- */
 
 export class SankeyNode extends NodeWithRightAccordionGraph {
@@ -60,86 +63,147 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         this.drawSankey()
     }
 
-    /* Rafraîchir à l'ouverture : un lien créé après coup ne déclenche aucune
-       resolve globale, donc le diagramme resterait sur son état précédent. */
+    /* Refresh on open: a link created afterwards triggers no global resolve,
+       so the diagram would otherwise keep its previous state. */
     reveal() {
         this.refreshFromLinks()
         super.reveal()
     }
 
     /* ---------------------------------------------------------------------
-       LECTURE DE L'ENTRÉE
+       READING THE MULTIPLEXED INPUT
 
-       La forme documentée est Map<parent, outputs[]> où chaque output est un
-       tableau de collections. Le parcours est récursif et tolérant : il descend
-       jusqu'à ce qui est lisible, quelle que soit la profondeur réelle. Un
-       parcours à profondeur fixe était le défaut principal : il prenait un
-       tableau d'outputs pour une collection, ne trouvait jamais `.formulas`,
-       et le diagramme restait vide sans aucun diagnostic.
+       Flow.parentSynapse fills ONE Map<parent, outputs[]> with EVERY link
+       landing on the anchor: a hundred cables on one input behave like one.
+       Each parent may publish several outputs, and each output may itself be
+       a single collection or an ARRAY of collections (this is what
+       FormulaCollectionNode and AttributionNode do).
+
+       So we walk the Map parent by parent, output by output, and descend
+       recursively through arrays/objects until a collection is recognized.
+       The accepted shapes are the same as FormulaCollectionNode's reader —
+       a Formula/Stoichiometry alone, an array of formulas, a
+       {name, formulas|entries|items} object, and a real FormulaCollection —
+       so that anything readable upstream is readable here.
+
+       `seen` avoids counting the same collection twice when several cables
+       connect the same parent to the same input (the output is then repeated
+       in the `values` array).
        --------------------------------------------------------------------- */
     collectCollections() {
         const collections = []
+        const seen = new Set()
         for (const input of this.inputs) {
-            this.walkInput(input, item => {
-                const collection = this.asCollection(item)
-                if (collection) collections.push(collection)
-            })
+            if (!(input instanceof Map)) continue
+            for (const [parent, values] of input) {
+                const parentName = parent?.events?.registrationName ?? parent?.title ?? "collection"
+                for (const output of values ?? []) {
+                    this.collectFromOutput(output, parentName, collections, seen)
+                }
+            }
         }
         this.lastCollections = collections
         return collections
     }
 
-    walkInput(value, visit, depth = 0) {
-        if (value == null || depth > 8) return
-        if (value instanceof FormulaCollection
-            || value instanceof Formula
-            || value instanceof Stoichiometry) {
-            visit(value)
+    collectFromOutput(value, parentName, collections, seen, depth = 0) {
+        if (value == null || depth > 16) return
+        if (!this.remember(value, seen)) return
+
+        if (value instanceof FormulaCollection) {
+            const collection = this.asCollection(value, parentName)
+            if (collection) collections.push(collection)
+            return
+        }
+        if (value instanceof Formula || value instanceof Stoichiometry) {
+            const collection = this.asCollection(value, parentName)
+            if (collection) collections.push(collection)
             return
         }
         if (Array.isArray(value)) {
-            const formulaList = value.length > 0 && value.every(entry =>
-                entry && typeof entry === "object"
-                && !Array.isArray(entry)
-                && !(entry instanceof FormulaCollection)
-                && !(entry instanceof Formula)
-                && !(entry instanceof Stoichiometry)
-                && !Array.isArray(entry.formulas)
-                && (entry.notation != null || entry.key != null || entry.formula != null))
-            if (formulaList) {
-                visit(value)
+            if (this.isFormulaList(value)) {
+                const collection = this.asCollection(value, parentName)
+                if (collection) collections.push(collection)
                 return
             }
-            for (const child of value) this.walkInput(child, visit, depth + 1)
+            for (const child of value) {
+                this.collectFromOutput(child, parentName, collections, seen, depth + 1)
+            }
             return
         }
         if (value instanceof Map) {
-            for (const child of value.values()) this.walkInput(child, visit, depth + 1)
+            for (const child of value.values()) {
+                this.collectFromOutput(child, parentName, collections, seen, depth + 1)
+            }
             return
         }
-        if (typeof value === "object") visit(value)
+        if (typeof value === "object") {
+            const formulas = value.formulas ?? value.entries ?? value.items
+            if (Array.isArray(formulas)) {
+                const collection = this.asCollection(value, parentName)
+                if (collection) collections.push(collection)
+                return
+            }
+            if (value.formula != null || value.notation != null || value.key != null) {
+                const collection = this.asCollection(value, parentName)
+                if (collection) collections.push(collection)
+                return
+            }
+            const proto = Object.getPrototypeOf(value)
+            if (proto === Object.prototype || proto === null) {
+                for (const child of Object.values(value)) {
+                    if (child && typeof child === "object") {
+                        this.collectFromOutput(child, parentName, collections, seen, depth + 1)
+                    }
+                }
+            }
+        }
     }
 
-    asCollection(item) {
+    remember(value, seen) {
+        if (!value || typeof value !== "object") return true
+        if (seen.has(value)) return false
+        seen.add(value)
+        return true
+    }
+
+    isFormulaList(entries) {
+        return entries.length > 0 && entries.every(entry => {
+            if (entry instanceof Formula || entry instanceof Stoichiometry) return true
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false
+            if (entry instanceof FormulaCollection) return false
+            if (Array.isArray(entry.formulas) || Array.isArray(entry.entries) || Array.isArray(entry.items)) {
+                return false
+            }
+            return entry.formula != null || entry.notation != null || entry.key != null
+        })
+    }
+
+    asCollection(item, parentName = "collection") {
         if (!item) return null
         if (item instanceof FormulaCollection) {
-            return {
-                name: item.name ?? "collection",
-                formulas: [...item.entries].map(entry => this.flatFormula(entry)).filter(Boolean)
-            }
+            const formulas = [...item.entries].map(entry => this.flatFormula(entry)).filter(Boolean)
+            return formulas.length
+                ? {name: item.name ?? parentName, formulas}
+                : null
         }
         if (Array.isArray(item)) {
             const formulas = item.map(entry => this.flatFormula(entry)).filter(Boolean)
-            return formulas.length ? {name: "collection", formulas} : null
+            return formulas.length ? {name: parentName, formulas} : null
         }
-        if (item.formula || item.notation || item.key) {
-            const formula = this.flatFormula(item)
-            return formula ? {name: item.name ?? "formule", formulas: [formula]} : null
-        }
-        if (Array.isArray(item.formulas)) {
-            return {
-                name: item.name ?? item.title ?? "sans nom",
-                formulas: item.formulas.map(entry => this.flatFormula(entry)).filter(Boolean)
+        if (typeof item === "object") {
+            const formulas = item.formulas ?? item.entries ?? item.items
+            if (Array.isArray(formulas)) {
+                const flat = formulas.map(entry => this.flatFormula(entry)).filter(Boolean)
+                return flat.length
+                    ? {name: item.name ?? item.title ?? parentName, formulas: flat}
+                    : null
+            }
+            if (item.formula != null || item.notation != null || item.key != null) {
+                const formula = this.flatFormula(item)
+                return formula
+                    ? {name: item.name ?? parentName, formulas: [formula]}
+                    : null
             }
         }
         return null
@@ -153,22 +217,26 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         return 0
     }
 
-    /* `Number(undefined)` vaut NaN, et `NaN ?? 0` vaut NaN : l'ancien
-       `Number(x) ?? y` ne retombait donc JAMAIS sur le second terme. Une entrée
-       sans `mass` produisait une masse NaN, une échelle d'épaisseur NaN et un
-       graphe aux flots invisibles. */
+    /* `Number(undefined)` is NaN, and `NaN ?? 0` is NaN: the old
+       `Number(x) ?? y` therefore NEVER fell back to the second term. An entry
+       without `mass` produced a NaN mass, a NaN thickness scale and a graph
+       with invisible flows. */
     flatFormula(entry) {
         if (entry == null) return null
-        if (entry instanceof Stoichiometry || entry instanceof Formula) {
+        const nested = (entry.formula instanceof Formula || entry.formula instanceof Stoichiometry)
+            ? entry.formula
+            : null
+        if (entry instanceof Stoichiometry || entry instanceof Formula || nested) {
+            const formula = nested ?? entry
             return {
-                key: entry.key ?? String(entry),
-                notation: String(entry),
-                mz: this.numberOr(entry.mz, entry.mass),
-                mass: this.numberOr(entry.mass, entry.mz),
-                charge: this.numberOr(entry.charge),
-                molecule: entry.root?.moleculeKey ?? entry.moleculeKey ?? null,
+                key: entry.key ?? formula.key ?? String(formula),
+                notation: entry.notation ?? String(formula),
+                mz: this.numberOr(entry.mz, entry.mass, formula.mz, formula.mass),
+                mass: this.numberOr(entry.mass, entry.mz, formula.mass, formula.mz),
+                charge: this.numberOr(entry.charge, formula.charge),
+                molecule: entry.molecule ?? formula.root?.moleculeKey ?? formula.moleculeKey ?? null,
                 intensity: 0,
-                note: ""
+                note: entry.note ?? ""
             }
         }
         return {
@@ -202,9 +270,9 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         return elements.join("")
     }
 
-    /* La nature du groupe est un RÉGLAGE, et elle doit être lue ici.
-       L'ancienne version construisait toujours la clé « éléments présents »,
-       donc le sélecteur « Chaque formule isolée » ne changeait rien. */
+    /* The nature of the group is a SETTING, and it must be read here.
+       The old version always built the "elements present" key, so the
+       "Each formula separately" selector changed nothing. */
     groupDescriptor(formula) {
         if (this.parameters.groupMode === "formula") {
             const label = formula.notation || formula.key || "?"
@@ -261,9 +329,9 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
 
         const sorted = this.sortFormulas(level0Nodes)
 
-        /* Une collection dont les masses sont absentes (ou nulles) donnait des
-           flots d'épaisseur zéro : un graphe vide alors qu'il y a des formules.
-           On retombe sur une unité par formule pour garder un diagramme lisible. */
+        /* A collection whose masses are missing (or zero) produced
+           zero-thickness flows: an empty graph even though formulas exist.
+           We fall back to one unit per formula to keep the diagram readable. */
         const totalValue = sorted.reduce((sum, node) => sum + Math.max(0, node.value || 0), 0)
         if (totalValue <= 0) {
             for (const node of sorted) node.value = 1
@@ -286,21 +354,30 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         }
 
         level1Nodes.sort((a, b) => b.totalValue - a.totalValue)
+        const total = level1Nodes.reduce((sum, group) => sum + Math.max(0, group.totalValue || 0), 0)
+        for (const group of level1Nodes) {
+            group.share = total > 0 ? Math.max(0, group.totalValue || 0) / total : 0
+        }
+        for (const node of sorted) {
+            node.share = total > 0 ? Math.max(0, node.value || 0) / total : 0
+            node.groupName = level1Map.get(node.groupKey)?.name ?? ""
+        }
 
         return {
             nodes: [...sorted, ...level1Nodes],
             links,
             level1Nodes,
-            level0Nodes: sorted
+            level0Nodes: sorted,
+            collectionCount: collections.length
         }
     }
 
-    /* Met les deux colonnes à l'échelle d'une hauteur IDENTIQUE.
-       Aucun minimum de 2 px par nœud : avec beaucoup de formules, les nœuds
-       deviennent plus fins qu'un pixel, mais tout rentre dans la fenêtre au lieu
-       de déborder sous le bas. L'échelle verticale `ky` est commune aux deux
-       colonnes (mêmes épaisseurs de rubans de chaque côté), puis chaque colonne
-       répartit l'espace restant dans ses propres gouttières. */
+    /* Scale both columns to an IDENTICAL, CONTIGUOUS height.
+       There is no 2 px minimum and no gutter: with many formulas the nodes
+       become thinner than a pixel, but every slice touches its neighbour, so
+       the column reads as one bar and each block's height is exactly its
+       share. The vertical scale `ky` is shared by both columns, so ribbon
+       thickness is identical on each side. */
     layoutSankey(data, width, height) {
         const margin = {top: 44, right: 10, bottom: 14, left: 10}
         const available = Math.max(1, height - margin.top - margin.bottom)
@@ -311,23 +388,13 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         const sum0 = level0.reduce((sum, node) => sum + Math.max(0, node.value || 0), 0)
         const sum1 = level1.reduce((sum, node) => sum + Math.max(0, node.totalValue || 0), 0)
         const sum = Math.max(sum0, sum1, 1)
-
-        const gapFor = count => count > 1 ? Math.min(6, available / (count * 3)) : 0
-        const kyCandidates = []
-        if (level0.length && sum0 > 0) kyCandidates.push((available - gapFor(level0.length) * (level0.length - 1)) / sum0)
-        if (level1.length && sum1 > 0) kyCandidates.push((available - gapFor(level1.length) * (level1.length - 1)) / sum1)
-        let ky = kyCandidates.length ? Math.min(...kyCandidates) : available / sum
-        if (!Number.isFinite(ky) || ky <= 0) ky = available / sum
+        const ky = available / sum
 
         const leftX = margin.left
         const rightX1 = width - margin.right
         const rightX0 = rightX1 - nodeWidth
 
         const placeColumn = (nodes, valueKey, x0, x1) => {
-            const padCount = Math.max(0, nodes.length - 1)
-            const columnSum = nodes.reduce((total, node) => total + Math.max(0, node[valueKey] || 0), 0)
-            const nodeSpan = columnSum * ky
-            const pad = padCount > 0 ? Math.max(0, (available - nodeSpan) / padCount) : 0
             let y = margin.top
             for (const node of nodes) {
                 const nodeHeight = Math.max(0, (node[valueKey] || 0) * ky)
@@ -337,7 +404,7 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
                 node.y1 = y + nodeHeight
                 node._outOffset = y
                 node._inOffset = y
-                y = node.y1 + pad
+                y = node.y1
             }
         }
 
@@ -396,7 +463,7 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
     }
 
     /* ---------------------------------------------------------------------
-       DESSIN
+       DRAWING
        --------------------------------------------------------------------- */
     ensureGraphHost(content) {
         if (this.graphHost && this.graphHost.parentElement === content) {
@@ -411,9 +478,9 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
                 overflow: "hidden"
             }
         }, [])
-        /* Le ResizeObserver de l'application et Dialog.notifyContentResized()
-           cherchent ce crochet : sans lui, redimensionner ou déplier la fenêtre
-           laissait le SVG à sa taille d'origine. */
+        /* The app's ResizeObserver and Dialog.notifyContentResized() look for
+           this hook: without it, resizing or unfolding the window left the SVG
+           at its original size. */
         host.handleResize = () => this.scheduleRedraw()
         this.graphHost = host
         content.append(host)
@@ -436,8 +503,8 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
 
         const width = Math.floor(host.clientWidth)
         const height = Math.floor(host.clientHeight)
-        /* Un contenu replié (ou pas encore mesuré) fait 0×0 : on retente
-           quelques frames, puis on attend un vrai redimensionnement. */
+        /* A folded (or not-yet-measured) content is 0×0: retry for a few
+           frames, then wait for a real resize. */
         if (width < 40 || height < 40) {
             if (this._sizeRetries < 5) {
                 this._sizeRetries++
@@ -484,27 +551,27 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             .attr("y", 18)
             .attr("font-weight", "bold")
             .attr("fill", "#333")
-            .text(`Sankey — ${data.level0Nodes.length} cible(s) → ${data.level1Nodes.length} groupe(s)`)
+            .text(`Sankey — ${data.collectionCount} collection(s), ${data.level0Nodes.length} target(s) → ${data.level1Nodes.length} group(s)`)
 
         svg.append("text")
             .attr("x", data.level0X0)
             .attr("y", margin.top - 8)
             .attr("fill", "#666")
-            .text("Cibles")
+            .text("Targets")
 
         svg.append("text")
             .attr("x", data.level1X1)
             .attr("y", margin.top - 8)
             .attr("text-anchor", "end")
             .attr("fill", "#666")
-            .text("Groupes")
+            .text("Groups")
 
         const groupColors = d3.scaleOrdinal()
             .domain(data.level1Nodes.map(node => node.id))
             .range(d3.schemeCategory10)
 
-        /* Les rubans : leur épaisseur est celle du flot, et leur ordre
-           d'empilement le long des nœuds vient de layoutSankey. */
+        /* The ribbons: their thickness is the flow's, and their stacking
+           order along the nodes comes from layoutSankey. */
         svg.append("g")
             .attr("class", "links")
             .selectAll("path")
@@ -517,8 +584,8 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             .append("title")
             .text(link => `${link.source.name} → ${link.target.name} (${this.formatValue(link.value)})`)
 
-        /* Colonne des cibles : plus d'étiquette de molécule (elle encombrait
-           la colonne), le nom et la masse restent dans le tooltip. */
+        /* Target column: no molecule label (it crowded the column); the name
+           and mass remain in the tooltip. */
         const node0 = svg.append("g")
             .attr("class", "nodes level0")
             .selectAll("g")
@@ -535,12 +602,20 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             .attr("stroke", "#333")
             .attr("stroke-width", 0.5)
             .attr("rx", 2)
+            /* The tooltip is attached to the RECT, not the group: browsers show
+               a <title> for the element under the cursor, and the thin bars are
+               now unlabelled, so this is the only way to read them. */
+            .append("title")
+            .text(node => [
+                node.name,
+                node.collection,
+                node.groupName ? `group: ${node.groupName} (${this.formatPercent(node.share)})` : null,
+                `m/z ${(node.mass || 0).toFixed(3)}`,
+                `value: ${this.formatValue(node.value)}`
+            ].filter(Boolean).join("\n"))
 
-        node0.append("title")
-            .text(node => `${node.name}\nm/z ${(node.mass || 0).toFixed(3)}`)
-
-        /* Colonne des groupes : l'étiquette reste, avec une couleur de texte
-           contrastée (noir sur les couleurs claires, blanc sur les sombres). */
+        /* Group column: the label stays, with a contrasting text colour
+           (black on light colours, white on dark ones). */
         const node1 = svg.append("g")
             .attr("class", "nodes level1")
             .selectAll("g")
@@ -559,7 +634,7 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             .attr("rx", 2)
 
         node1.append("title")
-            .text(node => `${node.name} — ${node.formulas.length} formule(s)`)
+            .text(node => `${node.name} — ${node.formulas.length} formula(s) — ${this.formatPercent(node.share)}`)
 
         node1.append("text")
             .attr("x", node => node.x0 + 8)
@@ -568,11 +643,11 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             .attr("fill", node => this.textColorFor(groupColors(node.id)))
             .attr("font-size", "11px")
             .attr("font-weight", "bold")
-            .text(node => this.shorten(node.name, Math.floor((node.x1 - node.x0) / 7)))
+            .text(node => this.groupLabel(node))
     }
 
-    /* Ruban de Sankey : deux courbes de Bézier et l'épaisseur du flot entre
-       elles, au lieu d'un simple trait centré sur les nœuds. */
+    /* Sankey ribbon: two Bezier curves with the flow's thickness between
+       them, instead of a simple stroke centred on the nodes. */
     sankeyLinkPath(link) {
         const x0 = link.source.x1
         const x1 = link.target.x0
@@ -599,6 +674,21 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         return value.toFixed(2)
     }
 
+    formatPercent(share) {
+        const percent = Math.max(0, Number(share) || 0) * 100
+        if (percent > 0 && percent < 0.1) return "<0.1%"
+        return percent >= 10 ? `${percent.toFixed(0)}%` : `${percent.toFixed(1)}%`
+    }
+
+    /* The percentage is added INSIDE the same label, and the name is
+       truncated by as much: on a narrow bar, the name gives way, never the
+       percentage. */
+    groupLabel(node) {
+        const suffix = ` (${this.formatPercent(node.share)})`
+        const budget = Math.max(1, Math.floor((node.x1 - node.x0) / 7) - suffix.length)
+        return this.shorten(node.name, budget) + suffix
+    }
+
     drawEmptyState(host, error = null) {
         if (!host) return
         host.replaceChildren()
@@ -617,17 +707,17 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
                 textAlign: "center"
             }
         }, [])
-        box.append(CE("div", {}, ["Ce nœud n’a rien à tracer. Reliez une collection de formules à son entrée, puis résolvez."]))
+        box.append(CE("div", {}, ["This node has nothing to plot. Connect a formula collection to its input, then resolve."]))
         const collections = this.lastCollections
         if (collections) {
             const formulas = collections.reduce((sum, collection) => sum + collection.formulas.length, 0)
             box.append(CE("div", {style: {fontSize: "0.85em", fontStyle: "normal"}}, [
-                `${collections.length} collection(s), ${formulas} formule(s) reçue(s).`
+                `${collections.length} collection(s), ${formulas} formula(s) received.`
             ]))
         }
         if (error) {
             box.append(CE("div", {style: {fontSize: "0.85em", color: "#b00", fontStyle: "normal"}}, [
-                `Erreur de dessin : ${error.message ?? error}`
+                `Draw error: ${error.message ?? error}`
             ]))
         }
         host.append(box)
@@ -640,7 +730,7 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
     }
 
     /* ---------------------------------------------------------------------
-       PANNEAU DROIT
+       RIGHT PANEL
        --------------------------------------------------------------------- */
     renderAccordion() {
         const content = this.accordion?.DOMelt?.content
@@ -649,19 +739,19 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
 
         content.append(CE("div", {
             style: { fontWeight: "bold", fontSize: "1.1em", marginBottom: "8px", color: "#333" }
-        }, ["Sankey — réglages"]))
+        }, ["Sankey — settings"]))
 
-        content.append(CE("div", { style: { fontWeight: "bold", marginTop: "8px" } }, ["Classement des cibles (niveau 1)"]))
+        content.append(CE("div", { style: { fontWeight: "bold", marginTop: "8px" } }, ["Target sort (level 1)"]))
 
         const sortGroup = CE("div", { style: { display: "flex", gap: "6px", alignItems: "center", marginBottom: "6px" } }, [])
-        sortGroup.append(CE("span", {}, ["Critère: "]))
+        sortGroup.append(CE("span", {}, ["Criterion: "]))
         const sortSel = CE("select", {
             style: { flex: "1" },
             onchange: (e) => { this.parameters.sortMode = e.target.value; this.resolve() }
         }, [])
         const sortModes = ["mass", "intensity", "name"]
         for (const mode of sortModes) {
-            sortSel.append(CE("option", { value: mode }, [mode === "mass" ? "Masse" : mode === "intensity" ? "Intensité" : "Nom"]))
+            sortSel.append(CE("option", { value: mode }, [mode === "mass" ? "Mass" : mode === "intensity" ? "Intensity" : "Name"]))
         }
         sortSel.value = this.parameters.sortMode
         sortGroup.append(sortSel)
@@ -670,13 +760,13 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             style: { width: "70px" },
             onchange: (e) => { this.parameters.sortOrder = e.target.value; this.resolve() }
         }, [])
-        orderSel.append(CE("option", { value: "asc" }, ["Croissant"]))
-        orderSel.append(CE("option", { value: "desc" }, ["Décroissant"]))
+        orderSel.append(CE("option", { value: "asc" }, ["Ascending"]))
+        orderSel.append(CE("option", { value: "desc" }, ["Descending"]))
         orderSel.value = this.parameters.sortOrder
         sortGroup.append(orderSel)
         content.append(sortGroup)
 
-        content.append(CE("div", { style: { fontWeight: "bold", marginTop: "12px" } }, ["Groupes (niveaux suivants)"]))
+        content.append(CE("div", { style: { fontWeight: "bold", marginTop: "12px" } }, ["Groups (subsequent levels)"]))
 
         const groupGroup = CE("div", { style: { display: "flex", gap: "6px", alignItems: "center", marginBottom: "6px" } }, [])
         groupGroup.append(CE("span", {}, ["Mode: "]))
@@ -684,23 +774,23 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             style: { flex: "1" },
             onchange: (e) => { this.parameters.groupMode = e.target.value; this.resolve() }
         }, [])
-        groupSel.append(CE("option", { value: "elements" }, ["Éléments présents (ex: CHO)"]))
-        groupSel.append(CE("option", { value: "formula" }, ["Chaque formule isolée"]))
+        groupSel.append(CE("option", { value: "elements" }, ["Elements present (e.g. CHO)"]))
+        groupSel.append(CE("option", { value: "formula" }, ["Each formula separately"]))
         groupSel.value = this.parameters.groupMode
         groupGroup.append(groupSel)
         content.append(groupGroup)
 
-        content.append(CE("div", { style: { fontWeight: "bold", marginTop: "12px" } }, ["Épaisseur des flots"]))
+        content.append(CE("div", { style: { fontWeight: "bold", marginTop: "12px" } }, ["Flow thickness"]))
 
         const linkGroup = CE("div", { style: { display: "flex", gap: "6px", alignItems: "center", marginBottom: "6px" } }, [])
-        linkGroup.append(CE("span", {}, ["Valeur: "]))
+        linkGroup.append(CE("span", {}, ["Value: "]))
         const linkSel = CE("select", {
             style: { flex: "1" },
             onchange: (e) => { this.parameters.linkValue = e.target.value; this.resolve() }
         }, [])
-        linkSel.append(CE("option", { value: "mass" }, ["Masse"]))
-        linkSel.append(CE("option", { value: "count" }, ["Nombre"]))
-        linkSel.append(CE("option", { value: "intensity" }, ["Intensité"]))
+        linkSel.append(CE("option", { value: "mass" }, ["Mass"]))
+        linkSel.append(CE("option", { value: "count" }, ["Count"]))
+        linkSel.append(CE("option", { value: "intensity" }, ["Intensity"]))
         linkSel.value = this.parameters.linkValue
         linkGroup.append(linkSel)
         content.append(linkGroup)
@@ -708,12 +798,12 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         const redrawBtn = CE("button", {
             style: { marginTop: "10px", padding: "4px 10px", cursor: "pointer" },
             onclick: () => this.resolve()
-        }, ["Redessiner le graphe"])
+        }, ["Redraw graph"])
         content.append(redrawBtn)
 
         const info = CE("div", {
             style: { marginTop: "10px", fontSize: "0.85em", color: "#666", fontStyle: "italic" }
-        }, ["Défaut : cibles classées par masse croissante ; groupes par éléments présents."])
+        }, ["Default: targets sorted by ascending mass; groups by elements present."])
         content.append(info)
     }
 
