@@ -42,6 +42,7 @@ export const NODE_SOURCE_FILES=[
     "ui/Plot2D.js",
     "nodes/NodeWithAccordionGraph.js",
     "nodes/NodeWithRightAccordionGraph.js",
+    "nodes/SankeyNode.js",
     "nodes/AttributionForestMethods.js",
     "nodes/DelimitedTextNode.js",
     "nodes/ThermoRawNode.js",

@@ -9,6 +9,7 @@ import {
     BrukerBafNode,
     FKMDNode,
     FormulaCollectionNode,
+    SankeyNode,
     HoughTransformNode,
     MassCalculatorNode,
     NodeWithAccordionGraph,
@@ -214,6 +215,16 @@ export class MainFlowMenu extends Menu{
                                 title,
                                 [],
                                 [],
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
+                        case "sankey":
+                            node = new SankeyNode(
+                                title,
+                                [[]],
+                                [[]],
                                 origin,
                                 origin.channel.get("mainFlow"),
                                 {x:180,y:10}

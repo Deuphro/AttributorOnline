@@ -56,6 +56,9 @@ const defaultMenu={
         "Display":{
             "Simple XY plot":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Simple XY plot',type:'simpleXYPlot'}}}))},
             "F-KMD":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'F-KMD',type:'fkmd'}}}))},
+            //Sankey: masses of a formula collection flowing into the
+            //groups of elements they contain.
+            "Sankey":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Sankey',type:'sankey'}}}))},
         },
         /*"Random and test":{
             "Random simple":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Random',type:'random'}}}))},
