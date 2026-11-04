@@ -372,29 +372,28 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         }
     }
 
-    /* Scale both columns to an IDENTICAL, CONTIGUOUS height.
-       There is no 2 px minimum and no gutter: with many formulas the nodes
-       become thinner than a pixel, but every slice touches its neighbour, so
-       the column reads as one bar and each block's height is exactly its
-       share. The vertical scale `ky` is shared by both columns, so ribbon
-       thickness is identical on each side. */
+    /* Scale both columns with a fixed gap between nodes on the right column
+       (level 1, groups) only, so the ribbons can curve more freely there.
+       The left column (level 0, targets) stays contiguous and fills the full
+       height without overflowing. The vertical scale `ky` is shared by both
+       columns, so ribbon thickness is identical on each side. */
     layoutSankey(data, width, height) {
         const margin = {top: 44, right: 10, bottom: 14, left: 10}
         const available = Math.max(1, height - margin.top - margin.bottom)
         const nodeWidth = Math.min(200, Math.max(90, width * 0.22))
+        const nodePadding = 6
 
         const level0 = data.level0Nodes
         const level1 = data.level1Nodes
         const sum0 = level0.reduce((sum, node) => sum + Math.max(0, node.value || 0), 0)
         const sum1 = level1.reduce((sum, node) => sum + Math.max(0, node.totalValue || 0), 0)
-        const sum = Math.max(sum0, sum1, 1)
-        const ky = available / sum
+        const ky = available / Math.max(sum0, sum1, 1)
 
         const leftX = margin.left
         const rightX1 = width - margin.right
         const rightX0 = rightX1 - nodeWidth
 
-        const placeColumn = (nodes, valueKey, x0, x1) => {
+        const placeColumn = (nodes, valueKey, x0, x1, padding = 0) => {
             let y = margin.top
             for (const node of nodes) {
                 const nodeHeight = Math.max(0, (node[valueKey] || 0) * ky)
@@ -404,12 +403,12 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
                 node.y1 = y + nodeHeight
                 node._outOffset = y
                 node._inOffset = y
-                y = node.y1
+                y = node.y1 + padding
             }
         }
 
-        placeColumn(level0, "value", leftX, leftX + nodeWidth)
-        placeColumn(level1, "totalValue", rightX0, rightX1)
+        placeColumn(level0, "value", leftX, leftX + nodeWidth, 0)
+        placeColumn(level1, "totalValue", rightX0, rightX1, nodePadding)
 
         for (const link of data.links) {
             const thickness = Math.max(0, link.value * ky)
@@ -736,10 +735,6 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         const content = this.accordion?.DOMelt?.content
         if (!content) return
         content.replaceChildren()
-
-        content.append(CE("div", {
-            style: { fontWeight: "bold", fontSize: "1.1em", marginBottom: "8px", color: "#333" }
-        }, ["Sankey — settings"]))
 
         content.append(CE("div", { style: { fontWeight: "bold", marginTop: "8px" } }, ["Target sort (level 1)"]))
 
