@@ -164,11 +164,12 @@
     footer{
         text-align:center;
         padding:30px 20px;
-        color:#7a8794;
-        font-size:0.85em;
-        border-top:1px solid rgba(255,255,255,0.1);
+        color:#aeb8c4;
+        font-size:0.9em;
+        border-top:1px solid rgba(255,255,255,0.15);
         margin-top:60px;
     }
+    footer a{color:#aef22e;}
     .docs{
         background:rgba(255,255,255,0.03);
         border:1px solid rgba(255,255,255,0.12);
@@ -3279,9 +3280,105 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
         <pre>formula text / periodic table clicks / isotope band
    → Formula.parse(text, table)          → Stoichiometry
    → mono mass, average mass (Σ avg·n − z·mₑ), m/z
-   → isotopologues({ratio, limit 200})   → normalised probabilities
-   → WebGL stick plot + per-bar hover tooltips
+    → isotopologues({ratio, limit 200})   → normalised probabilities
+    → WebGL stick plot + per-bar hover tooltips
    (no worker, no kernel: exact arithmetic, pure JS)</pre>
+
+        <h4 data-node="sankey" data-menu="Chemistry" data-keys="sankey diagram formula collection mass flow ribbon group elements targets partitioning d3 svg accessibility">Sankey <span class="badge">Chemistry</span> <span class="badge">mass flow</span></h4>
+        <p>
+            A Sankey diagram for formula collections: every attributed formula on the left column links to its
+            element group on the right (e.g. C6H12O6, CH4, C2H5OH all land in group "CHO"), and the ribbon thickness
+            is the formula's mass. Each flow is a real ribbon — its width stacked along the nodes so ribbons never
+            overlap — drawn with D3 as SVG directly in the central window. Nothing uses WebGL here.
+        </p>
+        <p>
+            The left column holds spectrum targets (individual formulas), sorted by ascending mass by default.
+            Molecule labels are not drawn — they crowded the column — but stay available on hover. The right column
+            groups formulas by the elements present, and each ribbon rides from its formula node to its group node.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Level 0 (left)</td>
+                <td><strong>Targets</strong> — one node per formula, contiguous, filling the column height. Each
+                node's height is exactly its mass share. No molecule label; name and mass live in the tooltip.</td>
+            </tr>
+            <tr>
+                <td>Level 1 (right)</td>
+                <td><strong>Groups</strong> — one node per element set (CHO, CHN, …), sized by the total mass of its
+                formulas. Ribbons fan out from each target to its group. Gaps between group nodes let the ribbons
+                curve freely instead of running flush against each other.</td>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td><strong>1 input</strong> — SOCKET.FORMULA_COLLECTION, multiplexed. Every parent wired to the
+                anchor is read, and each output may carry one collection or an array of collections.</td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td><strong>1 output</strong> — SOCKET.FORMULA_COLLECTION, pass-through of <strong>all</strong>
+                collections received.</td>
+            </tr>
+            <tr>
+                <td>Settings</td>
+                <td>Sort criterion (mass / intensity / name), sort order (asc / desc), group mode (elements present /
+                each formula separately), flow thickness (mass / count / intensity).</td>
+            </tr>
+        </table>
+
+        <h4 data-node="dataCollectionImport" data-menu="Data" data-keys="data collection import raw text csv tsv thermo scan multiplex dropzone spectra wave">Data Collection Import <span class="badge">Data</span> <span class="badge">import</span></h4>
+        <p>
+            A source node that brings external spectral data into the flow: Thermo <code>.raw</code> files and plain
+            text (<code>.txt</code>, <code>.csv</code>, <code>.tsv</code>). It has no central graph — only the right
+            accordion panel — and publishes waves downstream so any other node can consume them.
+        </p>
+        <p>
+            Drop files onto the dropzone or pick them with the file button. Each file becomes a <em>data item</em>
+            with its own row: a checkbox to include it in the multiplex output, a radio to make it the single output,
+            and (for .raw files) a per-scan checkbox to enable or disable individual scans.
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td><strong>none</strong> — a source node. Files arrive by drop or by the file picker.</td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td><strong>2 outputs</strong>.<br>
+                    <strong>Output 0</strong> — multiplex: every wave from every item ticked for multiplex, in item order.<br>
+                    <strong>Output 1</strong> — single: the first wave of the item selected by its radio button.</td>
+            </tr>
+            <tr>
+                <td>.raw files</td>
+                <td>Parsed in a worker via <code>parseThermoRaw</code>. A metadata-only pass runs first so every
+                filter is bounded by what the file actually holds (scan range, RT window, MS levels). Each scan can be
+                individually enabled or disabled. No msConvert, no .NET, no DLL.</td>
+            </tr>
+            <tr>
+                <td>Text files</td>
+                <td>Each line that yields two finite numbers becomes one point of a 2D wave <code>[X…, Y…]</code>.
+                Line and column separators are guessed per file and stored with the item.</td>
+            </tr>
+            <tr>
+                <td>Session</td>
+                <td>Raw bytes round-trip through the session JSON as byte arrays; parsed spectra are rebuilt on
+                reload. Raw files are not embedded — only their decoded spectra travel.</td>
+            </tr>
+        </table>
+
+        <h5>Data flow</h5>
+        <pre>.raw file  → worker: parseThermoRaw  → spectra[]  → per-scan checkboxes  → Wave[] per item
+   text file → parseText(pairs)       → Wave[] per item
+   item row  → multiplex checkbox     → output[0] = all multiplexed waves
+   item row  → single radio           → output[1] = selected item's first wave
+   publishOutputs() → resolveChildren()</pre>
 
     </div>
 
@@ -3289,7 +3386,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
 
 <footer>
     Attributor Online — Mass spectrometry & formula attribution · IPAG<br>
-    <span style="font-size:0.75em;opacity:0.7;margin-top:8px;display:block;">
+        <span style="font-size:0.85em;opacity:0.9;margin-top:10px;display:block;">
         Thermo <code>.raw</code> parsing via <a href="https://crates.io/crates/thermorawfile" target="_blank" style="color:#aef22e;">thermorawfile</a> (MIT OR Apache-2.0) by <strong>David Teschner</strong> (theGreatHerrLebert).<br>
         Bruker BAF parsing via the <a href="https://github.com/cran/rtms" target="_blank" style="color:#aef22e;">RTMS</a> R toolkit (GPL-3.0-or-later) by <strong>Mary Ashley Rimmer</strong> and <strong>Nathaniel Twarog</strong> (St. Jude Children's Research Hospital), ported to Rust/WebAssembly.<br>
         Binary layout derived from <a href="https://github.com/proteinspector/unthermo" target="_blank" style="color:#aef22e;">unthermo</a> (Apache-2.0) by <strong>Pieter Kelchtermans</strong> (proteinspector),<br>

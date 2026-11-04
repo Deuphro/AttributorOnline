@@ -380,7 +380,7 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
     layoutSankey(data, width, height) {
         const margin = {top: 44, right: 10, bottom: 14, left: 10}
         const available = Math.max(1, height - margin.top - margin.bottom)
-        const nodeWidth = Math.min(200, Math.max(90, width * 0.22))
+        const nodeWidth = Math.min(140, Math.max(70, width * 0.15))
         const nodePadding = 6
 
         const level0 = data.level0Nodes
@@ -545,11 +545,37 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
 
         this.svg = svg.node()
 
+        const groupColors = d3.scaleOrdinal()
+            .domain(data.level1Nodes.map(node => node.id))
+            .range(d3.schemeCategory10)
+
+        /* Dégradés d'opacité par groupe : évanescent à gauche (cible), opaque à droite (groupe). */
+        const defs = svg.append("defs")
+        const gradId = id => `sankey-grad-${String(id).replace(/[^a-zA-Z0-9_-]/g, "-")}`
+        data.level1Nodes.forEach(group => {
+            const color = groupColors(group.id)
+            const grad = defs.append("linearGradient")
+                .attr("id", gradId(group.id))
+                .attr("x1", "0%")
+                .attr("y1", "0%")
+                .attr("x2", "100%")
+                .attr("y2", "0%")
+            grad.append("stop")
+                .attr("offset", "0%")
+                .attr("stop-color", color)
+                .attr("stop-opacity", 0.05)
+            grad.append("stop")
+                .attr("offset", "100%")
+                .attr("stop-color", color)
+                .attr("stop-opacity", 0.45)
+        })
+
         svg.append("text")
             .attr("x", margin.left)
-            .attr("y", 18)
+            .attr("y", 22)
             .attr("font-weight", "bold")
-            .attr("fill", "#333")
+            .attr("font-size", "14px")
+            .attr("fill", "#fff")
             .text(`Sankey — ${data.collectionCount} collection(s), ${data.level0Nodes.length} target(s) → ${data.level1Nodes.length} group(s)`)
 
         svg.append("text")
@@ -565,10 +591,6 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             .attr("fill", "#666")
             .text("Groups")
 
-        const groupColors = d3.scaleOrdinal()
-            .domain(data.level1Nodes.map(node => node.id))
-            .range(d3.schemeCategory10)
-
         /* The ribbons: their thickness is the flow's, and their stacking
            order along the nodes comes from layoutSankey. */
         svg.append("g")
@@ -576,8 +598,7 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
             .selectAll("path")
             .data(data.links)
             .join("path")
-            .attr("fill", link => groupColors(link.target.id))
-            .attr("fill-opacity", 0.45)
+            .attr("fill", link => `url(#${gradId(link.target.id)})`)
             .attr("stroke", "none")
             .attr("d", link => this.sankeyLinkPath(link))
             .append("title")

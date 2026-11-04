@@ -125,7 +125,13 @@ const FRENCH_TERMS = {
   hauteur: ["height"], debut: ["start"],
   probleme: ["issue"], installation: ["install"], version: ["version"],
   documentation: ["documentation"], manuel: ["documentation"],
-  aide: ["help"]
+  aide: ["help"],
+  ruban: ["ribbon"], rubans: ["ribbon"],
+  diagramme: ["diagram"], diagrammes: ["diagram"],
+  flux: ["flow"], empiler: ["stack"], empilage: ["stack"],
+  cible: ["target"], cibles: ["target"],
+  groupement: ["group"], groupements: ["group"],
+  sankey: ["sankey"]
 };
 
 /* ---- tokenisation -------------------------------------------------------- */
