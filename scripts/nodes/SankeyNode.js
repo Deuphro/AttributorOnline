@@ -1,6 +1,6 @@
 import {NodeWithRightAccordionGraph} from "./NodeWithRightAccordionGraph.js"
 import {Formula, Stoichiometry, FormulaCollection} from "../chemistry.js"
-import {CE} from "../util.js"
+import {CE, stylize} from "../util.js"
 import {SOCKET} from "../socketTypes.js"
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm"
 
@@ -474,7 +474,9 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
                 position: "relative",
                 width: "100%",
                 height: "100%",
-                overflow: "hidden"
+                overflow: "hidden",
+                "border-radius": "10px",
+                background: "var(--code-bg)"
             }
         }, [])
         /* The app's ResizeObserver and Dialog.notifyContentResized() look for
@@ -756,6 +758,12 @@ export class SankeyNode extends NodeWithRightAccordionGraph {
         const content = this.accordion?.DOMelt?.content
         if (!content) return
         content.replaceChildren()
+        stylize(content,{
+            padding:"3px",
+            gap:"3px",
+            display:"flex",
+            flexDirection:"column"
+        })
 
         content.append(CE("div", { style: { fontWeight: "bold", marginTop: "8px" } }, ["Target sort (level 1)"]))
 

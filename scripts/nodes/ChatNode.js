@@ -469,8 +469,15 @@ export class ChatNode extends Node{
             return
         }
         try{
-            const skeleton=exportSkeleton(app)
-            this.transmit({type:"share_flow",skeleton:JSON.parse(skeleton),from:this.parameters.nick})
+            const skeleton=JSON.parse(exportSkeleton(app))
+            /* Exclure les nodes "tools" (Chat, Mass Calculator) du flow
+               partagé: les restaurer sur une autre session corrompt
+               l'affichage (dialogs, WebSocket, tableaux d'isotopes...). */
+            const TOOL_TYPES=["ChatNode","MassCalculatorNode"]
+            for(const flow of skeleton.flows??[]){
+                flow.nodes=flow.nodes?.filter(n=>!TOOL_TYPES.includes(n.type))
+            }
+            this.transmit({type:"share_flow",skeleton,from:this.parameters.nick})
             this.append("Flow shared with the room.","system")
         }catch(error){
             this.append(`Failed to share flow: ${error.message}`,"system")
