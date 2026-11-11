@@ -179,13 +179,19 @@ export class AttributionNode extends NodeWithAccordion{
         this.forests=[]
         this.forestComponents=[]
         this.forestErrors=[]
-        /* SELECTION ET FILTRE DU RÉSEAU.
+        /* SELECTION DU RÉSEAU.
         
-           forestSelected: Set de rangs (component.rank) des arbres sélectionnés.
-           forestMinSize: taille minimale pour afficher un arbre dans la liste.
-           Les deux sont persistés dans serializeState/restoreState. */
+           forestSelected: Set de rangs des arbres sélectionnés (cases à cocher).
+           forestActiveRank: arbre dont la racine est sondée / la formule éditée.
+           forestTreeState: racine et formule imposée par arbre (par rang), pour
+           qu'elles survivent aux reconstructions de `buildForestGraphs`.
+           forestDuplicates: copies bleues, rangs négatifs, source et couleur.
+           La sélection est persistée dans serializeState/restoreState. */
         this.forestSelected=new Set()
-        this.forestMinSize=1
+        this.forestActiveRank=null
+        this.forestTreeState=new Map()
+        this.forestDuplicates=[]
+        this.forestDuplicateSerial=-1
         /* COLORCODE DES SEGMENTS DU RÉSEAU: "nature" (la brique) ou "error"
            (l'écart de masse du lien, en ppm). Volontairement hors des
            paramètres — c'est une question de lecture, pas de calcul: le
@@ -226,7 +232,14 @@ export class AttributionNode extends NodeWithAccordion{
         this.run=0
         this.events.broadcast.pinSync=this.createPinSyncEvent.bind(this)
         this.events.listen.pinSync=this.handlePinSync.bind(this)
+        this.events.broadcast.pointSelectedSync=this.createPointSelectedSyncEvent.bind(this)
         this.events.listen.POINT_SELECTED=this.handlePointSelected.bind(this)
+        /* LE MÊME GESTE ARRIVE AUSSI PAR `pointSelectedSync`. Certains nœuds
+           (MassCalculator) ne publient que celui-là; s'abonner aux deux rend
+           la Probe d'un nœud d'attribution sensible au clic, quel que soit le
+           canal qui l'a porté. `handlePointSelected` déduplique les deux
+           livraisons d'un même clic. */
+        this.events.listen.pointSelectedSync=this.handlePointSelected.bind(this)
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]){
             inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity). Each is attributed separately.</title>'
@@ -245,23 +258,44 @@ export class AttributionNode extends NodeWithAccordion{
     createPinSyncEvent(info){
         return new CustomEvent("pinSync",{detail:{msg:info,emitter:this}})
     }
+    createPointSelectedSyncEvent(info){
+        return new CustomEvent("pointSelectedSync",{detail:{msg:info,emitter:this}})
+    }
     handlePinSync(e){
         if(e.detail.emitter===this) return
         this.applyPinSync(e.detail.msg)
     }
     applyPinSync(info){
         if(info.pointSelected) return
-        //update Probe field with the clicked mass (x value)
+        /*update Probe field with the clicked mass (x value)*/
         if(this.massInput && Number.isFinite(info.x)){
             this.massInput.value=info.x.toFixed(5)
             this.parameters.probeMass=info.x
             this.probeMass(info.x)
         }
     }
+    /* LE SEUL PASSAGE VERS LA PROBE, et il met AUSSI le champ à jour.
+       `probeMass` calcule les lectures mais ne touche pas au champ: l'appeler
+       seul laissait le « Probe » afficher l'ancienne masse alors que la liste
+       avait changé. Les routines du réseau passent donc par ici. */
+    applyProbeMass(raw){
+        const mass=Number(raw)
+        if(!Number.isFinite(mass)||mass<=0) return
+        this.parameters.probeMass=mass
+        if(this.massInput) this.massInput.value=mass.toFixed(5)
+        this.probeMass(mass)
+    }
     handlePointSelected(e){
         if(e.detail.emitter===this) return
         const {mass,isMass}=e.detail.msg??{}
         if(isMass!==true||!Number.isFinite(mass)||mass<=0) return
+        /* UN CLIC PEUT ARRIVER PAR DEUX CANAUX (`POINT_SELECTED` ET
+           `pointSelectedSync`). On ne sonde qu'une fois: la même masse dans
+           la même fenêtre de temps est la même livraison. */
+        const now=Date.now()
+        const last=this.lastPointSelected
+        if(last&&last.mass===mass&&now-last.at<50) return
+        this.lastPointSelected={mass,at:now}
         this.parameters.probeMass=mass
         if(this.massInput) this.massInput.value=mass.toFixed(5)
         this.probeMass(mass)
@@ -1694,10 +1728,30 @@ export class AttributionNode extends NodeWithAccordion{
                 `${this.parameters.ppm} ppm. Loosen the isotope windows, or the counts.`
             return
         }
-        const lines=centre.map(entry=>
-            `${prettyNotation(entry.notation)}  ${entry.mz.toFixed(5)}  `+
-            `${entry.errorPpm>=0?"+":""}${entry.errorPpm.toFixed(2)} ppm`)
-        output.textContent=`${mass} — ${centre.length} reading(s):\n${lines.join("\n")}`
+        /* LES LECTURES SONT CLIQUABLES QUAND UN ARBRE EST ACTIF.
+           C'est le pont demandé entre le Probe et le réseau: cliquer une
+           lecture impose cette formule à la racine de l'arbre actif, sans
+           retaper quoi que ce soit. Sans arbre actif, la liste reste une
+           simple lecture. */
+        output.textContent=""
+        const heading=CE("div",{},[])
+        heading.textContent=`${mass} — ${centre.length} reading(s):`
+        output.appendChild(heading)
+        const active=Number.isInteger(this.forestActiveRank)
+        for(const entry of centre){
+            const line=CE("div",{},[])
+            line.textContent=`${prettyNotation(entry.notation)}  ${entry.mz.toFixed(5)}  `+
+                `${entry.errorPpm>=0?"+":""}${entry.errorPpm.toFixed(2)} ppm`
+            if(active){
+                line.style.cursor="pointer"
+                line.title=`Use this formula as the root formula of tree #${this.forestActiveRank}`
+                line.addEventListener("click",()=>{
+                    this.setForestRootFormulaByRank?.(
+                        this.forestActiveRank,entry.formula,entry.notation)
+                })
+            }
+            output.appendChild(line)
+        }
     }
 
     /* LE TABLEAU, encore. Il est redessiné après chaque resolve parce que le plan
@@ -2232,9 +2286,8 @@ export class AttributionNode extends NodeWithAccordion{
                rechargée sans elle perdrait les groupes qu'on avait choisis de
                lier, et le réseau retomberait sur CH2 seul sans rien le dire. */
             forestGroups:this.forestGroupList(),
-            /* SÉLECTION ET FILTRE DU RÉSEAU (persistés pour la session). */
-            forestSelected:Array.from(this.forestSelected),
-            forestMinSize:this.forestMinSize
+            /* SÉLECTION DU RÉSEAU (persistée pour la session). */
+            forestSelected:Array.from(this.forestSelected)
         }
     }
 
@@ -2242,7 +2295,7 @@ export class AttributionNode extends NodeWithAccordion{
         if(!state) return
         for(const name of ["combining","ionising","ratio","chargeMin","chargeMax","bestMatches","ppm","probeMass",
             "forestTolerance","forestDegreeMax","forestCharge","forestGroups",
-            "forestSelected","forestMinSize"]){
+            "forestSelected"]){
             if(state[name]!==undefined&&state[name]!==null){
                 this.parameters[name]=state[name]
             }
@@ -2272,9 +2325,6 @@ export class AttributionNode extends NodeWithAccordion{
            setting that behaves the way its name says. Nothing is guessed. */
         if(Array.isArray(state.forestSelected)){
             this.forestSelected=new Set(state.forestSelected)
-        }
-        if(Number.isFinite(state.forestMinSize)){
-            this.forestMinSize=state.forestMinSize
         }
         if(state.forestLayoutMode){
             this.forestLayoutMode=state.forestLayoutMode
@@ -2326,8 +2376,6 @@ export class AttributionNode extends NodeWithAccordion{
             const input=this[field]
             if(input) input.value=this.parameters[key]
         }
-        /* CHAMPS DU PANNEAU RÉSEAU (sélection/filtre). */
-        if(this.forestMinSizeInput) this.forestMinSizeInput.value=String(this.forestMinSize)
     }
 
     registered(e){

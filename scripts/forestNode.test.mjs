@@ -635,7 +635,13 @@ test("the readout has ONE writer, and the plan has ONE reader",()=>{
 })
 
 test("the module is served: an import nothing serves is a 404 at the click",()=>{
-    assert.match(SERVER,/"\/scripts\/forest\.js":"scripts\/forest\.js"/)
+    /* LE SERVEUR NE TIENT PLUS UNE TABLE FICHIER PAR FICHIER: il sert des
+       RACINES publiques, justement pour qu'un module ajouté par un refactor ne
+       devienne pas un 404 silencieux. Ce qu'il faut donc vérifier n'est plus la
+       ligne nominative de `forest.js`, mais que sa racine est servie ET que le
+       test d'appartenance est bien un `startsWith` sur ces racines. */
+    assert.match(SERVER,/const publicRoots\s*=\s*\[[^\]]*'\/scripts\/'/)
+    assert.match(SERVER,/publicRoots\.some\(root\s*=>\s*urlPath\.startsWith\(root\)\)/)
     /* Et il est importé par les TROIS consommateurs, dont le worker — c'est le
        seul moyen que le repli y soit disponible sans chimie. */
     /* LE CHEMIN A CHANGÉ AVEC LE REFACTOR: `AttributionNode` et
