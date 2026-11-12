@@ -1206,6 +1206,7 @@ export class TrimmerNode extends NodeWithAccordion{
             kept:result.keptCount,
             total:result.totalCount,
             sourceWaveId:inputWave.metadata?.sourceWaveId,
+            sourceWave:inputWave.metadata?.sourceWave??inputWave.metadata?.title,
             sourcePointIndices,
             ...extra
         },["x","y"])

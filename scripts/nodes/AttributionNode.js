@@ -240,6 +240,8 @@ export class AttributionNode extends NodeWithAccordion{
            canal qui l'a porté. `handlePointSelected` déduplique les deux
            livraisons d'un même clic. */
         this.events.listen.pointSelectedSync=this.handlePointSelected.bind(this)
+        this.events.broadcast.hoverSync=this.createHoverSyncEvent.bind(this)
+        this.events.listen.hoverSync=this.handleHoverSync.bind(this)
         const inputAnchors=this.DOMelt.querySelectorAll('.input.anchor')
         if(inputAnchors[0]){
             inputAnchors[0].innerHTML='<title>Input: one or more XY waves (X=mass, Y=intensity). Each is attributed separately.</title>'
@@ -260,6 +262,78 @@ export class AttributionNode extends NodeWithAccordion{
     }
     createPointSelectedSyncEvent(info){
         return new CustomEvent("pointSelectedSync",{detail:{msg:info,emitter:this}})
+    }
+    createHoverSyncEvent(info){
+        return new CustomEvent("hoverSync",{detail:{msg:info,emitter:this}})
+    }
+    handleHoverSync(e){
+        if(e.detail.emitter===this) return
+        this.applyHoverSync(e.detail.msg)
+    }
+    applyHoverSync(info){
+        /* Réception d'un hover depuis un autre nœud (plot, calibration, etc.).
+           Sur le panneau forêt, on met en surbrillance le sommet correspondant
+           s'il est identifiable par source + indice. */
+        if(!this.forestPlot) return
+        if(info===null){
+            if(this.forestVertexInfoHost) this.forestVertexInfoHost.style.display="none"
+            if(this.forestSegmentInfoHost) this.forestSegmentInfoHost.style.display="none"
+            return
+        }
+        this.highlightForestVertex(info)
+    }
+    onGraphHoverChange(info){
+        /* Le graphe de forêt détecte un survol de sommet: publier un hoverSync
+           avec l'identité de la source pour que les autres nœuds (plot,
+           calibration, etc.) puissent synchroniser leur curseur. */
+        if(!info){
+            dispatchEvent(this.events.broadcast.hoverSync(null))
+            return
+        }
+        const {traceId,tracePoint,x,y,px,py}=info
+        const syncInfo={traceId,tracePoint,traceTitle:info.traceTitle,x,y,px,py}
+        if(typeof info.sourceWaveId==="string") syncInfo.sourceWaveId=info.sourceWaveId
+        if(typeof info.sourceWaveTitle==="string") syncInfo.sourceWaveTitle=info.sourceWaveTitle
+        /* sourcePointIndex est déduit par le récepteur via
+           metadata.sourcePointIndices[tracePoint]; on publie tracePoint tel quel. */
+        if(Number.isInteger(tracePoint)) syncInfo.sourcePointIndex=tracePoint
+        dispatchEvent(this.events.broadcast.hoverSync(syncInfo))
+    }
+    /* Mettre en surbrillance un sommet de la forêt à partir d'un hover reçu.
+       L'identité portée par le hover (source + indice) suffit: on retrouve le
+       point dans le layout et son intensité dans le graphe, sans géométrie. */
+    highlightForestVertex(info){
+        if(!info) return
+        if(!this.forestLayout||!this.forestGraphs?.[0]) return
+        const batch=this.forestGraphs[0]
+        if(!batch) return
+        const graph=(typeof info.sourceWaveId==="string"
+            ?batch.graphs.find(g=>g.sourceWaveId===info.sourceWaveId)
+            :null)??batch.graphs[0]
+        if(!graph) return
+        const pointIndex=Number.isInteger(info.sourcePointIndex)?info.sourcePointIndex:info.tracePoint
+        if(!Number.isInteger(pointIndex)) return
+        let point=null
+        for(const group of this.forestLayout.groups??[]){
+            point=group.points?.find(p=>p.index===pointIndex)??point
+        }
+        const vertex=graph.vertices?.find(v=>v.index===pointIndex)
+        if(!point&&!vertex) return
+        const mass=point?.mass??vertex?.mass
+        const lines=[
+            `Vertex ${pointIndex}`,
+            ...(Number.isFinite(mass)?[`Mass: ${mass.toFixed(4)} Da`]:[]),
+            `Source: ${info.sourceWaveTitle??batch.title??'attribution'}`,
+            ...(Number.isFinite(vertex?.intensity)?[`Intensity: ${vertex.intensity}`]:[]),
+        ]
+        if(!this.forestVertexInfoHost) return
+        this.forestVertexInfoHost.style.display="flex"
+        this.forestVertexInfoHost.replaceChildren()
+        for(const line of lines){
+            const div=CE("div",{},[line])
+            stylize(div,{lineHeight:"1.3"})
+            this.forestVertexInfoHost.appendChild(div)
+        }
     }
     handlePinSync(e){
         if(e.detail.emitter===this) return

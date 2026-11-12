@@ -1553,6 +1553,40 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const svgNode=svg.node()
         if(!svgNode) return
 
+        /* HALO DE SURVOL: un anneau blanc posé par-dessus le sommet le plus
+           proche, dans un calque SVG au-dessus du WebGL. Il ne capte pas la
+           souris (`pointer-events:none`) et reste dans le clip de la graphzone
+           pour ne pas déborder quand on zoome. */
+        const anchor=svg.select(".anchor")
+        let haloLayer=anchor.select(".forest-hover-halo")
+        if(haloLayer.empty()) haloLayer=anchor.append("g")
+            .attr("class","forest-hover-halo")
+            .attr("clip-path","url(#forest-graphzone-clip)")
+        let hoverHalo=haloLayer.select("circle")
+        if(hoverHalo.empty()) hoverHalo=haloLayer.append("circle")
+        hoverHalo
+            .attr("r",6)
+            .attr("fill","none")
+            .attr("stroke","#ffffff")
+            .attr("stroke-width",1.5)
+            .style("pointer-events","none")
+            .style("display","none")
+        const setHalo=(point)=>{
+            if(!point){
+                hoverHalo.style("display","none")
+                return
+            }
+            try{
+                const {xScale,yScale}=plot.plotScales()
+                hoverHalo
+                    .attr("cx",xScale(point.x))
+                    .attr("cy",yScale(point.y))
+                    .style("display",null)
+            }catch{
+                hoverHalo.style("display","none")
+            }
+        }
+
         /* Conversion écran → données (data coordinates) via les échelles du plot.
 
            `ux`/`uy` sont les VALEURS DE DONNÉE PAR PIXEL, mesurées sur place: une
@@ -1655,6 +1689,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             if(!data){
                 this.forestVertexInfoHost.style.display="none"
                 this.forestSegmentInfoHost.style.display="none"
+                setHalo(null)
+                this.onGraphHoverChange?.(null)
                 return
             }
 
@@ -1676,8 +1712,17 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             const vertexHit=findNearestVertex(data.x,data.y,data.ux,data.uy,this.forestLayout)
             if(vertexHit){
                 const {point,group}=vertexHit
+                setHalo(point)
                 const graph=batch.graphs.find(g=>g.rank===group.rank)
                 if(graph){
+                    this.onGraphHoverChange?.({
+                        traceId:`forest:${graph.rank}`,
+                        tracePoint:point.index,
+                        x:data.x,
+                        y:data.y,
+                        sourceWaveId:batch.sourceWaveId,
+                        sourceWaveTitle:batch.title??'attribution',
+                    })
                     const vertex=graph.vertices.find(v=>v.index===point.index)
                     const rows=this.forestAttributions?.byGraph?.get(graph)?.rows??null
                     const row=rows?rows.find(r=>r.index===point.index):null
@@ -1702,6 +1747,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 }
             }else{
                 this.forestVertexInfoHost.style.display="none"
+                setHalo(null)
             }
 
             /* Segment le plus proche. */
@@ -1754,6 +1800,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         svgNode.addEventListener("mouseleave",()=>{
             this.forestVertexInfoHost.style.display="none"
             this.forestSegmentInfoHost.style.display="none"
+            setHalo(null)
+            this.onGraphHoverChange?.(null)
         })
 
         /* LE CLIC: UN SOMMET, SINON UN SEGMENT.

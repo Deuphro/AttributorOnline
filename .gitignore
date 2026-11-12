@@ -1,3 +1,7 @@
+# the Certbot keys and certificates: privkey.pem and friends are secrets that
+# must never enter the repository. They live on the server, not in git.
+Admin/certificates/
+
 # the cached NIST pages: a rebuild never re-downloads, and the parse can be
 # checked offline. Regenerate with: powershell -File TOOLS/fetch-nist.ps1
 .cache/

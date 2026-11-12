@@ -1090,7 +1090,7 @@ if(!this.graph) return
             kept,
             total:this.persistenceKeptCount??kept,
             source,
-            sourceWave:source??ref?.metadata?.title??"unknown",
+            sourceWave:ref?.metadata?.sourceWave??ref?.metadata?.title??"unknown",
             sourceWaveId:ref?.metadata?.sourceWaveId,
             ...(sourcePointIndices?{sourcePointIndices}:{}),
             traceMode:"sticks-to-zero"

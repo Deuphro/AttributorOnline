@@ -214,7 +214,7 @@ export class FKMDNode extends NodeWithAccordion{
                     "f-kmd":true,
                     key:this.parameters.notation,
                     mz,
-                    sourceWave:inputTitle,
+                    sourceWave:wave.metadata?.sourceWave??wave.metadata?.title,
                     sourceWaveId:wave.metadata?.sourceWaveId,
                     ...(Array.isArray(wave.metadata?.sourcePointIndices)
                         ?{sourcePointIndices:wave.metadata.sourcePointIndices.slice(0,pointCount)}:{}),

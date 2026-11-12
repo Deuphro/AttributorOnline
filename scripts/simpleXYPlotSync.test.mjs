@@ -69,7 +69,7 @@ function relay(source, receiver, pointIndex, x=0, y=0){
 test("a direct trace selection matches the FKMD output by source metadata",()=>{
     assert.match(plotSource,/this\.events\.listen\.POINT_SELECTED=this\.handlePointSelected\.bind\(this\)/)
     assert.match(fkmdSource,/title:`\$\{inputTitle\}.*F-KMD\)`/)
-    assert.match(fkmdSource,/sourceWave:inputTitle/)
+    assert.match(fkmdSource,/sourceWave:wave\.metadata\?\.sourceWave\?\?wave\.metadata\?\.title/)
     const source=makePlot("source plot",makeTrace("channel-1:0","Sample"))
     const receiver=makePlot("FKMD plot",makeTrace("channel-2:0","Sample -> FKMD (F-KMD)",{sourceWave:"Sample"}),{
         title:"Sample",
