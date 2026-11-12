@@ -168,6 +168,7 @@ this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollecti
         dropzone.addEventListener("click",()=>loader.click())
         content.appendChild(dropzone)
         if(this.parameters.dataItems.length){
+            content.appendChild(this.buildDataToolbar())
             content.appendChild(this.buildDataList())
         }
         this.accordion.DOMelt.content.appendChild(content)
@@ -221,6 +222,34 @@ this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollecti
             }
         }
         return pairs
+    }
+    buildDataToolbar(){
+        const row=CE("div",{style:{display:"flex",gap:"6px",alignItems:"center"}},[])
+        const button=(label,title,selected)=>{
+            const element=CE("button",{type:"button",title},[label])
+            stylize(element,{
+                fontSize:"0.8em",lineHeight:"1",padding:"2px 8px",cursor:"pointer",
+                color:"inherit",background:"rgba(255,255,255,0.08)",
+                border:"1px solid rgba(255,255,255,0.15)",borderRadius:"2px"
+            })
+            element.addEventListener("click",()=>this.setAllMultiplexSelected(selected))
+            return element
+        }
+        row.append(
+            button("Select all","Select every file for the multiplex output",true),
+            button("Deselect all","Clear the multiplex selection",false)
+        )
+        return row
+    }
+    /* LA SÉLECTION MULTIPLEX EST UN ENSEMBLE D'IDs: tout cocher revient à le
+       remplir de tous les items, tout décocher à le vider. On republie et on
+       redessine, sinon les cases resteraient dans leur ancien état. */
+    setAllMultiplexSelected(selected){
+        this.parameters.selectedForMultiplex=selected
+            ?this.parameters.dataItems.map(item=>item.id)
+            :[]
+        this.publishOutputs()
+        this.renderAccordion()
     }
     buildDataList(){
         const list=CE("div",{style:{display:"grid",gap:"4px",minHeight:"0",maxHeight:"400px",overflow:"auto"}},[])
@@ -280,22 +309,56 @@ this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollecti
         let scanList=null
         if(item.type==="raw"&&item.spectra){
             const enabledIdx=this.parameters.enabledScans[item.id]||{}
-            scanList=CE("div",{style:{display:"grid",gap:"3px",marginTop:"4px"}},[])
+            /* `gridColumn:"1 / -1"` EST LA CORRECTION DE MISE EN PAGE: sans lui
+               la liste des scans est le 5e enfant d'une grille à 4 colonnes et
+               tombe dans la colonne de 24 px, où « scan » et son numéro se
+               séparent sur deux lignes. */
+            scanList=CE("div",{style:{
+                display:"grid",gap:"3px",marginTop:"4px",gridColumn:"1 / -1"
+            }},[])
+            const smallButton=(label,title)=>{
+                const element=CE("button",{type:"button",title},[label])
+                stylize(element,{
+                    fontSize:"11px",lineHeight:"1",padding:"1px 6px",cursor:"pointer",
+                    color:"inherit",background:"rgba(255,255,255,0.08)",
+                    border:"1px solid rgba(255,255,255,0.15)",borderRadius:"2px"
+                })
+                return element
+            }
+            const scanToolbar=CE("div",{style:{
+                display:"flex",gap:"6px",alignItems:"center"
+            }},[])
+            const selectAllScans=smallButton("Select all","Enable every scan of this file")
+            selectAllScans.addEventListener("click",()=>this.setAllScansEnabled(item,true))
+            const deselectAllScans=smallButton("Deselect all","Disable every scan of this file")
+            deselectAllScans.addEventListener("click",()=>this.setAllScansEnabled(item,false))
+            scanToolbar.append(selectAllScans,deselectAllScans)
+            scanList.appendChild(scanToolbar)
             item.spectra.forEach((spec,idx)=>{
                 const isEnabled=enabledIdx[idx]!==false
-                const scanLabel=CE("span",{style:{fontSize:"11px",color:"#666",marginRight:"6px"}},[`scan ${idx+1}`])
+                const points=spec.mz?.length??spec.intensity?.length??0
+                const scanLabel=CE("span",{style:{fontSize:"11px",color:"#888"}},[
+                    `scan ${idx+1} · ${points} point(s)`
+                ])
                 const scanCb=CE("input",{type:"checkbox",checked:isEnabled,style:{width:"14px",height:"14px",cursor:"pointer"}},[])
                 scanCb.addEventListener("change",()=>{
                     this.parameters.enabledScans[item.id][idx]=scanCb.checked
                     this.rebuildWaves()
                     this.renderAccordion()
                 })
-                scanList.appendChild(CE("div",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"12px"}},[scanLabel,scanCb]))
+                scanList.appendChild(CE("div",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"12px",whiteSpace:"nowrap"}},[scanCb,scanLabel]))
             })
         }
         row.append(checkMultiplex,radioOutput,info,removeBtn)
         if(scanList) row.appendChild(scanList)
         return row
+    }
+    setAllScansEnabled(item,enabled){
+        const enabledIdx={}
+        item.spectra?.forEach((_,idx)=>{ enabledIdx[idx]=enabled })
+        this.parameters.enabledScans[item.id]=enabledIdx
+        this.rebuildWaves()
+        this.renderAccordion()
     }
     /* L'ÉTAT DU NŒUD, diffusé comme dans les nœuds voisins (DelimitedTextNode,
        ThermoRawNode, AttributionNode). Un changement de statut sans cet événement
