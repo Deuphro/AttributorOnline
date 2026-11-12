@@ -294,9 +294,12 @@ export class AttributionNode extends NodeWithAccordion{
         const syncInfo={traceId,tracePoint,traceTitle:info.traceTitle,x,y,px,py}
         if(typeof info.sourceWaveId==="string") syncInfo.sourceWaveId=info.sourceWaveId
         if(typeof info.sourceWaveTitle==="string") syncInfo.sourceWaveTitle=info.sourceWaveTitle
-        /* sourcePointIndex est déduit par le récepteur via
-           metadata.sourcePointIndices[tracePoint]; on publie tracePoint tel quel. */
-        if(Number.isInteger(tracePoint)) syncInfo.sourcePointIndex=tracePoint
+        /* Le sommet porte DEUX indices: `tracePoint` est son rang dans le tri du
+           réseau, `sourcePointIndex` est l'indice du pic d'origine (via
+           points.order). C'est le second que le récepteur compare à
+           metadata.sourcePointIndices, donc on le préfère quand il existe. */
+        const sourcePointIndex=Number.isInteger(info.sourcePointIndex)?info.sourcePointIndex:tracePoint
+        if(Number.isInteger(sourcePointIndex)) syncInfo.sourcePointIndex=sourcePointIndex
         dispatchEvent(this.events.broadcast.hoverSync(syncInfo))
     }
     /* Mettre en surbrillance un sommet de la forêt à partir d'un hover reçu.

@@ -899,6 +899,19 @@ export class Plot2DWebGL extends Plot2D{
             row.appendChild(CE("span",{className:"pick-val"},[value]))
             tip.appendChild(row)
         }
+        /* A trace may name the ROW it stands for — a formula in the collection
+           node, a species elsewhere. `pickDetails(pointIndex)` returns
+           [key,value] pairs, so the plot stays generic: a plain XY trace simply
+           does not define it and its card is unchanged. */
+        const extra=typeof trace.pickDetails==="function"?trace.pickDetails(hit.tracePoint):null
+        if(extra){
+            for(const [key,value] of extra){
+                const row=CE("div",{className:"pick-row"},[])
+                row.appendChild(CE("span",{className:"pick-key"},[key]))
+                row.appendChild(CE("span",{className:"pick-val"},[value]))
+                tip.appendChild(row)
+            }
+        }
         const close=CE("button",{className:"pick-close",type:"button",title:"Retirer ce point"},["×"])
         close.addEventListener("click",(event)=>{
             //the container listens for clicks too: without this, closing a

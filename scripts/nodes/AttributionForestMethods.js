@@ -1557,21 +1557,25 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            proche, dans un calque SVG au-dessus du WebGL. Il ne capte pas la
            souris (`pointer-events:none`) et reste dans le clip de la graphzone
            pour ne pas déborder quand on zoome. */
-        const anchor=svg.select(".anchor")
-        let haloLayer=anchor.select(".forest-hover-halo")
-        if(haloLayer.empty()) haloLayer=anchor.append("g")
-            .attr("class","forest-hover-halo")
-            .attr("clip-path","url(#forest-graphzone-clip)")
-        let hoverHalo=haloLayer.select("circle")
-        if(hoverHalo.empty()) hoverHalo=haloLayer.append("circle")
-        hoverHalo
-            .attr("r",6)
-            .attr("fill","none")
-            .attr("stroke","#ffffff")
-            .attr("stroke-width",1.5)
-            .style("pointer-events","none")
-            .style("display","none")
+        const anchor=typeof svg.select==="function"?svg.select(".anchor"):null
+        let hoverHalo=null
+        if(anchor){
+            let haloLayer=anchor.select(".forest-hover-halo")
+            if(haloLayer.empty()) haloLayer=anchor.append("g")
+                .attr("class","forest-hover-halo")
+                .attr("clip-path","url(#forest-graphzone-clip)")
+            hoverHalo=haloLayer.select("circle")
+            if(hoverHalo.empty()) hoverHalo=haloLayer.append("circle")
+            hoverHalo
+                .attr("r",6)
+                .attr("fill","none")
+                .attr("stroke","#ffffff")
+                .attr("stroke-width",1.5)
+                .style("pointer-events","none")
+                .style("display","none")
+        }
         const setHalo=(point)=>{
+            if(!hoverHalo) return
             if(!point){
                 hoverHalo.style("display","none")
                 return
@@ -1715,9 +1719,16 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 setHalo(point)
                 const graph=batch.graphs.find(g=>g.rank===group.rank)
                 if(graph){
+                    /* Deux indices pour un même sommet: `point.index` est son
+                       rang TRIÉ dans le réseau, mais le récepteur compare
+                       contre les indices de la vague d'origine. On convertit
+                       via `points.order` (même règle que broadcastForestPoint). */
+                    const order=batch.points?.order
+                    const original=order?order[point.index]:point.index
                     this.onGraphHoverChange?.({
                         traceId:`forest:${graph.rank}`,
                         tracePoint:point.index,
+                        sourcePointIndex:Number.isInteger(original)?original:point.index,
                         x:data.x,
                         y:data.y,
                         sourceWaveId:batch.sourceWaveId,
@@ -2794,13 +2805,22 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            div vide — et elle tombe au premier rendu du récap, donc au premier
            resolve. Le conteneur doit donc passer `[]`. */
         const host=CE("div",{},[])
-        stylize(host,{minWidth:"0",minHeight:"0"})
-        const width=Math.max(180,Math.floor(this.forestRecapHost?.clientWidth||240))
+        const bins=row.counts.length
         const HEIGHT=78
         const PAD={top:8,right:30,bottom:16,left:0}
+        /* ENVIRON DIX PIXELS PAR TRANCHE. L'histogramme n'a pas à occuper
+           toute la largeur du panneau: sa largeur suit le NOMBRE de tranches,
+           plafonnée par la place disponible. Au-delà du plafond les barres
+           rétrécissent au lieu de s'étirer, et le graphe d'arbres au-dessus
+           garde son espace. */
+        const available=Math.max(180,Math.floor(this.forestRecapHost?.clientWidth||240))
+        const width=Math.min(available,Math.max(140,PAD.left+PAD.right+Math.max(1,bins)*10))
+        stylize(host,{
+            minWidth:"0",minHeight:"0",width:`${width}px`,maxWidth:"100%",
+            justifySelf:"start"
+        })
         const innerW=Math.max(40,width-PAD.left-PAD.right)
         const innerH=HEIGHT-PAD.top-PAD.bottom
-        const bins=row.counts.length
 
         const x=d3.scaleLinear().domain([0,row.domain]).range([PAD.left,PAD.left+innerW])
         const yPeak=d3.scaleLinear().domain([0,Math.max(1,d3.max(row.counts)??1)])
@@ -2816,7 +2836,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const steps=this.forestRecapSteps(row)
 
         const svg=d3.select(host).append("svg")
-            .attr("width","100%")
+            .attr("width",width)
             .attr("height",HEIGHT)
             .attr("viewBox",`0 0 ${width} ${HEIGHT}`)
             .attr("preserveAspectRatio","none")
@@ -4302,12 +4322,15 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             stylize(root,{
                 display:"flex",
                 gap:"10px","align-items":"center",boxSizing:"border-box",
-                fontSize:"0.78em",lineHeight:"1",padding:"3px 6px",
+                fontSize:"1em",lineHeight:"1",padding:"3px 6px",
+                overflow:"hidden",
                 borderBottom:"1px solid rgba(255,255,255,0.06)"
             })
             const check=CE("input",{type:"checkbox",title:"Select this tree"},[])
+            stylize(check,{margin:"0 6px 0 0",flex:"0 0 auto",alignSelf:"center"})
             const name=CE("span",{className:"an-forest-name"},[])
             const size=CE("span",{className:"an-forest-size"},[])
+            const mass=CE("span",{className:"an-forest-mass"},[])
             const formula=CE("span",{className:"an-forest-formula"},[])
             const duplicate=CE("button",{
                 type:"button",
@@ -4317,12 +4340,13 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 type:"button",
                 title:"Delete this copy"
             },["×"])
-            for(const cell of [name,size,formula]){
+            for(const cell of [name,size,mass,formula]){
                 stylize(cell,{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"})
             }
-            stylize(name,{flex:"0 0 auto"})
-            stylize(size,{flex:"0 0 auto",opacity:"0.85"})
-            stylize(formula,{flex:"1 1 auto",minWidth:"0"})
+            stylize(name,{flex:"0 0 auto",paddingRight:"10px"})
+            stylize(size,{flex:"0 0 auto",opacity:"0.85",paddingRight:"10px"})
+            stylize(mass,{flex:"0 0 auto",opacity:"0.85",paddingRight:"10px"})
+            stylize(formula,{flex:"1 1 auto",minWidth:"0",paddingLeft:"2px"})
             const smallButton={
                 fontSize:"0.9em",padding:"0 4px",cursor:"pointer",
                 color:"inherit",background:"transparent",
@@ -4330,8 +4354,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             }
             stylize(duplicate,{...smallButton,marginLeft:"auto"})
             stylize(remove,smallButton)
-            root.append(check,name,size,formula,duplicate,remove)
-            root.cells={check,name,size,formula,duplicate,remove}
+            root.append(check,name,size,mass,formula,duplicate,remove)
+            root.cells={check,name,size,mass,formula,duplicate,remove}
             check.addEventListener("click",event=>event.stopPropagation())
             check.addEventListener("change",()=>{
                 if(root.view) this.toggleForestSelection(root.view.graph.rank,check.checked)
@@ -4350,12 +4374,19 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             return root
         }
         element.view=row
+        /* VirtualRowList remet `display` à sa valeur CSS avant chaque
+           remplissage (une ligne invisible devient `none`, une visible "") :
+           le flex posé à la construction serait donc perdu, et la ligne
+           retomberait en flux inline où elle déborde sur les voisines. On le
+           réaffirme ici, sur les seules lignes effectivement peintes. */
+        element.style.display="flex"
         const cells=element.cells
         const empty=row?.kind==="empty"
         cells.check.style.display=empty?"none":""
         cells.duplicate.style.display=empty?"none":""
         cells.remove.style.display=empty?"none":""
         cells.size.style.display=empty?"none":""
+        cells.mass.style.display=empty?"none":""
         cells.formula.style.display=empty?"none":""
         if(empty){
             cells.check.checked=false
@@ -4382,7 +4413,9 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         cells.name.title=duplicate
             ?`copy of #${graph.duplicateOf}`
             :`tree #${graph.rank}`
-        cells.size.textContent=`= ${graph.size}`
+        cells.size.textContent=`${graph.size}`
+        const rootMass=this.forestRootVertex(graph)?.mass
+        cells.mass.textContent=Number.isFinite(rootMass)?rootMass.toFixed(5):"—"
         const notation=reading?.formula?prettyNotation(reading.formula):null
         cells.formula.textContent=notation??"…"
         cells.formula.title=reading

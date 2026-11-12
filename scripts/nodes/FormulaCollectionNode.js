@@ -1273,6 +1273,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
         this.events.broadcast.formulaSelectSync=this.createFormulaSelectSyncEvent.bind(this)
         this.events.listen.formulaSelectSync=this.handleFormulaSelectSync.bind(this)
         this.events.broadcast.pointSelectedSync=this.createPointSelectedSyncEvent.bind(this)
+        this.events.listen.pointSelectedSync=this.handlePointSelectedSync.bind(this)
         this.events.listen.massCalcTraceSync=this.handleMassCalcTraceSync.bind(this)
         /* THE TABLE IS ASKED FOR HERE, AT CONSTRUCTION, and not on first use.
 
@@ -1337,6 +1338,18 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
     handleHoverSync(e){
         if(e.detail.emitter===this) return
         this.applyHoverSync(e.detail.msg)
+    }
+    /* Une sélection venue d'un autre nœud (ex. un sommet cliqué dans le réseau
+       d'Attribution). Le message porte `sourceWaveId` + `sourcePointIndex`, la
+       même identité que `pinSync`; on le traite comme une épingle AJOUTÉE pour
+       que `syncGraphPin` retrouve la bonne trace et pose le pin. */
+    handlePointSelectedSync(e){
+        if(e.detail.emitter===this) return
+        this.applyPointSelectionSync(e.detail.msg)
+    }
+    applyPointSelectionSync(info){
+        if(!info) return
+        syncGraphPin(this.graph,{...info,added:true})
     }
     onGraphPinChange(info){
         const trace=this.graph?.traces.find(candidate=>candidate.id===info.traceId)
@@ -2526,6 +2539,25 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                     }))
                     drawn+=points.length
                 }
+            }
+        }
+        /* Chaque point d'une trace vient d'une formule: on donne à la carte
+           épinglée de quoi la NOMMER, en notation lisible (indices/exposants
+           Unicode). La clé de la vague est canonique; `notation` est la même
+           formule telle qu'elle s'affiche déjà dans la liste. */
+        const notationByKey=new Map()
+        for(const collection of this.collections){
+            for(const entry of collection.entries??[]){
+                if(entry?.key) notationByKey.set(entry.key,entry.notation??entry.key)
+            }
+        }
+        for(const trace of traces){
+            const keys=trace.wave?.metadata?.formulaKeys
+            if(!Array.isArray(keys)) continue
+            trace.pickDetails=(pointIndex)=>{
+                const key=keys[pointIndex]
+                if(!key) return null
+                return [["formula",prettyNotation(notationByKey.get(key)??key)]]
             }
         }
         this.graph.setTraces(traces)
