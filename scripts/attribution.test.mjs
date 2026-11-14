@@ -26,6 +26,7 @@ import {
     cribleHeap,
     cribleMixedRadix,
     attributeSpectrum,
+    proposalsByPoint,
     lastNonZero,
     saneBound,
     saneRatio,
@@ -275,6 +276,27 @@ await test("un spectre vide ou sans masse ne donne aucun point",()=>{
     ok(new SortedPoints([],[]).nearest(100)===null,"an empty spectrum has no nearest")
     ok(new SortedPoints([0,0],[1,2]).nearest(100)===null,
         "a zero mass has no ppm, so it cannot be a target")
+})
+
+await test("les propositions d'un pic sont distinctes, classées et numérotées",()=>{
+    /* Un pic, trois lectures — et deux d'entre elles de la MÊME formule: le
+       chemin kernel peut produire ce doublon quand des compositions dépendantes
+       se ressemblent. Une proposition est une FORMULE, donc le doublon ne compte
+       pas deux fois, et l'ordre est celui du crible. */
+    const entries=[
+        {key:"b",errorPpm:2.0,logProbability:-9,target:{index:4}},
+        {key:"a",errorPpm:-1.0,logProbability:-7,target:{index:4}},
+        {key:"a",errorPpm:-1.0,logProbability:-7,target:{index:4}},
+        {key:"c",errorPpm:1.5,logProbability:-8,target:{index:4}},
+        {key:"z",errorPpm:0.1,logProbability:-1,target:{index:9}}
+    ]
+    const byPoint=proposalsByPoint(entries)
+    const four=byPoint.get(4)
+    eq(four.map(p=>p.key).join("|"),"a|c|b","|ppm| first, then probability")
+    eq(four.map(p=>p.rank).join("|"),"0|1|2","rank is explicit, not an accident of order")
+    eq(four.length,3,"a repeated formula is ONE proposal")
+    eq(byPoint.get(9).length,1,"each peak has its own bucket")
+    eq(byPoint.get(9)[0].rank,0,"the only proposal of a peak is rank 0")
 })
 
 await test("le tri des points est payé une fois, pas par candidat",()=>{
@@ -1133,6 +1155,43 @@ await test("une re-resolve après changement amont termine resolved et efface le
     ok(node.parameters.combining[0].group==="C2H4","the upstream pattern must be installed")
 })
 
+/* LA COQUILLE DE RÉINSPECTION: deux méthodes pures de la classe, sorties comme
+   TEXTE pour éprouver la règle livrée. Le choix effectif est ce qui part dans
+   `publishable` ET ce que le panneau affiche; les deux doivent lire la même
+   réponse, sinon l'écran montrerait un mariage que la collection n'a pas. */
+const inspectStart=NAME.indexOf("    inspectionWaveKey(wave,index){")
+const inspectEnd=NAME.indexOf("    /* LE SCORE D'UN POINT",inspectStart)
+if(inspectStart<0||inspectEnd<inspectStart){
+    console.error("the re-inspection methods could not be located in AttributionNode")
+    process.exit(1)
+}
+const InspectShell=new Function(`return class {
+    ${NAME.slice(inspectStart,inspectEnd)}
+}`)()
+const inspectMarriage=(choices,waveKey,pointIndex,proposals)=>
+    InspectShell.prototype.inspectionMarriage.call(
+        {inspectionChoices:new Map(choices)},waveKey,pointIndex,proposals)
+
+await test("le mariage de réinspection: défaut, choix, refus, clé périmée",()=>{
+    const proposals=[{key:"A"},{key:"B"},{key:"C"}]
+    const fallback=inspectMarriage([],"wave",7,proposals)
+    ok(fallback.marriage==="A","without a choice the best proposal marries")
+    const chosen=inspectMarriage([["wave#7","C"]],"wave",7,proposals)
+    ok(chosen.marriage==="C","a stored choice overrides the default")
+    const engaged=inspectMarriage([["wave#7",null]],"wave",7,proposals)
+    ok(engaged.marriage===null,"an explicit null means engaged, not married")
+    ok(engaged.hasChoice,"and it is a CHOICE, not the absence of one")
+    const stale=inspectMarriage([["wave#7","Z"]],"wave",7,proposals)
+    ok(stale.marriage==="A","a key no longer proposed falls back to the default")
+})
+
+await test("la clé de vague préfère l'id, puis le titre, puis l'indice",()=>{
+    const key=(wave,index)=>InspectShell.prototype.inspectionWaveKey(wave,index)
+    ok(key({metadata:{sourceWaveId:"run-3",title:"x"}},0)==="id:run-3","id wins")
+    ok(key({metadata:{title:"spectrum A"}},1)==="title:spectrum A","title is the fallback")
+    ok(key({},4)==="index:4","index is the last resort")
+})
+
 await test("une session à l'ancienne écriture se relit, et prend les défauts par liste",()=>{
     /* LA MIGRATION, et c'est elle qui évite de perdre les sessions.
 
@@ -1247,6 +1306,28 @@ await test("le nœud ne passe que des options que le moteur connaît",()=>{
         ok(passed.includes(key),
             `the interface exposes "${key}" but the node never passes it — the setting would do nothing`)
     }
+})
+
+await test("le nœud publie les propositions ET le mariage sur chaque pic",()=>{
+    /* Le contrat de la publication, vérifié sur le TEXTE du nœud: c'est le
+       seul endroit où les deux structures se rejoignent, et une régression y
+       serait invisible — la liste s'afficherait, avec seulement le mariage, et
+       les propositions disparaîtraient sans un mot. Ce qui est vérifié est
+       exactement le geste, pas le résultat: le résultat est testé sur la classe
+       (collectionReader.test.mjs). */
+    const node=blocks.get("AttributionNode")??""
+    ok(/const\s+proposals\s*=\s*proposalsByPoint\(result\.entries\)/.test(node),
+        "the node must build the proposals from the sieve's entries")
+    ok(/proposals\s*:\s*pointProposals/.test(node),
+        "the point must CARRY its proposals, not only reference them")
+    ok(/let\s+marriage=proposals\.length\?proposals\[0\]\.key:null/.test(node),
+        "the default marriage is the best proposal")
+    ok(/inspectionMarriage\(waveKey,i,pointProposals\)/.test(node),
+        "publication must apply the effective re-inspection marriage")
+    ok(/inspectionChoices\?\.has\(key\)/.test(node),
+        "a re-inspection choice must be able to override the default")
+    ok(/marriage,index:i/.test(node),
+        "the marriage must be written explicitly, so it can later be refused")
 })
 
 await test("le nom du réglage est le même des deux côtés",()=>{

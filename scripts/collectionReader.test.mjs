@@ -1062,6 +1062,97 @@ test("a family of 2548 isotopologues pairs in one pass",()=>{
     c.setPoints(c.entries.map(e=>({mz:e.mz,intensity:1})))
     eq(c.entries.filter(e=>e.targets.length).length,2548,"every one found its point")
 })
+console.log("la collection: propositions et mariages")
+test("un point fiancé à plusieurs formules garde toutes ses propositions",()=>{
+    /* LE CŒUR DE LA STRUCTURE: un pic peut être plusieurs formules, mais il
+       n'en épouse qu'une. Les deux relations sont distinctes, et les confondre
+       ferait disparaître les propositions dès l'affichage — c'est exactement le
+       défaut qu'on répare. */
+    const c=collection()
+    const a=c.add("C6H12O6")
+    const b=c.add("C5H10O5")
+    c.setPoints([{
+        index:7,mz:a.mz,intensity:100,
+        proposals:[
+            {key:b.key,errorPpm:1.2,logProbability:-3,rank:0},
+            {key:a.key,errorPpm:2.4,logProbability:-5,rank:1}
+        ],
+        marriage:b.key
+    }])
+    eq(a.proposals.length,1,"the non-married formula still holds its proposal")
+    eq(b.proposals.length,1,"and so does the married one")
+    eq(a.proposals[0].relationship,"proposal","a proposal is not a marriage")
+    eq(b.proposals[0].relationship,"marriage","the married one is named as such")
+    eq(a.targets.length,0,"only the marriage owns the measured point")
+    eq(b.targets.length,1)
+    eq(b.targets[0].key,b.key,"the target names the formula it belongs to")
+})
+test("marriage:null laisse le point fiancé sans le marier",()=>{
+    /* `null` is EXPLICIT, and it must not fall back to the default: a refused
+       marriage that re-marries itself at the next render would make the
+       re-inspection screen impossible. */
+    const c=collection()
+    const a=c.add("C6H12O6")
+    const b=c.add("C5H10O5")
+    c.setPoints([{
+        index:3,mz:a.mz,intensity:5,marriage:null,
+        proposals:[{key:a.key,rank:0},{key:b.key,rank:1}]
+    }])
+    eq(a.targets.length,0,"nobody married the point")
+    eq(b.targets.length,0)
+    eq(a.proposals.length,1,"but both remain proposals")
+    eq(b.proposals.length,1)
+    eq(c.pointToProposals.get(3).length,2,"and the point knows both")
+})
+test("sans mariage explicite, le meilleur est marié par défaut",()=>{
+    const c=collection()
+    const a=c.add("C6H12O6")
+    const b=c.add("C5H10O5")
+    c.setPoints([{
+        index:2,mz:a.mz,intensity:5,
+        proposals:[{key:b.key,rank:0},{key:a.key,rank:1}]
+    }])
+    eq(b.targets.length,1,"the best proposal is married by default")
+    eq(a.targets.length,0,"the other one is only engaged")
+    eq(a.proposals.length,1,"and its proposal survives")
+})
+test("applyMarriages change le mariage sans perdre les propositions",()=>{
+    const c=collection()
+    const a=c.add("C6H12O6")
+    const b=c.add("C5H10O5")
+    c.setPoints([{
+        index:4,mz:a.mz,intensity:5,
+        proposals:[{key:b.key,rank:0},{key:a.key,rank:1}]
+    }])
+    eq(b.targets.length,1,"the default married b")
+    c.applyMarriages(new Map([[4,a.key]]))
+    eq(a.targets.length,1,"the chosen formula now owns the point")
+    eq(b.targets.length,0,"and the previous one does not")
+    eq(a.proposals.length,1,"the proposal itself was not deleted")
+})
+test("applyMarriages refuse une clé inconnue au lieu de démarier",()=>{
+    const c=collection()
+    const a=c.add("C6H12O6")
+    c.setPoints([{index:1,mz:a.mz,intensity:5,marriage:a.key,proposals:[{key:a.key,rank:0}]}])
+    c.applyMarriages(new Map([[1,"not a key"]]))
+    eq(a.targets.length,1,"a typo must not silently unmarry the point")
+})
+test("adopter conserve les propositions, pas seulement les mariages",()=>{
+    const producer=new FormulaCollection({name:"src",table:TABLE,ppm:10})
+    const a=producer.add("C6H12O6")
+    const b=producer.add("C5H10O5")
+    producer.setPoints([{
+        index:0,mz:a.mz,intensity:10,marriage:a.key,
+        proposals:[{key:a.key,rank:0},{key:b.key,rank:1}]
+    }])
+    const reader=new FormulaCollection({name:"r",table:TABLE,ppm:10})
+    reader.adoptAll(producer.entries,{points:producer.points})
+    eq(reader.entries[0].targets.length,1,"the marriage crossed over")
+    eq(reader.entries[0].proposals.length,1,"and so did the proposal")
+    eq(reader.entries[1].proposals.length,1,
+        "the engaged-but-not-married formula kept its proposal")
+    eq(reader.entries[1].targets.length,0,"without stealing the marriage")
+})
 test("the descriptor round-trips through the table",()=>{
     /* Two DIFFERENT formulas, on purpose: a 13C is a different composition,
        hence a different key, and the descriptor has to keep both apart. */

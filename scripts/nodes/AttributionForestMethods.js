@@ -6,7 +6,8 @@ import {Plot2DWebGL} from "../ui/Plot2DWebGL.js"
 import {Wave,XYTrace} from "../formats.js"
 import {Formula,FormulaCollection,positiveMassConjugate} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
-import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest} from "../attribution.js"
+import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest,proposalsByPoint} from "../attribution.js"
+import {computeFunnelMask,elementsInProposals} from "../funnelMask.js"
 import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,finalizeAnimatedLayout,applyGridLayout,createAnimatedLayoutWorker,advanceLayoutWorker,stopLayoutWorker,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
 import {windowFor} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
@@ -2602,8 +2603,9 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                pas à l'ordre des résultats, ce qui serait pire que « Entrée N ».
                Un plan vide ou une entrée cassée renvoient une liste plus courte:
                on retombe alors sur le numéro, et la ligne reste truthful. */
-            title:this.forestInputTitle(inputIndex),
-            targets,attributed,counts,domain,window,median,
+             title:this.forestInputTitle(inputIndex),
+             inputIndex,
+             targets,attributed,counts,domain,window,median,
             /* CES TROIS NOMBRES SONT CE QUI MANQUE LE PLUS. Un histogramme dit
                « les erreurs sont basses » sans dire « sur combien de pics » — et
                une attribution qui couvre trois pics sur mille n'est pas une
@@ -2630,6 +2632,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const title=this.forestInputTitles?.[index]
         return title?`${title} · input ${index+1}`:`input ${index+1}`
     }
+
 
 /* LE RÉCAPITULATIF, ET IL EST UN HISTOGRAMME PAR ENTRÉE.
 
@@ -2688,6 +2691,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         ])
         stylize(caption,{fontSize:"0.72em",opacity:"0.6",fontWeight:"bold"})
         host.appendChild(caption)
+        if(rows.length) host.appendChild(this.renderFunnelControls(rows))
         for(const row of rows){
             const line=CE("div",{className:"an-recap-line"},[])
             stylize(line,{display:"grid",gap:"2px",minHeight:"0"})
@@ -2713,7 +2717,18 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 line.appendChild(warn)
             }
 
-            line.appendChild(this.drawForestRecapChart(row))
+            const funnel=this.funnelMaskFor(row.inputIndex)
+            const charts=CE("div",{},[])
+            stylize(charts,{
+                display:"flex",gap:"8px",alignItems:"flex-start",
+                flexWrap:"wrap",minWidth:"0"
+            })
+            const histogramCap=funnel?.ratios?.length
+                ?Math.floor((this.forestRecapHost?.clientWidth||240)*0.55)
+                :null
+            charts.appendChild(this.drawForestRecapChart(row,{maxWidth:histogramCap}))
+            charts.appendChild(this.drawForestFunnelChart(funnel))
+            line.appendChild(charts)
             const parts=[`${row.readings} reading(s)`]
             if(row.keptMatches!==null) parts.push(`up to ${row.keptMatches}/peak`)
             parts.push(`median ${row.median===null
@@ -2732,6 +2747,250 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             host.appendChild(line)
         }
     }
+
+    /* =====================================================================
+       LE FUNNEL MASK — les rapports isotopiques des propositions.
+
+       Le sélecteur ne propose que les éléments qui APPARAISSENT dans les
+       propositions : un élément absent ne produira jamais de paire, et
+       l'offrir promettrait un calcul qui ne rendrait rien. Les isotopes, eux,
+       viennent de la table entière, parce que l'isotope lourd peut n'être
+       proposé nulle part — c'est justement le cas que la simulation couvre.
+
+       Le couple par défaut est `(A le plus léger, A suivant)`, c'est-à-dire
+       M et M+1 : pour le carbone, ¹²C et ¹³C. C'est la seule paire dont le
+       rapport se lit directement comme l'abondance naturelle. */
+    funnelSelection(result){
+        const elements=elementsInProposals(result?.entries)
+        if(!elements.length) return null
+        const pairable=elements.filter(record=>record.isotopes.length>=2)
+        const pool=pairable.length?pairable:elements
+        const record=pool.find(item=>item.symbol===this.funnelElement)
+            ??pool.find(item=>item.symbol==="C")
+            ??pool[0]
+        const isotopes=record.isotopes
+        const light=isotopes.find(item=>item.A===this.funnelLightA)??isotopes[0]
+        const heavy=isotopes.find(item=>
+                item.A!==light?.A&&item.A===this.funnelHeavyA)
+            ??isotopes.find(item=>item.A!==light?.A)
+            ??null
+        return {
+            elements,record,
+            lightA:light?.A??null,
+            heavyA:heavy?.A??null
+        }
+    }
+
+    /* LE MARIAGE EFFECTIF, recalculé comme à la publication : les choix de
+       réinspection comptent, sinon le surlignage désignerait un mariage que
+       l'utilisateur a déjà refusé. Absent, le défaut du crible reprend. */
+    funnelMarriageByPoint(result,inputIndex){
+        const proposals=proposalsByPoint(result?.entries)
+        if(!proposals.size) return null
+        let wave=null
+        try{ wave=this.collectInputWaves?.().waves?.[inputIndex]??null }catch{}
+        const waveKey=typeof this.inspectionWaveKey==="function"
+            ?this.inspectionWaveKey(wave,inputIndex)
+            :`index:${inputIndex}`
+        const map=new Map()
+        for(const [index,list] of proposals){
+            if(typeof this.inspectionMarriage==="function"){
+                map.set(index,this.inspectionMarriage(waveKey,index,list).marriage)
+            }else{
+                map.set(index,list.length?list[0].key:null)
+            }
+        }
+        return map
+    }
+
+    funnelMaskFor(inputIndex){
+        const result=(this.attributions??[])[inputIndex]
+        if(!result?.entries?.length) return null
+        const selection=this.funnelSelection(result)
+        if(!selection||selection.lightA===null||selection.heavyA===null) return null
+        const ppm=Number(this.parameters?.ppm)>0?Number(this.parameters.ppm):10
+        const cacheKey=`${inputIndex}|${selection.record.symbol}|${selection.lightA}|${selection.heavyA}|${ppm}`
+        const cache=this.funnelMaskCache
+        const cached=cache?.get(cacheKey)
+        if(cached&&cached.result===result) return cached.mask
+        const mask=computeFunnelMask({
+            entries:result.entries,
+            peakList:result.peakList??null,
+            element:selection.record.element??selection.record.symbol,
+            lightA:selection.lightA,
+            heavyA:selection.heavyA,
+            ppm,
+            marriageByPoint:this.funnelMarriageByPoint(result,inputIndex)
+        })
+        mask.selection=selection
+        cache?.set(cacheKey,{result,mask})
+        return mask
+    }
+
+    /* LE SÉLECTEUR, posé une fois au-dessus des lignes : il vaut pour tous les
+       spectres du lot, parce que changer d'élément par spectre créerait deux
+       funnels dont les abscisses ne se compareraient plus. */
+    renderFunnelControls(rows){
+        const host=CE("div",{className:"an-funnel-controls"},[])
+        stylize(host,{
+            display:"flex",gap:"5px",alignItems:"center",flexWrap:"wrap",
+            fontSize:"0.72em",margin:"2px 0 4px"
+        })
+        const firstIndex=rows[0]?.inputIndex??0
+        const result=(this.attributions??[])[firstIndex]
+        const selection=this.funnelSelection(result)
+        if(!selection) return host
+        const refresh=()=>{
+            this.renderForestRecap?.()
+            this.renderInspection?.()
+        }
+        const label=CE("span",{},["Funnel mask"])
+        stylize(label,{opacity:"0.7",fontWeight:"bold"})
+        const elementSelect=CE("select",{},[])
+        for(const record of selection.elements){
+            elementSelect.appendChild(CE("option",{value:record.symbol},[record.symbol]))
+        }
+        elementSelect.value=selection.record.symbol
+        elementSelect.addEventListener("change",()=>{
+            this.funnelElement=elementSelect.value
+            this.funnelLightA=null
+            this.funnelHeavyA=null
+            refresh()
+        })
+        const lightSelect=CE("select",{},[])
+        for(const isotope of selection.record.isotopes){
+            lightSelect.appendChild(CE("option",{value:String(isotope.A)},[
+                `${isotope.A}${selection.record.symbol}`
+            ]))
+        }
+        lightSelect.value=String(selection.lightA)
+        const heavySelect=CE("select",{},[])
+        for(const isotope of selection.record.isotopes){
+            if(isotope.A===selection.lightA) continue
+            heavySelect.appendChild(CE("option",{value:String(isotope.A)},[
+                `${isotope.A}${selection.record.symbol}`
+            ]))
+        }
+        if(selection.heavyA!==null) heavySelect.value=String(selection.heavyA)
+        lightSelect.addEventListener("change",()=>{
+            this.funnelLightA=Number(lightSelect.value)
+            if(this.funnelHeavyA===this.funnelLightA) this.funnelHeavyA=null
+            refresh()
+        })
+        heavySelect.addEventListener("change",()=>{
+            this.funnelHeavyA=Number(heavySelect.value)
+            refresh()
+        })
+        const arrow=CE("span",{},["→"])
+        stylize(arrow,{opacity:"0.6"})
+        const note=CE("span",{},[
+            "δ = (I(lourd)/I(base)/N) / naturel − 1 · orange = mariage ≠ meilleur δ"
+        ])
+        stylize(note,{opacity:"0.55",fontSize:"0.95em"})
+        host.append(label,elementSelect,lightSelect,arrow,heavySelect,note)
+        return host
+    }
+
+    /* LE FUNNEL, À DROITE DE L'HISTOGRAMME.
+
+       `x` est l'intensité TOTALE des deux pics qui ont produit le rapport :
+       c'est la quantité de signal qui a servi à le calcul, donc ce qui décide
+       de sa précision. `y` est `delta`, l'écart relatif au rapport naturel.
+       Un nuage qui se resserre vers la droite est un nuage sain ; un point
+       orange est un pic dont le mariage temporaire a préféré la masse à la
+       cohérence isotopique, et c'est exactement celui qu'on veut aller voir. */
+    drawForestFunnelChart(mask){
+        const host=CE("div",{},[])
+        stylize(host,{minWidth:"0",minHeight:"0"})
+        if(!mask||!(mask.ratios?.length)){
+            const note=CE("div",{},[
+                !mask?"funnel: no attribution yet"
+                    :(mask.available===false?"funnel: element absent":"funnel: no isotopic pair")
+            ])
+            stylize(note,{fontSize:"0.7em",opacity:"0.55",padding:"2px 0"})
+            host.appendChild(note)
+            return host
+        }
+        const HEIGHT=78
+        const PAD={top:8,right:8,bottom:16,left:30}
+        const available=Math.max(140,Math.floor((this.forestRecapHost?.clientWidth||240)*0.42))
+        const width=Math.min(260,available)
+        stylize(host,{
+            minWidth:"0",minHeight:"0",width:`${width}px`,maxWidth:"100%",
+            justifySelf:"start"
+        })
+        const innerW=Math.max(40,width-PAD.left-PAD.right)
+        const innerH=HEIGHT-PAD.top-PAD.bottom
+        const xMax=mask.ratios.reduce((value,ratio)=>
+            Math.max(value,ratio.totalIntensity),1)
+        const maxAbs=mask.ratios.reduce((value,ratio)=>
+            Math.max(value,Math.abs(ratio.delta)),0.05)
+        const x=d3.scaleLinear().domain([0,xMax]).range([PAD.left,PAD.left+innerW])
+        const y=d3.scaleLinear().domain([-maxAbs*1.1,maxAbs*1.1])
+            .range([PAD.top+innerH,PAD.top])
+        const svg=d3.select(host).append("svg")
+            .attr("width",width)
+            .attr("height",HEIGHT)
+            .attr("viewBox",`0 0 ${width} ${HEIGHT}`)
+            .attr("preserveAspectRatio","none")
+            .style("display","block")
+        const mismatch=new Map(mask.points.map(point=>[point.index,point.mismatch]))
+        /* LE ZÉRO EST LE RAPPORT NATUREL : tout l'intérêt est de voir qui s'en
+           écarte, et dans quel sens. */
+        svg.append("line")
+            .attr("x1",PAD.left).attr("x2",PAD.left+innerW)
+            .attr("y1",y(0)).attr("y2",y(0))
+            .attr("stroke","rgba(255,255,255,0.35)")
+            .attr("stroke-dasharray","3 2")
+        const nodes=svg.append("g").selectAll("circle").data(mask.ratios).join("circle")
+            .attr("cx",ratio=>x(ratio.totalIntensity))
+            .attr("cy",ratio=>y(ratio.delta))
+            .attr("r",ratio=>mismatch.get(ratio.lightPoint)?3.4:2.2)
+            .attr("fill",ratio=>mismatch.get(ratio.lightPoint)
+                ?"#ffb347"
+                :(ratio.simulated?"rgba(120,200,255,0.9)":"rgba(172,255,47,0.85)"))
+            .attr("stroke",ratio=>mismatch.get(ratio.lightPoint)?"#ffe0b0":"none")
+            .attr("stroke-width",1)
+        nodes.append("title").text(ratio=>{
+            const lines=[
+                `${ratio.lightKey} → ${ratio.heavyKey??"(simulated satellite)"}`,
+                `δ ${(ratio.delta*100).toFixed(1)} % · ratio ${ratio.ratio.toExponential(2)} / naturel ${ratio.theoretical.toExponential(2)}`,
+                `N(${ratio.symbol}) ${ratio.atoms} · I ${ratio.lightIntensity.toPrecision(4)} + ${ratio.heavyIntensity.toPrecision(4)}`
+            ]
+            if(mismatch.get(ratio.lightPoint))
+                lines.push("⚠ this peak's temporary marriage is not the most isotopic")
+            return lines.join("\n")
+        })
+        const compact=value=>value>=1e6?`${(value/1e6).toFixed(1)}M`
+            :value>=1e3?`${(value/1e3).toFixed(1)}k`
+            :value>=10?value.toFixed(0):value.toFixed(1)
+        svg.append("g").attr("transform",`translate(0,${PAD.top+innerH})`)
+            .call(d3.axisBottom(x)
+                .ticks(Math.max(2,Math.min(4,Math.floor(innerW/50))))
+                .tickSize(3)
+                .tickFormat(compact))
+            .call(group=>group.selectAll("text")
+                .attr("fill","rgba(255,255,255,0.6)")
+                .attr("font-size",8))
+            .call(group=>group.selectAll("line,path")
+                .attr("stroke","rgba(255,255,255,0.35)"))
+        svg.append("g").attr("transform",`translate(${PAD.left},0)`)
+            .call(d3.axisLeft(y).ticks(3).tickSize(0)
+                .tickFormat(value=>`${(value*100).toFixed(0)}%`))
+            .call(group=>group.selectAll("text")
+                .attr("fill","rgba(255,255,255,0.6)")
+                .attr("font-size",8)
+                .attr("dx",-2))
+            .call(group=>group.select(".domain").remove())
+        const flagged=mask.ratios.filter(ratio=>mismatch.get(ratio.lightPoint)).length
+        if(flagged>0){
+            const warn=CE("div",{},[`${flagged} peak(s) to re-inspect isotopically`])
+            stylize(warn,{fontSize:"0.7em",color:"#ffb347",padding:"1px 0"})
+            host.appendChild(warn)
+        }
+        return host
+    }
+
 
     /* LA COURBE CUMULÉE, CALCULÉE À PART ET SANS D3.
 
@@ -2798,7 +3057,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        constante par construction, et une oblique entre deux points dirait
        qu'il y a eu des pics entre les deux — donc afficherait une précision
        que la mesure n'a pas. */
-    drawForestRecapChart(row){
+    drawForestRecapChart(row,{maxWidth=null}={}){
         /* LE TROISIÈME ARGUMENT N'EST PAS OPTIONNEL, et il ne l'est pas par goût:
            `CE` fait `for (let elt of child)` sur un `undefined` et lève. Un
            `CE("div",{})` pour un conteneur vide est donc une exception, pas un
@@ -2814,7 +3073,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            rétrécissent au lieu de s'étirer, et le graphe d'arbres au-dessus
            garde son espace. */
         const available=Math.max(180,Math.floor(this.forestRecapHost?.clientWidth||240))
-        const width=Math.min(available,Math.max(140,PAD.left+PAD.right+Math.max(1,bins)*10))
+        const cap=Number.isFinite(maxWidth)?Math.max(140,maxWidth):available
+        const width=Math.min(cap,Math.max(140,PAD.left+PAD.right+Math.max(1,bins)*10))
         stylize(host,{
             minWidth:"0",minHeight:"0",width:`${width}px`,maxWidth:"100%",
             justifySelf:"start"

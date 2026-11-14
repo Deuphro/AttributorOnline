@@ -2463,7 +2463,18 @@ class FormulaCollection{
                fait sur lui, et non sur l'ion entier. `null` pour un adduit seul,
                qui n'a pas de core — l'appelant retombe alors sur `molecule`. */
             coreMolecule:formula.root.coreMoleculeKey,
+            /* LES DEUX RELATIONS, ET ELLES NE SONT PAS LA MÊME.
+
+               `targets` reste la relation FORTE: les points que cette formule a
+               ÉPOUSÉS. C'est ce que les vues comptent et dessinent, et le
+               mariage par défaut fait qu'elle est remplie dès la publication.
+
+               `proposals` est la relation FAIBLE: les points où cette formule
+               est seulement proposée, avec son rang. Elle survit à un mariage
+               qui choisit une autre formule, et c'est elle qu'une réinspection
+               (le vérificateur d'isotopologues) lira pour changer d'avis. */
             targets:[],
+            proposals:[],
             target:null,
             errorPpm:null,
             intensity:0
@@ -2472,25 +2483,37 @@ class FormulaCollection{
     /* Les points mesurés sur cette collection. Les remplacer/apparier à
        nouveau, parce qu'un point peut appartenir à une formule ajoutée après le
        dernier appel: refuser les nouveaux points ferait que l'ORDRE de deux
-       opérations déciderait du contenu de la collection. */
+       opérations déciderait du contenu de la collection.
+
+       LE TRI N'EST PLUS DANS LA BOUCLE. Il y était: chaque point sans clé
+       refaisait `[...this.entries].sort(...)`, donc un point coûtait un tri de
+       la collection entière — O(P·N log N) au lieu de O((P+N) log N) pour un
+       spectre de P pics sur N formules. Le tri vit maintenant dans `match()`,
+       qui est le seul endroit qui apparie, et il est payé UNE fois. */
     setPoints(points){
         this.points=(points??[]).filter(point=>point&&typeof point==="object")
-        /* point → formule indexé, pour que n'importe quel noeud puisse retrouver
-           la formule d'un pic par son index, sans re-parcourir la collection. */
-        this.pointToFormula=new Map()
-        for(let i=0;i<this.points.length;i++){
-            const p=this.points[i]
-            if(p.index!=null&&p.index>=0&&p.index<this.points.length){
-                let entry=typeof p.key==="string"?this.find(p.key):null
-                if(!entry){
-                    const sorted=[...this.entries].sort((a,b)=>a.mz-b.mz)
-                    entry=nearestByMz(sorted,Number(p.mz??p.mass),this.ppm)
-                }
-                if(entry) this.pointToFormula.set(p.index,entry)
-            }
-        }
         this.match()
         return this
+    }
+    /* UNE PROPOSITION, NORMALISÉE. Accepte la forme riche
+       `{key,errorPpm,logProbability,rank}` et la forme nue (une clé). Une
+       proposition sans clé n'existe pas: elle ne peut désigner personne. */
+    normaliseProposal(proposal,index){
+        if(typeof proposal==="string")
+            return {key:proposal,errorPpm:null,logProbability:null,rank:index}
+        if(!proposal||typeof proposal.key!=="string") return null
+        return {
+            key:proposal.key,
+            errorPpm:Number.isFinite(proposal.errorPpm)?proposal.errorPpm:null,
+            logProbability:Number.isFinite(proposal.logProbability)?proposal.logProbability:null,
+            rank:Number.isInteger(proposal.rank)?proposal.rank:index
+        }
+    }
+    /* LE MÊME MESSAGE UNE SEULE FOIS. `match()` est rappelé à chaque ajout et à
+       chaque `setPoints`; un diagnostic poussé sans contrôle se répétait autant
+       de fois que d'appels, et noyait les autres lignes. */
+    noteDiagnostic(message){
+        if(!this.diagnostics.includes(message)) this.diagnostics.push(message)
     }
     /* L'appariement, et le seul endroit où la vitesse comptait.
 
@@ -2500,44 +2523,136 @@ class FormulaCollection{
        l'index trié PAR COLLECTION, payé une fois, et la recherche
        dichotomique de nearestByMz.
 
-       Le point le plus proche l'emporte, et non le premier rencontré: sinon
-       l'attribution dépendrait de l'ordre du tableau, et la même collection
-       s'attribuerait différemment selon qui l'a construite. */
+       DEUX RELATIONS, ET ELLES SONT DÉRIVÉES ICI:
+
+         - `entry.proposals` reçoit CHAQUE formule proposée pour un point. Un
+           pic ambigu en a plusieurs, et c'est la structure que la réinspection
+           (vérificateur d'isotopologues) lira;
+         - `entry.targets` ne reçoit que le MARIAGE — un point, une explication.
+           C'est ce que les vues comptent et dessinent, donc le mariage par
+           défaut garde exactement l'affichage d'avant.
+
+       UN POINT PORTE DONC: `proposals` (0..j) et `marriage` (0..1). `marriage`
+       absent veut dire « applique le défaut » (le meilleur); `marriage: null`
+       veut dire « explicitement fiancé, pas marié ». La différence est tout
+       l'écran de réinspection: sinon un mariage refusé se remarierait tout seul
+       au rendu suivant. */
     match(){
         const sorted=[...this.entries].sort((a,b)=>a.mz-b.mz)
-        for(const entry of this.entries) entry.targets=[]
+        for(const entry of this.entries){
+            entry.targets=[]
+            entry.proposals=[]
+        }
+        this.pointToFormula=new Map()
+        this.pointToProposals=new Map()
         for(const point of this.points){
             const mz=Number(point.mz??point.mass)
-            if(!Number.isFinite(mz)) continue
+            const resolved=[]
+            if(Array.isArray(point.proposals)){
+                for(let index=0;index<point.proposals.length;index++){
+                    const spec=this.normaliseProposal(point.proposals[index],index)
+                    if(!spec) continue
+                    const entry=this.find(spec.key)
+                    if(entry) resolved.push({spec,entry})
+                }
+            }
             /* Un point qui NOMME sa formule est pris au mot: quand le
                producteur a l'affectation, la déduire par proximité serait
-               trafficoter une meilleure réponse que la sienne. */
-            let entry=typeof point.key==="string"?this.find(point.key):null
-            if(!entry) entry=nearestByMz(sorted,mz,this.ppm)
-            if(!entry){
-                this.diagnostics.push(`${this.name}: a point at ${mz.toFixed(4)} matches no formula`)
+               trafficoter une meilleure réponse que la sienne.
+
+               `marriage` explicite (même null) interdit le défaut; sans champ
+               `marriage`, on retombe sur l'ancien contrat `key`, puis sur la
+               proximité. */
+            const explicit=Object.prototype.hasOwnProperty.call(point,"marriage")
+            const declared=explicit?point.marriage:(typeof point.key==="string"?point.key:null)
+            let marriage=typeof declared==="string"?this.find(declared):null
+            const mayDefault=!explicit||declared===undefined
+            if(!marriage&&mayDefault&&resolved.length) marriage=resolved[0].entry
+            if(!marriage&&mayDefault&&Number.isFinite(mz))
+                marriage=nearestByMz(sorted,mz,this.ppm)
+            /* Le mariage est une proposition comme une autre: quand il n'était
+               pas dans la liste (point local apparié par proximité), il y entre
+               avec le rang -1, pour qu'`entry.proposals` reste complet. */
+            if(marriage&&!resolved.some(item=>item.entry===marriage)){
+                resolved.unshift({
+                    /* rang 0 quand le point n'avait AUCUNE liste: le mariage est
+                       alors la seule proposition. -1 quand une liste existait
+                       mais ne le contenait pas — il y est ajouté, pas reclassé. */
+                    spec:{
+                        key:marriage.key,
+                        errorPpm:null,
+                        logProbability:null,
+                        rank:Array.isArray(point.proposals)?-1:0
+                    },
+                    entry:marriage
+                })
+            }
+            if(!resolved.length){
+                if(Number.isFinite(mz))
+                    this.noteDiagnostic(`${this.name}: a point at ${mz.toFixed(4)} matches no formula`)
                 continue
             }
-            entry.targets.push({
-                mz,
-                intensity:Number(point.intensity??point.y),
-                cost:Number(point.cost),
-                //l'erreur se mesure sur le m/z, jamais sur une somme de masses
-                errorPpm:(mz-entry.mz)/entry.mz*1e6,
-                source:point
-            })
+            if(!Number.isFinite(mz)) continue
+            if(Number.isInteger(point.index)){
+                this.pointToProposals.set(point.index,resolved.map(item=>item.entry))
+                if(marriage) this.pointToFormula.set(point.index,marriage)
+            }
+            for(const {spec,entry} of resolved){
+                const link={
+                    mz,
+                    intensity:Number(point.intensity??point.y),
+                    cost:Number(point.cost),
+                    //l'erreur se mesure sur le m/z, jamais sur une somme de masses
+                    errorPpm:(mz-entry.mz)/entry.mz*1e6,
+                    relationship:entry===marriage?"marriage":"proposal",
+                    rank:spec.rank,
+                    key:entry.key,
+                    named:typeof declared==="string"&&declared===entry.key,
+                    source:point
+                }
+                entry.proposals.push(link)
+                if(entry===marriage) entry.targets.push(link)
+            }
         }
         /* UNE seule valeur par colonne, sinon la ligne cesse d'être comparable
            d'un bout à l'autre de l'écran: c'est la cible la plus proche en ppm
            qui est montrée, et les autres restent à un clic dans le détail. Une
            formule sans cible affiche un tiret, ce qui est une information —
-           une prédiction que rien n'a encore confirmée. */
+           une prédiction que rien n'a encore confirmée.
+
+           Ces agrégats sont calculés sur les MARIAGES, pas sur les propositions:
+           une intensité additionnée sur toutes les fiançailles compterait un
+           même pic autant de fois qu'il a de candidats. */
         for(const entry of this.entries){
             entry.target=nearestTarget(entry.targets)
             entry.errorPpm=entry.target?entry.target.errorPpm:null
             entry.intensity=entry.targets.reduce(
                 (n,target)=>n+(Number.isFinite(target.intensity)?target.intensity:0),0)
         }
+        return this
+    }
+    /* CONVERTIR LES FIANÇAILLES EN MARIAGES.
+
+       `choices` va de l'indice du point à la clé à marier, ou à `null` pour
+       laisser le point fiancé (explicitement, donc sans remariage automatique).
+       Une clé inconnue est REFUSÉE sans toucher au point: démarier en silence
+       sur une faute de frappe serait un mariage qui disparaît sans un mot. */
+    applyMarriages(choices){
+        const map=choices instanceof Map?choices:new Map(Object.entries(choices??{}))
+        for(const point of this.points){
+            const index=point.index
+            if(index===undefined||index===null) continue
+            const hasIndex=map.has(index)
+            const hasString=map.has(String(index))
+            if(!hasIndex&&!hasString) continue
+            const key=hasIndex?map.get(index):map.get(String(index))
+            const entry=typeof key==="string"?this.find(key):null
+            if(typeof key==="string"&&!entry) continue
+            point.marriage=entry?entry.key:null
+            if(entry) point.key=entry.key
+            else delete point.key
+        }
+        this.match()
         return this
     }
     /* Les points sous forme de paires m/z–intensité, triées: c'est la matière

@@ -6,9 +6,10 @@ import {Wave,XYTrace} from "../formats.js"
 import {Formula,Stoichiometry,FormulaCollection} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {CE,stylize} from "../util.js"
-import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula,propagateForest} from "../attribution.js"
+import {buildPlan,attributeSpectrum,SortedPoints,saneBound,saneRatio,planForKernel,stateToFormula,propagateForest,proposalsByPoint} from "../attribution.js"
 import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,layoutForests,terminateForestWorker,DEFAULT_LINK_TOLERANCE} from "../forest.js"
 import {windowFor,wavesFromInput} from "../utils/index.js"
+import {isotopologueEnvelope,scoreIsotopePattern} from "../isotopeMatch.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 import {AttributionForestMethods} from "./AttributionForestMethods.js"
 import {SOCKET} from "../socketTypes.js"
@@ -215,6 +216,35 @@ export class AttributionNode extends NodeWithAccordion{
         /* one attribution list per input wave, in input order — therefore in
            flow order, stable from one resolve to the next */
         this.attributions=[]
+        /* LES CHOIX DE RÉINSPECTION, et ils survivent au resolve.
+
+           Clé `waveKey#indexDuPoint` -> clé de formule mariée, ou `null` pour
+           « fiancé mais pas marié ». L'ABSENCE de clé est le défaut: la
+           meilleure proposition. C'est la distinction que porte déjà
+           `FormulaCollection.match()`: un mariage refusé doit rester refusé au
+           rendu suivant. Le choix voyage dans `serializeState`, parce qu'il ne
+           se déduit d'aucun réglage. */
+        this.inspectionChoices=new Map()
+        /* Les scores isotopologiques Calculés, par point, pour ne pas refaire
+           l'énumération à chaque redessin du panneau. Vidés à chaque resolve. */
+        this.inspectionScores=new Map()
+        this.inspectionWaveIndex=0
+        this.inspectionOnlyAmbiguous=true
+        this.inspectionOpenKey=null
+        this.inspectionBox=null
+        /* LE FUNNEL MASK — élément et couple d'isotopes choisis. Le choix est
+           une DÉCISION, pas un résultat de calcul: il survit au resolve et
+           voyage dans `serializeState`, comme les mariages de réinspection.
+           `null` veut dire « prends le défaut » : le carbone s'il est proposé,
+           et sa paire (A le plus léger, A suivant) — ¹²C/¹³C. */
+        this.funnelElement=null
+        this.funnelLightA=null
+        this.funnelHeavyA=null
+        /* Le funnel mask est recalculé à chaque resize du panneau forest ; le
+           garder par (résultat, couple d'isotopes) évite de refaire la
+           simulation pour un simple changement de taille. Vidé au resolve et à
+           chaque changement de mariage. */
+        this.funnelMaskCache=new Map()
         /* LE DRAPEAU DU CALCUL, et il est le SEUL qui dise si les résultats
            correspondent aux réglages.
 
@@ -897,8 +927,10 @@ export class AttributionNode extends NodeWithAccordion{
         if(!this.plan?.items?.length||!waves.length){
             this.attributions=[]
             this.kernelErrors=[]
+            this.inspectionScores?.clear()
             this.setStatus("resolved")
             this.renderReadout()
+            this.renderInspection?.()
             return
         }
         const published=[]
@@ -937,6 +969,7 @@ export class AttributionNode extends NodeWithAccordion{
         if(run!==this.run) return
         this.attributions=published
         this.kernelErrors=errors
+        this.inspectionScores?.clear()
         this.outputs[0]=this.publishable(published)
         /* "error" only if NOTHING came out. A partial success is a success, and
            a node painted red over three good results would be lying. */
@@ -944,6 +977,7 @@ export class AttributionNode extends NodeWithAccordion{
             ?"error"
             :"resolved")
         this.renderReadout()
+        this.renderInspection?.()
     }
 
     /* L'ÉTAT DU NŒUD, et surtout le FAIRE SAVOIR.
@@ -1047,19 +1081,24 @@ export class AttributionNode extends NodeWithAccordion{
                feature, not a defect — so the mapping is the other way round, and
                only the peaks that WERE matched appear at all.
 
-               A peak gets its key from the BEST reading of itself, the one the
-               sieve ranked first. The other `bestMatches-1` readings are left
-               unkeyed rather than competing for it: a key names THE formula a
-               peak was called, and three keys on one peak would be a claim the
-               ranking does not support. The unkeyed readings are still in the
-               collection, still readable, still ranked by `logProbability`. */
+               UN PIC PORTE SES PROPOSITIONS, ET SON MARIAGE.
+
+               `proposals` is the full reading of that peak: every formula the
+               sieve retained for it, best first, with its ppm and probability.
+               That is the structure a re-inspection reads — the isotopologue
+               checker chooses among these. It survives publishing because a
+               point is the one object a FormulaCollection does not rebuild:
+               `match()` derives the entries from it.
+
+               `marriage` is the DEFAULT choice, and the default is the best
+               proposal. It is written EXPLICITLY rather than left implicit so
+               the choice can later be refused (`marriage:null` means "engaged
+               to several, married to none") without the next render marrying it
+               again. `key` is kept beside it for the legacy readers that ask a
+               point "which formula are you". */
             const peakList=result.peakList
-            const bestKeyFor=new Map()
-            for(const entry of result.entries??[]){
-                const pointIndex=entry.target?.index
-                if(pointIndex===undefined||pointIndex===null) continue
-                if(!bestKeyFor.has(pointIndex)) bestKeyFor.set(pointIndex,entry.key)
-            }
+            const proposals=proposalsByPoint(result.entries)
+            const waveKey=this.inspectionWaveKey(wave,index)
             const points=[]
             if(peakList&&peakList.length){
                 for(let i=0;i<peakList.length;i++){
@@ -1068,9 +1107,16 @@ export class AttributionNode extends NodeWithAccordion{
                        peak to publish — the crible's own `nearest` refuses it for
                        the same reason, and the two must agree. */
                     if(!Number.isFinite(mz)||mz===0) continue
-                    const key=bestKeyFor.get(i)
+                    const pointProposals=proposals.get(i)??[]
+                    /* LE CHOIX DE RÉINSPECTION L'EMPORTE, et l'absence de choix
+                       garde le défaut. Une clé devenue inconnue (réglages
+                       changés depuis la session) est IGNORÉE plutôt que publiée:
+                       elle redeviendra valide si le même pic la retrouve. */
+                    const {marriage}=this.inspectionMarriage(waveKey,i,pointProposals)
                     points.push({
-                        mz,key,index:i,intensity:peakList.y[i]??0,
+                        mz,key:marriage??undefined,marriage,index:i,
+                        intensity:peakList.y[i]??0,
+                        proposals:pointProposals,
                         sourceWaveTitle:wave?.metadata?.sourceWave??wave?.metadata?.title??name,
                         sourceWaveId:wave?.metadata?.sourceWaveId
                     })
@@ -1457,6 +1503,16 @@ export class AttributionNode extends NodeWithAccordion{
         this.armProbe()
         this.readout=CE("div",{style:{fontSize:"0.8em",lineHeight:"1.35",whiteSpace:"pre-wrap"}},[])
         content.appendChild(this.readout)
+        /* L'ÉCRAN DE RÉINSPECTION, sous la lecture: il ne sert qu'une fois
+           qu'il y a des attributions, mais il doit exister au montage pour que
+           le resolve puisse simplement le redessiner. */
+        this.inspectionBox=CE("div",{className:"an-inspection"},[])
+        stylize(this.inspectionBox,{
+            borderTop:"1px solid rgba(255,255,255,0.14)",
+            paddingTop:"4px",marginTop:"4px"
+        })
+        content.appendChild(this.inspectionBox)
+        this.renderInspection()
     }
 
     /* LE TABLEAU DES GROUPES, et il est reconstruit à chaque changement.
@@ -2262,6 +2318,308 @@ export class AttributionNode extends NodeWithAccordion{
         this.readout.textContent=lines.join("\n")
     }
 
+    /* =====================================================================
+       LA RÉINSPECTION D'APPARIEMENT.
+
+       Le crible publie, pour chaque pic, toutes ses lectures classées. Ici on
+       les ROUVRE: le vérificateur d'isotopologues note chaque proposition sur
+       l'enveloppe M, M+1, M+2 réellement mesurée, et l'utilisateur marié le
+       point à la lecture qu'il retient. Le choix est persisté et réappliqué à
+       chaque resolve, parce que `publishable` reconstruit les points à partir
+       du crible et écraserait un mariage non mémorisé.
+
+       L'UNITÉ DE CLÉ EST `waveKey#indexDuPoint`, pas l'indice seul: deux
+       spectres d'entrée peuvent avoir des pics au même indice, et un mariage
+       posé sur l'un ne doit pas migrer sur l'autre.
+       ===================================================================== */
+    inspectionWaveKey(wave,index){
+        const id=wave?.metadata?.sourceWaveId
+        if(id!==undefined&&id!==null&&id!=="") return `id:${id}`
+        const title=wave?.metadata?.sourceWave??wave?.metadata?.title
+        if(title!==undefined&&title!==null&&title!=="") return `title:${title}`
+        return `index:${index}`
+    }
+
+    /* LE MARIAGE EFFECTIF D'UN POINT. Une seule règle, utilisée par la
+       publication ET par le panneau: un choix dont la clé n'existe plus dans
+       les propositions du pic (réglages changés depuis la session) est ignoré,
+       et le défaut reprend. Le panneau montre donc exactement ce qui part. */
+    inspectionMarriage(waveKey,pointIndex,proposals){
+        const key=`${waveKey}#${pointIndex}`
+        const hasChoice=this.inspectionChoices?.has(key)??false
+        const chosen=hasChoice?this.inspectionChoices.get(key):undefined
+        let marriage=proposals.length?proposals[0].key:null
+        if(hasChoice){
+            if(chosen===null) marriage=null
+            else if(typeof chosen==="string"
+                &&proposals.some(proposal=>proposal.key===chosen))
+                marriage=chosen
+        }
+        return {key,hasChoice,chosen,marriage}
+    }
+
+    /* LE SCORE D'UN POINT, calculé une fois puis gardé jusqu'au prochain
+       resolve. On classe par score décroissant, puis par écart en ppm: le
+       vérificateur PROPOSE, il ne décide pas. */
+    inspectionScoresFor(waveKey,pointIndex,result,proposals,entryByKey){
+        const cacheKey=`${waveKey}#${pointIndex}`
+        const cached=this.inspectionScores.get(cacheKey)
+        if(cached) return cached
+        const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):10
+        const centre=result.peakList?.x?.[pointIndex]
+        const nearest=(mass)=>{
+            const hit=result.peakList?.nearest?.(mass)
+            return hit??null
+        }
+        const scored=proposals.map((proposal,rank)=>{
+            const entry=entryByKey.get(proposal.key)??null
+            let isotopes=null
+            if(entry?.formula){
+                try{
+                    const envelope=isotopologueEnvelope(entry.formula,{
+                        mz:Number.isFinite(centre)?centre:entry.mz,
+                        spanDa:3,marginDa:0.5,ratio:1e-6,limit:500,mergePpm:ppm
+                    })
+                    isotopes=scoreIsotopePattern(envelope,nearest,{ppm,minRel:0.01})
+                }catch{
+                    /* Un vérificateur qui tombe ne doit pas emporter le choix:
+                       la proposition reste sélectionnable, seulement sans note. */
+                    isotopes=null
+                }
+            }
+            return {proposal,entry,rank,isotopes}
+        })
+        scored.sort((a,b)=>{
+            const left=a.isotopes?.score??-1
+            const right=b.isotopes?.score??-1
+            if(left!==right) return right-left
+            return Math.abs(a.proposal.errorPpm??Infinity)
+                -Math.abs(b.proposal.errorPpm??Infinity)
+        })
+        this.inspectionScores.set(cacheKey,scored)
+        return scored
+    }
+
+    /* LE CORPS D'UN POINT: les lectures, leur score, et l'enveloppe du
+       meilleur score. Le tableau des isotopes est ce qui rend le score
+       vérifiable au lieu d'être cru. */
+    fillInspectionBody(body,waveKey,pointIndex,result,proposals,entryByKey){
+        body.replaceChildren()
+        if(!proposals.length){
+            body.appendChild(CE("div",{},["no reading for this peak"]))
+            return
+        }
+        const scored=this.inspectionScoresFor(waveKey,pointIndex,result,proposals,entryByKey)
+        const {key:choiceKey,marriage:married}=
+            this.inspectionMarriage(waveKey,pointIndex,proposals)
+
+        const actions=CE("div",{className:"an-row"},[])
+        stylize(actions,{display:"flex",gap:"4px",margin:"2px 0 4px"})
+        const best=CE("button",{type:"button",title:"Forget this choice and marry the best proposal again"},["Default (best)"])
+        const engaged=CE("button",{type:"button",title:"Keep the proposals but refuse this marriage"},["Engaged only"])
+        for(const button of [best,engaged]) stylize(button,{fontSize:"0.75em",padding:"1px 6px",cursor:"pointer"})
+        best.addEventListener("click",()=>this.resetInspectionChoice(choiceKey))
+        engaged.addEventListener("click",()=>this.applyInspectionChoice(choiceKey,null))
+        actions.append(best,engaged)
+        body.appendChild(actions)
+
+        for(const item of scored){
+            const {proposal,entry,isotopes}=item
+            const row=CE("label",{className:"an-inspection-choice"},[])
+            stylize(row,{
+                display:"grid","grid-template-columns":"auto minmax(0, 1fr)",
+                gap:"4px",alignItems:"start",cursor:"pointer",
+                padding:"2px 3px",borderRadius:"3px",
+                background:proposal.key===married?"rgba(172,255,47,0.12)":"transparent"
+            })
+            const radio=CE("input",{type:"radio",name:`inspect-${waveKey}-${pointIndex}`},[])
+            radio.checked=proposal.key===married
+            radio.addEventListener("change",()=>{
+                if(radio.checked) this.applyInspectionChoice(choiceKey,proposal.key)
+            })
+            const text=CE("div",{},[])
+            stylize(text,{fontSize:"0.78em",lineHeight:"1.35",minWidth:0})
+            const notation=entry?.notation?prettyNotation(entry.notation):proposal.key
+            const parts=[`${item.rank+1}. ${notation}  ${proposal.errorPpm>=0?"+":""}${(proposal.errorPpm??0).toFixed(2)} ppm`]
+            if(isotopes){
+                parts.push(`isotopes ${isotopes.score.toFixed(2)} · coverage ${(isotopes.coverage*100).toFixed(0)}%`)
+                if(isotopes.residual!==null) parts.push(`residual ${isotopes.residual.toFixed(2)}`)
+            }
+            text.textContent=parts.join("  ·  ")
+            if(isotopes){
+                text.title=isotopes.bins
+                    .filter(bin=>bin.predicted>=0.01)
+                    .map(bin=>`${bin.mz.toFixed(5)}  predicted ${(bin.predicted*100).toFixed(1)}%  `+
+                        `${bin.matched?`measured ${(bin.observed*100).toFixed(1)}% (${bin.errorPpm.toFixed(2)} ppm)`:"not measured"}`)
+                    .join("\n")
+            }
+            row.append(radio,text)
+            body.appendChild(row)
+        }
+
+        /* L'ENVELOPPE DU MEILLEUR SCORE, sous les lectures. Le premier de la
+           liste EST le meilleur score (le tri vient de le faire); on affiche
+           ses satellites pour que le chiffre se lise. */
+        const top=scored.find(item=>item.isotopes&&item.isotopes.bins.length)
+        if(top){
+            const heading=CE("div",{},["best isotope match — predicted vs measured"])
+            stylize(heading,{fontSize:"0.72em",opacity:"0.75",margin:"5px 0 2px"})
+            body.appendChild(heading)
+            const table=CE("div",{},[])
+            stylize(table,{display:"grid","grid-template-columns":"1fr 1fr 1fr 1fr",gap:"0 6px",fontSize:"0.7em",fontFamily:"monospace"})
+            for(const label of ["m/z","pred %","meas %","ppm"]){
+                const cell=CE("div",{},[label])
+                stylize(cell,{opacity:"0.6"})
+                table.appendChild(cell)
+            }
+            for(const bin of top.isotopes.bins.filter(bin=>bin.predicted>=0.01)){
+                table.appendChild(CE("div",{},[bin.mz.toFixed(5)]))
+                table.appendChild(CE("div",{},[(bin.predicted*100).toFixed(1)]))
+                table.appendChild(CE("div",{},[bin.matched?(bin.observed*100).toFixed(1):"—"]))
+                table.appendChild(CE("div",{},[bin.matched?bin.errorPpm.toFixed(2):"—"]))
+            }
+            body.appendChild(table)
+        }
+    }
+
+    /* LE PANNEAU. Un point par pic apparié, les ambigus en tête quand le
+       filtre est actif. Les scores ne sont calculés qu'à l'OUVERTURE du
+       point: une liste de cent pics ne doit pas payer cent énumérations
+       isotopiques pour être affichée. */
+    renderInspection(){
+        if(!this.inspectionBox) return
+        const box=this.inspectionBox
+        box.replaceChildren()
+        const results=this.attributions??[]
+        const heading=CE("div",{},["Re-inspection"])
+        stylize(heading,{fontSize:"0.85em",fontWeight:"600",margin:"6px 0 2px"})
+        box.appendChild(heading)
+        if(!results.length){
+            box.appendChild(CE("div",{},["No attribution yet — Resolve first."]))
+            stylize(box.lastChild,{fontSize:"0.78em",opacity:"0.7"})
+            return
+        }
+
+        const waves=this.collectInputWaves().waves
+        this.inspectionWaveIndex=Math.min(
+            Math.max(0,this.inspectionWaveIndex??0),results.length-1)
+        if(results.length>1){
+            const select=CE("select",{},[])
+            stylize(select,{width:"100%",fontSize:"0.8em",margin:"2px 0"})
+            for(let index=0;index<results.length;index++){
+                const option=CE("option",{value:String(index)},[
+                    waves[index]?.metadata?.title??`input ${index+1}`
+                ])
+                select.appendChild(option)
+            }
+            select.value=String(this.inspectionWaveIndex)
+            select.addEventListener("change",()=>{
+                this.inspectionWaveIndex=Number(select.value)||0
+                this.renderInspection()
+            })
+            box.appendChild(select)
+        }
+
+        const filter=CE("label",{},[])
+        stylize(filter,{display:"flex",gap:"4px",alignItems:"center",fontSize:"0.76em",opacity:"0.85",margin:"2px 0 4px"})
+        const checkbox=CE("input",{type:"checkbox"},[])
+        checkbox.checked=!!this.inspectionOnlyAmbiguous
+        checkbox.addEventListener("change",()=>{
+            this.inspectionOnlyAmbiguous=checkbox.checked
+            this.renderInspection()
+        })
+        filter.append(checkbox,CE("span",{},["ambiguous only"]))
+        box.appendChild(filter)
+
+        const index=this.inspectionWaveIndex
+        const result=results[index]
+        const wave=waves[index]
+        const waveKey=this.inspectionWaveKey(wave,index)
+        const proposalsByIndex=proposalsByPoint(result.entries)
+        const entryByKey=new Map((result.entries??[]).map(entry=>[entry.key,entry]))
+        const indices=[...proposalsByIndex.keys()].sort((a,b)=>{
+            const left=proposalsByIndex.get(a)?.length??0
+            const right=proposalsByIndex.get(b)?.length??0
+            if(left!==right) return right-left
+            return a-b
+        })
+        const ambiguous=indices.filter(pointIndex=>
+            (proposalsByIndex.get(pointIndex)?.length??0)>1)
+        const shown=this.inspectionOnlyAmbiguous?ambiguous:indices
+        const summary=CE("div",{},[
+            `${indices.length} matched peak(s), ${ambiguous.length} ambiguous`
+        ])
+        stylize(summary,{fontSize:"0.74em",opacity:"0.7",marginBottom:"3px"})
+        box.appendChild(summary)
+        if(!shown.length){
+            box.appendChild(CE("div",{},[
+                this.inspectionOnlyAmbiguous
+                    ?"No ambiguous peak in this spectrum."
+                    :"No matched peak to re-inspect."
+            ]))
+            stylize(box.lastChild,{fontSize:"0.78em",opacity:"0.7"})
+            return
+        }
+
+        const list=CE("div",{className:"an-inspection-list"},[])
+        stylize(list,{maxHeight:"45vh",overflowY:"auto",display:"grid",gap:"1px"})
+        box.appendChild(list)
+        for(const pointIndex of shown){
+            const proposals=proposalsByIndex.get(pointIndex)??[]
+            const mz=result.peakList?.x?.[pointIndex]
+            const {hasChoice,marriage:married}=
+                this.inspectionMarriage(waveKey,pointIndex,proposals)
+            const marriedEntry=married?entryByKey.get(married)??null:null
+            const state=married
+                ?prettyNotation(marriedEntry?.notation??married)
+                :(hasChoice?"engaged, no marriage":"no reading")
+            const pointKey=`${waveKey}#${pointIndex}`
+            const details=CE("details",{className:"an-inspection-point"},[])
+            /* LA FICHE OUVERTE SURVIT AU REDESSIN. Poser un mariage reconstruit
+               la liste; sans cela, la fiche qu'on vient de lire se refermerait
+               sous le curseur, et il faudrait la rouvrir pour vérifier le
+               résultat de son propre geste. */
+            details.open=this.inspectionOpenKey===pointKey
+            const summaryLine=CE("summary",{},[
+                `${Number.isFinite(mz)?mz.toFixed(5):"?"}  ·  ${proposals.length} reading(s)  ·  ${state}`
+            ])
+            stylize(summaryLine,{cursor:"pointer",fontSize:"0.78em",lineHeight:"1.5"})
+            details.appendChild(summaryLine)
+            const body=CE("div",{},[])
+            stylize(body,{padding:"2px 4px 5px"})
+            details.appendChild(body)
+            details.addEventListener("toggle",()=>{
+                if(!details.open){
+                    if(this.inspectionOpenKey===pointKey) this.inspectionOpenKey=null
+                    return
+                }
+                this.inspectionOpenKey=pointKey
+                if(!body.dataset.filled){
+                    this.fillInspectionBody(body,waveKey,pointIndex,result,proposals,entryByKey)
+                    body.dataset.filled="1"
+                }
+            })
+            list.appendChild(details)
+        }
+    }
+
+    /* POSER UN CHOIX, puis republier. `resolveChildren` est ce qui fait
+       réellement circuler la nouvelle collection: sans lui, le mariage change
+       dans ce nœud et nulle part ailleurs. */
+    applyInspectionChoice(choiceKey,key){
+        this.inspectionChoices.set(choiceKey,key)
+        this.republishInspection()
+    }
+    resetInspectionChoice(choiceKey){
+        this.inspectionChoices.delete(choiceKey)
+        this.republishInspection()
+    }
+    async republishInspection(){
+        this.outputs[0]=this.publishable(this.attributions??[])
+        this.renderInspection()
+        try{ await this.resolveChildren() }catch{}
+    }
+
     async renderAll(){
         /* LA TABLE EST ATTENDUE ICI, ET C'EST LE SEUL ENDROIT DU NŒUD OÙ ÇA
            COMPTE.
@@ -2364,7 +2722,17 @@ export class AttributionNode extends NodeWithAccordion{
                lier, et le réseau retomberait sur CH2 seul sans rien le dire. */
             forestGroups:this.forestGroupList(),
             /* SÉLECTION DU RÉSEAU (persistée pour la session). */
-            forestSelected:Array.from(this.forestSelected)
+            forestSelected:Array.from(this.forestSelected),
+            /* LES MARIAGES CHOISIS EN RÉINSPECTION. Ce sont des décisions, pas
+               des résultats: aucun resolve ne peut les retrouver, donc elles
+               voyagent sous forme de paires clé -> formule (ou null). */
+            inspectionChoices:[...this.inspectionChoices]
+                .map(([key,marriage])=>({key,marriage})),
+            /* LE COUPLE ISOTOPIQUE DU FUNNEL MASK: une décision d'écran, qui ne
+               se déduit d'aucun réglage de calcul. `null` reste « défaut ». */
+            funnelElement:this.funnelElement,
+            funnelLightA:this.funnelLightA,
+            funnelHeavyA:this.funnelHeavyA
         }
     }
 
@@ -2403,9 +2771,23 @@ export class AttributionNode extends NodeWithAccordion{
         if(Array.isArray(state.forestSelected)){
             this.forestSelected=new Set(state.forestSelected)
         }
+        /* Un mariage restauré est réappliqué par le prochain `publishable`,
+           c'est-à-dire au resolve qui suit la restauration. `null` est un
+           choix (fiancé sans mariage), pas une absence: il est conservé. */
+        if(Array.isArray(state.inspectionChoices)){
+            this.inspectionChoices=new Map()
+            for(const entry of state.inspectionChoices){
+                if(entry&&typeof entry.key==="string"){
+                    this.inspectionChoices.set(entry.key,entry.marriage??null)
+                }
+            }
+        }
         if(state.forestLayoutMode){
             this.forestLayoutMode=state.forestLayoutMode
         }
+        if(typeof state.funnelElement==="string") this.funnelElement=state.funnelElement
+        if(Number.isFinite(state.funnelLightA)) this.funnelLightA=state.funnelLightA
+        if(Number.isFinite(state.funnelHeavyA)) this.funnelHeavyA=state.funnelHeavyA
         this.syncUI()
     }
 

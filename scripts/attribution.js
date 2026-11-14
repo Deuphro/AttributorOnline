@@ -2090,6 +2090,58 @@ function attributeSpectrum(plan,points,{limit=Infinity,ppm=null,bestMatches=null
     return attribution
 }
 
+/* LES PROPOSITIONS, PAR POINT — ce qu'un pic a le droit d'épouser.
+
+   Le moteur rend des LECTURES, une par couple (formule, pic). La collection,
+   elle, raisonne par POINT: « quelles formules ce pic peut-il être ? ». Cette
+   fonction fait la seule conversion qui compte, et elle est PURE pour être
+   testée sans nœud ni DOM.
+
+   DEUX RÈGLES, et les deux sont des faits sur les données, pas des préférences:
+
+     - une proposition est UNE FORMULE par point: deux lectures de la même clé
+       (le chemin kernel peut en produire quand des compositions dépendantes se
+       ressemblent) ne comptent pas deux fois;
+     - l'ordre est celui du crible — |ppm| croissant, puis probabilité
+       décroissante — et `rank` le rend explicite. Un consommateur qui trie
+       autrement doit le dire, pas hériter d'un ordre d'énumération.
+
+   Le mariage par défaut — la première proposition — est décidé par l'appelant,
+   pas ici: cette fonction ne connaît pas la politique, seulement le classement. */
+function proposalsByPoint(entries){
+    const byPoint=new Map()
+    const seen=new Map()
+    for(const entry of entries??[]){
+        const index=entry?.target?.index
+        if(index===undefined||index===null) continue
+        const key=entry?.key
+        if(typeof key!=="string") continue
+        let keys=seen.get(index)
+        if(!keys){ keys=new Set(); seen.set(index,keys) }
+        if(keys.has(key)) continue
+        keys.add(key)
+        const proposal={
+            key,
+            errorPpm:Number.isFinite(entry.errorPpm)?entry.errorPpm:null,
+            logProbability:Number.isFinite(entry.logProbability)?entry.logProbability:null,
+            rank:0
+        }
+        const list=byPoint.get(index)
+        if(list) list.push(proposal)
+        else byPoint.set(index,[proposal])
+    }
+    for(const list of byPoint.values()){
+        list.sort((a,b)=>{
+            const left=Math.abs(a.errorPpm??Infinity)
+            const right=Math.abs(b.errorPpm??Infinity)
+            if(left!==right) return left-right
+            return (b.logProbability??-Infinity)-(a.logProbability??-Infinity)
+        })
+        list.forEach((proposal,rank)=>{proposal.rank=rank})
+    }
+    return byPoint
+}
+
 /* Le plan complet, lectures de listes comprises, prêt à être sérialisé.
 
    Un nœud ne construit pas son plan à la main: il appelle ceci, qui lit les
@@ -2156,6 +2208,7 @@ export {
     cribleMixedRadix,
     stateToFormula,
     attributeSpectrum,
+    proposalsByPoint,
     planForKernel,
     buildPlan
 }
