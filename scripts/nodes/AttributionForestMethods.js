@@ -2403,6 +2403,15 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            ils se redimensionnent ensemble. */
         this.forestPlotBox.handleResize=()=>{
             this.forestPlot?.handleResize?.()
+            /* Le récap est reconstruit pour la LARGEUR, jamais pour la hauteur.
+               Une variation de hauteur vient du contenu du récap lui-même (un
+               texte plus long, une ligne de funnel en plus): la reconstruire
+               relancerait les plots et rendrait la variation de hauteur qu'on
+               vient de subir. Seule une largeur différente change réellement les
+               échelles de l'histogramme. */
+            const width=this.forestPlotBox?.clientWidth??0
+            if(width===this.forestRecapWidth) return
+            this.forestRecapWidth=width
             this.renderForestRecap()
         }
         content.appendChild(this.forestPlotBox)
@@ -2654,6 +2663,19 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
     renderForestRecap(){
         const host=this.forestRecapHost
         if(!host) return
+        this.forestRecapWidth=this.forestPlotBox?.clientWidth??null
+        /* Les funnels sont des Plot2DWebGL: chacun tient un contexte GPU. Le
+           récap est reconstruit à chaque redimensionnement du graphe d'arbres,
+           donc les anciens plots doivent être libérés AVANT que le DOM ne les
+           oublie. Le plot lui-même coupe son hook de resize, mais il faut aussi
+           le retirer de l'observateur de l'application: sinon l'observateur
+           garde un conteneur mort. */
+        const resizeObserver=this.origin?.resizeObserver
+        for(const plot of this.funnelPlots??[]){
+            resizeObserver?.unobserve?.(plot.container)
+            plot.dispose?.()
+        }
+        this.funnelPlots=[]
         host.replaceChildren()
         const rows=(this.attributions??[])
             .map((_,index)=>this.forestRecap(index))
@@ -2691,7 +2713,6 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         ])
         stylize(caption,{fontSize:"0.72em",opacity:"0.6",fontWeight:"bold"})
         host.appendChild(caption)
-        if(rows.length) host.appendChild(this.renderFunnelControls(rows))
         for(const row of rows){
             const line=CE("div",{className:"an-recap-line"},[])
             stylize(line,{display:"grid",gap:"2px",minHeight:"0"})
@@ -2717,18 +2738,17 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 line.appendChild(warn)
             }
 
-            const funnel=this.funnelMaskFor(row.inputIndex)
-            const charts=CE("div",{},[])
-            stylize(charts,{
-                display:"flex",gap:"8px",alignItems:"flex-start",
-                flexWrap:"wrap",minWidth:"0"
-            })
-            const histogramCap=funnel?.ratios?.length
-                ?Math.floor((this.forestRecapHost?.clientWidth||240)*0.55)
-                :null
-            charts.appendChild(this.drawForestRecapChart(row,{maxWidth:histogramCap}))
-            charts.appendChild(this.drawForestFunnelChart(funnel))
-            line.appendChild(charts)
+            /* L'HISTOGRAMME NE PORTE QUE SUR LE MARIAGE ACTUEL, et il est
+               volontairement seul ici: le funnel isotopique a sa propre
+               section, plus bas, avec son sélecteur et sa légende. Les mêler
+               dans une même rangée faisait lire le funnel comme un second axe
+               de l'histogramme alors qu'il compare d'autres formules. */
+            const histogramLabel=CE("div",{},[
+                "Mass error of the current marriage (ppm)"
+            ])
+            stylize(histogramLabel,{fontSize:"0.7em",opacity:"0.55"})
+            line.appendChild(histogramLabel)
+            line.appendChild(this.drawForestRecapChart(row))
             const parts=[`${row.readings} reading(s)`]
             if(row.keptMatches!==null) parts.push(`up to ${row.keptMatches}/peak`)
             parts.push(`median ${row.median===null
@@ -2746,6 +2766,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             line.appendChild(stats)
             host.appendChild(line)
         }
+        host.appendChild(this.renderFunnelSection(rows))
     }
 
     /* =====================================================================
@@ -2827,14 +2848,14 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         return mask
     }
 
-    /* LE SÉLECTEUR, posé une fois au-dessus des lignes : il vaut pour tous les
-       spectres du lot, parce que changer d'élément par spectre créerait deux
-       funnels dont les abscisses ne se compareraient plus. */
+    /* LE SÉLECTEUR VIT AVEC LE FUNNEL, pas avec l'histogramme. Il vaut pour
+       tous les spectres du lot, parce que changer d'élément par spectre
+       créerait deux funnels dont les abscisses ne se compareraient plus. */
     renderFunnelControls(rows){
         const host=CE("div",{className:"an-funnel-controls"},[])
         stylize(host,{
-            display:"flex",gap:"5px",alignItems:"center",flexWrap:"wrap",
-            fontSize:"0.72em",margin:"2px 0 4px"
+            display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap",
+            fontSize:"0.76em",margin:"2px 0 4px"
         })
         const firstIndex=rows[0]?.inputIndex??0
         const result=(this.attributions??[])[firstIndex]
@@ -2844,8 +2865,11 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             this.renderForestRecap?.()
             this.renderInspection?.()
         }
-        const label=CE("span",{},["Funnel mask"])
-        stylize(label,{opacity:"0.7",fontWeight:"bold"})
+        const label=text=>{
+            const span=CE("span",{},[text])
+            stylize(span,{opacity:"0.6"})
+            return span
+        }
         const elementSelect=CE("select",{},[])
         for(const record of selection.elements){
             elementSelect.appendChild(CE("option",{value:record.symbol},[record.symbol]))
@@ -2883,109 +2907,387 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         })
         const arrow=CE("span",{},["→"])
         stylize(arrow,{opacity:"0.6"})
-        const note=CE("span",{},[
-            "δ = (I(lourd)/I(base)/N) / naturel − 1 · orange = mariage ≠ meilleur δ"
-        ])
-        stylize(note,{opacity:"0.55",fontSize:"0.95em"})
-        host.append(label,elementSelect,lightSelect,arrow,heavySelect,note)
+        const note=CE("span",{},["δ = (I(heavy)/I(base)/N) / natural − 1"])
+        stylize(note,{opacity:"0.55",fontSize:"0.92em",marginLeft:"auto"})
+        host.append(label("element"),elementSelect,label("pair"),
+            lightSelect,arrow,heavySelect,note)
         return host
     }
 
-    /* LE FUNNEL, À DROITE DE L'HISTOGRAMME.
+    /* LA SECTION FUNNEL, SÉPARÉE DE L'HISTOGRAMME.
+
+       L'histogramme ci-dessus ne parle que du mariage ACTUEL, jugé sur l'écart
+       en masse. Le funnel pose l'autre question: ce mariage est-il cohérent
+       avec le rapport isotopique qu'il implique, et existe-t-il une autre
+       formule proposée pour le même pic qui le serait davantage? D'où sa
+       propre section, son propre sélecteur et sa propre légende. */
+    renderFunnelSection(rows){
+        const host=CE("section",{className:"an-funnel-section"},[])
+        stylize(host,{
+            marginTop:"10px",paddingTop:"8px",
+            borderTop:"1px solid rgba(255,255,255,0.18)",
+            display:"flex",flexDirection:"column",gap:"6px",minWidth:"0"
+        })
+        const head=CE("div",{},["Funnel mask — isotopic coherence"])
+        stylize(head,{fontSize:"0.82em",fontWeight:"bold",opacity:"0.92"})
+        const sub=CE("div",{},[
+            "The histogram above scores the CURRENT marriage on mass error alone. "
+            +"Here the same marriage is confronted with the isotopic ratio it implies; "
+            +"challengers are the other formulas proposed for the same peak."
+        ])
+        stylize(sub,{fontSize:"0.72em",opacity:"0.6",lineHeight:"1.4"})
+        host.append(head,sub)
+        host.appendChild(this.renderFunnelControls(rows))
+        for(const row of rows){
+            const card=CE("div",{},[])
+            stylize(card,{display:"flex",flexDirection:"column",gap:"4px",minWidth:"0"})
+            const title=CE("div",{},[row.title])
+            stylize(title,{fontSize:"0.72em",opacity:"0.65"})
+            card.append(title,this.drawForestFunnelChart(this.funnelMaskFor(row.inputIndex)))
+            host.appendChild(card)
+        }
+        return host
+    }
+
+    /* LE FUNNEL, EN GRAND ET ZOOMABLE.
 
        `x` est l'intensité TOTALE des deux pics qui ont produit le rapport :
        c'est la quantité de signal qui a servi à le calcul, donc ce qui décide
        de sa précision. `y` est `delta`, l'écart relatif au rapport naturel.
-       Un nuage qui se resserre vers la droite est un nuage sain ; un point
-       orange est un pic dont le mariage temporaire a préféré la masse à la
-       cohérence isotopique, et c'est exactement celui qu'on veut aller voir. */
+       Un nuage qui se resserre vers la droite est un nuage sain.
+
+       CHAQUE FORMULE PROPOSÉE A SON PROPRE DELTA. Le point du mariage actuel
+       (vert s'il est aussi le plus cohérent, orange sinon) et les challengers
+       (losange doré pour le meilleur d'entre eux, cercles creux pour les
+       autres) sont donc tracés séparément : on voit à la fois ce que le crible
+       a choisi et ce qu'il aurait pu choisir. */
     drawForestFunnelChart(mask){
-        const host=CE("div",{},[])
-        stylize(host,{minWidth:"0",minHeight:"0"})
+        const host=CE("div",{className:"an-funnel-chart"},[])
+        stylize(host,{
+            minWidth:"0",minHeight:"0",display:"flex",flexDirection:"column",
+            gap:"6px",width:"100%",maxWidth:"100%",marginTop:"4px",
+            padding:"8px 8px 6px",border:"1px solid rgba(255,255,255,0.12)",
+            borderRadius:"6px",background:"rgba(255,255,255,0.03)",
+            boxSizing:"border-box"
+        })
         if(!mask||!(mask.ratios?.length)){
             const note=CE("div",{},[
                 !mask?"funnel: no attribution yet"
                     :(mask.available===false?"funnel: element absent":"funnel: no isotopic pair")
             ])
-            stylize(note,{fontSize:"0.7em",opacity:"0.55",padding:"2px 0"})
+            stylize(note,{fontSize:"0.72em",opacity:"0.55",padding:"4px 0"})
             host.appendChild(note)
             return host
         }
-        const HEIGHT=78
-        const PAD={top:8,right:8,bottom:16,left:30}
-        const available=Math.max(140,Math.floor((this.forestRecapHost?.clientWidth||240)*0.42))
-        const width=Math.min(260,available)
-        stylize(host,{
-            minWidth:"0",minHeight:"0",width:`${width}px`,maxWidth:"100%",
-            justifySelf:"start"
+
+        const simulatedKeys=new Set()
+        for(const ratio of mask.ratios){
+            if(ratio.simulated||ratio.heavyKey==null){
+                simulatedKeys.add(`${ratio.lightPoint}\u0000${ratio.lightKey}`)
+            }
+        }
+        const markers=[]
+        const candidateKeys=new Set()
+        for(const point of mask.points??[]){
+            for(const delta of point.deltas??[]){
+                const id=`${point.index}\u0000${delta.key}`
+                candidateKeys.add(id)
+                const married=point.married===delta.key
+                const best=point.bestKey===delta.key
+                markers.push({
+                    kind:married?(best?"marriedBest":"married")
+                        :(best?"bestChallenger":"challenger"),
+                    point:point.index,key:delta.key,
+                    x:delta.totalIntensity,y:delta.delta,
+                    delta:delta.delta,ratio:delta.ratio,
+                    married,best,simulatedPair:simulatedKeys.has(id)
+                })
+            }
+        }
+        for(const ratio of mask.ratios){
+            if(!(ratio.simulated||ratio.heavyKey==null)) continue
+            const id=`${ratio.lightPoint}\u0000${ratio.lightKey}`
+            if(candidateKeys.has(id)) continue
+            markers.push({
+                kind:"simulated",point:null,key:ratio.lightKey,
+                x:ratio.totalIntensity,y:ratio.delta,ratio
+            })
+        }
+        if(!markers.length){
+            const note=CE("div",{},["funnel: no delta to plot"])
+            stylize(note,{fontSize:"0.72em",opacity:"0.55",padding:"4px 0"})
+            host.appendChild(note)
+            return host
+        }
+        const priority={simulated:0,challenger:1,bestChallenger:2,married:3,marriedBest:4}
+        markers.sort((a,b)=>priority[a.kind]-priority[b.kind])
+
+        const colorOf=marker=>marker.kind==="marriedBest"?"#8fe36a"
+            :marker.kind==="married"?"#ffb347"
+            :marker.kind==="bestChallenger"?"#ffd166"
+            :marker.kind==="challenger"?"rgba(180,200,230,0.55)"
+            :"rgba(120,200,255,0.92)"
+        const shapeOf=marker=>marker.kind==="bestChallenger"?"diamond"
+            :(marker.kind==="challenger"||marker.kind==="simulated")?"ring":"circle"
+        const sizeOf=marker=>marker.kind==="married"||marker.kind==="marriedBest"?5
+            :marker.kind==="bestChallenger"?5
+            :marker.kind==="challenger"?4:5
+        const titleOf={
+            simulated:"M+1 found by mass, no proposed base",
+            challenger:"other challenger δ",
+            bestChallenger:"best challenger δ",
+            married:"current marriage · not best",
+            marriedBest:"current marriage · best δ"
+        }
+
+        const details=CE("div",{className:"an-funnel-details"},[])
+        /* HAUTEUR FIXE, ET C'EST UNE CONDITION DE STABILITÉ, pas une question
+           d'esthétique. Le texte passe de deux à plusieurs lignes selon le
+           marqueur survolé; s'il pouvait changer la hauteur du bloc, il
+           changerait celle de la rangée `auto` du panneau, donc la place du
+           graphe d'arbres, donc le ResizeObserver de ce graphe, qui
+           reconstruirait tout le récap — et le funnel perdrait son zoom à
+           chaque survol. Avec une hauteur fixe, le texte défile. */
+        stylize(details,{
+            fontSize:"0.72em",lineHeight:"1.45",height:"5.6em",
+            overflow:"auto",boxSizing:"border-box",
+            padding:"4px 6px",border:"1px solid rgba(255,255,255,0.10)",
+            borderRadius:"4px",background:"rgba(0,0,0,0.18)",
+            color:"rgba(255,255,255,0.88)",whiteSpace:"pre-wrap"
         })
-        const innerW=Math.max(40,width-PAD.left-PAD.right)
-        const innerH=HEIGHT-PAD.top-PAD.bottom
-        const xMax=mask.ratios.reduce((value,ratio)=>
-            Math.max(value,ratio.totalIntensity),1)
-        const maxAbs=mask.ratios.reduce((value,ratio)=>
-            Math.max(value,Math.abs(ratio.delta)),0.05)
-        const x=d3.scaleLinear().domain([0,xMax]).range([PAD.left,PAD.left+innerW])
-        const y=d3.scaleLinear().domain([-maxAbs*1.1,maxAbs*1.1])
-            .range([PAD.top+innerH,PAD.top])
-        const svg=d3.select(host).append("svg")
-            .attr("width",width)
-            .attr("height",HEIGHT)
-            .attr("viewBox",`0 0 ${width} ${HEIGHT}`)
-            .attr("preserveAspectRatio","none")
-            .style("display","block")
-        const mismatch=new Map(mask.points.map(point=>[point.index,point.mismatch]))
-        /* LE ZÉRO EST LE RAPPORT NATUREL : tout l'intérêt est de voir qui s'en
-           écarte, et dans quel sens. */
-        svg.append("line")
-            .attr("x1",PAD.left).attr("x2",PAD.left+innerW)
-            .attr("y1",y(0)).attr("y2",y(0))
-            .attr("stroke","rgba(255,255,255,0.35)")
-            .attr("stroke-dasharray","3 2")
-        const nodes=svg.append("g").selectAll("circle").data(mask.ratios).join("circle")
-            .attr("cx",ratio=>x(ratio.totalIntensity))
-            .attr("cy",ratio=>y(ratio.delta))
-            .attr("r",ratio=>mismatch.get(ratio.lightPoint)?3.4:2.2)
-            .attr("fill",ratio=>mismatch.get(ratio.lightPoint)
-                ?"#ffb347"
-                :(ratio.simulated?"rgba(120,200,255,0.9)":"rgba(172,255,47,0.85)"))
-            .attr("stroke",ratio=>mismatch.get(ratio.lightPoint)?"#ffe0b0":"none")
-            .attr("stroke-width",1)
-        nodes.append("title").text(ratio=>{
-            const lines=[
-                `${ratio.lightKey} → ${ratio.heavyKey??"(simulated satellite)"}`,
-                `δ ${(ratio.delta*100).toFixed(1)} % · ratio ${ratio.ratio.toExponential(2)} / naturel ${ratio.theoretical.toExponential(2)}`,
-                `N(${ratio.symbol}) ${ratio.atoms} · I ${ratio.lightIntensity.toPrecision(4)} + ${ratio.heavyIntensity.toPrecision(4)}`
-            ]
-            if(mismatch.get(ratio.lightPoint))
-                lines.push("⚠ this peak's temporary marriage is not the most isotopic")
-            return lines.join("\n")
+        const showDefault=()=>{
+            const flagged=(mask.points??[]).filter(point=>point.mismatch).length
+            const simulated=(mask.ratios??[])
+                .filter(ratio=>ratio.simulated||ratio.heavyKey==null).length
+            details.textContent=
+                `${mask.ratios.length} pair(s) · ${mask.points?.length??0} peak(s) with a delta`
+                +(simulated?` · ${simulated} M+1 found by mass`:"")
+                +(flagged?` · ${flagged} mismatch(es)`:"")
+                +"\nHover a marker to compare the current marriage with its challengers."
+        }
+        const showPoint=pointIndex=>{
+            const point=(mask.points??[]).find(item=>item.index===pointIndex)
+            if(!point){ showDefault(); return }
+            const lines=[`Peak ${point.index} — current marriage: ${point.married??"(none)"}`]
+            for(const delta of point.deltas){
+                const tag=delta.key===point.married?"● married"
+                    :delta.key===point.bestKey?"◆ best δ":"○ challenger"
+                const suffix=simulatedKeys.has(`${point.index}\u0000${delta.key}`)
+                    ?" · M+1 by mass":""
+                lines.push(`${tag}  ${delta.key}  δ ${(delta.delta*100).toFixed(2)} %${suffix}`)
+            }
+            details.textContent=lines.join("\n")
+        }
+        const showMarker=marker=>{
+            if(marker?.point!==null&&marker?.point!==undefined){ showPoint(marker.point); return }
+            if(marker?.ratio){
+                details.textContent=
+                    `Simulated satellite ${marker.key} — no proposed base\n`
+                    +`δ ${(marker.y*100).toFixed(2)} %\n`
+                    +`I ${marker.ratio.lightIntensity.toPrecision(4)}`
+                    +` + ${marker.ratio.heavyIntensity.toPrecision(4)}`
+                return
+            }
+            showDefault()
+        }
+        showDefault()
+
+        /* LE GRAPHIQUE EST UN PLOT2DWEBGL, PAS UN SVG D3.
+
+           Le funnel précédent posait un nœud SVG par marqueur et par halo, et
+           recalculait leurs positions à chaque geste de zoom. Sur un spectre de
+           plusieurs milliers de pics, cela faisait payer le DOM à chaque frame.
+           Le calque GL reçoit les mêmes points sous forme de buffers: le zoom
+           ne déplace plus que la caméra, et les catégories deviennent des traces
+           distinctes (une couleur et une forme par trace).
+
+           La légende, le panneau de détail et les boutons restent en DOM: ils
+           sont peu nombreux et doivent rester lisibles sans WebGL. */
+        const plotHost=CE("div",{className:"an-funnel-plot"},[])
+        stylize(plotHost,{
+            width:"100%",height:"300px",minHeight:"220px",minWidth:"0"
         })
-        const compact=value=>value>=1e6?`${(value/1e6).toFixed(1)}M`
-            :value>=1e3?`${(value/1e3).toFixed(1)}k`
-            :value>=10?value.toFixed(0):value.toFixed(1)
-        svg.append("g").attr("transform",`translate(0,${PAD.top+innerH})`)
-            .call(d3.axisBottom(x)
-                .ticks(Math.max(2,Math.min(4,Math.floor(innerW/50))))
-                .tickSize(3)
-                .tickFormat(compact))
-            .call(group=>group.selectAll("text")
-                .attr("fill","rgba(255,255,255,0.6)")
-                .attr("font-size",8))
-            .call(group=>group.selectAll("line,path")
-                .attr("stroke","rgba(255,255,255,0.35)"))
-        svg.append("g").attr("transform",`translate(${PAD.left},0)`)
-            .call(d3.axisLeft(y).ticks(3).tickSize(0)
-                .tickFormat(value=>`${(value*100).toFixed(0)}%`))
-            .call(group=>group.selectAll("text")
-                .attr("fill","rgba(255,255,255,0.6)")
-                .attr("font-size",8)
-                .attr("dx",-2))
-            .call(group=>group.select(".domain").remove())
-        const flagged=mask.ratios.filter(ratio=>mismatch.get(ratio.lightPoint)).length
+        host.appendChild(plotHost)
+
+        const markerByTrace=new Map()
+        const plot=new Plot2DWebGL([],
+            `${this.title} funnel`,this.origin,plotHost,{
+                onHoverChange:info=>{
+                    if(!info){ showDefault(); return }
+                    const marker=(markerByTrace.get(info.traceId)??[])[info.tracePoint]
+                    showMarker(marker)
+                },
+                onPinChange:info=>{
+                    if(!info) return
+                    const marker=(markerByTrace.get(info.traceId)??[])[info.tracePoint]
+                    if(marker) showMarker(marker)
+                }
+            })
+        this.funnelPlots=this.funnelPlots??[]
+        this.funnelPlots.push(plot)
+        plot.glRenderOptions.opacity=1
+        plot.glLayer?.setOpacity?.(1)
+        plot.parameters.axis.bottom.autoLabel=false
+        plot.parameters.axis.left.autoLabel=false
+        plot.parameters.axis.bottom.label="I(M) + I(M+1) — signal used by the ratio"
+        plot.parameters.axis.left.label="δ = measured / natural − 1"
+
+        /* LE CADRAGE EST CELUI DU FUNNEL, pas le cadrage générique du plot.
+           En y, un delta se lit autour de zéro: on garde donc un domaine
+           symétrique. En x, l'intensité totale part de zéro. Cette règle est
+           branchée sur `autoDomainFor`, donc elle vaut aussi pour le zoom-out
+           et le double-clic qui revient au cadrage automatique. */
+        const baseAutoDomain=plot.autoDomainFor.bind(plot)
+        plot.autoDomainFor=(axis,bounds)=>{
+            if(axis==="left"&&bounds){
+                const span=Math.max(0.01,Math.abs(bounds.yMin),Math.abs(bounds.yMax))*1.15
+                return [-span,span]
+            }
+            if(axis==="bottom"&&bounds){
+                const low=Math.min(0,bounds.xMin)
+                const high=Math.max(low+1,bounds.xMax)
+                const pad=(high-low)*0.04
+                return [low-pad,high+pad]
+            }
+            return baseAutoDomain(axis,bounds)
+        }
+
+        const traces=[]
+        const addTrace=(id,title,list,style)=>{
+            if(!list.length) return
+            const xs=new Float64Array(list.length)
+            const ys=new Float64Array(list.length)
+            for(let index=0;index<list.length;index++){
+                xs[index]=list[index].x
+                ys[index]=list[index].y
+            }
+            traces.push(new XYTrace({
+                id,title,
+                options:{mode:"points",layer:"gl",
+                    color:style.color,opacity:style.opacity??1,
+                    line:{size:1},
+                    marker:{shape:style.shape??"circle",size:style.size??5}},
+                wave:Wave.fromCoordinates(xs,ys,{},["signal","δ"])
+            }))
+            markerByTrace.set(id,list)
+        }
+        addTrace("funnel:massHalo","M+1 found by mass, not proposed",
+            markers.filter(marker=>marker.simulatedPair),
+            {color:"rgba(120,200,255,0.95)",shape:"ring",size:9})
+        for(const kind of ["simulated","challenger","bestChallenger","married","marriedBest"]){
+            addTrace(`funnel:${kind}`,titleOf[kind],
+                markers.filter(marker=>marker.kind===kind),
+                {color:colorOf({kind}),shape:shapeOf({kind}),size:sizeOf({kind}),
+                    opacity:kind==="challenger"?0.95:1})
+        }
+        let xMax=0
+        for(const marker of markers) xMax=Math.max(xMax,marker.x)
+        if(!(xMax>0)) xMax=1
+        traces.push(new XYTrace({
+            id:"funnel:natural",
+            title:"natural ratio δ = 0",
+            options:{mode:"lines-between-points",layer:"gl",
+                color:"rgba(255,255,255,0.42)",opacity:0.8,
+                line:{size:1},marker:{size:0}},
+            wave:Wave.fromCoordinates(
+                Float64Array.from([0,xMax]),
+                Float64Array.from([0,0]),{},["signal","δ"])
+        }))
+        markerByTrace.set("funnel:natural",[])
+        plot.setTraces(traces)
+        plot.drawGraph()
+        /* Le plot est construit dans une section encore détachée, où sa boîte
+           mesure zéro: le premier drawGraph ne peut rien peindre. On redessine
+           une fois la section posée dans le document. */
+        requestAnimationFrame(()=>{
+            if(host.isConnected) plot.drawGraph()
+        })
+
+        const zoomBy=factor=>{
+            const xDomain=plot.parameters.axis.bottom.domain
+            const yDomain=plot.parameters.axis.left.domain
+            if(!Array.isArray(xDomain)||!Array.isArray(yDomain)) return
+            const changedX=plot.zoomAxisDomain("bottom",(xDomain[0]+xDomain[1])/2,factor)
+            const changedY=plot.zoomAxisDomain("left",(yDomain[0]+yDomain[1])/2,factor)
+            if(changedX||changedY) plot.drawGraph()
+        }
+        const resetView=()=>{
+            plot.parameters.axis.bottom.autoDomain=true
+            plot.parameters.axis.left.autoDomain=true
+            plot.drawGraph()
+        }
+
+        const legend=CE("div",{className:"an-funnel-legend"},[])
+        stylize(legend,{
+            display:"flex",flexWrap:"wrap",gap:"10px",
+            fontSize:"0.7em",opacity:"0.9",alignItems:"center"
+        })
+        const addLegend=(kind,text)=>{
+            const item=CE("span",{},[])
+            stylize(item,{display:"inline-flex",alignItems:"center",gap:"4px"})
+            const swatch=CE("span",{},[])
+            const hollow=kind==="challenger"||kind==="simulated"
+            stylize(swatch,{
+                width:"9px",height:"9px",display:"inline-block",
+                borderRadius:kind==="bestChallenger"?"0":"50%",
+                transform:kind==="bestChallenger"?"rotate(45deg)":"none",
+                background:hollow?"transparent":colorOf({kind}),
+                border:"1px solid "+colorOf({kind})
+            })
+            item.append(swatch,CE("span",{},[text]))
+            legend.appendChild(item)
+        }
+        const addRingLegend=text=>{
+            const item=CE("span",{},[])
+            stylize(item,{display:"inline-flex",alignItems:"center",gap:"4px"})
+            const swatch=CE("span",{},[])
+            stylize(swatch,{
+                width:"11px",height:"11px",display:"inline-block",
+                borderRadius:"50%",boxSizing:"border-box",
+                border:"1.5px dashed rgba(120,200,255,0.95)"
+            })
+            item.append(swatch,CE("span",{},[text]))
+            legend.appendChild(item)
+        }
+        addLegend("marriedBest","current marriage · best δ")
+        addLegend("married","current marriage · not best")
+        addLegend("bestChallenger","best challenger δ")
+        addLegend("challenger","other challenger δ")
+        if(markers.some(marker=>marker.simulatedPair))
+            addRingLegend("M+1 found by mass, not proposed")
+        if(markers.some(marker=>marker.kind==="simulated"))
+            addLegend("simulated","M+1 found by mass, no proposed base")
+        host.append(legend,details)
+
+        const zoomRow=CE("div",{className:"an-funnel-zoom"},[])
+        stylize(zoomRow,{
+            display:"flex",gap:"5px",alignItems:"center",
+            fontSize:"0.7em",opacity:"0.75"
+        })
+        const makeButton=(text,title,action)=>{
+            const button=CE("button",{type:"button"},[text])
+            button.title=title
+            stylize(button,{
+                width:"22px",height:"20px",padding:"0",lineHeight:"18px",
+                fontSize:"0.95em",cursor:"pointer",borderRadius:"3px",
+                border:"1px solid rgba(255,255,255,0.25)",
+                background:"rgba(255,255,255,0.08)",color:"inherit"
+            })
+            button.addEventListener("click",action)
+            return button
+        }
+        zoomRow.append(
+            makeButton("−","zoom out",()=>zoomBy(0.7)),
+            makeButton("+","zoom in",()=>zoomBy(1.4)),
+            makeButton("⌂","reset zoom",resetView),
+            CE("span",{},["wheel or drag to zoom · double-click to reset"])
+        )
+        host.appendChild(zoomRow)
+
+        const flagged=(mask.points??[]).filter(point=>point.mismatch).length
         if(flagged>0){
             const warn=CE("div",{},[`${flagged} peak(s) to re-inspect isotopically`])
-            stylize(warn,{fontSize:"0.7em",color:"#ffb347",padding:"1px 0"})
+            stylize(warn,{fontSize:"0.72em",color:"#ffb347",padding:"1px 0"})
             host.appendChild(warn)
         }
         return host
