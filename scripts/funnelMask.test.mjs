@@ -104,8 +104,8 @@ test("un frère proposé donne un rapport avec un delta vérifiable",()=>{
     const heavyIntensity=lightIntensity*6*theoretical1312*1.5
     const mask=computeFunnelMask({
         entries:[
-            reading(glucose,0,{intensity:lightIntensity}),
-            reading(glucose13,1,{intensity:heavyIntensity})
+            reading(glucose,0,{intensity:lightIntensity,errorPpm:1.2}),
+            reading(glucose13,1,{intensity:heavyIntensity,errorPpm:-2.8})
         ],
         element:"C",lightA:12,heavyA:13
     })
@@ -115,6 +115,21 @@ test("un frère proposé donne un rapport avec un delta vérifiable",()=>{
     ok(mask.ratios[0].simulated===false,"this pair was proposed, not simulated")
     ok(mask.ratios[0].atoms===6,"the stoichiometry is six carbons")
     ok(mask.points.length===2,"both peaks carry a delta")
+    /* L'AXE DU FUNNEL PEUT AFFICHER LA MASSE MOYENNE OU LE NOMBRE D'ATOMES:
+       ces grandeurs doivent donc voyager avec chaque delta, pas seulement le
+       signal total. */
+    const deltaAt0=mask.points.find(point=>point.index===0).deltas[0]
+    ok(Number.isFinite(deltaAt0.lightMz)&&Number.isFinite(deltaAt0.heavyMz),
+        "each delta must carry the two peak masses")
+    ok(deltaAt0.atoms===6,"each delta must carry the element count")
+    ok(deltaAt0.totalIntensity===lightIntensity+heavyIntensity,
+        "and the signal used by the ratio")
+    close(deltaAt0.massErrorPpm,4,1e-12,
+        "the cumulative |ppm| error of the two peaks must travel with each delta")
+    ok(deltaAt0.massErrorDa>0,
+        "and its equivalent in mass, for when the plot reads in Da")
+    close(deltaAt0.massErrorDiffPpm,-4,1e-12,
+        "the SIGNED error difference must be err(M+1) − err(M)")
 })
 
 test("sans frère proposé, le satellite est simulé en masse",()=>{
@@ -229,6 +244,59 @@ test("un couple d'isotopes absent ne prétend rien calculer",()=>{
     })
     ok(mask.available===false,"sulfur is not in the proposals")
     ok(mask.ratios.length===0,"and nothing is computed")
+})
+
+test("un mariage non cohérent expose le swap vers le meilleur delta",()=>{
+    const lightIntensity=1000
+    const heavyIntensity=lightIntensity*6*theoretical1312
+    const mask=computeFunnelMask({
+        entries:[
+            reading(glucose,0,{intensity:lightIntensity,errorPpm:2.0}),
+            reading(other,0,{intensity:lightIntensity*0.9,errorPpm:0.1}),
+            reading(glucose13,1,{intensity:heavyIntensity,errorPpm:1.0})
+        ],
+        element:"C",lightA:12,heavyA:13
+    })
+    ok(mask.swaps.length===1,`expected one swap, got ${mask.swaps.length}`)
+    const swap=mask.swaps[0]
+    ok(swap.index===0,"the swap targets the ambiguous peak")
+    ok(swap.fromKey===other.key,"the current marriage is the mass winner")
+    ok(swap.toKey===glucose.key,"the swap marries the coherent reading")
+    ok(swap.fromDelta===null,"the mass winner carries no isotopic delta")
+    close(swap.toDelta,0,1e-9,"the coherent reading is at delta 0")
+})
+
+test("les swaps partagent une signature de permutation",()=>{
+    const lightIntensity=1000
+    const heavyIntensity=lightIntensity*6*theoretical1312
+    const mask=computeFunnelMask({
+        entries:[
+            reading(glucose,0,{intensity:lightIntensity,errorPpm:2.0}),
+            reading(other,0,{intensity:lightIntensity*0.9,errorPpm:0.1}),
+            reading(glucose13,1,{intensity:heavyIntensity,errorPpm:1.0})
+        ],
+        element:"C",lightA:12,heavyA:13
+    })
+    ok(mask.swapGroups.length===1,"one permutation group")
+    const group=mask.swapGroups[0]
+    ok(group.count===1,"one swap in the group")
+    ok(group.signature.includes("C:+1"),
+        `signature must describe the carbon gain, got ${group.signature}`)
+})
+
+test("un mariage cohérent n'expose aucun swap",()=>{
+    const lightIntensity=1000
+    const heavyIntensity=lightIntensity*6*theoretical1312
+    const mask=computeFunnelMask({
+        entries:[
+            reading(glucose,0,{intensity:lightIntensity,errorPpm:0.1}),
+            reading(other,0,{intensity:lightIntensity*0.9,errorPpm:2.0}),
+            reading(glucose13,1,{intensity:heavyIntensity,errorPpm:1.0})
+        ],
+        element:"C",lightA:12,heavyA:13
+    })
+    ok(mask.swaps.length===0,"the coherent marriage needs no swap")
+    ok(mask.swapGroups.length===0,"and no permutation group")
 })
 
 console.log(`\n${passed} passed, ${failures.length} failed`)

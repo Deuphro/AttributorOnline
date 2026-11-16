@@ -246,6 +246,33 @@ export function isotopeRatio({lightIntensity,heavyIntensity,atoms,theoretical}){
     return {ratio,delta:ratio/theoretical-1}
 }
 
+function compositionDiff(fromAtoms,toAtoms){
+    const symbols=new Set([...fromAtoms.keys(),...toAtoms.keys()])
+    const terms=[]
+    for(const symbol of [...symbols].sort()){
+        const from=fromAtoms.get(symbol)
+        const to=toAtoms.get(symbol)
+        const As=new Set([...(from?.keys()??[]),...(to?.keys()??[])])
+        let total=0
+        const shifts=[]
+        for(const A of [...As].sort((a,b)=>a-b)){
+            const delta=countOf(toAtoms,symbol,A)-countOf(fromAtoms,symbol,A)
+            total+=delta
+            if(delta) shifts.push({symbol,A,delta})
+        }
+        if(total) terms.push({symbol,delta:total})
+        else terms.push(...shifts)
+    }
+    const encode=list=>list
+        .map(term=>term.A===undefined
+            ?`${term.symbol}:${term.delta>0?"+":""}${term.delta}`
+            :`${term.symbol}${term.A}:${term.delta>0?"+":""}${term.delta}`)
+        .join(",")
+    const signed=encode(terms)
+    const negated=encode(terms.map(term=>({...term,delta:-term.delta})))
+    return {terms,signed,negated,key:signed<negated?signed:negated}
+}
+
 /* LE CŒUR : tous les rapports d'un spectre pour un couple d'isotopes.
 
    `peakList` n'est requis que pour la simulation : il doit exposer
@@ -275,6 +302,8 @@ export function computeFunnelMask({
     const mask={
         element:symbol,
         lightA,heavyA,
+        lightMass,heavyMass,
+        adjacentMass:null,
         theoretical,
         lightAbundance,heavyAbundance,
         ppm:Number(ppm)>0?Number(ppm):10,
@@ -286,6 +315,7 @@ export function computeFunnelMask({
     if(!mask.available||!(theoretical>0)) return mask
 
     const adjacentMass=heavyMass-lightMass
+    mask.adjacentMass=adjacentMass
     const proposed=findProposedPermutations(candidates,{symbol,lightA,heavyA})
 
     const pushRatio=(pair)=>{
@@ -299,6 +329,32 @@ export function computeFunnelMask({
             theoretical
         })
         if(!measured) return
+        /* L'ERREUR DE MASSE PORTÉE PAR CHAQUE PIC, en valeur absolue et en ppm.
+           On la déduit de `errorPpm` quand le crible la fournit; sinon de la
+           masse mesurée et de la masse théorique. La somme des deux est
+           l'erreur cumulée des pics qui entrent RÉELLEMENT dans le rapport:
+           sans elle, un ratio peut sembler cohérent alors que ses deux masses
+           ont dérivé du même côté. Leur DIFFÉRENCE, elle, annule un décalage de
+           calibration commun: elle ne garde que ce qui est propre à la paire. */
+        const signedPpmOf=item=>{
+            if(Number.isFinite(item?.errorPpm)) return item.errorPpm
+            const target=Number(item?.mz)
+            const measuredMz=Number(item?.measuredMz)
+            if(Number.isFinite(target)&&Number.isFinite(measuredMz)&&target!==0)
+                return (measuredMz-target)/target*1e6
+            return null
+        }
+        const lightSignedPpm=signedPpmOf(light)
+        const heavySignedPpm=signedPpmOf(heavy)
+        const known=lightSignedPpm!==null&&heavySignedPpm!==null
+        const lightErrorPpm=known?Math.abs(lightSignedPpm):null
+        const heavyErrorPpm=known?Math.abs(heavySignedPpm):null
+        const massErrorPpm=known?lightErrorPpm+heavyErrorPpm:null
+        const massErrorDiffPpm=known?heavySignedPpm-lightSignedPpm:null
+        const massErrorDa=known
+            ?(lightErrorPpm*light.measuredMz
+                +heavyErrorPpm*heavy.measuredMz)*1e-6
+            :null
         mask.ratios.push({
             symbol,
             lightA,heavyA,
@@ -315,6 +371,11 @@ export function computeFunnelMask({
             theoretical,
             ratio:measured.ratio,
             delta:measured.delta,
+            lightErrorPpm,
+            heavyErrorPpm,
+            massErrorPpm,
+            massErrorDiffPpm,
+            massErrorDa,
             totalIntensity:light.intensity+heavy.intensity
         })
     }
@@ -350,6 +411,8 @@ export function computeFunnelMask({
                     point:hit.index,
                     key:null,
                     measuredMz:hit.mz??predicted,
+                    mz:predicted,
+                    errorPpm:Number.isFinite(hit.errorPpm)?hit.errorPpm:null,
                     intensity:hit.intensity
                 },
                 simulated:true
@@ -371,7 +434,26 @@ export function computeFunnelMask({
         if(!byKey){ byKey=new Map(); deltasByPoint.set(point,byKey) }
         const existing=byKey.get(key)
         if(!existing||Math.abs(ratio.delta)<Math.abs(existing.delta))
-            byKey.set(key,{delta:ratio.delta,ratio:ratio.ratio,totalIntensity:ratio.totalIntensity})
+            /* ON GARDE LE CONTEXTE DE LA PAIRE, pas seulement son écart: la
+               lecture en abscisse peut se faire sur le signal, sur la masse
+               moyenne des deux pics ou sur le nombre d'atomes de l'élément
+               étudié. Ces trois grandeurs sont donc portées par chaque delta,
+               pour que le rendu n'ait pas à retourner chercher le ratio. */
+            byKey.set(key,{
+                delta:ratio.delta,
+                ratio:ratio.ratio,
+                totalIntensity:ratio.totalIntensity,
+                lightMz:ratio.lightMz,
+                heavyMz:ratio.heavyMz,
+                lightIntensity:ratio.lightIntensity,
+                heavyIntensity:ratio.heavyIntensity,
+                lightErrorPpm:ratio.lightErrorPpm,
+                heavyErrorPpm:ratio.heavyErrorPpm,
+                massErrorPpm:ratio.massErrorPpm,
+                massErrorDiffPpm:ratio.massErrorDiffPpm,
+                massErrorDa:ratio.massErrorDa,
+                atoms:ratio.atoms
+            })
     }
     for(const ratio of mask.ratios){
         note(ratio.lightPoint,ratio.lightKey,ratio)
@@ -404,5 +486,47 @@ export function computeFunnelMask({
         })
     }
     mask.points.sort((a,b)=>a.index-b.index)
+
+    const candidateByPointKey=new Map()
+    for(const candidate of candidates)
+        candidateByPointKey.set(candidateId(candidate.point,candidate.key),candidate)
+
+    const swaps=[]
+    for(const point of mask.points){
+        if(!point.mismatch) continue
+        if(typeof point.bestKey!=="string") continue
+        const deltaByKey=new Map((point.deltas??[]).map(delta=>[delta.key,delta]))
+        const toDelta=deltaByKey.get(point.bestKey)
+        if(!toDelta) continue
+        const fromDelta=deltaByKey.get(point.married)??null
+        const from=candidateByPointKey.get(candidateId(point.index,point.married))
+        const to=candidateByPointKey.get(candidateId(point.index,point.bestKey))
+        const diff=from&&to?compositionDiff(from.atoms,to.atoms):null
+        swaps.push({
+            index:point.index,
+            fromKey:point.married,
+            toKey:point.bestKey,
+            fromDelta:fromDelta?fromDelta.delta:null,
+            toDelta:toDelta.delta,
+            gain:fromDelta?Math.abs(fromDelta.delta)-Math.abs(toDelta.delta):null,
+            signature:diff?diff.signed:null,
+            groupKey:diff?diff.key:null
+        })
+    }
+    mask.swaps=swaps
+
+    const groups=new Map()
+    for(const swap of swaps){
+        if(!swap.groupKey) continue
+        let group=groups.get(swap.groupKey)
+        if(!group){
+            group={key:swap.groupKey,signature:swap.groupKey,count:0,swaps:[]}
+            groups.set(swap.groupKey,group)
+        }
+        group.count++
+        group.swaps.push(swap)
+    }
+    mask.swapGroups=[...groups.values()]
+        .sort((a,b)=>b.count-a.count||(a.key<b.key?-1:1))
     return mask
 }

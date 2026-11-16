@@ -8,8 +8,9 @@ import {Formula,FormulaCollection,positiveMassConjugate} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest,proposalsByPoint} from "../attribution.js"
 import {computeFunnelMask,elementsInProposals} from "../funnelMask.js"
+import {isotopologueEnvelope} from "../isotopeMatch.js"
 import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,finalizeAnimatedLayout,applyGridLayout,createAnimatedLayoutWorker,advanceLayoutWorker,stopLayoutWorker,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
-import {windowFor} from "../utils/index.js"
+import {windowFor,scaleToggle,segmentToggle} from "../utils/index.js"
 import {prettyNotation} from "./formulaCollectionHelpers.js"
 import {VirtualRowList} from "./VirtualRowList.js"
 
@@ -2388,7 +2389,14 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                taille de contenu (sinon min-content empêche le shrink). */
             width:"100%",
             minWidth:"0",
-            minHeight:"160px",
+            /* PAS DE `min-height` FIXE: dans une rangée `minmax(0,1fr)`, une
+               hauteur minimale de l'élément le fait DÉBORDER de sa piste quand
+               la fenêtre rétrécit — le graphe descendait alors sur le récap et
+               couvrait l'histogramme. `overflow:hidden` borne en plus le canvas
+               WebGL à sa boîte, quoi qu'il arrive. */
+            minHeight:"0",
+            overflow:"hidden",
+            flex:"1 1 auto",
             background:"rgba(255,255,255,0.04)",
             border:"1px solid rgba(255,255,255,0.15)",borderRadius:"3px"
         })
@@ -2409,34 +2417,175 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                relancerait les plots et rendrait la variation de hauteur qu'on
                vient de subir. Seule une largeur différente change réellement les
                échelles de l'histogramme. */
-            const width=this.forestPlotBox?.clientWidth??0
+            const width=(this.forestPlotBox?.clientWidth
+                ||this.forestRecapHost?.clientWidth||0)
+            if(!width) return
             if(width===this.forestRecapWidth) return
             this.forestRecapWidth=width
             this.renderForestRecap()
+            this.applyRecapFolded?.()
         }
-        content.appendChild(this.forestPlotBox)
+        /* LE GRAPHE AUSSI SE REPLIE. Le panneau sert aux deux lectures — le
+           réseau d'arbres et les rapports isotopiques — et quand on travaille
+           sur le funnel, la hauteur du graphe est de la place perdue. Une barre
+           de titre discrète, du même dessin que celle du récap, suffit. */
+        this.forestPlotPanel=CE("div",{className:"an-forest-panel"},[])
+        stylize(this.forestPlotPanel,{
+            display:"flex",flexDirection:"column",
+            minHeight:"0",minWidth:"0",height:"100%",overflow:"hidden"
+        })
+        const forestHead=CE("div",{className:"an-forest-head",role:"button"},[])
+        forestHead.setAttribute("tabindex","0")
+        stylize(forestHead,{
+            display:"flex",alignItems:"center",gap:"6px",cursor:"pointer",
+            padding:"3px 6px",borderRadius:"4px",
+            border:"1px solid rgba(255,255,255,0.12)",
+            background:"rgba(255,255,255,0.05)",
+            fontSize:"0.72em",fontWeight:"bold",opacity:"0.85",
+            userSelect:"none",flex:"0 0 auto"
+        })
+        const forestCaret=CE("span",{},["▾"])
+        stylize(forestCaret,{width:"1em",display:"inline-block",textAlign:"center"})
+        const forestTitle=CE("span",{},["tree graph"])
+        stylize(forestTitle,{flex:"1 1 auto"})
+        const forestHint=CE("span",{},["click to fold"])
+        stylize(forestHint,{fontWeight:"normal",opacity:"0.5"})
+        forestHead.append(forestCaret,forestTitle,forestHint)
+        this.forestPlotPanel.append(forestHead,this.forestPlotBox)
+        content.appendChild(this.forestPlotPanel)
 
-        /* LE RÉCAPITULATIF, SOUS LE GRAPHE — et il ne s'annonce plus par un titre
-           séparé. Le titre « Attribution » au-dessus du bloc était une étiquette
-           dans le vide: le graphe juste au-dessus est déjà le réseau
-           d'attribution, donc l'étiquette ne distinguait rien — et le récap,
-           lui, s'annonçait par sa première ligne, qui porte le nom du spectre.
-           Une étiquette qui répète ce que la ligne dit déjà est du bruit, et
-           du bruit dans un panneau de lecture coûte de la place à chaque
-           chose. */
+        /* LE RÉCAPITULATIF, SOUS LE GRAPHE — MAIS DANS UN PANNEAU REPLIABLE.
+
+           Il a GRANDI: aux quelques chiffres d'origine sont venus l'histogramme,
+           le funnel isotopique, le cluster et la liste des swaps. Laissé en
+           rangée `auto` sans plafond, il prenait toute la hauteur du panneau et
+           écrasait le graphe d'arbres — celui qu'on est justement venu voir.
+
+           Il vit donc dans un panneau à hauteur plafonnée, avec son propre
+           défilement, et une barre de titre discrète qui le replie d'un clic.
+           La rangée du graphe garde un minimum, et le récap ne peut plus lui
+           disputer l'écran. */
+        this.forestRecapPanel=CE("div",{className:"an-recap-panel"},[])
+        stylize(this.forestRecapPanel,{
+            display:"flex",flexDirection:"column",
+            minHeight:"0",minWidth:"0",overflow:"hidden"
+        })
+        const recapHead=CE("div",{className:"an-recap-head",role:"button"},[])
+        recapHead.setAttribute("tabindex","0")
+        stylize(recapHead,{
+            display:"flex",alignItems:"center",gap:"6px",cursor:"pointer",
+            padding:"3px 6px",borderRadius:"4px",
+            border:"1px solid rgba(255,255,255,0.12)",
+            background:"rgba(255,255,255,0.05)",
+            fontSize:"0.72em",fontWeight:"bold",opacity:"0.85",
+            userSelect:"none",flex:"0 0 auto"
+        })
+        const recapCaret=CE("span",{},["▾"])
+        stylize(recapCaret,{width:"1em",display:"inline-block",textAlign:"center"})
+        const recapTitle=CE("span",{},["brute-force recap"])
+        stylize(recapTitle,{flex:"1 1 auto"})
+        const recapHint=CE("span",{},["click to fold"])
+        stylize(recapHint,{fontWeight:"normal",opacity:"0.5"})
+        recapHead.append(recapCaret,recapTitle,recapHint)
         this.forestRecapHost=CE("div",{className:"an-recap"},[])
-        /* UN BLOC UNIQUE, BORDÉ: les lignes se distinguaient par rien, donc une
-           pile de texte de tailles voisines se lisait comme un paragraphe —
-           on ne savait pas où un spectre finissait et où l'autre commençait.
-           `alignContent:start` empêche la grille d'étirer ses lignes, et
-           `overflow:auto` couvre un récap à plusieurs entrées sur hauteur
-           réduite. */
-        stylize(this.forestRecapHost,{display:"grid",gap:"6px",
-            alignContent:"start",minHeight:"0",overflow:"auto",
-            padding:"5px 7px",borderRadius:"4px",
+        /* UN BLOC UNIQUE, BORDÉ, EN COLONNE FLEX — pas une grille: les blocs
+           doivent s'empiler strictement, et une grille dont la hauteur est
+           contrainte peut placer deux enfants dans des rangées qui se
+           recouvrent visuellement. Chaque bloc porte `flex:0 0 auto`, donc
+           aucun ne se comprime: c'est `overflow:auto` qui fait défiler. */
+        stylize(this.forestRecapHost,{display:"flex",flexDirection:"column",gap:"8px",
+            minHeight:"0",minWidth:"0",flex:"1 1 auto",overflow:"auto",
+            padding:"5px 7px",borderRadius:"4px",fontSize:"1em",
             border:"1px solid rgba(255,255,255,0.12)",
             background:"rgba(255,255,255,0.03)"})
-        content.appendChild(this.forestRecapHost)
+        this.forestRecapPanel.append(recapHead,this.forestRecapHost)
+        content.appendChild(this.forestRecapPanel)
+        const applyRecapFolded=()=>{
+            const folded=!!this.forestRecapFolded
+            /* LA HAUTEUR EST LUE SUR LA FENÊTRE, pas sur l'écran: `46vh` peut
+               dépasser un dialogue court et écraser le graphe. On donne ~60 %
+               au récap, en laissant toujours de la place à la rangée du graphe
+               pour qu'elle ne tombe pas à zéro. */
+            const usable=content.clientHeight||600
+            const panelHeight=Math.max(160,
+                Math.min(Math.round(usable*0.6),usable-90))
+            this.forestRecapHost.style.display=folded?"none":"flex"
+            recapCaret.textContent=folded?"▸":"▾"
+            recapHint.textContent=folded?"click to unfold":"click to fold"
+            /* HAUTEUR EXPLICITE, pas un plafond: un `max-height` sur une
+               colonne flex n'indique pas à l'enfant défilant la place dont il
+               dispose, et le contenu se chevauchait. Une hauteur fixe donne un
+               vrai viewport interne. Mais si le GRAPHE est replié, le récap
+               occupe la rangée `1fr` de la grille et doit s'y étirer tout seul. */
+            if(this.forestPlotFolded){
+                this.forestRecapPanel.style.height="auto"
+            }else{
+                this.forestRecapPanel.style.height=folded?"auto":`${panelHeight}px`
+            }
+            this.forestRecapPanel.style.maxHeight="none"
+            recapHead.setAttribute("aria-expanded",folded?"false":"true")
+        }
+        this.applyRecapFolded=applyRecapFolded
+        const toggleRecap=()=>{
+            this.forestRecapFolded=!this.forestRecapFolded
+        applyRecapFolded()
+
+        /* LA GRILLE CHANGE DE FORME QUAND LE GRAPHE SE REPLIE. Replier le
+           graphe en laissant sa rangée `1fr` intacte ne rendrait pas un pixel au
+           récap: le vide resterait en haut. On inverse donc la répartition —
+           l'en-tête en `auto`, le récap en `1fr` — pour que la place rendue
+           aille réellement au contenu qu'on regarde. */
+        const applyForestFolded=()=>{
+            const folded=!!this.forestPlotFolded
+            this.forestPlotBox.style.display=folded?"none":"block"
+            this.forestPlotPanel.style.height=folded?"auto":"100%"
+            content.style.gridTemplateRows=folded
+                ?"auto minmax(0,1fr)"
+                :"minmax(0,1fr) auto"
+            forestCaret.textContent=folded?"▸":"▾"
+            forestHint.textContent=folded?"click to unfold":"click to fold"
+            forestHead.setAttribute("aria-expanded",folded?"false":"true")
+            this.applyRecapFolded?.()
+            if(!folded){
+                /* LE GRAPHE A ÉTÉ MESURÉ À ZÉRO pendant le repli: on relance sa
+                   taille et le récap (qui lit la même largeur) une fois la place
+                   rendue, plutôt que de peindre dans une boîte encore fermée. */
+                requestAnimationFrame(()=>{
+                    this.forestPlot?.handleResize?.()
+                    this.forestPlot?.drawGraph?.()
+                })
+            }
+        }
+        this.applyForestFolded=applyForestFolded
+        const toggleForest=()=>{
+            this.forestPlotFolded=!this.forestPlotFolded
+            applyForestFolded()
+        }
+        forestHead.addEventListener("click",toggleForest)
+        forestHead.addEventListener("keydown",event=>{
+            if(event.key==="Enter"||event.key===" "){
+                event.preventDefault()
+                toggleForest()
+            }
+        })
+        applyForestFolded()
+
+            if(!this.forestRecapFolded){
+                /* LE RÉCAP S'ÉTAIT DESSINÉ DANS UNE BOÎTE FERMÉE: ses
+                   histogrammes et ses plots ont été mesurés à zéro et gardent
+                   cette largeur. On le reconstruit une fois la place rendue,
+                   plutôt que de déplacer une à une des échelles périmées. */
+                requestAnimationFrame(()=>this.renderForestRecap?.())
+            }
+        }
+        recapHead.addEventListener("click",toggleRecap)
+        recapHead.addEventListener("keydown",event=>{
+            if(event.key==="Enter"||event.key===" "){
+                event.preventDefault()
+                toggleRecap()
+            }
+        })
+        applyRecapFolded()
 
         /* LE PLOT, EN DERNIER: tout ce qui occupe de la place est déjà en place,
            donc la boîte qu'il mesure est exactement celle qu'il dessinera. */
@@ -2564,14 +2713,18 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const entries=attribution.entries??[]
         const targets=attribution.pointCount??0
         const window=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):null
-        /* LA MEILLEURE ERREUR PAR CIBLE: une cible peut porter plusieurs
-           formules (bestMatches), et c'est la meilleure qui dit ce que le
-           programme a su en faire. */
+        const mask=this.funnelMaskFor?.(inputIndex)??null
+        const marriages=mask?.marriageByPoint??null
+        /* LA MEILLEURE ERREUR PAR CIBLE, et quand un mariage est connu c'est
+           CELUI-LÀ qui compte: après un swap de réinspection, l'histogramme doit
+           suivre le mariage effectif, pas la meilleure lecture en masse. Absent,
+           le défaut du crible reprend — la meilleure erreur de la cible. */
         const best=new Map()
         for(const entry of entries){
             if(!Number.isFinite(entry.errorPpm)) continue
             const index=entry.target?.index
             if(index===undefined||index===null) continue
+            if(marriages?.has(index)&&marriages.get(index)!==entry.key) continue
             const absolute=Math.abs(entry.errorPpm)
             const previous=best.get(index)
             if(previous===undefined||absolute<previous) best.set(index,absolute)
@@ -2604,6 +2757,52 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             for(const error of errors) if(error<=threshold) under++
             return under/targets
         }
+        const bestDeltaKey=new Map()
+        for(const point of mask?.points??[]){
+            if(typeof point.bestKey==="string") bestDeltaKey.set(point.index,point.bestKey)
+        }
+        const previewBest=new Map()
+        if(bestDeltaKey.size){
+            for(const entry of entries){
+                const index=entry.target?.index
+                if(index===undefined||index===null) continue
+                const wanted=bestDeltaKey.get(index)
+                if(wanted===undefined||entry.key!==wanted) continue
+                if(!Number.isFinite(entry.errorPpm)) continue
+                const absolute=Math.abs(entry.errorPpm)
+                const previous=previewBest.get(index)
+                if(previous===undefined||absolute<previous)
+                    previewBest.set(index,absolute)
+            }
+        }
+        const previewErrors=[]
+        let previewChanged=0
+        const seenTarget=new Set()
+        for(const [index,error] of best){
+            seenTarget.add(index)
+            const preview=previewBest.has(index)?previewBest.get(index):error
+            if(preview!==error) previewChanged++
+            previewErrors.push(preview)
+        }
+        for(const [index,error] of previewBest){
+            if(seenTarget.has(index)) continue
+            previewChanged++
+            previewErrors.push(error)
+        }
+        previewErrors.sort((a,b)=>a-b)
+        const previewCounts=new Array(BINS).fill(0)
+        for(const error of previewErrors){
+            let step=Math.floor(error/domain*BINS)
+            if(!Number.isFinite(step)||step<0) step=0
+            if(step>=BINS) step=BINS-1
+            previewCounts[step]++
+        }
+        const previewMedian=previewErrors.length
+            ?(previewErrors.length%2
+                ?previewErrors[(previewErrors.length-1)>>1]
+                :(previewErrors[previewErrors.length/2-1]
+                    +previewErrors[previewErrors.length/2])/2)
+            :null
         return {
             /* LE TITRE VIENT DE LA VAGUE, parce que le résultat lui-même ne le
                porte pas: deux spectres du même dossier ne se distinguent que par
@@ -2623,9 +2822,13 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             keptMatches:attribution.keptMatches??null,
             unexplained:Math.max(0,targets-errors.length),
             truncated:!!attribution.truncated,
-            under:window===null?null:share(window),
-            half:window===null?null:share(window/2),
-            tenth:window===null?null:share(window/10)
+             under:window===null?null:share(window),
+             half:window===null?null:share(window/2),
+             tenth:window===null?null:share(window/10),
+             previewCounts,
+             previewChanged,
+             previewMedian,
+             previewAvailable:bestDeltaKey.size>0
         }
     }
 
@@ -2663,7 +2866,9 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
     renderForestRecap(){
         const host=this.forestRecapHost
         if(!host) return
-        this.forestRecapWidth=this.forestPlotBox?.clientWidth??null
+        this.forestRecapWidth=(this.forestPlotBox?.clientWidth
+            ||this.forestRecapHost?.clientWidth||null)
+        this.recapChartByInput=new Map()
         /* Les funnels sont des Plot2DWebGL: chacun tient un contexte GPU. Le
            récap est reconstruit à chaque redimensionnement du graphe d'arbres,
            donc les anciens plots doivent être libérés AVANT que le DOM ne les
@@ -2711,11 +2916,19 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             "Brute force — the sieve, not the trees above"
             +(ppm!==null?` · window ${this.formatPPM(ppm)} ppm`:"")
         ])
-        stylize(caption,{fontSize:"0.72em",opacity:"0.6",fontWeight:"bold"})
+        stylize(caption,{
+            fontSize:"0.72em",opacity:"0.6",fontWeight:"bold",
+            flex:"0 0 auto"
+        })
         host.appendChild(caption)
         for(const row of rows){
             const line=CE("div",{className:"an-recap-line"},[])
-            stylize(line,{display:"grid",gap:"2px",minHeight:"0"})
+            stylize(line,{
+                display:"flex",flexDirection:"column",gap:"2px",
+                minHeight:"0",minWidth:"0",flex:"0 0 auto",
+                paddingBottom:"6px",
+                borderBottom:"1px solid rgba(255,255,255,0.08)"
+            })
             const head=CE("div",{},[row.title])
             stylize(head,{fontSize:"0.72em",opacity:"0.65",overflow:"hidden"})
             line.appendChild(head)
@@ -2748,7 +2961,9 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             ])
             stylize(histogramLabel,{fontSize:"0.7em",opacity:"0.55"})
             line.appendChild(histogramLabel)
-            line.appendChild(this.drawForestRecapChart(row))
+            const recapChart=this.drawForestRecapChart(row)
+            this.recapChartByInput.set(row.inputIndex,recapChart)
+            line.appendChild(recapChart)
             const parts=[`${row.readings} reading(s)`]
             if(row.keptMatches!==null) parts.push(`up to ${row.keptMatches}/peak`)
             parts.push(`median ${row.median===null
@@ -2834,6 +3049,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const cache=this.funnelMaskCache
         const cached=cache?.get(cacheKey)
         if(cached&&cached.result===result) return cached.mask
+        const marriageByPoint=this.funnelMarriageByPoint(result,inputIndex)
         const mask=computeFunnelMask({
             entries:result.entries,
             peakList:result.peakList??null,
@@ -2841,9 +3057,10 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             lightA:selection.lightA,
             heavyA:selection.heavyA,
             ppm,
-            marriageByPoint:this.funnelMarriageByPoint(result,inputIndex)
+            marriageByPoint
         })
         mask.selection=selection
+        mask.marriageByPoint=marriageByPoint
         cache?.set(cacheKey,{result,mask})
         return mask
     }
@@ -2907,10 +3124,46 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         })
         const arrow=CE("span",{},["→"])
         stylize(arrow,{opacity:"0.6"})
-        const note=CE("span",{},["δ = (I(heavy)/I(base)/N) / natural − 1"])
+        /* L'AXE DU FUNNEL EST ICI, PAS DANS CHAQUE CARTE: deux spectres du même
+           lot doivent se lire sur la même abscisse, sinon on compare des
+           nuages dont les x ne veulent pas dire la même chose. */
+        const axisToggle=segmentToggle({
+            get:()=>this.funnelXAxis??"intensity",
+            set:value=>{
+                if((this.funnelXAxis??"intensity")===value) return
+                this.funnelXAxis=value
+                refresh()
+            },
+            states:[
+                {label:"signal",value:"intensity"},
+                {label:"mass",value:"mass"},
+                {label:"atoms",value:"atoms"},
+                {label:"|Δ ppm|",value:"massError"},
+                {label:"Δppm",value:"massErrorDiff"}
+            ],
+            title:"Funnel x-axis: signal, average pair mass, element count, cumulative |mass error|, or signed error difference between the two peaks"
+        })
+        const note=CE("span",{},["δ = measured/natural − 1 · ratio = (I(M+1)/I(M))/N · I ratio = I(M+1)/I(M) · |Δ ppm| = |ppm light| + |ppm heavy| · Δppm = err(M+1) − err(M)"])
         stylize(note,{opacity:"0.55",fontSize:"0.92em",marginLeft:"auto"})
+        /* L'ORDONNÉE EST GLOBALE ELLE AUSSI, pour la même raison: deux spectres
+           du même lot doivent se comparer sur la même échelle verticale. */
+        const yAxisToggle=segmentToggle({
+            get:()=>this.funnelYAxis??"delta",
+            set:value=>{
+                if((this.funnelYAxis??"delta")===value) return
+                this.funnelYAxis=value
+                refresh()
+            },
+            states:[
+                {label:"δ",value:"delta"},
+                {label:"ratio",value:"ratio"},
+                {label:"I ratio",value:"intensityRatio"}
+            ],
+            title:"Funnel y-axis: delta, isotopic ratio (Ih/Il/N), or raw intensity ratio (≈ N × natural)"
+        })
         host.append(label("element"),elementSelect,label("pair"),
-            lightSelect,arrow,heavySelect,note)
+            lightSelect,arrow,heavySelect,label("x-axis"),axisToggle,
+            label("y-axis"),yAxisToggle,note)
         return host
     }
 
@@ -2926,7 +3179,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         stylize(host,{
             marginTop:"10px",paddingTop:"8px",
             borderTop:"1px solid rgba(255,255,255,0.18)",
-            display:"flex",flexDirection:"column",gap:"6px",minWidth:"0"
+            display:"flex",flexDirection:"column",gap:"6px",
+            minWidth:"0",flex:"0 0 auto"
         })
         const head=CE("div",{},["Funnel mask — isotopic coherence"])
         stylize(head,{fontSize:"0.82em",fontWeight:"bold",opacity:"0.92"})
@@ -2943,10 +3197,700 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             stylize(card,{display:"flex",flexDirection:"column",gap:"4px",minWidth:"0"})
             const title=CE("div",{},[row.title])
             stylize(title,{fontSize:"0.72em",opacity:"0.65"})
-            card.append(title,this.drawForestFunnelChart(this.funnelMaskFor(row.inputIndex)))
+            const mask=this.funnelMaskFor(row.inputIndex)
+            const result=(this.attributions??[])[row.inputIndex]??null
+            const plotRow=CE("div",{className:"an-funnel-plotrow"},[])
+            stylize(plotRow,{
+                /* LES DEUX BLOCS PARTAGENT LA MÊME HAUTEUR. En `flex-start`, le
+                   plus haut des deux laissait l'autre s'arrêter avant, et les
+                   deux graphes ne se lisaient plus côte à côte. En `stretch`,
+                   les cartes prennent la hauteur de la plus grande; les deux
+                   tracés gardent leur hauteur fixe et un ressort absorbe le
+                   reste, donc les deux zones de graphe sont identiques. */
+                display:"flex",gap:"8px",alignItems:"stretch",
+                flexWrap:"wrap",minWidth:"0"
+            })
+            const cluster=this.drawIsotopeCluster(row.inputIndex,mask,result)
+            stylize(cluster.host,{flex:"1 1 320px",minWidth:"0",
+                display:"flex",flexDirection:"column"})
+            const funnelCard=this.drawForestFunnelChart(mask,{
+                onFocus:marker=>cluster.focus?.(marker),
+                xAxis:this.funnelXAxis??"intensity",
+                yAxis:this.funnelYAxis??"delta"
+            })
+            stylize(funnelCard,{flex:"1 1 320px",minWidth:"0",width:"auto",
+                maxWidth:"100%",display:"flex",flexDirection:"column"})
+            /* UN RESSORT EN BAS DE CHAQUE CARTE: il ne pousse rien, il absorbe
+               la différence de hauteur entre les deux colonnes. Sans lui, la
+               carte la plus courte s'étirerait mais laisserait un vide avant
+               sa bordure. */
+            const funnelSpring=CE("div",{},[])
+            stylize(funnelSpring,{flex:"1 1 auto",minHeight:"0"})
+            funnelCard.appendChild(funnelSpring)
+            const clusterSpring=CE("div",{},[])
+            stylize(clusterSpring,{flex:"1 1 auto",minHeight:"0"})
+            cluster.host.appendChild(clusterSpring)
+            plotRow.append(funnelCard,cluster.host)
+            card.append(title,plotRow)
+            card.appendChild(this.renderFunnelSwaps(row,mask,cluster))
             host.appendChild(card)
         }
         return host
+    }
+
+    renderFunnelSwaps(row,mask,cluster){
+        const host=CE("div",{className:"an-funnel-swaps"},[])
+        stylize(host,{
+            display:"flex",flexDirection:"column",gap:"4px",minWidth:"0",
+            marginTop:"2px"
+        })
+        const swaps=mask?.swaps??[]
+        if(!swaps.length) return host
+        const preview=on=>this.recapChartByInput?.get(row.inputIndex)?.showPreview?.(on)
+        const wave=(()=>{
+            try{ return this.collectInputWaves?.().waves?.[row.inputIndex]??null }
+            catch{ return null }
+        })()
+        const waveKey=typeof this.inspectionWaveKey==="function"
+            ?this.inspectionWaveKey(wave,row.inputIndex)
+            :`index:${row.inputIndex}`
+        const applyOne=swap=>{
+            preview(false)
+            this.applyInspectionChoice?.(`${waveKey}#${swap.index}`,swap.toKey)
+        }
+        const applyMany=list=>{
+            preview(false)
+            this.applyInspectionChoices?.(list.map(swap=>({
+                key:`${waveKey}#${swap.index}`,marriage:swap.toKey
+            })))
+        }
+
+        const header=CE("div",{},[
+            `Swap to a better δ — ${swaps.length} peak(s) in ${mask.swapGroups?.length??0} permutation group(s)`
+        ])
+        stylize(header,{fontSize:"0.74em",fontWeight:"bold",opacity:"0.85"})
+        const applyAll=CE("button",{type:"button"},["apply all"])
+        stylize(applyAll,{fontSize:"0.72em",padding:"1px 6px",cursor:"pointer"})
+        applyAll.addEventListener("click",()=>applyMany(swaps))
+        applyAll.addEventListener("mouseenter",()=>preview(true))
+        applyAll.addEventListener("mouseleave",()=>preview(false))
+        const headRow=CE("div",{},[])
+        stylize(headRow,{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
+        headRow.append(header,applyAll)
+        host.appendChild(headRow)
+        if(row.previewAvailable&&row.previewChanged>0
+            &&row.median!==null&&row.previewMedian!==null){
+            const note=CE("div",{},[
+                `all swaps: median ${this.formatPPM(row.median)} → `
+                +`${this.formatPPM(row.previewMedian)} ppm on ${row.previewChanged} peak(s)`
+            ])
+            stylize(note,{fontSize:"0.7em",opacity:"0.6"})
+            host.appendChild(note)
+        }
+
+        if(mask.swapGroups?.length){
+            const groups=CE("div",{},[])
+            stylize(groups,{display:"flex",flexDirection:"column",gap:"1px",fontSize:"0.72em"})
+            for(const group of mask.swapGroups){
+                const line=CE("div",{},[])
+                stylize(line,{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
+                const label=CE("span",{},[`${group.count}× ${group.signature||"(same composition)"}`])
+                stylize(label,{opacity:"0.8"})
+                const button=CE("button",{type:"button"},["apply group"])
+                stylize(button,{fontSize:"0.9em",padding:"0 5px",cursor:"pointer"})
+                button.addEventListener("click",()=>applyMany(group.swaps))
+                button.addEventListener("mouseenter",()=>preview(true))
+                button.addEventListener("mouseleave",()=>preview(false))
+                const spectraButton=CE("button",{type:"button"},["show pair spectra"])
+                stylize(spectraButton,{
+                    fontSize:"0.9em",padding:"0 5px",cursor:"pointer"
+                })
+                spectraButton.addEventListener("click",()=>
+                    cluster?.showPairSpectra?.(group.swaps))
+                line.append(label,button,spectraButton)
+                groups.appendChild(line)
+            }
+            host.appendChild(groups)
+        }
+
+        const list=CE("div",{},[])
+        stylize(list,{
+            display:"flex",flexDirection:"column",gap:"1px",fontSize:"0.72em",
+            maxHeight:"18vh",overflowY:"auto"
+        })
+        for(const swap of swaps){
+            const line=CE("div",{},[])
+            stylize(line,{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
+            const from=swap.fromDelta===null?"no δ":`δ ${(swap.fromDelta*100).toFixed(2)} %`
+            const to=`δ ${(swap.toDelta*100).toFixed(2)} %`
+            const label=CE("span",{},[
+                `peak ${swap.index} · ${swap.fromKey} (${from}) → ${swap.toKey} (${to})`
+            ])
+            stylize(label,{opacity:"0.82",overflow:"hidden"})
+            const button=CE("button",{type:"button"},["swap"])
+            stylize(button,{fontSize:"0.9em",padding:"0 5px",cursor:"pointer"})
+            button.addEventListener("click",()=>applyOne(swap))
+            button.addEventListener("mouseenter",()=>preview(true))
+            button.addEventListener("mouseleave",()=>preview(false))
+            line.append(label,button)
+            list.appendChild(line)
+        }
+        host.appendChild(list)
+        return host
+    }
+
+    isotopeClusterEnvelope(formula,ppm){
+        if(!formula||typeof formula.isotopologues!=="function") return []
+        const cache=this.clusterEnvelopeCache??(this.clusterEnvelopeCache=new Map())
+        const key=`${formula.key??""}|${ppm}`
+        const cached=cache.get(key)
+        if(cached) return cached
+        let peaks=[]
+        try{
+            const envelope=isotopologueEnvelope(formula,{
+                mz:Number(formula.mz),spanDa:3.5,marginDa:0.6,
+                ratio:1e-6,limit:500,mergePpm:ppm
+            })
+            peaks=envelope.peaks??[]
+        }catch{
+            peaks=[]
+        }
+        cache.set(key,peaks)
+        return peaks
+    }
+
+    isotopeClusterGroupDescriptor(mask,result,swaps){
+        const entries=result?.entries??[]
+        const peakList=result?.peakList
+        if(!entries.length||!peakList||!swaps?.length) return null
+        const entryByPointKey=new Map()
+        for(const entry of entries){
+            const index=entry.target?.index
+            if(index!==undefined&&index!==null)
+                entryByPointKey.set(`${index}\u0000${entry.key}`,entry)
+        }
+        const first=swaps[0]
+        const focalMz=peakList.x?.[first.index]
+        if(!Number.isFinite(focalMz)) return null
+        const ppm=Number(mask?.ppm)>0?Number(mask.ppm):10
+        const series={married:[],challenger:[]}
+        let maxOffset=0
+        for(const swap of swaps){
+            const measuredMz=peakList.x?.[swap.index]
+            if(!Number.isFinite(measuredMz)) continue
+            for(const [role,key] of [
+                ["married",swap.fromKey],
+                ["challenger",swap.toKey]
+            ]){
+                const entry=entryByPointKey.get(`${swap.index}\u0000${key}`)
+                if(!entry?.formula) continue
+                const envelope=this.isotopeClusterEnvelope(entry.formula,ppm)
+                if(!envelope.length) continue
+                const root=envelope.reduce((best,peak)=>
+                    Math.abs(peak.mz-entry.formula.mz)
+                        <Math.abs(best.mz-entry.formula.mz)?peak:best,envelope[0])
+                if(!(root.probability>0)) continue
+                const peaks=envelope.filter(peak=>peak.probability>0).map(peak=>({
+                    mz:focalMz+(peak.mz-root.mz),
+                    intensity:peak.probability/root.probability
+                }))
+                for(const peak of peaks)
+                    maxOffset=Math.max(maxOffset,peak.mz-focalMz)
+                series[role].push({swap,entry,key,peaks})
+            }
+        }
+        if(!series.married.length&&!series.challenger.length) return null
+
+        const firstFormula=series.married[0]?.entry?.formula
+            ??series.challenger[0]?.entry?.formula
+        const charge=Math.max(1,Math.abs(firstFormula?.charge??1))
+        const step=Math.max(0.01,(mask?.adjacentMass??1)/charge)
+        maxOffset=Math.max(maxOffset,step)
+        const high=focalMz+maxOffset+step*0.6
+        const low=focalMz-step*0.4
+        const ticks=new Map([[focalMz,"focal peak = 1"]])
+        for(let k=1;focalMz+k*step<high;k++)
+            ticks.set(focalMz+k*step,`${k}× ${mask?.heavyA??""}${mask?.element??""}`)
+
+        const specs=[]
+        const addEnvelope=(role,color,title)=>{
+            const peaks=series[role].flatMap(item=>item.peaks)
+                .filter(peak=>peak.mz>=low&&peak.mz<=high)
+            if(!peaks.length) return
+            specs.push({id:`cluster:group:${role}:envelope`,title,options:{
+                mode:"sticks-to-zero",layer:"gl",color,opacity:0.62,
+                line:{size:1.5},marker:{size:0}
+            },xs:peaks.map(peak=>peak.mz),ys:peaks.map(peak=>peak.intensity)})
+        }
+        addEnvelope("married","#4cc9f0","married formula simulations (focal = 1)")
+        addEnvelope("challenger","#ffd166","challenger simulations (focal = 1)")
+        specs.push({id:"cluster:group:targets",title:"normalized focal targets",options:{
+            mode:"sticks-to-zero",layer:"gl",color:"rgba(235,240,245,0.35)",
+            opacity:0.65,line:{size:1},marker:{size:0}
+        },xs:[focalMz],ys:[1]})
+        specs.push({id:"cluster:group:challenger-marks",title:"challenger focal points",options:{
+            mode:"points",layer:"gl",color:"#ffd166",opacity:1,
+            marker:{shape:"square",size:9},line:{size:1}
+        },xs:[focalMz],ys:[1]})
+        specs.push({id:"cluster:group:married-marks",title:"married focal points",options:{
+            mode:"points",layer:"gl",color:"#4cc9f0",opacity:1,
+            marker:{shape:"circle",size:7},line:{size:1}
+        },xs:[focalMz],ys:[1]})
+        const traces=specs.map(spec=>new XYTrace({
+            id:spec.id,title:spec.title,options:spec.options,
+            wave:Wave.fromCoordinates(
+                Float64Array.from(spec.xs),Float64Array.from(spec.ys),
+                {},["m/z","relative intensity"])
+        }))
+        let yMax=1
+        for(const sample of [...series.married,...series.challenger])
+            for(const peak of sample.peaks) yMax=Math.max(yMax,peak.intensity)
+        return {
+            ticks,
+            build:()=>({
+                traces,marriedLabels:[],challengerLabels:[],
+                legend:[
+                    {color:"#4cc9f0",label:`married spectra (${series.married.length})`,shape:"stick"},
+                    {color:"#ffd166",label:`challenger spectra (${series.challenger.length})`,shape:"stick"},
+                    {color:"#4cc9f0",label:"married focal peaks · all = 1",shape:"circle"},
+                    {color:"#ffd166",label:"challenger focal peaks · all = 1",shape:"square"}
+                ],
+                details:`${swaps.length} swap(s) · ${series.married.length} married and `
+                    +`${series.challenger.length} challenger envelopes, each normalized at its focal peak to 1.`,
+                domain:[low,high],yDomain:[0,yMax*1.12]
+            })
+        }
+    }
+
+     /* LE CLUSTER ISOTOPIQUE DU PIC SÉLECTIONNÉ.
+
+         À droite du funnel, la paire vue comme le spectromètre la voit : les pics
+         MESURÉS de la fenêtre, les pics CIBLES de la paire (triangles blancs), la
+         proposition qui porte le mariage actuel sur ces cibles (bleu) et les
+         challengers de ces mêmes cibles (ambre). Les ratios théoriques viendront
+         se superposer ici une fois leur calcul branché. */
+    isotopeClusterDescriptor(mask,result,pointIndex){
+        const entries=result?.entries??[]
+        if(!entries.length) return null
+        const entryByPointKey=new Map()
+        const entryByKey=new Map()
+        for(const entry of entries){
+            const index=entry.target?.index
+            if(index!==undefined&&index!==null)
+                entryByPointKey.set(`${index}\u0000${entry.key}`,entry)
+            if(!entryByKey.has(entry.key)) entryByKey.set(entry.key,entry)
+        }
+        const points=mask?.points??[]
+        let point=pointIndex!==null&&pointIndex!==undefined
+            ?points.find(item=>item.index===pointIndex)??null
+            :null
+        if(!point) point=points.find(item=>item.mismatch)??points[0]??null
+        const focusIndex=point?point.index:null
+        const actualKey=focusIndex!==null
+            ?(mask?.marriageByPoint?.get?.(focusIndex)??point?.married??null)
+            :null
+        const challengerKey=point?.bestKey??null
+        const deltaForKey=key=>{
+            const hit=(point?.deltas??[]).find(item=>item.key===key)
+            return hit?hit.delta:null
+        }
+        const ratioFor=key=>{
+            if(focusIndex===null||typeof key!=="string") return null
+            let best=null
+            for(const ratio of mask?.ratios??[]){
+                const light=ratio.lightPoint===focusIndex&&ratio.lightKey===key
+                const heavy=ratio.heavyPoint===focusIndex&&ratio.heavyKey===key
+                if(!light&&!heavy) continue
+                if(!best||Math.abs(ratio.delta)<Math.abs(best.delta)) best=ratio
+            }
+            return best
+        }
+        const actualRatio=ratioFor(actualKey)
+        const challengerRatio=ratioFor(challengerKey)
+        const anchor=actualRatio??challengerRatio
+        const peakX=Number.isFinite(result?.peakList?.x?.[focusIndex])
+            ?result.peakList.x[focusIndex]:null
+        const baseMz=anchor?.lightMz??peakX??null
+        if(!(baseMz>0)) return null
+
+        const dm=Number.isFinite(mask?.adjacentMass)&&mask.adjacentMass>0
+            ?mask.adjacentMass
+            :Math.max(1,(anchor?.heavyMz??baseMz+1)-baseMz)
+        const charge=Math.max(1,Math.abs(anchor?.charge??1))
+        const step=dm/charge
+        const symbol=mask?.element??""
+        const lightA=mask?.lightA??""
+        const heavyA=mask?.heavyA??""
+        let maxOffset=0
+        const noteOffset=mz=>{
+            if(Number.isFinite(mz)) maxOffset=Math.max(maxOffset,(mz-baseMz)/step)
+        }
+        for(const ratio of [actualRatio,challengerRatio]){
+            if(!ratio) continue
+            noteOffset(ratio.lightMz)
+            noteOffset(ratio.heavyMz)
+        }
+        if(Number.isFinite(peakX)) noteOffset(peakX)
+        const spanSteps=Math.max(1,Math.min(4,Math.round(maxOffset)))
+        const low=baseMz-step*0.4
+        const high=baseMz+step*(spanSteps+0.6)
+        const ticks=new Map()
+        for(let k=0;k<=spanSteps;k++){
+            ticks.set(baseMz+k*step,k===0?`all ${lightA}${symbol}`:`${k}× ${heavyA}${symbol}`)
+        }
+
+        const xs=result?.peakList?.x??[]
+        const ys=result?.peakList?.y??[]
+        const measured=[]
+        let windowMax=0
+
+        const ppm=Number(mask?.ppm)>0?Number(mask.ppm):10
+        const actualEntry=entryByPointKey.get(`${focusIndex}\u0000${actualKey}`)
+            ??entryByKey.get(actualKey)??null
+        const actualEnvelope=actualEntry?.formula
+            ?this.isotopeClusterEnvelope(actualEntry.formula,ppm)
+            :[]
+        const challengerEntry=challengerKey!==actualKey
+            ?entryByPointKey.get(`${focusIndex}\u0000${challengerKey}`)
+                ??entryByKey.get(challengerKey)??null
+            :null
+        const challengerEnvelope=challengerEntry?.formula
+            ?this.isotopeClusterEnvelope(challengerEntry.formula,ppm)
+            :[]
+
+        const actualDelta=actualRatio?.delta??deltaForKey(actualKey)
+        const challengerDelta=challengerRatio?.delta??deltaForKey(challengerKey)
+
+        const pointByIndex=new Map((mask?.points??[]).map(item=>[item.index,item]))
+        const targetPoints=[]
+        const addTarget=value=>{
+            if(Number.isInteger(value)&&!targetPoints.includes(value)) targetPoints.push(value)
+        }
+        if(actualRatio){
+            addTarget(actualRatio.lightPoint)
+            addTarget(actualRatio.heavyPoint)
+        }else if(challengerRatio){
+            addTarget(challengerRatio.lightPoint)
+            addTarget(challengerRatio.heavyPoint)
+        }else if(focusIndex!==null){
+            addTarget(focusIndex)
+        }
+
+        const targetMarks=[]
+        const marriedMarks=[]
+        const challengerMarks=[]
+        const targetIntensities=[]
+        for(const index of targetPoints){
+            const mz=Number.isFinite(xs[index])?xs[index]:null
+            const intensity=Number.isFinite(ys[index])?ys[index]:null
+            if(mz===null||intensity===null) continue
+            targetMarks.push({mz,intensity})
+            if(intensity>0){
+                measured.push({mz,intensity})
+                if(intensity>windowMax) windowMax=intensity
+            }
+            if(intensity>0) targetIntensities.push(intensity)
+            const info=pointByIndex.get(index)
+            const marriedKey=(mask?.marriageByPoint?.get?.(index))??info?.married??null
+            if(typeof marriedKey==="string"){
+                const marriedEntry=entryByPointKey.get(`${index}\u0000${marriedKey}`)
+                    ??entryByKey.get(marriedKey)??null
+                marriedMarks.push({
+                    index,key:marriedKey,mz,intensity,
+                    notation:prettyNotation(marriedEntry?.notation
+                        ??marriedEntry?.formula??marriedKey)
+                })
+            }
+            const challengers=(info?.deltas??[]).filter(item=>item.key!==marriedKey)
+            challengers.forEach((item,position)=>{
+                const spread=challengers.length>1
+                    ?(position-(challengers.length-1)/2)/(challengers.length-1)
+                    :0
+                challengerMarks.push({
+                    index,key:item.key,
+                    mz:mz+spread*step*0.18,intensity
+                })
+            })
+        }
+        if(!(windowMax>0)) windowMax=1
+        const referenceFor=entry=>Number.isFinite(entry?.target?.intensity)
+            &&entry.target.intensity>0
+            ?entry.target.intensity
+            :(Number.isFinite(ys[focusIndex])&&ys[focusIndex]>0
+                ?ys[focusIndex]:windowMax)
+        const actualReference=referenceFor(actualEntry)
+        const challengerReference=referenceFor(challengerEntry)
+        const targetMax=targetIntensities.length
+            ?Math.max(...targetIntensities)
+            :windowMax
+        const yTop=Math.max(targetMax,Number.MIN_VALUE)*1.15
+        const positive=targetIntensities.filter(value=>value>0)
+
+        const build=logY=>{
+            const yDomain=logY
+                ?[Math.max(1e-9,(positive.length?Math.min(...positive):yTop/100)/1.5),yTop]
+                :[0,yTop]
+            const span=logY?Math.log(yDomain[1]/yDomain[0]):yDomain[1]-yDomain[0]
+            const lift=(value,fraction)=>{
+                const delta=fraction*span
+                return logY
+                    ?value*Math.exp(delta)
+                    :Math.min(yDomain[1],value+delta)
+            }
+            const specs=[]
+            specs.push({id:"cluster:measured",title:"measured",options:{
+                mode:"sticks-to-zero",layer:"gl",color:"rgba(190,200,215,0.5)",
+                opacity:0.8,line:{size:1},marker:{size:0}
+            },xs:measured.map(item=>item.mz),ys:measured.map(item=>item.intensity)})
+            const envelopePeaks=actualEnvelope.filter(peak=>
+                peak.mz>=low&&peak.mz<=high&&peak.probability>0)
+            if(envelopePeaks.length){
+                specs.push({id:"cluster:actual-envelope",title:"actual theoretical envelope",options:{
+                    mode:"sticks-to-zero",layer:"gl",color:"#4cc9f0",opacity:0.9,
+                    line:{size:1.6},marker:{size:0}
+                },xs:envelopePeaks.map(peak=>peak.mz),
+                    ys:envelopePeaks.map(peak=>peak.probability*actualReference)})
+            }
+            const challengerEnvelopePeaks=challengerEnvelope.filter(peak=>
+                peak.mz>=low&&peak.mz<=high&&peak.probability>0)
+            if(challengerEnvelopePeaks.length){
+                specs.push({id:"cluster:challenger-envelope",
+                    title:"best challenger theoretical envelope",options:{
+                        mode:"sticks-to-zero",layer:"gl",color:"#ffd166",opacity:0.9,
+                        line:{size:1.6},marker:{size:0}
+                    },xs:challengerEnvelopePeaks.map(peak=>peak.mz),
+                    ys:challengerEnvelopePeaks.map(peak=>
+                        peak.probability*challengerReference)})
+            }
+            if(challengerMarks.length){
+                specs.push({id:"cluster:challengers",title:"challengers",options:{
+                    mode:"points",layer:"gl",color:"#ffd166",opacity:0.95,
+                    marker:{shape:"square",size:6},line:{size:1}
+                },xs:challengerMarks.map(item=>item.mz),
+                    ys:challengerMarks.map(item=>lift(item.intensity,0.02))})
+            }
+            if(marriedMarks.length){
+                specs.push({id:"cluster:married",title:"current marriage",options:{
+                    mode:"points",layer:"gl",color:"#4cc9f0",opacity:1,
+                    marker:{shape:"circle",size:8},line:{size:1}
+                },xs:marriedMarks.map(item=>item.mz),
+                    ys:marriedMarks.map(item=>lift(item.intensity,0.05))})
+            }
+            if(targetMarks.length){
+                specs.push({id:"cluster:target-mark",title:"target marker",options:{
+                    mode:"points",layer:"gl",color:"#ffffff",opacity:0.95,
+                    marker:{shape:"triangle-down",size:10},line:{size:1}
+                },xs:targetMarks.map(item=>item.mz),
+                    ys:targetMarks.map(item=>lift(item.intensity,0.09))})
+            }
+            const traces=specs.map(spec=>new XYTrace({
+                id:spec.id,title:spec.title,options:spec.options,
+                wave:Wave.fromCoordinates(
+                    Float64Array.from(spec.xs),Float64Array.from(spec.ys),
+                    {},["m/z","intensity"])
+            }))
+            const marriedLabels=marriedMarks.map(mark=>({
+                id:`${mark.index}:${mark.key}`,
+                mz:mark.mz,
+                intensity:lift(mark.intensity,0.05),
+                notation:mark.notation,color:"#4cc9f0"
+            }))
+            const challengerLabels=challengerMarks.map(mark=>{
+                    const entry=entryByPointKey.get(`${mark.index}\u0000${mark.key}`)
+                        ??entryByKey.get(mark.key)??null
+                    return {
+                        id:`challenger:${mark.index}:${mark.key}`,
+                        mz:mark.mz,
+                        intensity:lift(mark.intensity,0.02),
+                        notation:prettyNotation(entry?.notation
+                            ??entry?.formula??mark.key),
+                        color:"#ffd166"
+                    }
+                })
+            const legend=[{color:"rgba(190,200,215,0.75)",label:"measured target peaks",shape:"bar"}]
+            if(targetMarks.length) legend.push({color:"#ffffff",label:"target peaks of the pair",shape:"triangle"})
+            if(envelopePeaks.length)
+                legend.push({color:"#4cc9f0",label:"married isotope simulation",shape:"stick"})
+            if(marriedMarks.length) legend.push({color:"#4cc9f0",label:"current marriage proposal",shape:"circle"})
+            if(challengerEnvelopePeaks.length)
+                legend.push({color:"#ffd166",label:"challenger isotope simulation",shape:"stick"})
+            if(challengerMarks.length) legend.push({color:"#ffd166",label:"challenger for these targets",shape:"square"})
+            const fmt=value=>Number.isFinite(value)?`${(value*100).toFixed(2)} %`:"—"
+            const lines=[
+                `focused peak ${focusIndex??"—"} · ${measured.length} measured target peak(s)`,
+                `actual ${actualKey??"(none)"} · δ ${fmt(actualDelta)}`,
+                `challenger ${challengerKey??"(none)"} · δ ${fmt(challengerDelta)}`,
+                `${targetMarks.length} target peak(s) · ${marriedMarks.length} marriage proposal(s) · ${challengerMarks.length} challenger(s)`
+            ]
+            return {
+                traces,marriedLabels,challengerLabels,legend,details:lines.join("\n"),
+                domain:[low,high],yDomain
+            }
+        }
+        return {build,ticks}
+    }
+
+    clusterLegendItem(item){
+        const host=CE("span",{},[])
+        stylize(host,{display:"inline-flex",gap:"4px",alignItems:"center"})
+        const swatch=CE("span",{},[])
+        if(item.shape==="triangle"){
+            stylize(swatch,{
+                color:item.color,fontSize:"0.85em",lineHeight:"1",
+                display:"inline-block",flex:"0 0 auto"
+            })
+            swatch.textContent="▾"
+            const label=CE("span",{},[item.label])
+            stylize(label,{opacity:"0.85"})
+            host.append(swatch,label)
+            return host
+        }
+        const shape=item.shape==="circle"
+            ?{width:"10px",height:"10px",borderRadius:"50%"}
+            :item.shape==="square"
+                ?{width:"8px",height:"8px",borderRadius:"1px"}
+                :item.shape==="stick"
+                    ?{width:"3px",height:"12px",borderRadius:"1px"}
+                    :item.shape==="bar"
+                        ?{width:"6px",height:"12px",borderRadius:"1px"}
+                        :{width:"10px",height:"10px",borderRadius:"2px"}
+        stylize(swatch,{
+            ...shape,background:item.color,display:"inline-block",flex:"0 0 auto"
+        })
+        const label=CE("span",{},[item.label])
+        stylize(label,{opacity:"0.85"})
+        host.append(swatch,label)
+        return host
+    }
+
+    drawIsotopeCluster(inputIndex,mask,result){
+        const host=CE("div",{className:"an-isotope-cluster"},[])
+        stylize(host,{
+            minWidth:"0",display:"flex",flexDirection:"column",gap:"4px",
+            border:"1px solid rgba(255,255,255,0.12)",borderRadius:"6px",
+            background:"rgba(255,255,255,0.03)",padding:"8px 8px 6px",
+            boxSizing:"border-box"
+        })
+        const head=CE("div",{},[])
+        stylize(head,{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
+        const title=CE("div",{},["Isotopic cluster — measured vs theoretical"])
+        stylize(title,{fontSize:"0.76em",fontWeight:"bold",opacity:"0.9"})
+        let logY=false
+        const logToggle=scaleToggle({
+            get:()=>logY,
+            set:value=>{
+                if(value===logY) return
+                logY=value
+                applyLogScale()
+            },
+            leftLabel:"Lin",rightLabel:"Log",title:"Value axis scale"
+        })
+        logToggle.style.marginLeft="auto"
+        head.append(title,logToggle)
+        const subtitle=CE("div",{},["hover a funnel marker to focus a peak"])
+        stylize(subtitle,{fontSize:"0.7em",opacity:"0.6"})
+        const plotHost=CE("div",{className:"an-isotope-plot"},[])
+        stylize(plotHost,{width:"100%",height:"300px",minHeight:"220px",
+            minWidth:"0",flex:"0 0 auto"})
+        const legend=CE("div",{},[])
+        stylize(legend,{display:"flex",flexWrap:"wrap",gap:"10px",fontSize:"0.7em",opacity:"0.9"})
+        const details=CE("div",{},[])
+        stylize(details,{
+            fontSize:"0.7em",lineHeight:"1.4",minHeight:"3.2em",
+            whiteSpace:"pre-wrap",opacity:"0.85"
+        })
+        host.append(head,subtitle,plotHost,legend,details)
+
+        if(!result){
+            subtitle.textContent="no attribution yet"
+            return {host,focus:()=>{}}
+        }
+        const plot=new Plot2DWebGL([],`${this.title} isotopes`,this.origin,plotHost,{})
+        plot.pickEnabled=false
+        this.funnelPlots=this.funnelPlots??[]
+        this.funnelPlots.push(plot)
+        plot.parameters.axis.bottom.autoLabel=false
+        plot.parameters.axis.left.autoLabel=false
+        plot.parameters.axis.bottom.label="m/z — isotopic composition"
+        plot.parameters.axis.left.label="intensity"
+        plot.parameters.axis.bottom.autoDomain=false
+        plot.parameters.axis.left.autoDomain=true
+
+        let formulaLabels=[]
+        const drawGraph=plot.drawGraph.bind(plot)
+        plot.drawGraph=()=>{
+            drawGraph()
+            const anchor=plot.graphSVG?.select(".anchor")
+            if(!anchor) return
+            const group=anchor.selectAll("g.cluster-formula-labels")
+                .data([null]).join("g").attr("class","cluster-formula-labels")
+            const {xScale,yScale}=plot.plotScales()
+            group.selectAll("text").data(formulaLabels,label=>label.id)
+                .join("text")
+                .attr("x",label=>xScale(label.mz)+7)
+                .attr("y",label=>yScale(label.intensity)-5)
+                .attr("dominant-baseline","middle")
+                .attr("fill",label=>label.color)
+                .attr("font-size",12)
+                .attr("font-weight",600)
+                .attr("stroke","rgba(0,0,0,0.85)")
+                .attr("stroke-width",2.5)
+                .attr("paint-order","stroke")
+                .attr("pointer-events","none")
+                .text(label=>label.notation)
+        }
+
+        const tickState={ticks:new Map()}
+        const baseApply=plot.applyTickReadability.bind(plot)
+        plot.applyTickReadability=(generator,axis,scale,length)=>{
+            if(axis==="bottom"&&tickState.ticks.size){
+                return generator.tickValues([...tickState.ticks.keys()])
+                    .tickFormat(value=>tickState.ticks.get(value)??"")
+            }
+            return baseApply(generator,axis,scale,length)
+        }
+
+        let descriptor=null
+        const redraw=()=>{
+            if(!descriptor){
+                plot.setTraces([])
+                legend.replaceChildren()
+                details.textContent=""
+                return
+            }
+            const data=descriptor.build(logY)
+            formulaLabels=[...(data.marriedLabels??[]),
+                ...(data.challengerLabels??[])]
+            tickState.ticks=descriptor.ticks
+            plot.parameters.axis.bottom.domain=data.domain
+            plot.parameters.axis.left.autoDomain=false
+            plot.parameters.axis.left.domain=data.yDomain
+            plot.setTraces(data.traces)
+            plot.drawGraph()
+            legend.replaceChildren()
+            for(const item of data.legend) legend.appendChild(this.clusterLegendItem(item))
+            details.textContent=data.details
+        }
+        const applyLogScale=()=>{
+            plot.parameters.axis.left.scale=logY?"log":"linear"
+            redraw()
+        }
+        const focus=marker=>{
+            const pointIndex=Number.isInteger(marker?.point)?marker.point:null
+            descriptor=this.isotopeClusterDescriptor(mask,result,pointIndex)
+            tickState.ticks=descriptor?.ticks??new Map()
+            redraw()
+        }
+        const showPairSpectra=swaps=>{
+            const grouped=this.isotopeClusterGroupDescriptor(mask,result,swaps)
+            if(!grouped) return
+            descriptor=grouped
+            tickState.ticks=descriptor.ticks??new Map()
+            redraw()
+        }
+        focus(null)
+        requestAnimationFrame(()=>{ if(plotHost.isConnected) redraw() })
+        return {host,focus,showPairSpectra}
     }
 
     /* LE FUNNEL, EN GRAND ET ZOOMABLE.
@@ -2961,15 +3905,29 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        (losange doré pour le meilleur d'entre eux, cercles creux pour les
        autres) sont donc tracés séparément : on voit à la fois ce que le crible
        a choisi et ce qu'il aurait pu choisir. */
-    drawForestFunnelChart(mask){
+    drawForestFunnelChart(mask,{onFocus=null,xAxis="intensity",yAxis="delta"}={}){
         const host=CE("div",{className:"an-funnel-chart"},[])
         stylize(host,{
             minWidth:"0",minHeight:"0",display:"flex",flexDirection:"column",
-            gap:"6px",width:"100%",maxWidth:"100%",marginTop:"4px",
+            gap:"6px",width:"100%",maxWidth:"100%",marginTop:"0",
             padding:"8px 8px 6px",border:"1px solid rgba(255,255,255,0.12)",
             borderRadius:"6px",background:"rgba(255,255,255,0.03)",
             boxSizing:"border-box"
         })
+        /* LE MÊME EN-TÊTE QUE LE CLUSTER. Sans lui, la zone de tracé commençait
+           plus haut que celle d'en face et les deux graphiques n'étaient pas
+           alignés, même à hauteur égale. Le titre et le sous-titre reprennent
+           donc exactement la taille de ceux de l'amas isotopique. */
+        const funnelHead=CE("div",{},[])
+        stylize(funnelHead,{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
+        const funnelTitle=CE("div",{},["Isotopic funnel — measured vs natural"])
+        stylize(funnelTitle,{fontSize:"0.76em",fontWeight:"bold",opacity:"0.9"})
+        funnelHead.appendChild(funnelTitle)
+        const funnelSubtitle=CE("div",{},[
+            "hover a marker to compare the current marriage with its challengers"
+        ])
+        stylize(funnelSubtitle,{fontSize:"0.7em",opacity:"0.6"})
+        host.append(funnelHead,funnelSubtitle)
         if(!mask||!(mask.ratios?.length)){
             const note=CE("div",{},[
                 !mask?"funnel: no attribution yet"
@@ -2999,7 +3957,18 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                         :(best?"bestChallenger":"challenger"),
                     point:point.index,key:delta.key,
                     x:delta.totalIntensity,y:delta.delta,
+                    totalIntensity:delta.totalIntensity,
+                    lightMz:delta.lightMz,heavyMz:delta.heavyMz,
+                    atoms:delta.atoms,
+                    lightIntensity:delta.lightIntensity,
+                    heavyIntensity:delta.heavyIntensity,
+                    lightErrorPpm:delta.lightErrorPpm,
+                    heavyErrorPpm:delta.heavyErrorPpm,
+                    massErrorPpm:delta.massErrorPpm,
+                    massErrorDiffPpm:delta.massErrorDiffPpm,
+                    massErrorDa:delta.massErrorDa,
                     delta:delta.delta,ratio:delta.ratio,
+                    ratioValue:delta.ratio,
                     married,best,simulatedPair:simulatedKeys.has(id)
                 })
             }
@@ -3010,7 +3979,18 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             if(candidateKeys.has(id)) continue
             markers.push({
                 kind:"simulated",point:null,key:ratio.lightKey,
-                x:ratio.totalIntensity,y:ratio.delta,ratio
+                x:ratio.totalIntensity,y:ratio.delta,ratio,
+                totalIntensity:ratio.totalIntensity,
+                lightMz:ratio.lightMz,heavyMz:ratio.heavyMz,
+                atoms:ratio.atoms,
+                lightIntensity:ratio.lightIntensity,
+                heavyIntensity:ratio.heavyIntensity,
+                lightErrorPpm:ratio.lightErrorPpm,
+                heavyErrorPpm:ratio.heavyErrorPpm,
+                massErrorPpm:ratio.massErrorPpm,
+                massErrorDiffPpm:ratio.massErrorDiffPpm,
+                massErrorDa:ratio.massErrorDa,
+                delta:ratio.delta,ratioValue:ratio.ratio
             })
         }
         if(!markers.length){
@@ -3022,10 +4002,42 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const priority={simulated:0,challenger:1,bestChallenger:2,married:3,marriedBest:4}
         markers.sort((a,b)=>priority[a.kind]-priority[b.kind])
 
+        /* L'ABSCISSE EST AU CHOIX, ET ELLE RESTE LA MÊME SUR TOUTES LES
+           TRACES. Le signal total dit la précision d'un rapport; la masse
+           moyenne dit où se situe la paire dans le spectre; le nombre d'atomes
+           de l'élément étudié dit la pente attendue — un rapport M+1 sur 6
+           carbones et sur 60 n'ont pas la même sensibilité. Choisir l'axe est
+           donc choisir la question, pas un simple confort de lecture. */
+        let metric=xAxis==="mass"||xAxis==="atoms"||xAxis==="massError"
+            ||xAxis==="massErrorDiff"?xAxis:"intensity"
+        /* L'ORDONNÉE AUSSI EST AU CHOIX: le delta dit l'écart relatif, le
+           rapport isotopique dit la valeur brute comparée à l'abondance
+           naturelle, et le rapport d'intensités revient à `N × ratio` — il
+           corrèle donc avec le nombre d'atomes de l'élément dans la formule. */
+        let yMetric=yAxis==="ratio"||yAxis==="intensityRatio"?yAxis:"delta"
+        const yValue=marker=>yMetric==="ratio"
+            ?(Number.isFinite(marker.ratioValue)?marker.ratioValue:NaN)
+            :yMetric==="intensityRatio"
+                ?(marker.lightIntensity>0&&Number.isFinite(marker.heavyIntensity)
+                    ?marker.heavyIntensity/marker.lightIntensity:NaN)
+                :marker.delta
+        const metricValue=marker=>metric==="mass"
+            ?(Number.isFinite(marker.lightMz)&&Number.isFinite(marker.heavyMz)
+                ?(marker.lightMz+marker.heavyMz)/2:NaN)
+            :metric==="atoms"
+                ?(Number.isFinite(marker.atoms)?marker.atoms:NaN)
+                :metric==="massError"
+                    ?(Number.isFinite(marker.massErrorPpm)?marker.massErrorPpm:NaN)
+                    :metric==="massErrorDiff"
+                        ?(Number.isFinite(marker.massErrorDiffPpm)
+                            ?marker.massErrorDiffPpm:NaN)
+                        :marker.totalIntensity
+
         const colorOf=marker=>marker.kind==="marriedBest"?"#8fe36a"
             :marker.kind==="married"?"#ffb347"
             :marker.kind==="bestChallenger"?"#ffd166"
             :marker.kind==="challenger"?"rgba(180,200,230,0.55)"
+            :marker.kind==="swap"?"rgba(255,209,102,0.85)"
             :"rgba(120,200,255,0.92)"
         const shapeOf=marker=>marker.kind==="bestChallenger"?"diamond"
             :(marker.kind==="challenger"||marker.kind==="simulated")?"ring":"circle"
@@ -3074,7 +4086,15 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                     :delta.key===point.bestKey?"◆ best δ":"○ challenger"
                 const suffix=simulatedKeys.has(`${point.index}\u0000${delta.key}`)
                     ?" · M+1 by mass":""
-                lines.push(`${tag}  ${delta.key}  δ ${(delta.delta*100).toFixed(2)} %${suffix}`)
+                const ratioText=Number.isFinite(delta.ratio)
+                    ?` · R ${delta.ratio.toPrecision(4)}`:""
+                const iText=delta.lightIntensity>0&&Number.isFinite(delta.heavyIntensity)
+                    ?` · Ih/Il ${(delta.heavyIntensity/delta.lightIntensity).toPrecision(4)}`:""
+                const eText=Number.isFinite(delta.massErrorPpm)
+                    ?` · Σ|ppm| ${delta.massErrorPpm.toFixed(2)}`:""
+                const dText=Number.isFinite(delta.massErrorDiffPpm)
+                    ?` · Δppm ${delta.massErrorDiffPpm.toFixed(2)}`:""
+                lines.push(`${tag}  ${delta.key}  δ ${(delta.delta*100).toFixed(2)} %${ratioText}${iText}${eText}${dText}${suffix}`)
             }
             details.textContent=lines.join("\n")
         }
@@ -3086,6 +4106,12 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                     +`δ ${(marker.y*100).toFixed(2)} %\n`
                     +`I ${marker.ratio.lightIntensity.toPrecision(4)}`
                     +` + ${marker.ratio.heavyIntensity.toPrecision(4)}`
+                    +(Number.isFinite(marker.ratio.ratio)
+                        ?`\nR ${marker.ratio.ratio.toPrecision(4)}`:"")
+                    +(Number.isFinite(marker.ratio.massErrorPpm)
+                        ?`\nΣ|ppm| ${marker.ratio.massErrorPpm.toFixed(2)}`:"")
+                    +(Number.isFinite(marker.ratio.massErrorDiffPpm)
+                        ?`\nΔppm ${marker.ratio.massErrorDiffPpm.toFixed(2)}`:"")
                 return
             }
             showDefault()
@@ -3105,7 +4131,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            sont peu nombreux et doivent rester lisibles sans WebGL. */
         const plotHost=CE("div",{className:"an-funnel-plot"},[])
         stylize(plotHost,{
-            width:"100%",height:"300px",minHeight:"220px",minWidth:"0"
+            width:"100%",height:"300px",minHeight:"220px",minWidth:"0",
+            flex:"0 0 auto"
         })
         host.appendChild(plotHost)
 
@@ -3113,14 +4140,18 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const plot=new Plot2DWebGL([],
             `${this.title} funnel`,this.origin,plotHost,{
                 onHoverChange:info=>{
-                    if(!info){ showDefault(); return }
+                    if(!info){ showDefault(); onFocus?.(null); return }
                     const marker=(markerByTrace.get(info.traceId)??[])[info.tracePoint]
                     showMarker(marker)
+                    onFocus?.(marker??null)
                 },
                 onPinChange:info=>{
                     if(!info) return
                     const marker=(markerByTrace.get(info.traceId)??[])[info.tracePoint]
-                    if(marker) showMarker(marker)
+                    if(marker){
+                        showMarker(marker)
+                        onFocus?.(marker)
+                    }
                 }
             })
         this.funnelPlots=this.funnelPlots??[]
@@ -3140,16 +4171,54 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const baseAutoDomain=plot.autoDomainFor.bind(plot)
         plot.autoDomainFor=(axis,bounds)=>{
             if(axis==="left"&&bounds){
+                /* SEUL LE DELTA SE LIT AUTOUR DE ZÉRO. Le rapport isotopique et
+                   le rapport d'intensités sont positifs: les recentrer sur zéro
+                   gaspillerait la moitié de la hauteur. */
+                if(yMetric!=="delta"){
+                    const low=Math.max(0,bounds.yMin)
+                    const high=Math.max(low+1e-9,bounds.yMax)
+                    const pad=(high-low)*0.06
+                    return [low-pad,high+pad]
+                }
                 const span=Math.max(0.01,Math.abs(bounds.yMin),Math.abs(bounds.yMax))*1.15
                 return [-span,span]
             }
             if(axis==="bottom"&&bounds){
-                const low=Math.min(0,bounds.xMin)
-                const high=Math.max(low+1,bounds.xMax)
+                /* LE ZÉRO N'EST UN BORD QUE POUR LE SIGNAL. Une masse ou un
+                   nombre d'atomes vit loin de zéro: forcer l'origine y
+                   écraserait le nuage contre le bord droit. L'écart d'erreur,
+                   lui, se lit DE PART ET D'AUTRE de zéro: c'est son signe qui
+                   dit quel pic a dérivé le plus. */
+                if(metric==="massErrorDiff"){
+                    const span=Math.max(0.5,Math.abs(bounds.xMin),Math.abs(bounds.xMax))*1.15
+                    return [-span,span]
+                }
+                const low=(metric==="intensity"||metric==="massError")
+                    ?Math.min(0,bounds.xMin):bounds.xMin
+                const high=Math.max(low+(metric==="atoms"?0.5:1),bounds.xMax)
                 const pad=(high-low)*0.04
                 return [low-pad,high+pad]
             }
             return baseAutoDomain(axis,bounds)
+        }
+
+        const updateBottomLabel=()=>{
+            plot.parameters.axis.bottom.label=metric==="mass"
+                ?"average m/z of the pair"
+                :metric==="atoms"
+                    ?`${mask.element??"element"} count in the base formula (N)`
+                    :metric==="massError"
+                        ?"cumulative |mass error| of the two peaks (ppm)"
+                        :metric==="massErrorDiff"
+                            ?"err(M+1) − err(M) (ppm)"
+                            :"I(M) + I(M+1) — signal used by the ratio"
+        }
+        const updateLeftLabel=()=>{
+            plot.parameters.axis.left.label=yMetric==="ratio"
+                ?"isotopic ratio = (I(M+1)/I(M)) / N"
+                :yMetric==="intensityRatio"
+                    ?"I(M+1)/I(M)"
+                    :"δ = measured / natural − 1"
         }
 
         const traces=[]
@@ -3167,35 +4236,122 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                     color:style.color,opacity:style.opacity??1,
                     line:{size:1},
                     marker:{shape:style.shape??"circle",size:style.size??5}},
-                wave:Wave.fromCoordinates(xs,ys,{},["signal","δ"])
+                wave:Wave.fromCoordinates(xs,ys,{},axisTags())
             }))
             markerByTrace.set(id,list)
         }
-        addTrace("funnel:massHalo","M+1 found by mass, not proposed",
-            markers.filter(marker=>marker.simulatedPair),
-            {color:"rgba(120,200,255,0.95)",shape:"ring",size:9})
-        for(const kind of ["simulated","challenger","bestChallenger","married","marriedBest"]){
-            addTrace(`funnel:${kind}`,titleOf[kind],
-                markers.filter(marker=>marker.kind===kind),
-                {color:colorOf({kind}),shape:shapeOf({kind}),size:sizeOf({kind}),
-                    opacity:kind==="challenger"?0.95:1})
+        /* TOUT LE TRACÉ EST RECONSTRUIT QUAND L'AXE CHANGE. Les points sont les
+           mêmes, seule leur abscisse diffère: on remplace donc les traces en
+           bloc plutôt que de déplacer des marqueurs un à un, et le zoom
+           automatique repart sur le nouveau domaine. */
+        let hasSwapSegments=false
+        const axisTags=()=>[
+            metric==="mass"?"mass":metric==="atoms"?"N"
+                :metric==="massError"?"|ppm|"
+                    :metric==="massErrorDiff"?"Δppm":"signal",
+            yMetric==="ratio"?"ratio":yMetric==="intensityRatio"?"Ih/Il":"δ"
+        ]
+        const renderTraces=()=>{
+            for(const marker of markers){
+                marker.x=metricValue(marker)
+                marker.y=yValue(marker)
+            }
+            const plotted=markers.filter(marker=>
+                Number.isFinite(marker.x)&&Number.isFinite(marker.y))
+            traces.length=0
+            markerByTrace.clear()
+            hasSwapSegments=false
+            let xMin=Infinity
+            let xMax=-Infinity
+            for(const marker of plotted){
+                if(marker.x<xMin) xMin=marker.x
+                if(marker.x>xMax) xMax=marker.x
+            }
+            if(!Number.isFinite(xMin)) xMin=0
+            if(!Number.isFinite(xMax)) xMax=1
+            if(!(xMax>xMin)) xMax=xMin+1
+            addTrace("funnel:massHalo","M+1 found by mass, not proposed",
+                plotted.filter(marker=>marker.simulatedPair),
+                {color:"rgba(120,200,255,0.95)",shape:"ring",size:9})
+            for(const kind of ["simulated","challenger","bestChallenger","married","marriedBest"]){
+                addTrace(`funnel:${kind}`,titleOf[kind],
+                    plotted.filter(marker=>marker.kind===kind),
+                    {color:colorOf({kind}),shape:shapeOf({kind}),size:sizeOf({kind}),
+                        opacity:kind==="challenger"?0.95:1})
+            }
+            const markerAt=new Map()
+            for(const marker of plotted){
+                if(marker.point===null||marker.point===undefined) continue
+                markerAt.set(`${marker.point}\u0000${marker.key}`,marker)
+            }
+            const swapX=[]
+            const swapY=[]
+            for(const swap of mask.swaps??[]){
+                const from=markerAt.get(`${swap.index}\u0000${swap.fromKey}`)
+                const to=markerAt.get(`${swap.index}\u0000${swap.toKey}`)
+                if(!from||!to) continue
+                swapX.push(from.x,to.x)
+                swapY.push(from.y,to.y)
+            }
+            if(swapX.length){
+                hasSwapSegments=true
+                traces.unshift(new XYTrace({
+                    id:"funnel:swap",
+                    title:"swap to the better δ",
+                    options:{mode:"segments",layer:"gl",
+                        color:"rgba(255,209,102,0.85)",opacity:0.9,
+                        line:{size:1.4},marker:{size:0}},
+                    wave:Wave.fromCoordinates(
+                        Float64Array.from(swapX),
+                        Float64Array.from(swapY),{},axisTags())
+                }))
+            }
+            /* LA RÉFÉRENCE NATURELLE SUIT L'ORDONNÉE CHOISIE. Pour un delta
+               c'est zéro; pour le rapport isotopique c'est l'abondance
+               théorique, une horizontale; pour le rapport d'intensités il n'y a
+               PAS d'horizontale commune — le naturel vaut `N × théorique`, qui
+               change à chaque formule. On pose donc un repère par couple, au
+              -dessus duquel l'excès d'intensité se lit à l'œil. */
+            if(yMetric==="intensityRatio"){
+                const refs=plotted
+                    .filter(marker=>Number.isFinite(marker.atoms))
+                    .map(marker=>({x:marker.x,y:mask.theoretical*marker.atoms}))
+                if(refs.length&&mask.theoretical>0){
+                    traces.push(new XYTrace({
+                        id:"funnel:natural",
+                        title:"natural I ratio (N × natural), one dot per pair",
+                        options:{mode:"points",layer:"gl",
+                            color:"rgba(255,255,255,0.38)",opacity:0.75,
+                            line:{size:1},marker:{shape:"ring",size:4}},
+                        wave:Wave.fromCoordinates(
+                            Float64Array.from(refs.map(ref=>ref.x)),
+                            Float64Array.from(refs.map(ref=>ref.y)),{},axisTags())
+                    }))
+                    markerByTrace.set("funnel:natural",[])
+                }
+            }else{
+                const naturalLow=(metric==="intensity"||metric==="massError")?0:xMin
+                const naturalY=yMetric==="ratio"?mask.theoretical:0
+                traces.push(new XYTrace({
+                    id:"funnel:natural",
+                    title:yMetric==="ratio"
+                        ?"natural isotopic ratio (theoretical)"
+                        :"natural ratio δ = 0",
+                    options:{mode:"lines-between-points",layer:"gl",
+                        color:"rgba(255,255,255,0.42)",opacity:0.8,
+                        line:{size:1},marker:{size:0}},
+                    wave:Wave.fromCoordinates(
+                        Float64Array.from([naturalLow,xMax]),
+                        Float64Array.from([naturalY,naturalY]),{},axisTags())
+                }))
+                markerByTrace.set("funnel:natural",[])
+            }
+            plot.setTraces(traces)
+            plot.drawGraph()
         }
-        let xMax=0
-        for(const marker of markers) xMax=Math.max(xMax,marker.x)
-        if(!(xMax>0)) xMax=1
-        traces.push(new XYTrace({
-            id:"funnel:natural",
-            title:"natural ratio δ = 0",
-            options:{mode:"lines-between-points",layer:"gl",
-                color:"rgba(255,255,255,0.42)",opacity:0.8,
-                line:{size:1},marker:{size:0}},
-            wave:Wave.fromCoordinates(
-                Float64Array.from([0,xMax]),
-                Float64Array.from([0,0]),{},["signal","δ"])
-        }))
-        markerByTrace.set("funnel:natural",[])
-        plot.setTraces(traces)
-        plot.drawGraph()
+        updateBottomLabel()
+        updateLeftLabel()
+        renderTraces()
         /* Le plot est construit dans une section encore détachée, où sa boîte
            mesure zéro: le premier drawGraph ne peut rien peindre. On redessine
            une fois la section posée dans le document. */
@@ -3244,7 +4400,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             stylize(swatch,{
                 width:"11px",height:"11px",display:"inline-block",
                 borderRadius:"50%",boxSizing:"border-box",
-                border:"1.5px dashed rgba(120,200,255,0.95)"
+                border:"1.5px solid rgba(120,200,255,0.95)"
             })
             item.append(swatch,CE("span",{},[text]))
             legend.appendChild(item)
@@ -3253,6 +4409,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         addLegend("married","current marriage · not best")
         addLegend("bestChallenger","best challenger δ")
         addLegend("challenger","other challenger δ")
+        if(hasSwapSegments) addLegend("swap","swap to the better δ")
         if(markers.some(marker=>marker.simulatedPair))
             addRingLegend("M+1 found by mass, not proposed")
         if(markers.some(marker=>marker.kind==="simulated"))
@@ -3378,8 +4535,10 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const cap=Number.isFinite(maxWidth)?Math.max(140,maxWidth):available
         const width=Math.min(cap,Math.max(140,PAD.left+PAD.right+Math.max(1,bins)*10))
         stylize(host,{
-            minWidth:"0",minHeight:"0",width:`${width}px`,maxWidth:"100%",
-            justifySelf:"start"
+            display:"block",minWidth:"0",minHeight:"0",
+            height:`${HEIGHT}px`,
+            width:`${width}px`,maxWidth:"100%",alignSelf:"flex-start",
+            flex:"0 0 auto"
         })
         const innerW=Math.max(40,width-PAD.left-PAD.right)
         const innerH=HEIGHT-PAD.top-PAD.bottom
@@ -3460,6 +4619,21 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            TRANCHE. Elle traverse tout le graphique: en dessous, le crible a
            publishé; au-dessus, il a écarté. C'est la seule information que la
            forme ne donne pas et qu'il faut avoir sous les yeux. */
+        let previewLayer=null
+        if(Array.isArray(row.previewCounts)&&row.previewCounts.length===bins){
+            const previewSteps=this.forestRecapSteps({...row,counts:row.previewCounts})
+            previewLayer=svg.append("g").style("opacity",0).style("pointer-events","none")
+            previewLayer.append("path")
+                .datum(previewSteps)
+                .attr("d",d3.line()
+                    .x(step=>x(step.error))
+                    .y(step=>yShare(step.share))
+                    .curve(d3.curveStepAfter))
+                .attr("fill","none")
+                .attr("stroke","#4cc9f0")
+                .attr("stroke-width",1.3)
+                .attr("stroke-dasharray","3 2")
+        }
         if(row.window!==null&&row.window<=row.domain){
             const wx=x(row.window)
             svg.append("line")
@@ -3518,6 +4692,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         /* LA LECTURE EN CHIFFRES, SOUS L'IMAGE ET DANS L'IMAGE. Elle ne double
            pas la courbe: elle en donne le point médian et les trois seuils de la
            fenêtre, que la courbe ne montre qu'à l'œil. */
+        host.showPreview=on=>previewLayer?.style("opacity",on?0.95:0)
+        host.hasPreview=!!previewLayer
         return host
     }
 

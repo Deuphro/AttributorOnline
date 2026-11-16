@@ -2610,13 +2610,23 @@ export class AttributionNode extends NodeWithAccordion{
         this.inspectionChoices.set(choiceKey,key)
         this.republishInspection()
     }
+    applyInspectionChoices(entries){
+        for(const entry of entries??[]){
+            if(!entry||typeof entry.key!=="string") continue
+            this.inspectionChoices.set(entry.key,entry.marriage??null)
+        }
+        this.republishInspection()
+    }
     resetInspectionChoice(choiceKey){
         this.inspectionChoices.delete(choiceKey)
         this.republishInspection()
     }
     async republishInspection(){
+        this.funnelMaskCache?.clear()
+        this.clusterEnvelopeCache?.clear()
         this.outputs[0]=this.publishable(this.attributions??[])
         this.renderInspection()
+        this.renderForestRecap?.()
         try{ await this.resolveChildren() }catch{}
     }
 
