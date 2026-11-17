@@ -299,6 +299,58 @@ test("un mariage cohérent n'expose aucun swap",()=>{
     ok(mask.swapGroups.length===0,"and no permutation group")
 })
 
+test("un satellite simulé crée une permutation absente du crible",()=>{
+    const lightIntensity=800
+    const heavyIntensity=lightIntensity*6*theoretical1312*0.8
+    const deltaMass=carbon.isotope(13).mass-carbon.isotope(12).mass
+    const mask=computeFunnelMask({
+        entries:[reading(glucose,0,{intensity:lightIntensity})],
+        peakList:peaksStub([
+            {index:0,mz:glucose.mz,intensity:lightIntensity},
+            {index:5,mz:glucose.mz+deltaMass,intensity:heavyIntensity}
+        ]),
+        element:"C",lightA:12,heavyA:13
+    })
+    ok(mask.simulatedCreations.length===1,
+        `expected one creation, got ${mask.simulatedCreations.length}`)
+    const creation=mask.simulatedCreations[0]
+    ok(creation.create===true,"the satellite formula is absent from the sieve")
+    ok(creation.replace===false,"the base was already the default marriage")
+    ok(creation.index===5,"the created reading is on the satellite peak")
+    ok(creation.signature.includes("C12:-1")&&creation.signature.includes("C13:+1"),
+        `the permutation must describe 12C -> 13C, got ${creation.signature}`)
+    ok(mask.simulatedCreationGroups.length===1,"one isotopic permutation group")
+    ok(mask.simulatedCreationGroups[0].created===1,"one created reading in it")
+    ok(mask.swaps.length===0,"a simulated ratio is not a proposed swap")
+    ok(mask.swapGroups.length===0,"and produces no proposed group")
+})
+
+test("une base simulée remplace le mariage qui ne peut pas expliquer le delta",()=>{
+    const lightIntensity=1000
+    const heavyIntensity=lightIntensity*6*theoretical1312
+    const deltaMass=carbon.isotope(13).mass-carbon.isotope(12).mass
+    const mask=computeFunnelMask({
+        entries:[
+            reading(glucose,0,{intensity:lightIntensity,errorPpm:2.0}),
+            reading(other,0,{intensity:0,errorPpm:0.1})
+        ],
+        peakList:peaksStub([
+            {index:0,mz:glucose.mz,intensity:lightIntensity},
+            {index:5,mz:glucose.mz+deltaMass,intensity:heavyIntensity}
+        ]),
+        element:"C",lightA:12,heavyA:13
+    })
+    ok(mask.simulatedReplacements.length===1,
+        `expected one replacement, got ${mask.simulatedReplacements.length}`)
+    const replacement=mask.simulatedReplacements[0]
+    ok(replacement.fromKey===other.key,"the mass winner is what gets replaced")
+    ok(replacement.toKey===glucose.key,"the simulated base takes the marriage")
+    ok(replacement.simulated===true,"the replacement comes from simulation")
+    ok(mask.swaps.length===0,"a simulated replacement is not a proposed swap")
+    const creation=mask.simulatedCreations.find(item=>item.replace)
+    ok(creation,"the creation must flag the matching replacement")
+})
+
 console.log(`\n${passed} passed, ${failures.length} failed`)
 if(failures.length){
     console.log(failures.join("\n"))

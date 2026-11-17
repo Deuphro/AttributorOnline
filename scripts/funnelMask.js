@@ -452,7 +452,12 @@ export function computeFunnelMask({
                 massErrorPpm:ratio.massErrorPpm,
                 massErrorDiffPpm:ratio.massErrorDiffPpm,
                 massErrorDa:ratio.massErrorDa,
-                atoms:ratio.atoms
+                atoms:ratio.atoms,
+                /* LE DRAPEAU DIT D'OÙ VIENT LE DELTA. Un delta issu d'une
+                   simulation ne doit pas se présenter comme une paire proposée:
+                   c'est ce qui sépare les swaps « déjà dans le crible » des
+                   remplacements que seule la lecture isotopique justifie. */
+                simulated:!!ratio.simulated
             })
     }
     for(const ratio of mask.ratios){
@@ -491,7 +496,15 @@ export function computeFunnelMask({
     for(const candidate of candidates)
         candidateByPointKey.set(candidateId(candidate.point,candidate.key),candidate)
 
+    /* DEUX FAMILLES DE SWAPS, ET ELLES NE SE MÉLANGENT PLUS.
+
+       Un swap né d'une paire PROPOSÉE ne fait que déplacer un mariage entre deux
+       formules que le crible connaît déjà. Un swap né d'une SIMULATION remplace
+       une attribution qui gagnait en masse mais n'expliquait aucun rapport
+       isotopique. Ce sont deux gestes de nature différente, et les compter
+       ensemble laisserait croire que le crible avait déjà tout proposé. */
     const swaps=[]
+    const simulatedReplacements=[]
     for(const point of mask.points){
         if(!point.mismatch) continue
         if(typeof point.bestKey!=="string") continue
@@ -502,7 +515,7 @@ export function computeFunnelMask({
         const from=candidateByPointKey.get(candidateId(point.index,point.married))
         const to=candidateByPointKey.get(candidateId(point.index,point.bestKey))
         const diff=from&&to?compositionDiff(from.atoms,to.atoms):null
-        swaps.push({
+        const swap={
             index:point.index,
             fromKey:point.married,
             toKey:point.bestKey,
@@ -510,23 +523,107 @@ export function computeFunnelMask({
             toDelta:toDelta.delta,
             gain:fromDelta?Math.abs(fromDelta.delta)-Math.abs(toDelta.delta):null,
             signature:diff?diff.signed:null,
-            groupKey:diff?diff.key:null
-        })
+            groupKey:diff?diff.key:null,
+            simulated:!!toDelta.simulated
+        }
+        if(swap.simulated) simulatedReplacements.push(swap)
+        else swaps.push(swap)
     }
     mask.swaps=swaps
 
-    const groups=new Map()
-    for(const swap of swaps){
-        if(!swap.groupKey) continue
-        let group=groups.get(swap.groupKey)
+    const groupOf=(list,field)=>list.reduce((groups,item)=>{
+        if(!item.groupKey) return groups
+        let group=groups.get(item.groupKey)
         if(!group){
-            group={key:swap.groupKey,signature:swap.groupKey,count:0,swaps:[]}
-            groups.set(swap.groupKey,group)
+            /* La CLÉ groupe (forme canonique), la SIGNATURE affiche le sens:
+               « C12:-1,C13:+1 » dit ce qui est réellement converti. */
+            group={key:item.groupKey,signature:item.signature??item.groupKey,
+                count:0,[field]:[]}
+            groups.set(item.groupKey,group)
         }
         group.count++
-        group.swaps.push(swap)
+        group[field].push(item)
+        return groups
+    },new Map())
+
+    mask.swapGroups=[...groupOf(swaps,"swaps").values()]
+        .sort((a,b)=>b.count-a.count||(a.key<b.key?-1:1))
+
+    /* LES SATELLITES QUE LE CRIBLE N'A PAS PROPOSÉS — la seconde famille.
+
+       Une simulation lit un pic par sa MASSE, pas par une formule du crible:
+       elle crée donc une lecture qui n'existait pas. Ce qui se crée, c'est la
+       permutation (l'isotopologue de la base), et on le mesure en cherchant si
+       la signature du satellite figure déjà parmi les candidats de ce pic.
+
+       `create` et `replace` sont DEUX FAITS INDÉPENDANTS et peuvent coexister:
+       on peut à la fois ajouter le satellite manquant et remplacer la base mal
+       mariée. Les grouper par permutation met côte à côte tous les pics que le
+       même échange d'atome explique. */
+    const signaturesByPoint=new Map()
+    for(const candidate of candidates){
+        let set=signaturesByPoint.get(candidate.point)
+        if(!set){ set=new Set(); signaturesByPoint.set(candidate.point,set) }
+        set.add(candidate.signature)
     }
-    mask.swapGroups=[...groups.values()]
+    const simulatedCreations=[]
+    for(const ratio of mask.ratios){
+        if(!ratio.simulated) continue
+        const light=candidateByPointKey.get(candidateId(ratio.lightPoint,ratio.lightKey))
+        if(!light) continue
+        const satellite=convertOne(light.atoms,symbol,lightA,heavyA)
+        if(!satellite) continue
+        const satelliteSignature=atomsSignature(satellite)
+        const diff=compositionDiff(light.atoms,satellite)
+        if(!diff.key) continue
+        const existing=signaturesByPoint.get(ratio.heavyPoint)
+        const replacement=simulatedReplacements.find(item=>
+            item.index===ratio.lightPoint&&item.toKey===ratio.lightKey)??null
+        simulatedCreations.push({
+            index:ratio.heavyPoint,
+            lightPoint:ratio.lightPoint,
+            lightKey:ratio.lightKey,
+            satelliteSignature,
+            signature:diff.signed,
+            groupKey:diff.key,
+            atoms:ratio.atoms,
+            lightMz:ratio.lightMz,
+            heavyMz:ratio.heavyMz,
+            lightIntensity:ratio.lightIntensity,
+            heavyIntensity:ratio.heavyIntensity,
+            delta:ratio.delta,
+            ratio:ratio.ratio,
+            massErrorPpm:ratio.massErrorPpm,
+            massErrorDiffPpm:ratio.massErrorDiffPpm,
+            create:!(existing&&existing.has(satelliteSignature)),
+            replace:!!replacement
+        })
+    }
+    /* Un swap de remplacement peut ne pas avoir de création associée, donc on
+       regroupe aussi les remplacements: c'est la permutation de base, celle que
+       la simulation vient corriger. */
+    const replacementGroups=[...groupOf(simulatedReplacements,"swaps").values()]
+        .sort((a,b)=>b.count-a.count||(a.key<b.key?-1:1))
+    /* Les créations se groupent par la permutation ISOTOPIQUE (base -> satellite),
+       pas par le changement de base: c'est elle qui décrit « le même M+1 ». */
+    const creationGroups=simulatedCreations.reduce((groups,creation)=>{
+        if(!creation.groupKey) return groups
+        let group=groups.get(creation.groupKey)
+        if(!group){
+            group={key:creation.groupKey,signature:creation.signature,
+                count:0,created:0,entries:[]}
+            groups.set(creation.groupKey,group)
+        }
+        group.count++
+        if(creation.create) group.created++
+        group.entries.push(creation)
+        return groups
+    },new Map())
+
+    mask.simulatedReplacements=simulatedReplacements
+    mask.simulatedReplacementGroups=replacementGroups
+    mask.simulatedCreations=simulatedCreations
+    mask.simulatedCreationGroups=[...creationGroups.values()]
         .sort((a,b)=>b.count-a.count||(a.key<b.key?-1:1))
     return mask
 }

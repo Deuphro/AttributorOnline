@@ -2446,7 +2446,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         })
         const forestCaret=CE("span",{},["▾"])
         stylize(forestCaret,{width:"1em",display:"inline-block",textAlign:"center"})
-        const forestTitle=CE("span",{},["tree graph"])
+        const forestTitle=CE("span",{},["Forest graph"])
         stylize(forestTitle,{flex:"1 1 auto"})
         const forestHint=CE("span",{},["click to fold"])
         stylize(forestHint,{fontWeight:"normal",opacity:"0.5"})
@@ -2526,9 +2526,24 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             recapHead.setAttribute("aria-expanded",folded?"false":"true")
         }
         this.applyRecapFolded=applyRecapFolded
+        /* LE REPLI DU RÉCAP, ET IL DOIT RESTER CLOS SUR LUI-MÊME.
+
+           Ce corps contenait auparavant tout le montage du repli du GRAPHE.
+           L'accolade fermante était placée après ce montage, donc l'écouteur du
+           graphe n'existait qu'après un premier clic sur le récap: le graphe
+           semblait « impossible à replier » au démarrage. Les deux replis sont
+           indépendants et chacun possède sa fermeture. */
         const toggleRecap=()=>{
             this.forestRecapFolded=!this.forestRecapFolded
-        applyRecapFolded()
+            applyRecapFolded()
+            if(!this.forestRecapFolded){
+                /* LE RÉCAP S'ÉTAIT DESSINÉ DANS UNE BOÎTE FERMÉE: ses
+                   histogrammes et ses plots ont été mesurés à zéro et gardent
+                   cette largeur. On le reconstruit une fois la place rendue,
+                   plutôt que de déplacer une à une des échelles périmées. */
+                requestAnimationFrame(()=>this.renderForestRecap?.())
+            }
+        }
 
         /* LA GRILLE CHANGE DE FORME QUAND LE GRAPHE SE REPLIE. Replier le
            graphe en laissant sa rangée `1fr` intacte ne rendrait pas un pixel au
@@ -2570,14 +2585,6 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         })
         applyForestFolded()
 
-            if(!this.forestRecapFolded){
-                /* LE RÉCAP S'ÉTAIT DESSINÉ DANS UNE BOÎTE FERMÉE: ses
-                   histogrammes et ses plots ont été mesurés à zéro et gardent
-                   cette largeur. On le reconstruit une fois la place rendue,
-                   plutôt que de déplacer une à une des échelles périmées. */
-                requestAnimationFrame(()=>this.renderForestRecap?.())
-            }
-        }
         recapHead.addEventListener("click",toggleRecap)
         recapHead.addEventListener("keydown",event=>{
             if(event.key==="Enter"||event.key===" "){
@@ -3232,9 +3239,107 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             cluster.host.appendChild(clusterSpring)
             plotRow.append(funnelCard,cluster.host)
             card.append(title,plotRow)
+            /* LE GROUPE SIMULÉ PASSE AVANT CELUI DES SWAPS: il raconte ce que
+               le crible n'a PAS proposé, alors que les swaps ne déplacent que
+               des mariages entre formules déjà présentes. Lire le premier
+               éclaire le second. */
+            card.appendChild(this.renderFunnelSimulated(row,mask,cluster))
             card.appendChild(this.renderFunnelSwaps(row,mask,cluster))
             host.appendChild(card)
         }
+        return host
+    }
+
+    /* LE GROUPE DES SIMULATIONS — ce que le crible ne savait pas dire.
+
+       Deux faits s'y font valoir, et ils peuvent concerner le même pic:
+
+         - CRÉATION: le satellite est lu par sa masse, alors qu'aucune formule du
+           crible ne le propose. Le rapport isotopique ajoute donc une lecture
+           qui n'existait pas;
+         - REMPLACEMENT: la base qui explique le rapport est plus mal placée en
+           masse que le mariage courant. Elle prend pourtant le mariage, parce
+           que l'actuel ne permet aucune lecture isotopique.
+
+       On les groupe par permutation stoechiométrique (`C12:-1,C13:+1`), donc
+       tous les pics que le même échange d'atome explique se lisent ensemble. */
+    renderFunnelSimulated(row,mask,cluster){
+        const host=CE("div",{className:"an-funnel-simulated"},[])
+        stylize(host,{
+            display:"flex",flexDirection:"column",gap:"4px",minWidth:"0",
+            marginTop:"2px"
+        })
+        const creations=mask?.simulatedCreations??[]
+        const replacements=mask?.simulatedReplacements??[]
+        if(!creations.length&&!replacements.length) return host
+
+        const header=CE("div",{},[
+            `Simulated satellites — ${creations.length} created M+1 · `
+            +`${replacements.length} replaced marriage(s)`
+        ])
+        stylize(header,{fontSize:"0.92em",fontWeight:"bold",opacity:"0.92"})
+        host.appendChild(header)
+        const note=CE("div",{},[
+            "Creation adds a satellite the sieve never proposed; replacement "
+            +"overrides a better mass match that could not explain the ratio."
+        ])
+        stylize(note,{fontSize:"0.82em",opacity:"0.75",lineHeight:"1.4"})
+        host.appendChild(note)
+
+        const addGroupList=(groups,fieldText)=>{
+            if(!groups.length) return
+            const list=CE("div",{},[])
+            stylize(list,{display:"flex",flexDirection:"column",gap:"2px",
+                fontSize:"0.86em"})
+            for(const group of groups){
+                const line=CE("div",{},[])
+                stylize(line,{display:"flex",gap:"6px",alignItems:"center",
+                    flexWrap:"wrap"})
+                const label=CE("span",{},[
+                    `${group.count}× ${group.signature||"(same composition)"}`
+                    +(fieldText?` · ${fieldText(group)}`:"")
+                ])
+                stylize(label,{opacity:"0.82"})
+                line.appendChild(label)
+                list.appendChild(line)
+            }
+            host.appendChild(list)
+        }
+        addGroupList(mask?.simulatedCreationGroups??[],
+            group=>`${group.created} new reading(s)`)
+        addGroupList(mask?.simulatedReplacementGroups??[],
+            group=>{
+                const gain=group.swaps.reduce((sum,swap)=>
+                    sum+(Number.isFinite(swap.gain)?swap.gain:0),0)
+                return `${group.count} base(s) swapped`
+                    +(Number.isFinite(gain)?` · ${(gain*100).toFixed(2)} % δ gained`:"")
+            })
+
+        /* LA LISTE DES CRÉATIONS, POUR VOIR QUEL PIC GAGNE UNE LECTURE. Elle
+           reste courte: un pic par satellite simulé, et rien de plus. */
+        const list=CE("div",{},[])
+        stylize(list,{
+            display:"flex",flexDirection:"column",gap:"2px",fontSize:"0.86em",
+            maxHeight:"18vh",overflowY:"auto"
+        })
+        for(const creation of creations){
+            const line=CE("div",{},[])
+            stylize(line,{display:"flex",gap:"6px",alignItems:"center",
+                flexWrap:"wrap"})
+            const tags=[]
+            if(creation.create) tags.push("new M+1")
+            if(creation.replace) tags.push("base replaced")
+            const label=CE("span",{},[
+                `peak ${creation.index} · ${creation.lightKey} → `
+                +`${creation.satelliteSignature??creation.signature}`
+                +` · δ ${(creation.delta*100).toFixed(2)} %`
+                +` · ${tags.join(" + ")||"no change"}`
+            ])
+            stylize(label,{opacity:"0.82",overflow:"hidden"})
+            line.appendChild(label)
+            list.appendChild(line)
+        }
+        if(creations.length) host.appendChild(list)
         return host
     }
 
@@ -3268,9 +3373,9 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const header=CE("div",{},[
             `Swap to a better δ — ${swaps.length} peak(s) in ${mask.swapGroups?.length??0} permutation group(s)`
         ])
-        stylize(header,{fontSize:"0.74em",fontWeight:"bold",opacity:"0.85"})
+        stylize(header,{fontSize:"0.92em",fontWeight:"bold",opacity:"0.92"})
         const applyAll=CE("button",{type:"button"},["apply all"])
-        stylize(applyAll,{fontSize:"0.72em",padding:"1px 6px",cursor:"pointer"})
+        stylize(applyAll,{fontSize:"0.82em",padding:"1px 6px",cursor:"pointer"})
         applyAll.addEventListener("click",()=>applyMany(swaps))
         applyAll.addEventListener("mouseenter",()=>preview(true))
         applyAll.addEventListener("mouseleave",()=>preview(false))
@@ -3284,13 +3389,13 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 `all swaps: median ${this.formatPPM(row.median)} → `
                 +`${this.formatPPM(row.previewMedian)} ppm on ${row.previewChanged} peak(s)`
             ])
-            stylize(note,{fontSize:"0.7em",opacity:"0.6"})
+            stylize(note,{fontSize:"0.82em",opacity:"0.75"})
             host.appendChild(note)
         }
 
         if(mask.swapGroups?.length){
             const groups=CE("div",{},[])
-            stylize(groups,{display:"flex",flexDirection:"column",gap:"1px",fontSize:"0.72em"})
+            stylize(groups,{display:"flex",flexDirection:"column",gap:"2px",fontSize:"0.86em"})
             for(const group of mask.swapGroups){
                 const line=CE("div",{},[])
                 stylize(line,{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
@@ -3315,7 +3420,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
 
         const list=CE("div",{},[])
         stylize(list,{
-            display:"flex",flexDirection:"column",gap:"1px",fontSize:"0.72em",
+            display:"flex",flexDirection:"column",gap:"2px",fontSize:"0.86em",
             maxHeight:"18vh",overflowY:"auto"
         })
         for(const swap of swaps){
@@ -3979,6 +4084,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             if(candidateKeys.has(id)) continue
             markers.push({
                 kind:"simulated",point:null,key:ratio.lightKey,
+                simulatedPair:true,
                 x:ratio.totalIntensity,y:ratio.delta,ratio,
                 totalIntensity:ratio.totalIntensity,
                 lightMz:ratio.lightMz,heavyMz:ratio.heavyMz,
@@ -4270,9 +4376,19 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             if(!Number.isFinite(xMin)) xMin=0
             if(!Number.isFinite(xMax)) xMax=1
             if(!(xMax>xMin)) xMax=xMin+1
-            addTrace("funnel:massHalo","M+1 found by mass, not proposed",
+            /* CHAQUE PAIRE EST UN DISQUE CERCLÉ. Le cercle est PLEIN quand les
+               deux formules sont proposées par le crible, et POINTILLÉ quand un
+               membre n'existe que par la masse (isotopologue simulé). On lit
+               donc d'un coup d'œil si le rapport repose sur deux lectures réelles
+               ou sur une lecture reconstituée. */
+            addTrace("funnel:pairSolid","pair with both formulae proposed",
+                plotted.filter(marker=>marker.point!==null
+                    &&marker.point!==undefined&&!marker.simulatedPair),
+                {color:"rgba(190,205,225,0.55)",opacity:0.8,
+                    shape:"ring",size:10})
+            addTrace("funnel:pairDashed","pair with an isotopologue found by mass",
                 plotted.filter(marker=>marker.simulatedPair),
-                {color:"rgba(120,200,255,0.95)",shape:"ring",size:9})
+                {color:"rgba(120,200,255,0.95)",shape:"dashed-ring",size:11})
             for(const kind of ["simulated","challenger","bestChallenger","married","marriedBest"]){
                 addTrace(`funnel:${kind}`,titleOf[kind],
                     plotted.filter(marker=>marker.kind===kind),
@@ -4393,14 +4509,16 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             item.append(swatch,CE("span",{},[text]))
             legend.appendChild(item)
         }
-        const addRingLegend=text=>{
+        const addRingLegend=(text,{dashed=false}={})=>{
             const item=CE("span",{},[])
             stylize(item,{display:"inline-flex",alignItems:"center",gap:"4px"})
             const swatch=CE("span",{},[])
             stylize(swatch,{
-                width:"11px",height:"11px",display:"inline-block",
+                width:"12px",height:"12px",display:"inline-block",
                 borderRadius:"50%",boxSizing:"border-box",
-                border:"1.5px solid rgba(120,200,255,0.95)"
+                border:dashed
+                    ?"1.5px dashed rgba(120,200,255,0.95)"
+                    :"1.5px solid rgba(190,205,225,0.75)"
             })
             item.append(swatch,CE("span",{},[text]))
             legend.appendChild(item)
@@ -4410,8 +4528,12 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         addLegend("bestChallenger","best challenger δ")
         addLegend("challenger","other challenger δ")
         if(hasSwapSegments) addLegend("swap","swap to the better δ")
+        if(markers.some(marker=>marker.point!==null&&marker.point!==undefined
+            &&!marker.simulatedPair))
+            addRingLegend("pair: both formulae proposed (solid ring)")
         if(markers.some(marker=>marker.simulatedPair))
-            addRingLegend("M+1 found by mass, not proposed")
+            addRingLegend("pair: isotopologue found by mass (dashed ring)",
+                {dashed:true})
         if(markers.some(marker=>marker.kind==="simulated"))
             addLegend("simulated","M+1 found by mass, no proposed base")
         host.append(legend,details)

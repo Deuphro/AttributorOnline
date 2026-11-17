@@ -43,7 +43,10 @@ export const MARKER_SHAPES={
     //anneau (hollow circle): the forest vertex, filled by its own error
     ring:7,
     //luminous point (derived core + rim + halo): the forest root
-    glow:8
+    glow:8,
+    //dashed ring: the same hollow circle, broken into segments — a pair whose
+    //isotopologue was NOT proposed (filled by mass, not by the sieve)
+    "dashed-ring":9
 }
 
 export function shapeId(shape){
@@ -184,8 +187,9 @@ void main(){
     vSize=max(aSize*uPixelRatio,1.0);
     float sprite=vSize;
     //only shape 8 (glow) is drawn by drawPoint(); every other shape keeps
-    //its exact size (circle, square, ring… are hard masks)
-    if(aShape>7.5) sprite=vSize*GLOW_SPRITE_SCALE;
+    //its exact size (circle, square, ring… are hard masks). The dashed ring
+    //(9) is a hard mask too, so it must NOT be inflated like the glow.
+    if(aShape>7.5&&aShape<8.5) sprite=vSize*GLOW_SPRITE_SCALE;
     vSprite=sprite;
     gl_PointSize=sprite;
     gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
@@ -361,7 +365,7 @@ void main(){
     //sprite is inflated (see vertex shader) so the wide halo is not clipped,
     //and a soft radial window fades the gaussian tail to 0 at the sprite
     //edge so the halo never shows a hard cut.
-    if(vShape>7.5){
+    if(vShape>7.5&&vShape<8.5){
         vec2 p=c*(vSprite*0.5);
         float R=vSize*0.5;
         vec4 point=drawPoint(p,R,vColor.rgb);
@@ -392,6 +396,18 @@ void main(){
     }else if(vShape<7.5){
         float d=length(c);
         mask=min(1.0-d,d-0.55);                                //ring (hollow)
+    }else if(vShape<8.5){
+        mask=plusMask(c);                                      //glow: unreachable
+    }else if(vShape<9.5){
+        /* DASHED RING - the same thin annulus as the ring shape, cut into ten
+           segments around the circumference. dash is +1 on a segment and
+           -1 in a gap, so min(band,dash-0.5) keeps only the band where the
+           segment is lit. */
+        float d=length(c);
+        float band=min(1.0-d,d-0.72);
+        float angle=atan(c.y,c.x);
+        float dash=step(0.0,sin(angle*10.0))-0.5;
+        mask=min(band,dash);
     }else{
         mask=plusMask(c);                                      //unknown → plus
     }
