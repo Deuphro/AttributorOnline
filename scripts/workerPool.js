@@ -20,6 +20,8 @@ const MAX_RESPAWNS=3
    principal. C'est ce qui autorise le repli local à être le VRAI calcul et non
    une approximation. */
 import {growForest} from "./forest.js"
+//Le repli local de l'EM est le module de référence, comme le worker l'importe.
+import {fitGmm2d} from "./emGmm.js"
 class WorkerPool{
     constructor(size){
         this.size=Math.max(1,Math.min(size??((navigator.hardwareConcurrency||2)-1),4))
@@ -141,6 +143,21 @@ function runKernelLocally(kernel,payload){
             result[n+i]=scaled-Math.round(scaled)
         }
         return {core:result}
+    }
+    if(kernel==="emGmm2d"){
+        const {data,n_samples,max_components,requested_k,max_iter,tolerance,seed}=payload
+        const n=Number(n_samples)||0
+        const points=new Array(n)
+        for(let index=0;index<n;index++){
+            points[index]=[data[2*index],data[2*index+1]]
+        }
+        return fitGmm2d(points,{
+            ...(requested_k>0?{k:requested_k}:{}),
+            maxComponents:max_components??6,
+            maxIterations:max_iter??400,
+            tolerance:tolerance??1e-7,
+            ...(seed===undefined?{}:{seed})
+        })
     }
     if(kernel==="addScalar"){
         const {core,params}=payload

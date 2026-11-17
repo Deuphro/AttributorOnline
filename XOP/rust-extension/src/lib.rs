@@ -5,6 +5,7 @@ mod attribution;
 mod barycentric;
 mod bruker;
 mod calibration;
+mod emgmm;
 mod fkmd;
 mod forest;
 mod hough;
@@ -41,6 +42,10 @@ pub use barycentric::{barycentric_project, barycentric_project_f64};
 pub use pca::pca_project;
 pub use kmeans::kmeans_cluster;
 pub use spectral::spectral_cluster;
+//2D Gaussian mixture through expectation-maximization: the same flat input
+//(n*2 coordinates) and the same algorithm as scripts/emGmm.js, so the JS is a
+//reference fallback rather than a second, drifting implementation.
+pub use emgmm::gmm2d_em;
 //the Hough accumulator of (slope, intercept), over the relations between pairs
 //of peaks. The kernel is not a fixed bin: each vote is spread, and the SHAPE
 //is estimated from the data — from the grid, because asking it of the pairs is

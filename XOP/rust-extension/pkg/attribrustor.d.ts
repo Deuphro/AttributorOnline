@@ -367,6 +367,8 @@ export function fkmd(core: Float64Array, mz: number): Float64Array;
  */
 export function forest_grow(masses: Float64Array, intensities: Float64Array, standards: Float64Array, tolerance: number, degree_max: number, limit: number): Forest;
 
+export function gmm2d_em(data: Float64Array, n_samples: number, max_components: number, requested_k: number, max_iter: number, tolerance: number, seed: bigint): Float64Array;
+
 /**
  * Accumulates every pair of peaks into a `nx` x `ny` grid of (slope, intercept),
  * spreading each vote over four neighbours rather than one cell.
@@ -576,6 +578,7 @@ export interface InitOutput {
     readonly forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
     readonly forest_isolated: (a: number) => number;
     readonly forest_weights: (a: number) => [number, number];
+    readonly gmm2d_em: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => [number, number];
     readonly hough_accumulate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
     readonly hough_prepare: (a: number, b: number, c: number) => [number, number];
     readonly hough_smooth: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];

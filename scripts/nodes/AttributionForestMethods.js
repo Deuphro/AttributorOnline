@@ -8,6 +8,7 @@ import {Formula,FormulaCollection,positiveMassConjugate} from "../chemistry.js"
 import {computePool} from "../workerPool.js"
 import {buildPlan,attributeSpectrum,SortedPoints,stateToFormula,propagateForest,proposalsByPoint} from "../attribution.js"
 import {computeFunnelMask,elementsInProposals} from "../funnelMask.js"
+import {fitGmm2d,gaussianEllipse} from "../emGmm.js"
 import {isotopologueEnvelope} from "../isotopeMatch.js"
 import {forestStandards,forestComponents,componentLine,growForest,suggestWeightCut,forestGraph,forestRoot,forestCompositionDiff,forestDiffIsEmpty,forestDiffNotation,forestFindBrick,forestMergeGraphs,layoutForests,finalizeAnimatedLayout,applyGridLayout,createAnimatedLayoutWorker,advanceLayoutWorker,stopLayoutWorker,linkableBrick,DEFAULT_LINK_TOLERANCE,FOREST_LAYOUT_DEFAULTS} from "../forest.js"
 import {windowFor,scaleToggle,segmentToggle} from "../utils/index.js"
@@ -3218,6 +3219,21 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         dispatchEvent(this.events.broadcast.hoverSync(syncInfo))
     }
 
+    /* L'EM TOURNE DANS LE WORKER. Le résultat arrive après le rendu qui l'a
+       demandé ; on reconstruit une seule fois par frame, même si plusieurs
+       cartes répondent, pour ne pas repeindre le panneau N fois. */
+    scheduleFunnelEmRefresh(){
+        if(this._funnelEmRefreshPending) return
+        this._funnelEmRefreshPending=true
+        const run=()=>{
+            this._funnelEmRefreshPending=false
+            this.renderInspection?.()
+            this.renderForestRecap?.()
+        }
+        if(typeof requestAnimationFrame==="function") requestAnimationFrame(run)
+        else run()
+    }
+
     renderFunnelSection(rows){
         const host=CE("section",{className:"an-funnel-section"},[])
         stylize(host,{
@@ -4066,6 +4082,11 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             borderRadius:"6px",background:"rgba(255,255,255,0.03)",
             boxSizing:"border-box"
         })
+        /* L'EM EST UN ÉTAT DU NŒUD, PAS DU GRAPHIQUE: il survit aux
+           reconstructions (changement d'axe, réinspection) parce qu'il décrit
+           une question — « où est le nuage sain? » — et non un rendu. */
+        if(this.funnelEm===undefined) this.funnelEm=false
+        if(this.funnelEmK===undefined) this.funnelEmK="auto"
         /* LE MÊME EN-TÊTE QUE LE CLUSTER. Sans lui, la zone de tracé commençait
            plus haut que celle d'en face et les deux graphiques n'étaient pas
            alignés, même à hauteur égale. Le titre et le sous-titre reprennent
@@ -4220,14 +4241,28 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             borderRadius:"4px",background:"rgba(0,0,0,0.18)",
             color:"rgba(255,255,255,0.88)",whiteSpace:"pre-wrap"
         })
+        /* LA SYNTHÈSE EM EST RECALCULÉE AVEC LES TRACES. Elle n'a de sens
+           qu'après l'ajustement, donc `renderTraces` la remplit; le texte par
+           défaut la relit sans recalculer. */
+        let emState=null
+        let emPendingState=false
         const showDefault=()=>{
             const flagged=(mask.points??[]).filter(point=>point.mismatch).length
             const simulated=(mask.ratios??[])
                 .filter(ratio=>ratio.simulated||ratio.heavyKey==null).length
-            details.textContent=
+            let text=
                 `${mask.ratios.length} pair(s) · ${mask.points?.length??0} peak(s) with a delta`
                 +(simulated?` · ${simulated} M+1 found by mass`:"")
                 +(flagged?` · ${flagged} mismatch(es)`:"")
+            if(emState){
+                text+=`\nEM: ${emState.k} component(s) · near-origin holds `
+                    +`${emState.originCount} point(s) `
+                    +`(mean ${emState.originMean[0].toFixed(2)}, `
+                    +`${emState.originMean[1].toFixed(2)})`
+            }else if(emPendingState){
+                text+="\nEM: computing…"
+            }
+            details.textContent=text
                 +"\nHover a marker to compare the current marriage with its challengers."
         }
         const showPoint=pointIndex=>{
@@ -4398,16 +4433,77 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            bloc plutôt que de déplacer des marqueurs un à un, et le zoom
            automatique repart sur le nouveau domaine. */
         let hasSwapSegments=false
+        let emFit=null
         const axisTags=()=>[
             metric==="mass"?"mass":metric==="atoms"?"N"
                 :metric==="massError"?"|ppm|"
                     :metric==="massErrorDiff"?"Δppm":"signal",
             yMetric==="ratio"?"ratio":yMetric==="intensityRatio"?"Ih/Il":"δ"
         ]
+        /* LA CLÉ EST CELLE DU PLAN AFFICHÉ. Le résultat est rangé sur l'objet
+           `mask`, qui est déjà mémorisé par le nœud pour cette sélection et ce
+           ppm : changer d'axe redemande un ajustement, changer d'inspection
+           crée un nouveau mask et repart de zéro. */
+        const emKey=`${metric}|${yMetric}|${this.funnelEmK}`
+        const emOptions=()=>{
+            const requested=this.funnelEmK==="auto"?0:Number(this.funnelEmK)
+            return {
+                max_components:6,
+                requested_k:Number.isInteger(requested)&&requested>0?requested:0,
+                max_iter:400,tolerance:1e-7,seed:0x9e3779b9
+            }
+        }
+        const requestEm=plotted=>{
+            const pending=mask.__emPending??(mask.__emPending=new Set())
+            if(pending.has(emKey)) return
+            if(mask.__emErrors?.has(emKey)) return
+            pending.add(emKey)
+            const options=emOptions()
+            const data=new Float64Array(plotted.length*2)
+            for(let index=0;index<plotted.length;index++){
+                data[2*index]=plotted[index].x
+                data[2*index+1]=plotted[index].y
+            }
+            computePool.run("emGmm2d",
+                {data,n_samples:plotted.length,...options},[data.buffer])
+                .then(result=>{
+                    if(result){
+                        (mask.__emCache??(mask.__emCache=new Map())).set(emKey,result)
+                    }else{
+                        /* Un résultat vide ne doit pas relancer indéfiniment la
+                           même demande à chaque reconstruction. */
+                        ;(mask.__emErrors??(mask.__emErrors=new Set())).add(emKey)
+                    }
+                })
+                .catch(err=>{
+                    console.warn("[funnel] EM kernel unavailable, local fallback:",err)
+                    try{
+                        const points=plotted.map(marker=>[marker.x,marker.y])
+                        const fallback=options.requested_k>0
+                            ?fitGmm2d(points,{k:options.requested_k,
+                                maxComponents:options.max_components})
+                            :fitGmm2d(points,{maxComponents:options.max_components})
+                        if(fallback){
+                            (mask.__emCache??(mask.__emCache=new Map()))
+                                .set(emKey,fallback)
+                        }else{
+                            (mask.__emErrors??(mask.__emErrors=new Set())).add(emKey)
+                        }
+                    }catch(fallbackError){
+                        console.warn("[funnel] EM fallback failed:",fallbackError)
+                        ;(mask.__emErrors??(mask.__emErrors=new Set())).add(emKey)
+                    }
+                })
+                .finally(()=>{
+                    pending.delete(emKey)
+                    this.scheduleFunnelEmRefresh?.()
+                })
+        }
         const renderTraces=()=>{
             for(const marker of markers){
                 marker.x=metricValue(marker)
                 marker.y=yValue(marker)
+                marker.emLabel=-1
             }
             const plotted=markers.filter(marker=>
                 Number.isFinite(marker.x)&&Number.isFinite(marker.y))
@@ -4423,21 +4519,64 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             if(!Number.isFinite(xMin)) xMin=0
             if(!Number.isFinite(xMax)) xMax=1
             if(!(xMax>xMin)) xMax=xMin+1
+
+            /* LE MÉLANGE EST AJUSTÉ DANS LE PLAN AFFICHÉ, pas dans un espace
+               intermédiaire: c'est le nuage que l'utilisateur voit qu'on veut
+               séparer. En |Δppm| et Δppm, l'origine est le lieu idéal; la
+               composante dont la moyenne en est la plus proche est donc le
+               nuage sain, et on atténue le reste pour le dégager. Ailleurs
+               (signal, masse, atomes), l'origine n'a pas ce sens: la
+               composante la plus proche de (0,0) est seulement mise en avant. */
+            emFit=null
+            emPendingState=false
+            if(this.funnelEm&&plotted.length>=4){
+                if(mask.__emCache?.has(emKey)){
+                    emFit=mask.__emCache.get(emKey)
+                }else if(!mask.__emErrors?.has(emKey)){
+                    requestEm(plotted)
+                    emPendingState=true
+                }
+                if(emFit){
+                    plotted.forEach((marker,index)=>{
+                        marker.emLabel=emFit.labels[index]
+                    })
+                }
+            }
+            const origin=emFit?emFit.originComponent:-1
+            const isOrigin=marker=>!!emFit&&marker.emLabel===origin
+            /* UNE CATÉGORIE SE SCINDE EN DEUX QUAND L'EM EST ACTIF: le nuage
+               d'origine garde sa couleur et sa forme, le reste baisse
+               d'intensité. On ne recolore pas par composante: la couleur dit
+               déjà le rôle du marqueur (mariage, challenger, simulé), et la
+               remplacer ferait perdre cette lecture. */
+            const addGroup=(id,title,list,style)=>{
+                if(!list.length) return
+                if(!emFit){ addTrace(id,title,list,style); return }
+                addTrace(`${id}:origin`,title,list.filter(isOrigin),style)
+                const rest=list.filter(marker=>!isOrigin(marker))
+                if(rest.length){
+                    addTrace(`${id}:rest`,title,rest,{
+                        ...style,
+                        opacity:(style.opacity??1)*0.16
+                    })
+                }
+            }
+
             /* CHAQUE PAIRE EST UN DISQUE CERCLÉ. Le cercle est PLEIN quand les
                deux formules sont proposées par le crible, et POINTILLÉ quand un
                membre n'existe que par la masse (isotopologue simulé). On lit
                donc d'un coup d'œil si le rapport repose sur deux lectures réelles
                ou sur une lecture reconstituée. */
-            addTrace("funnel:pairSolid","pair with both formulae proposed",
+            addGroup("funnel:pairSolid","pair with both formulae proposed",
                 plotted.filter(marker=>marker.point!==null
                     &&marker.point!==undefined&&!marker.simulatedPair),
                 {color:"rgba(190,205,225,0.55)",opacity:0.8,
                     shape:"ring",size:10})
-            addTrace("funnel:pairDashed","pair with an isotopologue found by mass",
+            addGroup("funnel:pairDashed","pair with an isotopologue found by mass",
                 plotted.filter(marker=>marker.simulatedPair),
                 {color:"rgba(120,200,255,0.95)",shape:"dashed-ring",size:11})
             for(const kind of ["simulated","challenger","bestChallenger","married","marriedBest"]){
-                addTrace(`funnel:${kind}`,titleOf[kind],
+                addGroup(`funnel:${kind}`,titleOf[kind],
                     plotted.filter(marker=>marker.kind===kind),
                     {color:colorOf({kind}),shape:shapeOf({kind}),size:sizeOf({kind}),
                         opacity:kind==="challenger"?0.95:1})
@@ -4509,6 +4648,50 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 }))
                 markerByTrace.set("funnel:natural",[])
             }
+            /* LES ELLIPSES SONT SOUS LES MARQUEURS. Le contour à 2σ de la
+               composante d'origine est vert (le même vert que le mariage au
+               meilleur δ); les autres composantes restent discrètes. Une
+               composante vide ou quasi vide n'apporte rien: on ne dessine que
+               celles qui portent des points. */
+            if(emFit){
+                const ellipseTraces=[]
+                emFit.means.forEach((mean,component)=>{
+                    if(!(emFit.counts[component]>0)) return
+                    const isOrigin=component===emFit.originComponent
+                    const ellipse=gaussianEllipse(
+                        mean,emFit.covariances[component],
+                        {radius:isOrigin?2:1.5,samples:72})
+                    ellipseTraces.push(new XYTrace({
+                        id:`funnel:em:${component}`,
+                        title:isOrigin
+                            ?"EM component nearest the origin"
+                            :"EM other component",
+                        options:{mode:"lines-between-points",layer:"gl",
+                            color:isOrigin
+                                ?"rgba(143,227,106,0.95)"
+                                :"rgba(150,170,200,0.32)",
+                            opacity:isOrigin?0.95:0.7,
+                            line:{size:isOrigin?1.6:1},marker:{size:0}},
+                        wave:Wave.fromCoordinates(
+                            Float64Array.from(ellipse.map(point=>point[0])),
+                            Float64Array.from(ellipse.map(point=>point[1])),
+                            {},axisTags())
+                    }))
+                    markerByTrace.set(`funnel:em:${component}`,[])
+                })
+                ellipseTraces.sort((a,b)=>
+                    (a.id.endsWith(`:${emFit.originComponent}`)?1:0)
+                    -(b.id.endsWith(`:${emFit.originComponent}`)?1:0))
+                traces.unshift(...ellipseTraces)
+                emState={
+                    k:emFit.k,
+                    originCount:emFit.counts[emFit.originComponent]??0,
+                    originMean:emFit.means[emFit.originComponent]
+                }
+            }else{
+                emState=null
+            }
+            showDefault()
             plot.setTraces(traces)
             plot.drawGraph()
         }
@@ -4583,6 +4766,21 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 {dashed:true})
         if(markers.some(marker=>marker.kind==="simulated"))
             addLegend("simulated","M+1 found by mass, no proposed base")
+        if(emFit){
+            const total=emFit.counts.reduce((sum,count)=>sum+count,0)
+            const item=CE("span",{},[])
+            stylize(item,{display:"inline-flex",alignItems:"center",gap:"4px"})
+            const swatch=CE("span",{},[])
+            stylize(swatch,{
+                width:"13px",height:"9px",display:"inline-block",
+                borderRadius:"50%",boxSizing:"border-box",
+                border:"1.5px solid rgba(143,227,106,0.95)"
+            })
+            item.append(swatch,CE("span",{},[
+                `EM nearest (0,0): ${emFit.counts[emFit.originComponent]??0}/${total}`
+            ]))
+            legend.appendChild(item)
+        }
         host.append(legend,details)
 
         const zoomRow=CE("div",{className:"an-funnel-zoom"},[])
@@ -4602,12 +4800,74 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             button.addEventListener("click",action)
             return button
         }
-        zoomRow.append(
+        const rerenderFunnel=()=>{
+            this.renderForestRecap?.()
+            this.renderInspection?.()
+        }
+        const emButton=makeButton("EM",
+            "Fit a 2D Gaussian mixture (expectation-maximization) and set apart "
+            +"the component nearest (0,0)",()=>{
+                this.funnelEm=!this.funnelEm
+                rerenderFunnel()
+            })
+        stylize(emButton,{
+            width:"auto",padding:"0 6px",lineHeight:"18px",fontSize:"0.85em",
+            ...(this.funnelEm?{
+                background:"rgba(143,227,106,0.25)",
+                border:"1px solid rgba(143,227,106,0.85)"
+            }:{})
+        })
+        const emSelect=CE("select",{},[])
+        for(const value of ["auto","2","3","4","5","6"]){
+            emSelect.appendChild(CE("option",{value},[
+                value==="auto"?"k auto":`k=${value}`
+            ]))
+        }
+        emSelect.value=String(this.funnelEmK)
+        emSelect.title="Number of Gaussian components: auto (BIC) or fixed"
+        stylize(emSelect,{fontSize:"0.9em",height:"20px",padding:"0 2px"})
+        emSelect.addEventListener("change",()=>{
+            this.funnelEmK=emSelect.value
+            this.funnelEm=true
+            rerenderFunnel()
+        })
+        const focusOrigin=()=>{
+            if(!emFit) return
+            const component=emFit.originComponent
+            const mean=emFit.means[component]
+            const covariance=emFit.covariances[component]
+            const spanX=2.5*Math.sqrt(Math.max(covariance[0][0],1e-12))
+            const spanY=2.5*Math.sqrt(Math.max(covariance[1][1],1e-12))
+            const fallback=Math.max(Math.abs(mean[0]),Math.abs(mean[1]),1)
+            plot.parameters.axis.bottom.autoDomain=false
+            plot.parameters.axis.left.autoDomain=false
+            plot.parameters.axis.bottom.domain=[
+                mean[0]-(spanX>0?spanX:fallback),
+                mean[0]+(spanX>0?spanX:fallback)
+            ]
+            plot.parameters.axis.left.domain=[
+                mean[1]-(spanY>0?spanY:fallback),
+                mean[1]+(spanY>0?spanY:fallback)
+            ]
+            plot.drawGraph()
+        }
+        const zoomControls=[
             makeButton("−","zoom out",()=>zoomBy(0.7)),
             makeButton("+","zoom in",()=>zoomBy(1.4)),
             makeButton("⌂","reset zoom",resetView),
-            CE("span",{},["wheel or drag to zoom · double-click to reset"])
-        )
+            emButton
+        ]
+        if(this.funnelEm){
+            zoomControls.push(emSelect)
+            if(emFit){
+                zoomControls.push(makeButton("◎",
+                    "zoom on the EM component nearest (0,0)",focusOrigin))
+            }
+        }
+        zoomControls.push(CE("span",{},[
+            "wheel or drag to zoom · double-click to reset"
+        ]))
+        zoomRow.append(...zoomControls)
         host.appendChild(zoomRow)
 
         const flagged=(mask.points??[]).filter(point=>point.mismatch).length

@@ -6,6 +6,9 @@ import init,* as rust from "../XOP/rust-extension/pkg/attribrustor.js"
    dans chaque fil — et c'est pourquoi `growForest` y est le MÊME calcul que
    dans le noyau, et non une version allégée. */
 import {growForest} from "./forest.js"
+/* Le repli JS de l'EM est le MÊME calcul, importé plutôt que recopié: une
+   copie dériverait du noyau sans que rien ne le dise. */
+import {fitGmm2d,unpackGmm2dFlat} from "./emGmm.js"
 
 let wasmReady=null
 //Log-histogram bar density, kept in step with LOG_BINS_PER_DECADE in trim.rs
@@ -689,6 +692,31 @@ async houghTransform({core,params}){
         }catch(err){
             console.warn("[kernelWorker] rust spectral unavailable, JS fallback:",err)
             return spectralJS(data,n_samples,n_features,n_clusters,requested,k_neighbors??10)
+        }
+    },
+    /* --- EM / mélange de gaussiennes 2D ----------------------------------
+       Même contrat plat que les autres noyaux, mais la sortie est un objet
+       nommé: le funnel ne veut pas d'un Vec<f64>. `unpackGmm2dFlat` est la
+       seule lecture du format, partagée avec le test de parité. */
+    async emGmm2d({data,n_samples,max_components,requested_k,max_iter,tolerance,seed}){
+        const n=Number(n_samples)||0
+        try{
+            await ensureWasm()
+            if(typeof rust.gmm2d_em!=="function"){
+                throw new Error("rust gmm2d_em is missing (stale pkg build?)")
+            }
+            const flat=rust.gmm2d_em(
+                Float64Array.from(data??[]),n,
+                max_components??6,requested_k??0,
+                max_iter??400,tolerance??1e-7,
+                BigInt(Math.floor(seed??0x9e3779b9))
+            )
+            const result=unpackGmm2dFlat(flat,n)
+            if(!result) throw new Error("gmm2d_em returned no usable result")
+            return result
+        }catch(err){
+            console.warn("[kernelWorker] rust EM-GMM unavailable, JS fallback:",err)
+            return emGmm2dJS(data,n,{max_components,requested_k,max_iter,tolerance,seed})
         }
     },
     async parseThermoRaw({data,options={}}){
@@ -1682,6 +1710,26 @@ function parseThermoRawJS(data){
 }
 
 //JS fallback for PCA - simplified power iteration
+/* LE REPLI JS DE L'EM. Il reconstruit les couples depuis la disposition
+   plate, puis appelle le module de référence: aucune formule n'est recopiée
+   ici, donc le repli ne peut pas dériver du noyau. */
+function emGmm2dJS(data,n_samples,{
+    max_components=6,requested_k=0,max_iter=400,tolerance=1e-7,seed=0x9e3779b9
+}={}){
+    const n=Number(n_samples)||0
+    const points=new Array(n)
+    for(let index=0;index<n;index++){
+        points[index]=[data[2*index],data[2*index+1]]
+    }
+    return fitGmm2d(points,{
+        ...(requested_k>0?{k:requested_k}:{}),
+        maxComponents:max_components??6,
+        maxIterations:max_iter??400,
+        tolerance:tolerance??1e-7,
+        seed
+    })
+}
+
 function pcaJS(data,n_samples,n_features,n_components){
     if(!n_samples||!n_features||!n_components||n_components>n_features||!data||data.length!==n_samples*n_features){
         return {projected:new Float64Array(0),components:new Float64Array(0),explainedVariance:new Float64Array(0),means:new Float64Array(0)}

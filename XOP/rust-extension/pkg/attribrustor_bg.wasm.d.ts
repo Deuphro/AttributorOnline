@@ -47,6 +47,7 @@ export const forest_edge_weight: (a: number) => [number, number];
 export const forest_grow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
 export const forest_isolated: (a: number) => number;
 export const forest_weights: (a: number) => [number, number];
+export const gmm2d_em: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => [number, number];
 export const hough_accumulate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
 export const hough_prepare: (a: number, b: number, c: number) => [number, number];
 export const hough_smooth: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];

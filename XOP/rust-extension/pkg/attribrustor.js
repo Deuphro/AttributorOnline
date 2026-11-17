@@ -1184,6 +1184,25 @@ export function forest_grow(masses, intensities, standards, tolerance, degree_ma
 }
 
 /**
+ * @param {Float64Array} data
+ * @param {number} n_samples
+ * @param {number} max_components
+ * @param {number} requested_k
+ * @param {number} max_iter
+ * @param {number} tolerance
+ * @param {bigint} seed
+ * @returns {Float64Array}
+ */
+export function gmm2d_em(data, n_samples, max_components, requested_k, max_iter, tolerance, seed) {
+    const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.gmm2d_em(ptr0, len0, n_samples, max_components, requested_k, max_iter, tolerance, seed);
+    var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v2;
+}
+
+/**
  * Accumulates every pair of peaks into a `nx` x `ny` grid of (slope, intercept),
  * spreading each vote over four neighbours rather than one cell.
  *
