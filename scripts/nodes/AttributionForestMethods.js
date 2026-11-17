@@ -3349,6 +3349,40 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         stylize(note,{fontSize:"0.82em",opacity:"0.75",lineHeight:"1.4"})
         host.appendChild(note)
 
+        /* MÊMES GESTES QUE POUR LES SWAPS PROPOSÉS. Un remplacement simulé
+           reste un remplacement: on doit pouvoir l'appliquer seul ou par
+           groupe, et voir les spectres de la paire. Sans ça, séparer les deux
+           familles (ce qui est juste) faisait disparaître les boutons de la
+           seconde. */
+        const preview=on=>this.recapChartByInput?.get(row.inputIndex)?.showPreview?.(on)
+        const wave=(()=>{
+            try{ return this.collectInputWaves?.().waves?.[row.inputIndex]??null }
+            catch{ return null }
+        })()
+        const waveKey=typeof this.inspectionWaveKey==="function"
+            ?this.inspectionWaveKey(wave,row.inputIndex)
+            :`index:${row.inputIndex}`
+        const applyMany=list=>{
+            preview(false)
+            this.applyInspectionChoices?.(list.map(swap=>({
+                key:`${waveKey}#${swap.index}`,marriage:swap.toKey
+            })))
+        }
+        const addActionButtons=(line,swaps)=>{
+            if(!swaps?.length) return
+            const applyButton=CE("button",{type:"button"},["apply group"])
+            stylize(applyButton,{fontSize:"0.9em",padding:"0 5px",cursor:"pointer"})
+            applyButton.addEventListener("click",()=>applyMany(swaps))
+            applyButton.addEventListener("mouseenter",()=>preview(true))
+            applyButton.addEventListener("mouseleave",()=>preview(false))
+            const spectraButton=CE("button",{type:"button"},["show pair spectra"])
+            stylize(spectraButton,{
+                fontSize:"0.9em",padding:"0 5px",cursor:"pointer"
+            })
+            spectraButton.addEventListener("click",()=>
+                cluster?.showPairSpectra?.(swaps))
+            line.append(applyButton,spectraButton)
+        }
         const addGroupList=(groups,fieldText)=>{
             if(!groups.length) return
             const list=CE("div",{},[])
@@ -3364,6 +3398,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 ])
                 stylize(label,{opacity:"0.82"})
                 line.appendChild(label)
+                addActionButtons(line,group.swaps)
                 list.appendChild(line)
             }
             host.appendChild(list)
