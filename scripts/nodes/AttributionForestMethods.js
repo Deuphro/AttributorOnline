@@ -3181,6 +3181,43 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        avec le rapport isotopique qu'il implique, et existe-t-il une autre
        formule proposée pour le même pic qui le serait davantage? D'où sa
        propre section, son propre sélecteur et sa propre légende. */
+    /* PUBLIER LE HOVER DU FUNNEL, comme le graphe de forêt le fait déjà.
+
+       Un marqueur du funnel est attaché à un pic (`point`) du spectre source.
+       On publie donc l'identité que les autres lecteurs savent résoudre —
+       `sourceWaveId` + `sourcePointIndex` — et pas un `tracePoint` de trace GL,
+       qui n'a de sens que dans les buffers de CE plot. Le pic survolé est
+       l'ancre du delta: c'est lui que le spectre doit éclairer, que le delta
+       l'ait été noté côté base ou côté satellite. */
+    publishFunnelHover(marker,wave){
+        if(!marker){
+            dispatchEvent(this.events.broadcast.hoverSync(null))
+            return
+        }
+        const metadata=wave?.metadata??{}
+        const syncInfo={
+            traceId:"funnel",
+            x:Number.isFinite(marker.lightMz)?marker.lightMz:marker.x,
+            y:Number.isFinite(marker.delta)?marker.delta:marker.y
+        }
+        if(typeof metadata.sourceWaveId==="string")
+            syncInfo.sourceWaveId=metadata.sourceWaveId
+        const title=metadata.sourceWave??metadata.title
+        if(typeof title==="string") syncInfo.sourceWaveTitle=title
+        if(Number.isInteger(marker.point)){
+            syncInfo.sourcePointIndex=marker.point
+            syncInfo.tracePoint=marker.point
+        }
+        /* La clé de formule permet aux lecteurs qui tracent `formulaKeys`
+           (Van Krevelen, collections) de viser la bonne lecture, et pas
+           seulement le bon pic. */
+        const formulaKey=typeof marker.key==="string"
+            ?marker.key
+            :(typeof marker.lightKey==="string"?marker.lightKey:null)
+        if(formulaKey) syncInfo.formulaKey=formulaKey
+        dispatchEvent(this.events.broadcast.hoverSync(syncInfo))
+    }
+
     renderFunnelSection(rows){
         const host=CE("section",{className:"an-funnel-section"},[])
         stylize(host,{
@@ -3206,6 +3243,13 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             stylize(title,{fontSize:"0.72em",opacity:"0.65"})
             const mask=this.funnelMaskFor(row.inputIndex)
             const result=(this.attributions??[])[row.inputIndex]??null
+            /* LA VAGUE SOURCE, pour que le hover publié porte son identité.
+               Sans elle, les autres nœuds ne pourraient pas rattacher le point
+               à un spectre précis. */
+            const wave=(()=>{
+                try{ return this.collectInputWaves?.().waves?.[row.inputIndex]??null }
+                catch{ return null }
+            })()
             const plotRow=CE("div",{className:"an-funnel-plotrow"},[])
             stylize(plotRow,{
                 /* LES DEUX BLOCS PARTAGENT LA MÊME HAUTEUR. En `flex-start`, le
@@ -3221,7 +3265,10 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             stylize(cluster.host,{flex:"1 1 320px",minWidth:"0",
                 display:"flex",flexDirection:"column"})
             const funnelCard=this.drawForestFunnelChart(mask,{
-                onFocus:marker=>cluster.focus?.(marker),
+                onFocus:marker=>{
+                    cluster.focus?.(marker)
+                    this.publishFunnelHover?.(marker,wave)
+                },
                 xAxis:this.funnelXAxis??"intensity",
                 yAxis:this.funnelYAxis??"delta"
             })
