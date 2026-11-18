@@ -124,11 +124,20 @@ const splitsByRing=(assignments)=>{
 
 /* --- 1. the pipeline is joined ------------------------------------------ */
 console.log("the clustering pipeline is joined end to end")
-test("kernelWorker.js answers to the pca, kmeans and spectral kernel names",()=>{
-    for(const signature of ["async pca(","async kmeans(","async spectral("]){
+test("kernelWorker.js answers to the pca, kmeans, spectral and emGmm2d kernel names",()=>{
+    for(const signature of ["async pca(","async kmeans(","async spectral(","async emGmm2d("]){
         ok(workerSource.includes(signature),
             `kernelWorker.js has no ${signature.slice(6,-1)} handler — computePool.run would answer 'unknown kernel' and every run would fail`)
     }
+})
+test("the node offers the EM/GMM mode and calls the shared 2D kernel",()=>{
+    const nodeSource=readFileSync(join(here,"nodes/FormulaCollectionNode.js"),"utf8")
+    ok(nodeSource.includes('new Option("Gaussian mixture (EM)","gmm")'),
+        "the mode selector no longer offers the EM/GMM clustering")
+    ok(nodeSource.includes('computePool.run("emGmm2d"'),
+        "the EM/GMM mode is not wired to the shared Rust/JS kernel")
+    ok(nodeSource.includes('["kmeans","spectral","gmm"].includes'),
+        "a restored session would drop the gmm mode")
 })
 test("the node keys colours to the POINTS, not to their position",()=>{
     const nodeSource=readFileSync(join(here,"nodes/FormulaCollectionNode.js"),"utf8")

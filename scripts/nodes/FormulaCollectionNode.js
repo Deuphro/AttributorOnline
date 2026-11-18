@@ -1230,7 +1230,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
         this.parameters.clustering={
             enabled:false,
             nClusters:2,
-            mode:"kmeans", // "kmeans" or "spectral"
+            mode:"kmeans", // "kmeans", "spectral" or "gmm"
             /* PCA runs by DEFAULT: standardising each feature (centring and
                dividing by its spread) equalises the SCALES, but three
                correlated features are still one direction repeated — the
@@ -3487,7 +3487,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
             const c=state.clustering
             if(typeof c.enabled==="boolean") this.parameters.clustering.enabled=c.enabled
             if(Number.isFinite(c.nClusters)&&c.nClusters>=2) this.parameters.clustering.nClusters=c.nClusters
-            if(["kmeans","spectral"].includes(c.mode)) this.parameters.clustering.mode=c.mode
+            if(["kmeans","spectral","gmm"].includes(c.mode)) this.parameters.clustering.mode=c.mode
             if(Number.isFinite(c.pcaComponents)&&c.pcaComponents>=0) this.parameters.clustering.pcaComponents=c.pcaComponents
             if(Number.isFinite(c.sigma)&&c.sigma>=0) this.parameters.clustering.sigma=c.sigma
             if(Number.isFinite(c.kNeighbors)&&c.kNeighbors>=1) this.parameters.clustering.kNeighbors=c.kNeighbors
@@ -3755,11 +3755,12 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
         /* Clustering mode selector */
         this.clustModeSelect=CE("select",{
             value:clust.mode,
-            title:"Clustering algorithm: K-means (centroid-based) or Spectral Partitioning (graph-based)",
+            title:"Clustering algorithm: K-means (centroid-based), Spectral Partitioning (graph-based) or Gaussian mixture fitted by EM (2D, Rust/JS kernel)",
             style:{padding:"2px 4px",fontSize:"0.9em",minWidth:"0"}
         },[])
         this.clustModeSelect.appendChild(new Option("K-means","kmeans"))
         this.clustModeSelect.appendChild(new Option("Spectral Partitioning","spectral"))
+        this.clustModeSelect.appendChild(new Option("Gaussian mixture (EM)","gmm"))
         /* SET THE VALUE AFTER THE OPTIONS EXIST. `CE` applies `.value` while the
            select is still empty — and `.value` on a select with no options does
            nothing — so the rebuilt control always fell back to its FIRST option
@@ -3843,14 +3844,14 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
             min:10,
             max:1000,
             value:clust.maxIter,
-            title:"Maximum iterations for K-means",
+            title:"Maximum iterations for K-means or EM",
             style:{width:"70px",padding:"2px 4px",fontSize:"0.9em"}
         },[])
         this.clustMaxIter.addEventListener("change",()=>{
             const v=parseInt(this.clustMaxIter.value,10)
             if(Number.isFinite(v)&&v>=10) clust.maxIter=v
             this.origin?.saveSessionSoon?.()
-            if(clust.enabled&&clust.mode==="kmeans") this.computeClustering()
+            if(clust.enabled&&(clust.mode==="kmeans"||clust.mode==="gmm")) this.computeClustering()
         })
         /* Seed for reproducibility */
         this.clustSeed=CE("input",{
@@ -3924,7 +3925,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
             CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Max iter:"]),this.clustMaxIter]),
             CE("label",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"0.9em"}},[CE("span",{},["Seed:"]),this.clustSeed])
         )
-        if(clust.mode!=="kmeans") kmeansRow.style.display="none"
+        if(clust.mode!=="kmeans"&&clust.mode!=="gmm") kmeansRow.style.display="none"
         /* LE CONTENEUR NE DÉFILE QUE EN VERTICAL.
 
            Il portait `overflow:auto`, qui ouvre une barre horizontale dès qu'un
@@ -4225,15 +4226,24 @@ fontSize:"0.85em",background:"var(--bg)",
             // every component, a pure rotation that removes the correlation the
             // standardisation leaves behind; `-1` turns it off). A positive
             // number keeps that many components and denoises as it reduces.
+            //
+            // EM/GMM EST UN NOYAU 2D: sur trois cibles, on projette donc sur
+            // deux composantes même si l'utilisateur a demandé « tout garder »
+            // ou « pas de PCA ». Sans ça le noyau refuserait le tableau, et
+            // refuser en silence serait pire que projeter. La source graphe,
+            // elle, est déjà en 2D et reste telle quelle.
+            let pcaComponents=clust.pcaComponents
+            if(clust.mode==="gmm"&&(n_features>2||pcaComponents===1))
+                pcaComponents=2
             let projected=null
             let useData=scaled
             let useFeatures=n_features
-            if(clust.pcaComponents>=0){
+            if(pcaComponents>=0){
                 const pcaResult=await computePool.run("pca",{
                     data:scaled,
                     n_samples,
                     n_features,
-                    n_components:clust.pcaComponents>0?Math.min(clust.pcaComponents,n_features):n_features
+                    n_components:pcaComponents>0?Math.min(pcaComponents,n_features):n_features
                 })
                 if(pcaResult.projected&&pcaResult.projected.length>0){
                     projected=pcaResult.projected
@@ -4252,6 +4262,26 @@ fontSize:"0.85em",background:"var(--bg)",
                     max_iter:clust.maxIter,
                     seed:clust.seed
                 })
+            }else if(clust.mode==="gmm"){
+                /* LE MÊME NOYAU QUE LE FUNNEL. Il attend n*2 valeurs: la
+                   dimension a été garantie ci-dessus. `requested_k` force le
+                   nombre de classes demandé, au lieu de laisser le BIC choisir
+                   un k différent de celui affiché par le panneau. */
+                if(useFeatures!==2)
+                    throw new Error("EM/GMM clustering needs two dimensions")
+                const data2d=Float64Array.from(useData)
+                const gmm=await computePool.run("emGmm2d",{
+                    data:data2d,
+                    n_samples,
+                    max_components:clust.nClusters,
+                    requested_k:clust.nClusters,
+                    max_iter:clust.maxIter,
+                    tolerance:1e-7,
+                    seed:clust.seed
+                },[data2d.buffer])
+                result=gmm&&gmm.labels
+                    ?{...gmm,assignments:gmm.labels}
+                    :gmm
             }else{
                 result=await computePool.run("spectral",{
                     data:useData,
