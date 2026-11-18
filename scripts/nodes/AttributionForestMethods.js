@@ -3315,14 +3315,16 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
 
     /* LE GROUPE DES SIMULATIONS — ce que le crible ne savait pas dire.
 
-       Deux faits s'y font valoir, et ils peuvent concerner le même pic:
+       Trois faits s'y font valoir, et ils peuvent concerner le même pic:
 
-         - CRÉATION: le satellite est lu par sa masse, alors qu'aucune formule du
-           crible ne le propose. Le rapport isotopique ajoute donc une lecture
-           qui n'existait pas;
-         - REMPLACEMENT: la base qui explique le rapport est plus mal placée en
-           masse que le mariage courant. Elle prend pourtant le mariage, parce
-           que l'actuel ne permet aucune lecture isotopique.
+         - NEW ISOTOPOLOGUE: le satellite est lu par sa masse, aucune formule ne
+           revendique ce pic; le rapport ajoute une lecture qui n'existait pas;
+         - MARRIAGE CHALLENGED: le satellite tombe sur un pic déjà marié à une
+           autre formule, qui ne peut pas être son isotopologue. Il y a
+           compétition, mais pas bataille de delta entre deux formules;
+         - CHALLENGED MARRIAGE: la base qui explique le rapport est plus mal
+           placée en masse que le mariage courant. Elle prend pourtant le
+           mariage, parce que l'actuel ne permet aucune lecture isotopique.
 
        On les groupe par permutation stoechiométrique (`C12:-1,C13:+1`), donc
        tous les pics que le même échange d'atome explique se lisent ensemble. */
@@ -3334,27 +3336,6 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         })
         const creations=mask?.simulatedCreations??[]
         const replacements=mask?.simulatedReplacements??[]
-        if(!creations.length&&!replacements.length) return host
-
-        const header=CE("div",{},[
-            `Simulated satellites — ${creations.length} created M+1 · `
-            +`${replacements.length} replaced marriage(s)`
-        ])
-        stylize(header,{fontSize:"0.92em",fontWeight:"bold",opacity:"0.92"})
-        host.appendChild(header)
-        const note=CE("div",{},[
-            "Creation adds a satellite the sieve never proposed; replacement "
-            +"overrides a better mass match that could not explain the ratio."
-        ])
-        stylize(note,{fontSize:"0.82em",opacity:"0.75",lineHeight:"1.4"})
-        host.appendChild(note)
-
-        /* MÊMES GESTES QUE POUR LES SWAPS PROPOSÉS. Un remplacement simulé
-           reste un remplacement: on doit pouvoir l'appliquer seul ou par
-           groupe, et voir les spectres de la paire. Sans ça, séparer les deux
-           familles (ce qui est juste) faisait disparaître les boutons de la
-           seconde. */
-        const preview=on=>this.recapChartByInput?.get(row.inputIndex)?.showPreview?.(on)
         const wave=(()=>{
             try{ return this.collectInputWaves?.().waves?.[row.inputIndex]??null }
             catch{ return null }
@@ -3362,6 +3343,111 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const waveKey=typeof this.inspectionWaveKey==="function"
             ?this.inspectionWaveKey(wave,row.inputIndex)
             :`index:${row.inputIndex}`
+        const hasUndo=typeof this.hasEmClusterUndo==="function"
+            ?this.hasEmClusterUndo(waveKey)
+            :!!this.emClusterUndo?.has?.(waveKey)
+        if(!creations.length&&!replacements.length&&!hasUndo) return host
+
+        /* L'EM DIT QUELS SATELLITES SIMULÉS SONT DANS LE NUAGE SAIN. On range
+           ceux-là en tête et on les marque d'un badge vert: le vert ne sert
+           qu'à ça, il ne colore jamais un compteur qui mélange les familles. */
+        const emOrigin=mask?.__emOriginSimKeys??null
+        const creationKey=creation=>`${creation.lightPoint}\u0000${creation.lightKey}`
+        const swapKey=swap=>`${swap.index}\u0000${swap.toKey}`
+        const creationInEm=creation=>!!emOrigin?.has(creationKey(creation))
+        const swapInEm=swap=>!!emOrigin?.has(swapKey(swap))
+        const newCount=creations.filter(creation=>
+            creation.create&&!creation.challenge&&!creation.replace).length
+        const challengedCount=creations.filter(creation=>
+            creation.challenge||creation.replace).length
+        const emCount=creations.filter(creationInEm).length
+        const emReplacements=replacements.filter(swapInEm)
+        const emBadge=()=>{
+            const badge=CE("span",{},["EM"])
+            badge.title="This simulated satellite lies in the EM component "
+                +"nearest the origin"
+            stylize(badge,{
+                fontSize:"0.82em",lineHeight:"1.4",padding:"0 4px",
+                borderRadius:"3px",fontWeight:"bold",
+                color:"rgba(22,42,16,0.95)",
+                background:"rgba(143,227,106,0.92)"
+            })
+            return badge
+        }
+
+        if(creations.length||replacements.length){
+            const header=CE("div",{},[
+                `Simulated satellites — ${newCount} new isotopologue(s) · `
+                +`${challengedCount} marriage challenged`
+            ])
+            stylize(header,{fontSize:"0.92em",fontWeight:"bold",opacity:"0.92",
+                display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"})
+            if(emCount){
+                const emItem=CE("span",{},[])
+                stylize(emItem,{display:"inline-flex",gap:"4px",
+                    alignItems:"center",color:"rgba(143,227,106,0.95)"})
+                emItem.append(emBadge(),CE("span",{},[
+                    `${emCount} in the cluster`
+                ]))
+                header.appendChild(emItem)
+            }
+            host.appendChild(header)
+            const note=CE("div",{},[
+                "A new isotopologue adds a satellite no formula claimed; a "
+                +"challenged marriage competes with a formula already in place. "
+                +"Satellites carrying the green EM badge are listed first."
+            ])
+            stylize(note,{fontSize:"0.82em",opacity:"0.75",lineHeight:"1.4"})
+            host.appendChild(note)
+        }
+
+        /* VALIDER LE CLUSTER EM, puis pouvoir l'annuler. Le bouton ne vise que
+           les satellites badgés: les autres familles ont leurs propres gestes. */
+        const actionRow=CE("div",{},[])
+        stylize(actionRow,{display:"flex",gap:"6px",alignItems:"center",
+            flexWrap:"wrap"})
+        if(emCount||emReplacements.length){
+            const validate=CE("button",{type:"button"},["validate EM marriages"])
+            validate.title="Marry the EM-cluster formulas: add new "
+                +"isotopologues and replace in-place formulas by their challenger"
+            stylize(validate,{fontSize:"0.86em",padding:"1px 6px",
+                cursor:"pointer"})
+            validate.addEventListener("click",()=>{
+                if(typeof this.applyEmClusterMarriages!=="function") return
+                this.applyEmClusterMarriages({
+                    waveIndex:row.inputIndex,
+                    waveKey,
+                    additions:creations.filter(creationInEm).map(creation=>({
+                        point:creation.index,
+                        formula:creation.satelliteFormula,
+                        mz:creation.heavyMz,
+                        intensity:creation.heavyIntensity,
+                        errorPpm:creation.heavySignedPpm
+                    })),
+                    marriages:emReplacements.map(swap=>({
+                        point:swap.index,key:swap.toKey
+                    }))
+                })
+            })
+            actionRow.appendChild(validate)
+        }
+        if(hasUndo){
+            const revert=CE("button",{type:"button"},["revert"])
+            revert.title="Undo the EM marriage validation for this spectrum"
+            stylize(revert,{fontSize:"0.86em",padding:"1px 6px",
+                cursor:"pointer"})
+            revert.addEventListener("click",()=>
+                this.revertEmClusterMarriages?.(waveKey))
+            actionRow.appendChild(revert)
+        }
+        if(actionRow.childElementCount) host.appendChild(actionRow)
+
+        /* MÊMES GESTES QUE POUR LES SWAPS PROPOSÉS. Un remplacement simulé
+           reste un remplacement: on doit pouvoir l'appliquer seul ou par
+           groupe, et voir les spectres de la paire. Sans ça, séparer les deux
+           familles (ce qui est juste) faisait disparaître les boutons de la
+           seconde. */
+        const preview=on=>this.recapChartByInput?.get(row.inputIndex)?.showPreview?.(on)
         const applyMany=list=>{
             preview(false)
             this.applyInspectionChoices?.(list.map(swap=>({
@@ -3383,12 +3469,16 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 cluster?.showPairSpectra?.(swaps))
             line.append(applyButton,spectraButton)
         }
-        const addGroupList=(groups,fieldText)=>{
+        const addGroupList=(groups,fieldText,itemsOf,inEm)=>{
             if(!groups.length) return
+            const countEm=group=>itemsOf?itemsOf(group).filter(inEm).length:0
+            const ordered=[...groups].sort((a,b)=>
+                countEm(b)-countEm(a)||b.count-a.count||(a.key<b.key?-1:1))
             const list=CE("div",{},[])
             stylize(list,{display:"flex",flexDirection:"column",gap:"2px",
                 fontSize:"0.86em"})
-            for(const group of groups){
+            for(const group of ordered){
+                const em=countEm(group)>0
                 const line=CE("div",{},[])
                 stylize(line,{display:"flex",gap:"6px",alignItems:"center",
                     flexWrap:"wrap"})
@@ -3398,35 +3488,54 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 ])
                 stylize(label,{opacity:"0.82"})
                 line.appendChild(label)
+                if(em) line.appendChild(emBadge())
                 addActionButtons(line,group.swaps)
                 list.appendChild(line)
             }
             host.appendChild(list)
         }
         addGroupList(mask?.simulatedCreationGroups??[],
-            group=>`${group.created} new reading(s)`)
+            group=>{
+                const fresh=(group.entries??[]).filter(creation=>
+                    creation.create&&!creation.challenge&&!creation.replace).length
+                return `${fresh} new isotopologue(s)`
+                    +(group.challenged?` · ${group.challenged} marriage challenged`:"")
+            },
+            group=>group.entries??[],creationInEm)
         addGroupList(mask?.simulatedReplacementGroups??[],
             group=>{
                 const gain=group.swaps.reduce((sum,swap)=>
                     sum+(Number.isFinite(swap.gain)?swap.gain:0),0)
-                return `${group.count} base(s) swapped`
+                return `${group.count} marriage challenged`
                     +(Number.isFinite(gain)?` · ${(gain*100).toFixed(2)} % δ gained`:"")
-            })
+            },
+            group=>group.swaps??[],swapInEm)
 
         /* LA LISTE DES CRÉATIONS, POUR VOIR QUEL PIC GAGNE UNE LECTURE. Elle
-           reste courte: un pic par satellite simulé, et rien de plus. */
+           reste courte: un pic par satellite simulé, et rien de plus. Les
+           satellites du cluster EM montent en tête, puis ceux qui challengent
+           un mariage en place. */
         const list=CE("div",{},[])
         stylize(list,{
             display:"flex",flexDirection:"column",gap:"2px",fontSize:"0.86em",
             maxHeight:"18vh",overflowY:"auto"
         })
-        for(const creation of creations){
+        const orderedCreations=[...creations].sort((a,b)=>
+            (creationInEm(b)?1:0)-(creationInEm(a)?1:0)
+            ||(Number(b.challenge||b.replace)-Number(a.challenge||a.replace))
+            ||a.index-b.index)
+        for(const creation of orderedCreations){
+            const em=creationInEm(creation)
             const line=CE("div",{},[])
             stylize(line,{display:"flex",gap:"6px",alignItems:"center",
                 flexWrap:"wrap"})
             const tags=[]
-            if(creation.create) tags.push("new M+1")
-            if(creation.replace) tags.push("base replaced")
+            if(creation.create&&!creation.challenge&&!creation.replace)
+                tags.push("new isotopologue")
+            if(creation.challenge)
+                tags.push(`marriage challenged`
+                    +(creation.challengerKey?` (${creation.challengerKey})`:""))
+            else if(creation.replace) tags.push("marriage challenged")
             const label=CE("span",{},[
                 `peak ${creation.index} · ${creation.lightKey} → `
                 +`${creation.satelliteSignature??creation.signature}`
@@ -3435,6 +3544,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             ])
             stylize(label,{opacity:"0.82",overflow:"hidden"})
             line.appendChild(label)
+            if(em) line.appendChild(emBadge())
             list.appendChild(line)
         }
         if(creations.length) host.appendChild(list)
@@ -4726,6 +4836,26 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             }else{
                 emState=null
             }
+            /* QUELS SATELLITES SIMULÉS TOMBENT DANS LE CLUSTER SAIN. On garde
+               l'identité de leur paire (base) pour que la liste des simulations
+               puisse les reconnaître sans refaire l'ajustement: la clé est la
+               même que celle des swaps (`point\u0000key`). */
+            if(emFit){
+                const originSimKeys=new Set()
+                for(const marker of plotted){
+                    if(!marker.simulatedPair) continue
+                    if(marker.emLabel!==emFit.originComponent) continue
+                    const pairKey=marker.point!==null&&marker.point!==undefined
+                        ?`${marker.point}\u0000${marker.key}`
+                        :(marker.ratio&&typeof marker.ratio==="object"
+                            ?`${marker.ratio.lightPoint}\u0000${marker.ratio.lightKey}`
+                            :null)
+                    if(pairKey) originSimKeys.add(pairKey)
+                }
+                mask.__emOriginSimKeys=originSimKeys
+            }else{
+                mask.__emOriginSimKeys=null
+            }
             showDefault()
             plot.setTraces(traces)
             plot.drawGraph()
@@ -4739,20 +4869,6 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         requestAnimationFrame(()=>{
             if(host.isConnected) plot.drawGraph()
         })
-
-        const zoomBy=factor=>{
-            const xDomain=plot.parameters.axis.bottom.domain
-            const yDomain=plot.parameters.axis.left.domain
-            if(!Array.isArray(xDomain)||!Array.isArray(yDomain)) return
-            const changedX=plot.zoomAxisDomain("bottom",(xDomain[0]+xDomain[1])/2,factor)
-            const changedY=plot.zoomAxisDomain("left",(yDomain[0]+yDomain[1])/2,factor)
-            if(changedX||changedY) plot.drawGraph()
-        }
-        const resetView=()=>{
-            plot.parameters.axis.bottom.autoDomain=true
-            plot.parameters.axis.left.autoDomain=true
-            plot.drawGraph()
-        }
 
         const legend=CE("div",{className:"an-funnel-legend"},[])
         stylize(legend,{
@@ -4886,12 +5002,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             ]
             plot.drawGraph()
         }
-        const zoomControls=[
-            makeButton("−","zoom out",()=>zoomBy(0.7)),
-            makeButton("+","zoom in",()=>zoomBy(1.4)),
-            makeButton("⌂","reset zoom",resetView),
-            emButton
-        ]
+        const zoomControls=[emButton]
         if(this.funnelEm){
             zoomControls.push(emSelect)
             if(emFit){

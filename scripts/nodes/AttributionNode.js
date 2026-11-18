@@ -970,6 +970,10 @@ export class AttributionNode extends NodeWithAccordion{
         this.attributions=published
         this.kernelErrors=errors
         this.inspectionScores?.clear()
+        /* Les entrées injectées par la validation EM appartenaient aux
+           attributions précédentes: elles ne survivent pas à un nouveau
+           resolve, donc leur annulation non plus. */
+        this.emClusterUndo?.clear()
         this.outputs[0]=this.publishable(published)
         /* "error" only if NOTHING came out. A partial success is a success, and
            a node painted red over three good results would be lying. */
@@ -2616,6 +2620,100 @@ export class AttributionNode extends NodeWithAccordion{
             this.inspectionChoices.set(entry.key,entry.marriage??null)
         }
         this.republishInspection()
+    }
+    /* VALIDER LES MARIAGES DU CLUSTER EM.
+     *
+     * Deux gestes, et ils sont de même nature: mettre la lecture voulue en
+     * première position pour son pic. Un satellite absent du crible doit
+     * d'abord y être injecté comme proposition, sinon aucun mariage ne peut
+     * le désigner; un remplacement, lui, choisit une clé déjà proposée.
+     *
+     * L'état d'annulation est rangé par vague et FUSIONNÉ: valider deux fois
+     * de suite ne doit pas perdre les choix d'origine, sinon `revert` ne
+     * rendrait que le dernier coup. */
+    applyEmClusterMarriages({waveIndex,waveKey,additions=[],marriages=[]}={}){
+        if(typeof waveKey!=="string") return
+        const result=this.attributions?.[waveIndex]??null
+        if(!this.emClusterUndo) this.emClusterUndo=new Map()
+        let undo=this.emClusterUndo.get(waveKey)
+        if(!undo){
+            undo={choices:[],added:[]}
+            this.emClusterUndo.set(waveKey,undo)
+        }
+        const choose=(point,key)=>{
+            if(!Number.isInteger(point)||typeof key!=="string") return
+            const choiceKey=`${waveKey}#${point}`
+            if(!undo.choices.some(item=>item.choiceKey===choiceKey)){
+                undo.choices.push({
+                    choiceKey,
+                    had:this.inspectionChoices.has(choiceKey),
+                    value:this.inspectionChoices.get(choiceKey)
+                })
+            }
+            this.inspectionChoices.set(choiceKey,key)
+        }
+        if(result){
+            if(!Array.isArray(result.entries)) result.entries=[]
+            for(const addition of additions??[]){
+                const {point,formula}=addition??{}
+                if(!Number.isInteger(point)||!formula) continue
+                let entry=result.entries?.find(item=>
+                    item?.target?.index===point&&item?.key===formula.key)
+                if(!entry){
+                    const measuredMz=Number.isFinite(addition.mz)
+                        ?addition.mz:formula.mz
+                    const errorPpm=Number.isFinite(addition.errorPpm)
+                        ?addition.errorPpm:null
+                    entry={
+                        formula,
+                        key:formula.key,
+                        notation:String(formula),
+                        mz:formula.mz,
+                        mass:formula.mass,
+                        charge:formula.charge,
+                        molecule:formula.moleculeKey,
+                        logProbability:null,
+                        recipe:null,
+                        target:{
+                            index:point,
+                            mz:measuredMz,
+                            intensity:Number(addition.intensity??0),
+                            errorPpm
+                        },
+                        errorPpm,
+                        inWindow:true,
+                        emSatellite:true
+                    }
+                    result.entries.push(entry)
+                    undo.added.push({result,entry})
+                }
+                choose(point,formula.key)
+            }
+        }
+        for(const marriage of marriages??[]){
+            choose(marriage?.point,marriage?.key)
+        }
+        this.republishInspection()
+    }
+    hasEmClusterUndo(waveKey){
+        return !!this.emClusterUndo?.has(waveKey)
+    }
+    revertEmClusterMarriages(waveKey){
+        const undo=this.emClusterUndo?.get(waveKey)
+        if(!undo) return false
+        for(const item of undo.choices){
+            if(item.had) this.inspectionChoices.set(item.choiceKey,item.value)
+            else this.inspectionChoices.delete(item.choiceKey)
+        }
+        for(const item of undo.added){
+            const list=item.result?.entries
+            if(!list) continue
+            const index=list.indexOf(item.entry)
+            if(index>=0) list.splice(index,1)
+        }
+        this.emClusterUndo.delete(waveKey)
+        this.republishInspection()
+        return true
     }
     resetInspectionChoice(choiceKey){
         this.inspectionChoices.delete(choiceKey)

@@ -316,6 +316,8 @@ test("un satellite simulé crée une permutation absente du crible",()=>{
     const creation=mask.simulatedCreations[0]
     ok(creation.create===true,"the satellite formula is absent from the sieve")
     ok(creation.replace===false,"the base was already the default marriage")
+    ok(creation.challenge===false,"nobody occupies the satellite peak")
+    ok(creation.challengerKey===null,"there is no in-place marriage to challenge")
     ok(creation.index===5,"the created reading is on the satellite peak")
     ok(creation.signature.includes("C12:-1")&&creation.signature.includes("C13:+1"),
         `the permutation must describe 12C -> 13C, got ${creation.signature}`)
@@ -323,6 +325,36 @@ test("un satellite simulé crée une permutation absente du crible",()=>{
     ok(mask.simulatedCreationGroups[0].created===1,"one created reading in it")
     ok(mask.swaps.length===0,"a simulated ratio is not a proposed swap")
     ok(mask.swapGroups.length===0,"and produces no proposed group")
+})
+
+test("un satellite simulé qui tombe sur un pic déjà marié challenge ce mariage",()=>{
+    const lightIntensity=1000
+    const heavyIntensity=lightIntensity*6*theoretical1312
+    const deltaMass=carbon.isotope(13).mass-carbon.isotope(12).mass
+    const mask=computeFunnelMask({
+        entries:[
+            reading(glucose,0,{intensity:lightIntensity}),
+            reading(other,5,{intensity:heavyIntensity,errorPpm:0.2})
+        ],
+        peakList:peaksStub([
+            {index:0,mz:glucose.mz,intensity:lightIntensity},
+            {index:5,mz:glucose.mz+deltaMass,intensity:heavyIntensity}
+        ]),
+        element:"C",lightA:12,heavyA:13
+    })
+    ok(mask.simulatedCreations.length===1,
+        `expected one creation, got ${mask.simulatedCreations.length}`)
+    const creation=mask.simulatedCreations[0]
+    ok(creation.create===true,"the satellite formula is still new")
+    ok(creation.satelliteFormula,"the satellite formula is carried for applying")
+    ok(String(creation.satelliteFormula).includes("13C"),
+        `the satellite must be the 13C isotopologue, got ${creation.satelliteFormula}`)
+    ok(creation.challenge===true,"an in-place formula occupies the satellite peak")
+    ok(creation.challengerKey===other.key,
+        `the occupant must be reported, got ${creation.challengerKey}`)
+    ok(creation.replace===false,"this is not a delta-based replacement")
+    ok(mask.simulatedCreationGroups[0].challenged===1,
+        "the group counts the challenged marriage")
 })
 
 test("une base simulée remplace le mariage qui ne peut pas expliquer le delta",()=>{

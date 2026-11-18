@@ -373,6 +373,8 @@ export function computeFunnelMask({
             delta:measured.delta,
             lightErrorPpm,
             heavyErrorPpm,
+            lightSignedPpm,
+            heavySignedPpm,
             massErrorPpm,
             massErrorDiffPpm,
             massErrorDa,
@@ -576,14 +578,30 @@ export function computeFunnelMask({
         const satelliteSignature=atomsSignature(satellite)
         const diff=compositionDiff(light.atoms,satellite)
         if(!diff.key) continue
+        /* La formule du satellite, pour pouvoir l'injecter comme proposition
+           d'un pic quand l'utilisateur valide le mariage EM. */
+        const satelliteFormula=light.formula?.isotopologue?.(symbol,heavyA)??null
         const existing=signaturesByPoint.get(ratio.heavyPoint)
         const replacement=simulatedReplacements.find(item=>
             item.index===ratio.lightPoint&&item.toKey===ratio.lightKey)??null
+        const create=!(existing&&existing.has(satelliteSignature))
+        /* LE SATELLITE PEUT TOMBER SUR UN PIC DÉJÀ MARIÉ. Ce n'est pas un
+           remplacement au sens du delta (aucune formule ne se bat sur ce pic
+           pour ce satellite) : la lecture par masse découvre simplement que le
+           mariage en place est l'isotopologue d'une autre base. On le signale
+           pour le compter comme « marriage challenged » et non comme une
+           création ex nihilo. */
+        const challengerKey=create
+            ?(marriageByPoint?.get?.(ratio.heavyPoint)
+                ??defaultMarriage.get(ratio.heavyPoint)?.key
+                ??null)
+            :null
         simulatedCreations.push({
             index:ratio.heavyPoint,
             lightPoint:ratio.lightPoint,
             lightKey:ratio.lightKey,
             satelliteSignature,
+            satelliteFormula,
             signature:diff.signed,
             groupKey:diff.key,
             atoms:ratio.atoms,
@@ -593,9 +611,12 @@ export function computeFunnelMask({
             heavyIntensity:ratio.heavyIntensity,
             delta:ratio.delta,
             ratio:ratio.ratio,
+            heavySignedPpm:ratio.heavySignedPpm,
             massErrorPpm:ratio.massErrorPpm,
             massErrorDiffPpm:ratio.massErrorDiffPpm,
-            create:!(existing&&existing.has(satelliteSignature)),
+            create,
+            challenge:!!challengerKey,
+            challengerKey,
             replace:!!replacement
         })
     }
@@ -611,11 +632,12 @@ export function computeFunnelMask({
         let group=groups.get(creation.groupKey)
         if(!group){
             group={key:creation.groupKey,signature:creation.signature,
-                count:0,created:0,entries:[]}
+                count:0,created:0,challenged:0,entries:[]}
             groups.set(creation.groupKey,group)
         }
         group.count++
         if(creation.create) group.created++
+        if(creation.challenge) group.challenged++
         group.entries.push(creation)
         return groups
     },new Map())
