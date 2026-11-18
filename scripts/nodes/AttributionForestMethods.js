@@ -2419,7 +2419,8 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                vient de subir. Seule une largeur différente change réellement les
                échelles de l'histogramme. */
             const width=(this.forestPlotBox?.clientWidth
-                ||this.forestRecapHost?.clientWidth||0)
+                ||this.forestRecapHost?.clientWidth
+                ||this.forestBruteHost?.clientWidth||0)
             if(!width) return
             if(width===this.forestRecapWidth) return
             this.forestRecapWidth=width
@@ -2483,7 +2484,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         })
         const recapCaret=CE("span",{},["▾"])
         stylize(recapCaret,{width:"1em",display:"inline-block",textAlign:"center"})
-        const recapTitle=CE("span",{},["brute-force recap"])
+        const recapTitle=CE("span",{},["Isotopic Mask"])
         stylize(recapTitle,{flex:"1 1 auto"})
         const recapHint=CE("span",{},["click to fold"])
         stylize(recapHint,{fontWeight:"normal",opacity:"0.5"})
@@ -2500,31 +2501,83 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             border:"1px solid rgba(255,255,255,0.12)",
             background:"rgba(255,255,255,0.03)"})
         this.forestRecapPanel.append(recapHead,this.forestRecapHost)
-        content.appendChild(this.forestRecapPanel)
+        /* LE SOUS-GRAPHE "BRUTE FORCE RECAP", À PART: l'histogramme des erreurs
+           ppm et la re-inspection. "Isotopic Mask" ne raconte pas la même
+           chose: il confronte le mariage au rapport isotopique. */
+        this.forestBrutePanel=CE("div",{className:"an-recap-panel an-brute-panel"},[])
+        stylize(this.forestBrutePanel,{
+            display:"flex",flexDirection:"column",
+            minHeight:"0",minWidth:"0",overflow:"hidden"
+        })
+        const bruteHead=CE("div",{className:"an-recap-head",role:"button"},[])
+        bruteHead.setAttribute("tabindex","0")
+        stylize(bruteHead,{
+            display:"flex",alignItems:"center",gap:"6px",cursor:"pointer",
+            padding:"3px 6px",borderRadius:"4px",
+            border:"1px solid rgba(255,255,255,0.12)",
+            background:"rgba(255,255,255,0.05)",
+            fontSize:"0.72em",fontWeight:"bold",opacity:"0.85",
+            userSelect:"none",flex:"0 0 auto"
+        })
+        const bruteCaret=CE("span",{},["▾"])
+        stylize(bruteCaret,{width:"1em",display:"inline-block",textAlign:"center"})
+        const bruteTitle=CE("span",{},["Brute force recap"])
+        stylize(bruteTitle,{flex:"1 1 auto"})
+        const bruteHint=CE("span",{},["click to fold"])
+        stylize(bruteHint,{fontWeight:"normal",opacity:"0.5"})
+        bruteHead.append(bruteCaret,bruteTitle,bruteHint)
+        this.forestBruteHost=CE("div",{className:"an-recap"},[])
+        stylize(this.forestBruteHost,{display:"flex",flexDirection:"column",gap:"8px",
+            minHeight:"0",minWidth:"0",flex:"1 1 auto",overflow:"auto",
+            padding:"5px 7px",borderRadius:"4px",fontSize:"1em",
+            border:"1px solid rgba(255,255,255,0.12)",
+            background:"rgba(255,255,255,0.03)"})
+        this.forestBruteRows=CE("div",{},[])
+        stylize(this.forestBruteRows,{display:"flex",flexDirection:"column",gap:"8px",
+            minHeight:"0",minWidth:"0",flex:"0 0 auto"})
+        this.bruteRecapInspectionMount=CE("div",{className:"an-brute-inspection"},[])
+        stylize(this.bruteRecapInspectionMount,{
+            display:"flex",flexDirection:"column",gap:"2px",
+            flex:"0 0 auto",minWidth:"0"
+        })
+        this.forestBruteHost.append(this.forestBruteRows,this.bruteRecapInspectionMount)
+        this.forestBrutePanel.append(bruteHead,this.forestBruteHost)
+        this.forestRecapStack=CE("div",{className:"an-recap-stack"},[])
+        stylize(this.forestRecapStack,{
+            display:"flex",flexDirection:"column",gap:"4px",
+            minHeight:"0",minWidth:"0",overflow:"hidden",flex:"0 0 auto"
+        })
+        this.forestRecapPanel.style.flex="1 1 0"
+        this.forestBrutePanel.style.flex="1 1 0"
+        this.forestRecapStack.append(this.forestRecapPanel,this.forestBrutePanel)
+        content.appendChild(this.forestRecapStack)
         const applyRecapFolded=()=>{
             const folded=!!this.forestRecapFolded
+            const bruteFolded=!!this.forestBruteFolded
             /* LA HAUTEUR EST LUE SUR LA FENÊTRE, pas sur l'écran: `46vh` peut
                dépasser un dialogue court et écraser le graphe. On donne ~60 %
-               au récap, en laissant toujours de la place à la rangée du graphe
-               pour qu'elle ne tombe pas à zéro. */
+               aux deux récaps, en laissant toujours de la place à la rangée du
+               graphe pour qu'elle ne tombe pas à zéro. */
             const usable=content.clientHeight||600
             const panelHeight=Math.max(160,
                 Math.min(Math.round(usable*0.6),usable-90))
             this.forestRecapHost.style.display=folded?"none":"flex"
+            this.forestBruteHost.style.display=bruteFolded?"none":"flex"
             recapCaret.textContent=folded?"▸":"▾"
             recapHint.textContent=folded?"click to unfold":"click to fold"
-            /* HAUTEUR EXPLICITE, pas un plafond: un `max-height` sur une
-               colonne flex n'indique pas à l'enfant défilant la place dont il
-               dispose, et le contenu se chevauchait. Une hauteur fixe donne un
-               vrai viewport interne. Mais si le GRAPHE est replié, le récap
-               occupe la rangée `1fr` de la grille et doit s'y étirer tout seul. */
-            if(this.forestPlotFolded){
-                this.forestRecapPanel.style.height="auto"
-            }else{
-                this.forestRecapPanel.style.height=folded?"auto":`${panelHeight}px`
-            }
-            this.forestRecapPanel.style.maxHeight="none"
+            bruteCaret.textContent=bruteFolded?"▸":"▾"
+            bruteHint.textContent=bruteFolded?"click to unfold":"click to fold"
             recapHead.setAttribute("aria-expanded",folded?"false":"true")
+            bruteHead.setAttribute("aria-expanded",bruteFolded?"false":"true")
+            this.forestRecapPanel.style.flex=folded?"0 0 auto":"1 1 0"
+            this.forestBrutePanel.style.flex=bruteFolded?"0 0 auto":"1 1 0"
+            if(this.forestPlotFolded){
+                this.forestRecapStack.style.height="100%"
+            }else{
+                this.forestRecapStack.style.height=(folded&&bruteFolded)
+                    ?"auto":`${panelHeight}px`
+            }
+            this.forestRecapStack.style.maxHeight="none"
         }
         this.applyRecapFolded=applyRecapFolded
         /* LE REPLI DU RÉCAP, ET IL DOIT RESTER CLOS SUR LUI-MÊME.
@@ -2542,6 +2595,13 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                    histogrammes et ses plots ont été mesurés à zéro et gardent
                    cette largeur. On le reconstruit une fois la place rendue,
                    plutôt que de déplacer une à une des échelles périmées. */
+                requestAnimationFrame(()=>this.renderForestRecap?.())
+            }
+        }
+        const toggleBrute=()=>{
+            this.forestBruteFolded=!this.forestBruteFolded
+            applyRecapFolded()
+            if(!this.forestBruteFolded){
                 requestAnimationFrame(()=>this.renderForestRecap?.())
             }
         }
@@ -2591,6 +2651,13 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             if(event.key==="Enter"||event.key===" "){
                 event.preventDefault()
                 toggleRecap()
+            }
+        })
+        bruteHead.addEventListener("click",toggleBrute)
+        bruteHead.addEventListener("keydown",event=>{
+            if(event.key==="Enter"||event.key===" "){
+                event.preventDefault()
+                toggleBrute()
             }
         })
         applyRecapFolded()
@@ -2873,9 +2940,11 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        QUE faire pour le remplir. */
     renderForestRecap(){
         const host=this.forestRecapHost
-        if(!host) return
+        const bruteHost=this.forestBruteRows??this.forestBruteHost
+        if(!host||!bruteHost) return
         this.forestRecapWidth=(this.forestPlotBox?.clientWidth
-            ||this.forestRecapHost?.clientWidth||null)
+            ||this.forestRecapHost?.clientWidth
+            ||this.forestBruteHost?.clientWidth||null)
         this.recapChartByInput=new Map()
         /* Les funnels sont des Plot2DWebGL: chacun tient un contexte GPU. Le
            récap est reconstruit à chaque redimensionnement du graphe d'arbres,
@@ -2890,12 +2959,15 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         }
         this.funnelPlots=[]
         host.replaceChildren()
+        bruteHost.replaceChildren()
         const rows=(this.attributions??[])
             .map((_,index)=>this.forestRecap(index))
             .filter(Boolean)
         if(!rows.length){
-            stylize(host.appendChild(CE("div",{},["run the brute force to fill this in"])),
-                {fontSize:"0.75em",opacity:"0.55"})
+            for(const target of [host,bruteHost]){
+                stylize(target.appendChild(CE("div",{},["run the brute force to fill this in"])),
+                    {fontSize:"0.75em",opacity:"0.55"})
+            }
             return
         }
         /* LE RÉCAPITULATIF DOIT DIRE CE QU'IL RÉCAPITULE, ET IL L'A AVAIT CESSÉ
@@ -2928,7 +3000,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             fontSize:"0.72em",opacity:"0.6",fontWeight:"bold",
             flex:"0 0 auto"
         })
-        host.appendChild(caption)
+        bruteHost.appendChild(caption)
         for(const row of rows){
             const line=CE("div",{className:"an-recap-line"},[])
             stylize(line,{
@@ -2987,7 +3059,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             const stats=CE("div",{},[parts.join(" · ")])
             stylize(stats,{fontSize:"0.72em",opacity:"0.8",overflow:"hidden"})
             line.appendChild(stats)
-            host.appendChild(line)
+            bruteHost.appendChild(line)
         }
         host.appendChild(this.renderFunnelSection(rows))
     }
@@ -5106,7 +5178,9 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            plafonnée par la place disponible. Au-delà du plafond les barres
            rétrécissent au lieu de s'étirer, et le graphe d'arbres au-dessus
            garde son espace. */
-        const available=Math.max(180,Math.floor(this.forestRecapHost?.clientWidth||240))
+        const available=Math.max(180,Math.floor(
+            Math.max(this.forestBruteHost?.clientWidth||0,
+                this.forestRecapHost?.clientWidth||0)||240))
         const cap=Number.isFinite(maxWidth)?Math.max(140,maxWidth):available
         const width=Math.min(cap,Math.max(140,PAD.left+PAD.right+Math.max(1,bins)*10))
         stylize(host,{

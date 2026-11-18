@@ -1515,7 +1515,12 @@ export class AttributionNode extends NodeWithAccordion{
             borderTop:"1px solid rgba(255,255,255,0.14)",
             paddingTop:"4px",marginTop:"4px"
         })
-        content.appendChild(this.inspectionBox)
+        /* LA RÉINSPECTION VIT DANS LE SOUS-GRAPHE "BRUTE FORCE RECAP" du
+           panneau réseau, avec l'histogramme des ppm. Si ce panneau n'existe
+           pas encore (aucun accordéon réseau), elle retombe dans le panneau de
+           gauche plutôt que de disparaître. */
+        const inspectionParent=this.bruteRecapInspectionMount??content
+        inspectionParent.appendChild(this.inspectionBox)
         this.renderInspection()
     }
 
