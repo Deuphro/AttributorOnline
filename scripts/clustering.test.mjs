@@ -139,6 +139,13 @@ test("the node offers the EM/GMM mode and calls the shared 2D kernel",()=>{
     ok(nodeSource.includes('["kmeans","spectral","gmm"].includes'),
         "a restored session would drop the gmm mode")
 })
+test("a cluster row can be partitioned on its own",()=>{
+    const nodeSource=readFileSync(join(here,"nodes/FormulaCollectionNode.js"),"utf8")
+    ok(/async partitionCollectionByClusters\(onlyCluster=null\)/.test(nodeSource),
+        "partition no longer accepts a single cluster index")
+    ok(nodeSource.includes("this.partitionCollectionByClusters(c)"),
+        "the cluster rows have no per-cluster sub-collection button")
+})
 test("the node keys colours to the POINTS, not to their position",()=>{
     const nodeSource=readFileSync(join(here,"nodes/FormulaCollectionNode.js"),"utf8")
     ok(nodeSource.includes("pointKeys"),

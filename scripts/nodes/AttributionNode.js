@@ -1864,6 +1864,15 @@ export class AttributionNode extends NodeWithAccordion{
         const centre=result.entries
             .filter(entry=>entry.target?.index===1)
             .sort((a,b)=>Math.abs(a.errorPpm)-Math.abs(b.errorPpm))
+        /* LES LECTURES SONT AUSSI PUBLIÉES À LA LISTE DES ARBRES: le menu
+           déroulant de chaque racine y lit les mêmes formules que la sonde,
+           sans reconstruire un second crible. On garde par masse, parce que
+           deux arbres peuvent partager la même racine. */
+        this.probeReadings=centre
+        this.probeReadingMass=mass
+        this.forestProbeReadings??=new Map()
+        this.forestProbeReadings.set(mass,centre)
+        this.renderForestList?.()
         if(!output) return
         if(!centre.length){
             output.textContent=`${mass} — no formula within `+

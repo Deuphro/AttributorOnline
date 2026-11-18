@@ -4006,7 +4006,19 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                 style:{opacity:"0.7",fontFamily:"monospace",fontSize:"0.8em",
                     flex:"0 1 auto",minWidth:"0",whiteSpace:"nowrap",overflow:"hidden"}
             }, [`(${Number.isFinite(cx)?cx.toFixed(1):"?"}, ${Number.isFinite(cy)?cy.toFixed(1):"?"})`])
-            row.append(swatch,label,centerText)
+            const subBtn=CE("button",{
+                type:"button",
+                style:{flex:"none",fontSize:"0.8em",lineHeight:"1.1",
+                    padding:"0 4px",cursor:"pointer",color:"inherit",
+                    background:"transparent",
+                    border:"1px solid "+color+"80",borderRadius:"3px"},
+                title:`Create a sub-collection from cluster ${c+1} only`
+            },["+"])
+            subBtn.addEventListener("click",event=>{
+                event.stopPropagation()
+                this.partitionCollectionByClusters(c)
+            })
+            row.append(swatch,label,centerText,subBtn)
             row.addEventListener("mouseenter",()=>row.style.background=color+"40")
             row.addEventListener("mouseleave",()=>row.style.background=color+"20")
             row.addEventListener("click",()=>this.selectClusterInList(c))
@@ -4534,7 +4546,7 @@ fontSize:"0.85em",background:"var(--bg)",
        marche dans les deux sources ; seul un graphique de RATIO, où un point
        est une formule et non une cible, reste réellement impossible — et là
        on le dit clairement, au lieu d'un message qui ne s'explique pas. */
-    async partitionCollectionByClusters(){
+    async partitionCollectionByClusters(onlyCluster=null){
         const clust=this.parameters.clustering
         if(!clust.results||!this.currentCollection) return
         const results=clust.results
@@ -4579,7 +4591,11 @@ fontSize:"0.85em",background:"var(--bg)",
             }
         }
         const groups=[]
-        for(let c=0;c<results.nClusters;c++){
+        const wanted=Number.isInteger(onlyCluster)&&onlyCluster>=0
+            &&onlyCluster<results.nClusters
+            ?[onlyCluster]
+            :Array.from({length:results.nClusters},(_,index)=>index)
+        for(const c of wanted){
             const texts=[]
             for(let e=0;e<collection.entries.length;e++){
                 if(clusterOf[e]!==c) continue

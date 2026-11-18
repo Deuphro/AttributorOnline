@@ -6719,6 +6719,13 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             const size=CE("span",{className:"an-forest-size"},[])
             const mass=CE("span",{className:"an-forest-mass"},[])
             const formula=CE("span",{className:"an-forest-formula"},[])
+            const rootSelect=CE("select",{className:"an-forest-root-select"},[])
+            stylize(rootSelect,{
+                flex:"1 1 auto",minWidth:"0",height:"1.35em",
+                fontSize:"0.85em",padding:"0 2px",
+                color:"inherit",background:"rgba(255,255,255,0.08)",
+                border:"1px solid rgba(255,255,255,0.2)",borderRadius:"3px"
+            })
             const duplicate=CE("button",{
                 type:"button",
                 title:"Duplicate this tree: a blue copy with its own root and formula"
@@ -6741,11 +6748,23 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             }
             stylize(duplicate,{...smallButton,marginLeft:"auto"})
             stylize(remove,smallButton)
-            root.append(check,name,size,mass,formula,duplicate,remove)
-            root.cells={check,name,size,mass,formula,duplicate,remove}
+            root.append(check,name,size,mass,formula,rootSelect,duplicate,remove)
+            root.cells={check,name,size,mass,formula,rootSelect,duplicate,remove}
             check.addEventListener("click",event=>event.stopPropagation())
             check.addEventListener("change",()=>{
                 if(root.view) this.toggleForestSelection(root.view.graph.rank,check.checked)
+            })
+            for(const eventName of ["click","mousedown","pointerdown"]){
+                rootSelect.addEventListener(eventName,event=>event.stopPropagation())
+            }
+            rootSelect.addEventListener("change",()=>{
+                const view=root.view
+                if(!view) return
+                if(rootSelect.value==="current") return
+                const readings=rootSelect._readings??[]
+                const entry=readings[Number(rootSelect.value)]
+                if(entry) this.setForestRootFormulaByRank(
+                    view.graph.rank,entry.formula,entry.notation)
             })
             root.addEventListener("click",()=>{
                 if(root.view) this.activateForestTree(root.view.graph.rank)
@@ -6775,6 +6794,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         cells.size.style.display=empty?"none":""
         cells.mass.style.display=empty?"none":""
         cells.formula.style.display=empty?"none":""
+        cells.rootSelect.style.display=empty?"none":""
         if(empty){
             cells.check.checked=false
             cells.name.textContent="— no network yet —"
@@ -6804,10 +6824,44 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         const rootMass=this.forestRootVertex(graph)?.mass
         cells.mass.textContent=Number.isFinite(rootMass)?rootMass.toFixed(5):"—"
         const notation=reading?.formula?prettyNotation(reading.formula):null
-        cells.formula.textContent=notation??"…"
-        cells.formula.title=reading
-            ?`${notation}${reading.errorPpm!=null?` · ${reading.errorPpm.toFixed(2)} ppm`:""}`
-            :"The root formula is computed when the tree is drawn"
+        const readings=Number.isFinite(rootMass)
+            ?this.forestProbeReadings?.get(rootMass)??null
+            :null
+        const canChoose=Array.isArray(readings)&&readings.length>0
+        cells.formula.style.display=canChoose?"none":""
+        cells.rootSelect.style.display=canChoose?"":"none"
+        if(canChoose){
+            const override=graph.rootFormulaOverride
+            const currentNotation=override?.notation
+                ??(override?.formula?prettyNotation(override.formula):null)
+                ??notation
+            cells.rootSelect.replaceChildren()
+            let selectedIndex=-1
+            readings.forEach((entry,index)=>{
+                const entryNotation=prettyNotation(entry.notation)
+                cells.rootSelect.appendChild(
+                    CE("option",{value:String(index)},[entryNotation]))
+                if(selectedIndex<0&&currentNotation&&entryNotation===currentNotation)
+                    selectedIndex=index
+            })
+            if(selectedIndex<0&&currentNotation){
+                cells.rootSelect.appendChild(
+                    CE("option",{value:"current"},[currentNotation]))
+                cells.rootSelect.value="current"
+            }else if(selectedIndex>=0){
+                cells.rootSelect.value=String(selectedIndex)
+            }else{
+                cells.rootSelect.value="0"
+            }
+            cells.rootSelect._readings=readings
+            cells.rootSelect.title="Change this tree's root formula"
+        }else{
+            cells.rootSelect._readings=null
+            cells.formula.textContent=notation??"…"
+            cells.formula.title=reading
+                ?`${notation}${reading.errorPpm!=null?` · ${reading.errorPpm.toFixed(2)} ppm`:""}`
+                :"The root formula is computed when the tree is drawn"
+        }
         element.style.background=duplicate
             ?"rgba(120,180,255,0.14)"
             :(selected?"rgba(172,255,47,0.16)":"transparent")
