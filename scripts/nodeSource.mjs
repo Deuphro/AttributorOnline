@@ -46,6 +46,7 @@ export const NODE_SOURCE_FILES=[
     "nodes/AttributionForestMethods.js",
     "nodes/DelimitedTextNode.js",
     "nodes/ThermoRawNode.js",
+    "nodes/BrukerBafNode.js",
     "nodes/TrimmerNode.js",
     "nodes/FKMDNode.js",
     "nodes/AttributionNode.js",
@@ -54,6 +55,10 @@ export const NODE_SOURCE_FILES=[
     "nodes/FormulaCollectionNode.js",
     "nodes/SimpleXYPlotNode.js",
     "nodes/ChatNode.js",
+    "nodes/MassCalculatorNode.js",
+    "nodes/HoughTransformNode.js",
+    "nodes/DataCollectionImportNode.js",
+    "nodes/StoichiometricAnalysisNode.js",
     "utils/index.js",
     "app/registerNodeTypes.js"
 ]

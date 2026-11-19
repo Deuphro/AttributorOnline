@@ -94,6 +94,33 @@ const eq=(a,b,msg)=>{ if(a!==b) throw new Error(`${msg??`${a} != ${b}`}`) }
 const close=(a,b,tol,msg)=>{ if(!(Math.abs(a-b)<=tol)) throw new Error(`${msg??`${a} vs ${b}`}`) }
 const parse=(text)=>Formula.parse(text,TABLE)
 
+const vkMethodsStart=source.indexOf("    static dbeOfFormula(")
+const vkMethodsEnd=source.indexOf("    /* --- Barycentric projection",vkMethodsStart)
+if(vkMethodsStart<0||vkMethodsEnd<vkMethodsStart){
+    console.error("Van Krevelen methods could not be located - the test cannot run")
+    process.exit(1)
+}
+const VkFormula=new Function(
+    `return class FormulaCollectionNode {${source.slice(vkMethodsStart,vkMethodsEnd)}}`
+)()
+
+console.log("the notation is drawn, not altered")
+test("Van Krevelen element counts exclude absorbed ionisation groups",()=>{
+    const neutral=parse("C6H12O6")
+    const adduct=parse("C6H12O6[H2O-]")
+    const oxygen=VkFormula.compileVkFormula("O",TABLE)
+    const carbon=VkFormula.compileVkFormula("C",TABLE)
+    const ratio=VkFormula.compileVkFormula("O/C",TABLE)
+    const oxygenElement=TABLE.bySymbol.get("O")
+    eq(adduct.counts.get(oxygenElement),7,"the fixture includes absorbed adduct oxygen")
+    for(const formula of [neutral,adduct]){
+        const counts=VkFormula.writtenElementCounts(formula)
+        eq(oxygen(counts,TABLE,formula),6,"written oxygen count")
+        eq(carbon(counts,TABLE,formula),6,"written carbon count")
+        eq(ratio(counts,TABLE,formula),1,"written O/C ratio")
+    }
+})
+
 console.log("the notation is drawn, not altered")
 test("the counts go down and the charge goes up",()=>{
     eq(prettyNotation("C6H12O6"),"C₆H₁₂O₆")

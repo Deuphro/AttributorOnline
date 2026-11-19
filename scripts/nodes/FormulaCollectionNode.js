@@ -2369,7 +2369,7 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
                     for(const entry of collection.entries){
                         const formula=entry.formula
                         if(!formula) continue
-                        const counts=formula.counts
+                        const counts=FormulaCollectionNode.writtenElementCounts(formula)
                         const xv=evalX(counts,table,entry.formula)
                         const yv=evalY(counts,table,entry.formula)
                         if(Number.isFinite(xv)&&Number.isFinite(yv)){
@@ -2643,14 +2643,9 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
        ignoré, et une formule sans aucun atome à valence donne NaN. */
     static dbeOfFormula(formula){
         if(!formula) return NaN
-        //neutral written part: the core when remembered, else the composition
-        const written=formula.core??formula.composition
-        if(!(written instanceof Map)) return NaN
         let sum=0
         let seen=false
-        for(const [element,byA] of written){
-            let n=0
-            for(const count of byA?.values?.()??[]) n+=count
+        for(const [element,n] of this.writtenElementCounts(formula)){
             if(!n) continue
             const valence=element?.valences?.default
             if(!Number.isFinite(valence)) continue
@@ -2658,6 +2653,16 @@ constructor(title,origin,destinationFlow,position={x:180,y:10}){
             sum+=n*(valence-2)/2
         }
         return seen?1+sum:NaN
+    }
+
+    static writtenElementCounts(formula){
+        const counts=new Map()
+        for(const [element,byA] of formula?.written??[]){
+            let count=0
+            for(const value of byA?.values?.()??[]) count+=Number(value)||0
+            if(count) counts.set(element,count)
+        }
+        return counts
     }
 
     static compileVkFormula(expr,table){

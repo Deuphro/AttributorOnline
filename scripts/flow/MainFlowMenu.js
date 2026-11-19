@@ -16,6 +16,7 @@ import {
     NodeWithRightAccordionGraph,
     PeakPickingNode,
     SimpleXYPlotNode,
+    StoichiometricAnalysisNode,
     ThermoRawNode,
     TrimmerNode
 } from "../nodes/index.js"
@@ -107,6 +108,15 @@ export class MainFlowMenu extends Menu{
                         }
                         case "attribution": {
                             node = new AttributionNode(
+                                title,
+                                origin,
+                                origin.channel.get("mainFlow"),
+                                {x:180,y:10}
+                            )
+                            break
+                        }
+                        case "stoichiometricAnalysis": {
+                            node = new StoichiometricAnalysisNode(
                                 title,
                                 origin,
                                 origin.channel.get("mainFlow"),

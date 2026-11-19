@@ -15,6 +15,7 @@ import {
     NodeWithRightAccordionGraph,
     PeakPickingNode,
     SimpleXYPlotNode,
+    StoichiometricAnalysisNode,
     ThermoRawNode,
     TrimmerNode
 } from "../nodes/index.js"
@@ -41,7 +42,8 @@ export function registerNodeTypes(){
         CalibrationNode,
         MassCalculatorNode,
         HoughTransformNode,
-        DataCollectionImportNode
+        DataCollectionImportNode,
+        StoichiometricAnalysisNode
     })
     for(const NodeType of [
         DelimitedTextNode,
@@ -57,7 +59,8 @@ export function registerNodeTypes(){
         CalibrationNode,
         MassCalculatorNode,
         HoughTransformNode,
-        DataCollectionImportNode
+        DataCollectionImportNode,
+        StoichiometricAnalysisNode
     ]){
         SELF_SHAPED_NODES.add(NodeType)
     }

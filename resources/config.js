@@ -77,7 +77,8 @@ const defaultMenu={
             //Formula: it MAKES them, from a sieve over isotopic and adduct
             //masses. Folding it into the reader would have meant a node that is
             //one thing or the other depending on which cable arrived.
-            "Attribution":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Attribution',type:'attribution'}}}))}
+            "Attribution":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Attribution',type:'attribution'}}}))},
+            "Stoichiometric analysis":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Stoichiometric analysis',type:'stoichiometricAnalysis'}}}))}
         },
         "Flow":{
             Resolve:(e)=>{dispatchEvent(new CustomEvent('resolveFlow',{detail:{msg:""}}))},

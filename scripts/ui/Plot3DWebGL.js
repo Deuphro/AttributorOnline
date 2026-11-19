@@ -600,6 +600,7 @@ export class Plot3DWebGL{
        new camera so orbit/pan/zoom keep working. */
     setCameraType(orthographic){
         const layer=this.glLayer
+        this._orthographic=!!orthographic
         if(!layer) return
         const old=layer.camera
         const kept=this.controls?.getAngles?.()??this.defaultAngles??null
@@ -1034,6 +1035,7 @@ export class Plot3DWebGL{
         this.drawBox(svg,bounds,width,height)
         this.drawRules(svg,width,height)
         this.drawTicks(svg,bounds,width,height)
+        this.drawAxisGuide(svg,width,height)
     }
     /* The twelve edges of the CUBE, at the world corners. Not the data
        corners: those would be 100 x 1e7 x 1 for a real error surface, and a
@@ -1374,6 +1376,112 @@ export class Plot3DWebGL{
             name.textContent=axis.label
             group.appendChild(name)
         }
+        svg.appendChild(group)
+    }
+
+    drawAxisGuide(svg,width,height){
+        const ns="http://www.w3.org/2000/svg"
+        const boxWidth=Math.min(220,width-16)
+        const boxHeight=72
+        if(boxWidth<88||height<boxHeight+16) return
+        const x=width-boxWidth-8
+        const y=8
+        const group=document.createElementNS(ns,"g")
+        group.setAttribute("class","gl3d-axis-guide")
+        const axes=[
+            {key:"x",color:"#ff8a70",vector:new THREE.Vector3(1,0,0)},
+            {key:"y",color:"#72d6a0",vector:new THREE.Vector3(0,1,0)},
+            {key:"z",color:"#76a9ff",vector:new THREE.Vector3(0,0,1)}
+        ]
+        const labels=axes.map(axis=>`${axis.key.toUpperCase()} ${this.axisLabels[axis.key]??axis.key}`)
+        group.setAttribute("aria-label",`Axis directions: ${labels.join(", ")}`)
+        const background=document.createElementNS(ns,"rect")
+        background.setAttribute("x",x)
+        background.setAttribute("y",y)
+        background.setAttribute("width",boxWidth)
+        background.setAttribute("height",boxHeight)
+        background.setAttribute("rx","4")
+        background.setAttribute("fill","rgba(18,24,30,0.88)")
+        background.setAttribute("stroke","rgba(190,205,216,0.35)")
+        group.appendChild(background)
+
+        const centerX=x+boxWidth/2
+        const centerY=y+34
+        const cameraInverse=this.glCamera?.quaternion?.clone?.().invert()
+        const projectedAxes=[]
+        for(const axis of axes){
+            const direction=cameraInverse
+                ?axis.vector.clone().applyQuaternion(cameraInverse)
+                :axis.vector
+            const projectedLength=Math.hypot(direction.x,direction.y)
+            const length=18*projectedLength
+            const endX=centerX+(projectedLength>1e-4?direction.x/projectedLength*length:0)
+            const endY=centerY-(projectedLength>1e-4?direction.y/projectedLength*length:0)
+            projectedAxes.push({axis,direction,projectedLength,endX,endY})
+            if(projectedLength>1e-4){
+                const line=document.createElementNS(ns,"line")
+                line.setAttribute("x1",centerX)
+                line.setAttribute("y1",centerY)
+                line.setAttribute("x2",endX)
+                line.setAttribute("y2",endY)
+                line.setAttribute("stroke",axis.color)
+                line.setAttribute("stroke-width","2")
+                line.setAttribute("stroke-linecap","round")
+                group.appendChild(line)
+                const angle=Math.atan2(endY-centerY,endX-centerX)
+                const head=document.createElementNS(ns,"path")
+                const points=[angle-0.55,angle+0.55].map(a=>
+                    `${endX-4*Math.cos(a)},${endY-4*Math.sin(a)}`
+                )
+                head.setAttribute("d",`M ${points[0]} L ${endX},${endY} L ${points[1]}`)
+                head.setAttribute("fill","none")
+                head.setAttribute("stroke",axis.color)
+                head.setAttribute("stroke-width","1.5")
+                head.setAttribute("stroke-linecap","round")
+                group.appendChild(head)
+            }
+        }
+        const origin=document.createElementNS(ns,"circle")
+        origin.setAttribute("cx",centerX)
+        origin.setAttribute("cy",centerY)
+        origin.setAttribute("r","2")
+        origin.setAttribute("fill","#e4edf3")
+        group.appendChild(origin)
+
+        projectedAxes.forEach(({axis,direction,projectedLength,endX,endY},index)=>{
+            const fullLabel=String(this.axisLabels[axis.key]??axis.key)
+            const anchor=projectedLength<=1e-4
+                ?"middle"
+                :direction.x < -0.15 ? "end" : direction.x > 0.15 ? "start" : "middle"
+            const labelX=endX+(anchor==="start"?4:anchor==="end"?-4:0)
+            const available=anchor==="start"
+                ?x+boxWidth-7-labelX
+                :anchor==="end"
+                    ?labelX-(x+7)
+                    :2*Math.min(labelX-(x+7),x+boxWidth-7-labelX)
+            const maxChars=Math.max(1,Math.floor((available-12)/5.5))
+            const shortLabel=fullLabel.length>maxChars
+                ?`${fullLabel.slice(0,Math.max(1,maxChars-2))}..`
+                :fullLabel
+            const text=document.createElementNS(ns,"text")
+            text.setAttribute("x",labelX)
+            const labelY=projectedLength<=1e-4
+                ?y+15+index*17
+                :Math.max(y+11,Math.min(y+boxHeight-5,endY+3-direction.y*4))
+            text.setAttribute("y",labelY)
+            text.setAttribute("text-anchor",anchor)
+            text.setAttribute("fill",axis.color)
+            text.setAttribute("font-size","10")
+            text.setAttribute("font-weight","600")
+            text.setAttribute("font-family","inherit")
+            text.textContent=`${axis.key.toUpperCase()} ${shortLabel}`
+            if(shortLabel!==fullLabel){
+                const title=document.createElementNS(ns,"title")
+                title.textContent=`${axis.key.toUpperCase()} — ${fullLabel}`
+                text.appendChild(title)
+            }
+            group.appendChild(text)
+        })
         svg.appendChild(group)
     }
 
