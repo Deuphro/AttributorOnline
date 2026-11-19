@@ -11,12 +11,13 @@ function CE(tag,props,child){
             res[k]=props[k]
         }
     }
-    for (let elt of child) {
-        if(typeof elt ==='string'){
-            res.innerText=elt
-        } else if(elt===null){
-        } else{
-            res.appendChild(elt)
+    if(child){
+        for(let elt of child){
+            if(typeof elt==='string'){
+                res.innerText=elt
+            }else if(elt!==null){
+                res.appendChild(elt)
+            }
         }
     }
     return res
@@ -174,3 +175,4 @@ function requestPOST(url,data,callback=()=>{}){
 }
 
 export {$,CE,stylize,fakeData,DC,requestPOST,SingleJsonFile}
+

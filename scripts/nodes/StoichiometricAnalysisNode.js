@@ -7,6 +7,7 @@ import {Formula,Stoichiometry,FormulaCollection} from "../chemistry.js"
 import {CE,stylize} from "../util.js"
 import {traceColor} from "./formulaCollectionHelpers.js"
 import {SOCKET} from "../socketTypes.js"
+import {columnLatticeBasis,quotientRepresentative} from "../math/integerLattice.js"
 
 const AXIS_KEYS=["x","y","z"]
 const AXIS_VIEW_ANGLES={
@@ -29,12 +30,18 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         }
         this.parameters.pca={x:0,y:1,z:2}
         this.parameters.fit={}
+
+        this.parameters.patterns=["CH2"]
+        this.patternErrors=[]
+        this.projectionLevels=[]
+        this.stoichiometricDimensions=[]
         this.inputCollections=[]
         this.collectionPoints=[]
         this.pointTotal=0
         this.diagnostics=[]
         this.loadedTable=null
         this.formulaCache=new Map()
+        this.patternCache=new Map()
         this.viewPanels={}
         this.plot=null
         this.axisButtons={}
@@ -109,11 +116,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         content.replaceChildren()
         stylize(content,{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:"6px",padding:"4px"})
         this.projectionControls=CE("div",{className:"sa-projections"},[])
-        this.pcaControls=this.placeholderSection(
-            "Compression (PCA / graph)",
-            "The compression view and its controls are not wired yet.",
-            "Compute compression"
-        )
+        this.pcaControls=CE("div",{className:"sa-series"},[])
         this.fitControls=this.placeholderSection(
             "Model fit",
             "No model definition is available yet.",
@@ -166,7 +169,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.viewPanels.main=this.discreetAccordion(`${label} — 3D view`,{
             onUnfold:()=>requestAnimationFrame(()=>this.plot?.handleResize?.())
         })
-        this.viewPanels.compression=this.discreetAccordion(`${label} — compression`,{folded:true})
+        this.viewPanels.compression=this.discreetAccordion(`${label} — stoichiometric series`,{folded:true})
         this.viewPanels.models=this.discreetAccordion(`${label} — fitted models`,{folded:true})
         for(const panel of Object.values(this.viewPanels)){
             scroller.appendChild(panel.DOMelt.container)
@@ -282,18 +285,12 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
     setupCompressionView(){
         const content=this.viewPanels.compression.DOMelt.content
         content.replaceChildren()
-        stylize(content,{display:"grid",gap:"6px",padding:"8px",fontSize:"0.9em",lineHeight:"1.35"})
-        content.append(CE("div",{},[
-            "Compression and reorganisation by PCA or by graph study will live here."
-        ]))
-        const placeholder=CE("div",{},["No compression computed yet."])
-        stylize(placeholder,{
-            padding:"10px",
-            border:"1px dashed rgba(255,255,255,0.2)",
-            borderRadius:"4px",
-            opacity:"0.65"
-        })
-        content.appendChild(placeholder)
+        stylize(content,{display:"grid",gap:"8px",padding:"8px",fontSize:"0.85em",lineHeight:"1.35"})
+        this.seriesSummary=CE("div",{},[])
+        this.seriesLevels=CE("div",{className:"sa-series-levels"},[])
+        stylize(this.seriesLevels,{display:"grid",gap:"10px"})
+        content.append(this.seriesSummary,this.seriesLevels)
+        this.renderProjectionLevels()
     }
 
     setupModelsView(){
@@ -335,6 +332,43 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             this.setAnalysisVisible(this.analysisDialog?.DOMelt?.window?.style.display==="none")
         })
         content.appendChild(this.viewsButton)
+        const patternBox=CE("div",{className:"sa-patterns"},[])
+        stylize(patternBox,{
+            display:"grid",
+            gap:"4px",
+            padding:"5px 6px 6px",
+            border:"1px solid rgba(255,255,255,0.14)",
+            borderRadius:"4px",
+            background:"rgba(255,255,255,0.025)"
+        })
+        const patternCaption=CE("div",{},["Ordered stoichiometric patterns"])
+        stylize(patternCaption,{fontSize:"0.8em",opacity:"0.85"})
+        const patternAddRow=CE("div",{},[])
+        stylize(patternAddRow,{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto",gap:"4px"})
+        this.patternInput=CE("input",{
+            type:"text",
+            placeholder:"CH2, H2, O...",
+            title:"Add a stoichiometric pattern; order defines cascade depth"
+        },[])
+        stylize(this.patternInput,{minWidth:"0",padding:"3px 5px",boxSizing:"border-box"})
+        const addPatternButton=CE("button",{type:"button",title:"Add pattern"},["+"])
+        const addPattern=()=>{
+            if(this.addPattern(this.patternInput.value)){
+                this.patternInput.value=""
+            }
+        }
+        this.patternInput.addEventListener("keydown",event=>{
+            if(event.key==="Enter"){
+                event.preventDefault()
+                addPattern()
+            }
+        })
+        addPatternButton.addEventListener("click",addPattern)
+        patternAddRow.append(this.patternInput,addPatternButton)
+        this.patternRows=CE("div",{className:"sa-pattern-rows"},[])
+        stylize(this.patternRows,{display:"grid",gap:"3px"})
+        patternBox.append(patternCaption,patternAddRow,this.patternRows)
+        content.appendChild(patternBox)
         const elementBox=CE("div",{className:"sa-elements"},[])
         stylize(elementBox,{
             display:"grid",
@@ -369,8 +403,11 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         content.appendChild(this.readout)
         this.table().then(()=>{
             if(this.elementRows){
+                this.recompute()
+                this.renderPatterns()
                 this.renderElements()
                 this.renderProjectionControls()
+                this.renderProjectionLevels()
             }
         })
     }
@@ -379,6 +416,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.setStatus("pending")
         await this.table()
         this.formulaCache.clear()
+        this.patternCache.clear()
         this.collectInputs()
         this.recompute()
         this.renderAll()
@@ -454,20 +492,37 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             return
         }
         const seen=new Set()
-        const formulas=[]
+        const records=[]
         for(const raw of rawFormulas??[]){
             const formula=this.formulaFromEntry(raw)
             if(!formula||seen.has(formula.key)){
                 continue
             }
             seen.add(formula.key)
-            formulas.push(formula)
+            const asFinite=value=>value===null||value===undefined||value===""?NaN:Number(value)
+            const targets=Array.isArray(raw?.targets)
+                ?raw.targets
+                :raw?.target?[raw.target]:[]
+            const targetIntensity=targets.reduce((total,target)=>
+                total+(Number.isFinite(asFinite(target?.intensity))?asFinite(target.intensity):0),0)
+            const suppliedIntensity=asFinite(raw?.intensity)
+            records.push({
+                formula,
+                intensity:Number.isFinite(suppliedIntensity)?suppliedIntensity:targetIntensity,
+                targets:targets.map(target=>({
+                    mz:asFinite(target?.mz),
+                    intensity:asFinite(target?.intensity),
+                    errorPpm:asFinite(target?.errorPpm),
+                    index:target?.index
+                }))
+            })
         }
         this.inputCollections.push({
             name:String(name??"collection"),
             source:String(source??""),
             anchor:anchorIndex,
-            formulas,
+            records,
+            formulas:records.map(record=>record.formula),
             pointCount:Array.isArray(points)?points.length:0
         })
     }
@@ -510,17 +565,121 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
     }
 
     recompute(){
-        const elements=this.elements()
+        this.patternErrors=[]
+        const patterns=this.patterns().map((text,index)=>({
+            text,
+            index,
+            formula:this.parsePattern(text)
+        }))
+        const formulaRecords=this.inputCollections.flatMap(collection=>
+            collection.records.map(record=>({...record,collection}))
+        )
+        const usedSymbols=new Set()
+        for(const record of formulaRecords){
+            for(const [element] of this.writtenElementCounts(record.formula)){
+                usedSymbols.add(element.symbol)
+            }
+        }
+        for(const pattern of patterns){
+            if(!pattern.formula||!this.writtenElementCounts(pattern.formula).size){
+                this.patternErrors.push(`pattern "${pattern.text}" has no readable stoichiometry`)
+                continue
+            }
+            for(const [element] of this.writtenElementCounts(pattern.formula)){
+                usedSymbols.add(element.symbol)
+            }
+        }
+        this.stoichiometricDimensions=(this.loadedTable?.elements??[])
+            .filter(element=>usedSymbols.has(element.symbol))
+            .map(element=>element.symbol)
+        const dimensionIndex=new Map(this.stoichiometricDimensions.map((symbol,index)=>[symbol,index]))
+        const vectorFor=formula=>{
+            const vector=new Array(this.stoichiometricDimensions.length).fill(0)
+            for(const [element,count] of this.writtenElementCounts(formula)){
+                const index=dimensionIndex.get(element.symbol)
+                if(index!==undefined){
+                    vector[index]=count
+                }
+            }
+            return vector
+        }
         this.collectionPoints=this.inputCollections.map(collection=>({
             ...collection,
-            points:collection.formulas.map(formula=>({
-                key:formula.key,
-                notation:String(formula),
-                formula,
-                values:elements.map(symbol=>this.countElement(formula,symbol))
+            points:collection.records.map(record=>({
+                key:record.formula.key,
+                notation:String(record.formula),
+                formula:record.formula,
+                collection,
+                intensity:record.intensity,
+                targets:record.targets,
+                values:this.elements().map(symbol=>this.countElement(record.formula,symbol)),
+                stoichiometry:vectorFor(record.formula)
             }))
         }))
+        this.projectionLevels=[]
+        const prefix=[]
+        let parentGroups=null
+        for(const pattern of patterns){
+            if(!pattern.formula||!this.writtenElementCounts(pattern.formula).size){
+                continue
+            }
+            prefix.push(vectorFor(pattern.formula))
+            const matrix=this.stoichiometricDimensions.map((_,rowIndex)=>
+                prefix.map(vector=>vector[rowIndex])
+            )
+            const lattice=columnLatticeBasis(matrix)
+            const previousLattice=parentGroups?.lattice??null
+            const groups=new Map()
+            for(const collection of this.collectionPoints){
+                for(const point of collection.points){
+                    const representative=quotientRepresentative(point.stoichiometry,lattice)
+                    const key=representative.join(",")
+                    const parentKey=previousLattice
+                        ?quotientRepresentative(point.stoichiometry,previousLattice).join(",")
+                        :"root"
+                    let group=groups.get(key)
+                    if(!group){
+                        group={key,parentKey,representative,formulas:[],intensity:0,targetCount:0}
+                        groups.set(key,group)
+                    }
+                    group.formulas.push(point)
+                    group.intensity+=Number.isFinite(point.intensity)?point.intensity:0
+                    group.targetCount+=point.targets.length
+                }
+            }
+            this.projectionLevels.push({
+                pattern:pattern.text,
+                index:pattern.index,
+                lattice,
+                groups:[...groups.values()].sort((left,right)=>
+                    right.formulas.length-left.formulas.length||left.key.localeCompare(right.key)
+                )
+            })
+            const previous=this.projectionLevels.length>1
+                ?this.projectionLevels[this.projectionLevels.length-2].groups
+                :[]
+            const parentIndices=new Map(previous.map((group,index)=>[group.key,index+1]))
+            for(const group of this.projectionLevels[this.projectionLevels.length-1].groups){
+                group.parentNumber=parentIndices.get(group.parentKey)??null
+            }
+            parentGroups=this.projectionLevels[this.projectionLevels.length-1]
+        }
         this.pointTotal=this.collectionPoints.reduce((total,collection)=>total+collection.points.length,0)
+    }
+
+    parsePattern(text){
+        if(!this.loadedTable){
+            return null
+        }
+        if(this.patternCache.has(text)){
+            return this.patternCache.get(text)
+        }
+        let formula=null
+        try{
+            formula=Formula.parse(String(text),this.loadedTable)
+        }catch{}
+        this.patternCache.set(text,formula)
+        return formula
     }
 
     writtenElementCounts(formula){
@@ -573,10 +732,160 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             return
         }
         this.renderInputRecap()
+        this.renderPatterns()
         this.renderElements()
         this.renderProjectionControls()
+        this.renderProjectionLevels()
         this.renderReadout()
         this.refreshPlot()
+    }
+
+    renderPatterns(){
+        if(!this.patternRows){
+            return
+        }
+        this.patternRows.replaceChildren()
+        const patterns=this.patterns()
+        if(!patterns.length){
+            const empty=CE("div",{},["No patterns: all formulas remain separate."])
+            stylize(empty,{fontSize:"0.8em",opacity:"0.65"})
+            this.patternRows.appendChild(empty)
+            return
+        }
+        patterns.forEach((pattern,index)=>{
+            const row=CE("div",{},[])
+            stylize(row,{
+                display:"grid",
+                gridTemplateColumns:"minmax(0,1fr) auto auto auto",
+                alignItems:"center",
+                gap:"3px",
+                padding:"3px 4px",
+                border:"1px solid rgba(255,255,255,0.12)",
+                borderRadius:"3px",
+                background:"rgba(255,255,255,0.035)"
+            })
+            const formula=CE("span",{},[`${index+1}. ${pattern}`])
+            stylize(formula,{fontFamily:"monospace",fontSize:"0.82em"})
+            const up=CE("button",{type:"button",title:"Move pattern up",disabled:index===0},["↑"])
+            const down=CE("button",{type:"button",title:"Move pattern down",disabled:index===patterns.length-1},["↓"])
+            const remove=CE("button",{type:"button",title:`Remove ${pattern}`},["×"])
+            for(const button of [up,down,remove]){
+                stylize(button,{padding:"0 4px",lineHeight:"1.2",minWidth:"0"})
+            }
+            up.addEventListener("click",()=>this.movePattern(index,index-1))
+            down.addEventListener("click",()=>this.movePattern(index,index+1))
+            remove.addEventListener("click",()=>this.removePattern(index))
+            row.append(formula,up,down,remove)
+            const parsed=this.parsePattern(pattern)
+            if(!parsed||!this.writtenElementCounts(parsed).size){
+                row.title=`Pattern ${pattern} has no readable stoichiometry`
+                row.style.borderColor="rgba(255,120,100,0.6)"
+            }
+            this.patternRows.appendChild(row)
+        })
+    }
+
+    renderProjectionLevels(){
+        if(!this.seriesSummary||!this.seriesLevels){
+            return
+        }
+        this.seriesSummary.textContent=this.patterns().length
+            ?`${this.pointTotal} formula${this.pointTotal===1?"":"s"} · cumulative integer-lattice quotients`
+            :"Add an ordered pattern to build stoichiometric groups."
+        this.seriesLevels.replaceChildren()
+        for(const level of this.projectionLevels){
+            const section=CE("section",{className:"sa-series-level"},[])
+            stylize(section,{display:"grid",gap:"4px",paddingTop:"6px",borderTop:"1px solid rgba(255,255,255,0.14)"})
+            const heading=CE("div",{},[`After ${level.index+1}: ${level.pattern} · ${level.groups.length} group${level.groups.length===1?"":"s"}`])
+            stylize(heading,{fontWeight:"600"})
+            section.appendChild(heading)
+            if(!level.groups.length){
+                section.appendChild(CE("div",{},["No formulas in this level."]))
+            }
+            for(const [groupIndex,group] of level.groups.entries()){
+                const details=CE("details",{},[])
+                stylize(details,{padding:"3px 5px",border:"1px solid rgba(255,255,255,0.12)",borderRadius:"3px",background:"rgba(255,255,255,0.025)"})
+                const parent=group.parentNumber?` · from group ${group.parentNumber}`:""
+                const summary=CE("summary",{},[
+                    `Group ${groupIndex+1}${parent} · ${group.formulas.length} formula${group.formulas.length===1?"":"s"} · ΣI ${this.formatIntensity(group.intensity)} · ${group.targetCount} targets`
+                ])
+                stylize(summary,{cursor:"pointer"})
+                details.appendChild(summary)
+                const members=CE("div",{},[])
+                stylize(members,{display:"grid",gap:"3px",padding:"5px 0 2px 8px"})
+                for(const point of group.formulas){
+                    const formulaRow=CE("div",{},[])
+                    stylize(formulaRow,{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto",gap:"6px",alignItems:"baseline"})
+                    const label=CE("span",{},[`${point.notation} · ${point.collection.name}`])
+                    stylize(label,{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"})
+                    const intensity=CE("span",{},[`I ${this.formatIntensity(point.intensity)}`])
+                    stylize(intensity,{fontFamily:"monospace",fontSize:"0.78em",whiteSpace:"nowrap"})
+                    formulaRow.append(label,intensity)
+                    members.appendChild(formulaRow)
+                    if(point.targets.length){
+                        const targets=CE("details",{},[])
+                        const targetSummary=CE("summary",{},[`${point.targets.length} measured target${point.targets.length===1?"":"s"}`])
+                        stylize(targetSummary,{cursor:"pointer",fontSize:"0.8em",opacity:"0.75"})
+                        const targetRows=point.targets.map(target=>{
+                            const mz=Number.isFinite(target.mz)?target.mz.toFixed(5):"—"
+                            const targetIntensity=this.formatIntensity(target.intensity)
+                            const error=Number.isFinite(target.errorPpm)?` · ${target.errorPpm.toFixed(2)} ppm`:""
+                            return CE("div",{},[`m/z ${mz} · I ${targetIntensity}${error}`])
+                        })
+                        stylize(targets,{paddingLeft:"12px"})
+                        targets.append(targetSummary,...targetRows)
+                        members.appendChild(targets)
+                    }
+                }
+                details.appendChild(members)
+                section.appendChild(details)
+            }
+            this.seriesLevels.appendChild(section)
+        }
+    }
+
+    formatIntensity(value){
+        return Number.isFinite(value)?new Intl.NumberFormat(undefined,{maximumSignificantDigits:5}).format(value):"0"
+    }
+
+    patterns(){
+        return Array.isArray(this.parameters.patterns)?this.parameters.patterns:[]
+    }
+
+    addPattern(value){
+        const pattern=String(value??"").trim()
+        if(!pattern||this.patterns().includes(pattern)){
+            return false
+        }
+        this.setPatterns([...this.patterns(),pattern])
+        return true
+    }
+
+    removePattern(index){
+        if(index<0||index>=this.patterns().length){
+            return
+        }
+        const patterns=this.patterns().slice()
+        patterns.splice(index,1)
+        this.setPatterns(patterns)
+    }
+
+    movePattern(from,to){
+        const patterns=this.patterns().slice()
+        if(from<0||from>=patterns.length||to<0||to>=patterns.length){
+            return
+        }
+        const [pattern]=patterns.splice(from,1)
+        patterns.splice(to,0,pattern)
+        this.setPatterns(patterns)
+    }
+
+    setPatterns(patterns){
+        this.parameters.patterns=patterns
+        this.patternCache.clear()
+        this.recompute()
+        this.renderAll()
+        this.origin?.saveSessionSoon?.()
     }
 
     renderInputRecap(){
@@ -865,6 +1174,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         if(!this.loadedTable){
             lines.push("periodic table not loaded")
         }
+        lines.push(...this.patternErrors)
         lines.push(...this.diagnostics.slice(0,20))
         if(this.diagnostics.length>20){
             lines.push(`… ${this.diagnostics.length-20} more diagnostic(s)`)
@@ -1040,6 +1350,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
     serializeState(){
         return {
             elements:[...this.elements()],
+            patterns:[...this.patterns()],
             projection:{
                 ...this.parameters.projection,
                 orthographic:this.plot?._orthographic??this.parameters.projection.orthographic===true
@@ -1059,6 +1370,10 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 .map(symbol=>String(symbol))
                 .filter(symbol=>!available.length||available.includes(symbol))
         }
+        if(Array.isArray(state.patterns)){
+            this.parameters.patterns=state.patterns.map(pattern=>String(pattern))
+            this.patternCache.clear()
+        }
         if(state.projection&&typeof state.projection==="object"){
             this.parameters.projection={...this.parameters.projection,...state.projection}
         }
@@ -1069,6 +1384,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             this.parameters.fit={...this.parameters.fit,...state.fit}
         }
         this._viewApplied=false
+        this.recompute()
         this.syncUI()
     }
 
