@@ -55,15 +55,18 @@ const recomputeContext={
     loadedTable:table,
     parameters:{elements:["H","C","O"],patterns:["CH2","O"]},
     patternCache:new Map(),
+    compositionCache:new Map(),
+    latticeCache:new Map(),
     patternErrors:[],
     diagnostics:[],
     elements:new Function(`return function(){${extractMethod("elements")}}`)(),
     patterns:new Function(`return function(){${extractMethod("patterns")}}`)(),
     writtenElementCounts:new Function(`return function(formula){${extractMethod("writtenElementCounts")}}`)(),
+    compositionOf:new Function(`return function(formula){${extractMethod("compositionOf")}}`)(),
     countElement:new Function(`return function(formula,symbol){${extractMethod("countElement")}}`)(),
     parsePattern:new Function("Formula",`return function(text){${extractMethod("parsePattern")}}`)(Formula),
-    recompute:new Function("columnLatticeBasis","quotientRepresentative",
-        `return function(){${extractMethod("recompute")}}`
+    recomputeModel:new Function("columnLatticeBasis","quotientRepresentative",
+        `return function(){${extractMethod("recomputeModel")}}`
     )(columnLatticeBasis,quotientRepresentative),
     inputCollections:[{
         name:"sample",
@@ -74,7 +77,7 @@ const recomputeContext={
         }))
     }]
 }
-recomputeContext.recompute()
+recomputeContext.recomputeModel()
 const firstLevel=recomputeContext.projectionLevels[0]
 if(firstLevel.groups.length!==2||Math.max(...firstLevel.groups.map(group=>group.formulas.length))!==2){
     throw new Error("CH2 level did not group the two formulas differing by CH2")
@@ -86,4 +89,17 @@ if(recomputeContext.projectionLevels[1].groups.length!==1||
    recomputeContext.projectionLevels[1].groups[0].formulas.length!==3){
     throw new Error("O level did not merge the formulas after O was added to the cumulative lattice")
 }
+if(firstLevel.rank!==1||firstLevel.gainedRank!==1||firstLevel.redundant){
+    throw new Error(`CH2 level should add one rank and not be redundant, got ${JSON.stringify({
+        rank:firstLevel.rank,gainedRank:firstLevel.gainedRank,redundant:firstLevel.redundant
+    })}`)
+}
+if(recomputeContext.projectionLevels[1].gainedRank!==1){
+    throw new Error("adding O should raise the cumulative lattice rank by one")
+}
 console.log("the real recompute method builds nested CH2 then O formula groups")
+if(!Array.isArray(firstLevel.groups[0].representative)||
+   firstLevel.groups[0].representative.length!==recomputeContext.stoichiometricDimensions.length){
+    throw new Error("every quotient class must expose a representative of the stoichiometric dimensions")
+}
+console.log("quotient levels expose rank, increment and canonical representatives")

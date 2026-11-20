@@ -786,6 +786,30 @@ class Scatter3DTrace extends Trace{
     }
 }
 
+/* Straight segments in the same [nx, ny, 3] carrier as the two above, read as
+   PAIRS: points 0-1 are one segment, 2-3 the next. It exists so a node can show
+   a direction — a pattern vector or a displacement — without inventing a
+   second overlay channel in the plot. An odd point count is allowed and its
+   last point is simply left out, because the producer is the one that decides
+   how many pairs it meant. */
+class Segment3DTrace extends Trace{
+    constructor({id,title="Segments",wave,options={}}={}){
+        super({id,title,options})
+        if(!(wave instanceof Wave)||wave.degree!==3||wave.dims[2]!==3){
+            throw new TypeError("Segment3DTrace requires a Wave with dimensions [nx, ny, 3]")
+        }
+        this.wave=wave
+        this.options={
+            color:"#ffffff",
+            opacity:0.85,
+            ...options
+        }
+    }
+    get segmentCount(){
+        return Math.floor(this.wave.dims[0]*this.wave.dims[1]/2)
+    }
+}
+
 function serializeFormatValue(value){
     if(value instanceof Wave){
         return {
@@ -805,7 +829,7 @@ function serializeFormatValue(value){
             wave:serializeFormatValue(value.wave)
         }
     }
-    for(const GridTrace of [SurfaceTrace,Scatter3DTrace]){
+    for(const GridTrace of [SurfaceTrace,Scatter3DTrace,Segment3DTrace]){
         if(value instanceof GridTrace){
             return {
                 kind:GridTrace.name,
@@ -833,7 +857,7 @@ function recreateFormatValue(value){
     if(value?.kind==="XYTrace"){
         return new XYTrace({...value,wave:recreateFormatValue(value.wave)})
     }
-    for(const GridTrace of [SurfaceTrace,Scatter3DTrace]){
+    for(const GridTrace of [SurfaceTrace,Scatter3DTrace,Segment3DTrace]){
         if(value?.kind===GridTrace.name){
             return new GridTrace({...value,wave:recreateFormatValue(value.wave)})
         }
@@ -844,4 +868,4 @@ function recreateFormatValue(value){
     throw new TypeError("Unsupported serialized format value")
 }
 
-export {Data,Vector,Wave,Trace,XYTrace,SurfaceTrace,Scatter3DTrace,serializeFormatValue,recreateFormatValue}
+export {Data,Vector,Wave,Trace,XYTrace,SurfaceTrace,Scatter3DTrace,Segment3DTrace,serializeFormatValue,recreateFormatValue}

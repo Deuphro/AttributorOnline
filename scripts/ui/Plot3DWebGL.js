@@ -1,7 +1,7 @@
 import * as THREE from "https://unpkg.com/three@0.160.1/build/three.module.js"
 import {CE,stylize} from "../util.js"
 import {GLSceneLayer,GL3D_DEFAULTS,surfaceMaterial,scatterMaterial,THREE_CDN_3D} from "../plot3d-gl.js"
-import {SurfaceTrace,Scatter3DTrace} from "../formats.js"
+import {SurfaceTrace,Scatter3DTrace,Segment3DTrace} from "../formats.js"
 
 const PLOT3D_DEFAULTS={
     ...GL3D_DEFAULTS,
@@ -785,7 +785,9 @@ export class Plot3DWebGL{
         for(const trace of this.visibleTraces){
             const object=trace instanceof SurfaceTrace
                 ?this.buildSurface(trace,bounds)
-                :this.buildScatter(trace,bounds)
+                :trace instanceof Segment3DTrace
+                    ?this.buildSegments(trace,bounds)
+                    :this.buildScatter(trace,bounds)
             if(!object) continue
             content.add(object)
             this._traces.push(object)
@@ -896,6 +898,16 @@ export class Plot3DWebGL{
         const stride=Math.max(1,Math.trunc(trace.options?.stride??1))
         const count=Math.ceil(nx/stride)*Math.ceil(ny/stride)
         const world=this.axisWorld()
+        /* ONE COLOUR PER POINT. The cloud used to be a single material colour,
+           which forced a caller that wanted classes to emit one trace per
+           class — a draw call and a geometry each. `pointColors` is parallel to
+           the wave's own point order (not to the strided subset), so the index
+           is the source cell, and a colour is never silently shifted by the
+           stride. `_dataRevision` already invalidates the fingerprint on every
+           setTraces, so the array need not enter it. */
+        const pointColors=Array.isArray(trace.options?.pointColors)?trace.options.pointColors:null
+        const colors=pointColors?new Float32Array(count*3):null
+        const colour=new THREE.Color()
         const positions=new Float32Array(count*3)
         let written=0
         for(let iy=0;iy<ny;iy+=stride){
@@ -907,6 +919,13 @@ export class Plot3DWebGL{
                 positions[written*3]=world.x(x)
                 positions[written*3+1]=world.y(y)
                 positions[written*3+2]=world.z(z)
+                if(colors){
+                    const source=iy*nx+ix
+                    colour.set(pointColors[source]??"#ffffff")
+                    colors[written*3]=colour.r
+                    colors[written*3+1]=colour.g
+                    colors[written*3+2]=colour.b
+                }
                 written++
             }
         }
@@ -914,19 +933,70 @@ export class Plot3DWebGL{
         //a subarray VIEW on a possibly oversized buffer: the upload takes a
         //count, so nothing is copied just to trim the tail
         geometry.setAttribute("position",new THREE.BufferAttribute(positions,3))
+        if(colors){
+            geometry.setAttribute("color",new THREE.BufferAttribute(colors,3))
+        }
         geometry.setDrawRange(0,written)
         const opacity=Number.isFinite(trace.options?.opacity)?trace.options.opacity:1
         const cloud=new THREE.Points(geometry,scatterMaterial({
             size:Number.isFinite(trace.options?.size)?trace.options.size:3,
-            colors:false,
+            colors:!!colors,
             opacity
         }))
         cloud.name=trace.title??"scatter"
         cloud.userData.traceId=trace.id
-        if(trace.options?.color){
+        if(!colors&&trace.options?.color){
             cloud.material.color.set(trace.options.color)
         }
         return cloud
+    }
+    /* Straight segments from a [nx, ny, 3] wave read as consecutive pairs.
+       The world mapping is the same per-axis map as every other trace, so a
+       direction drawn in data units cannot disagree with the clouds it is
+       meant to explain. */
+    buildSegments(trace,bounds){
+        const wave=trace.wave
+        const [nx,ny]=wave.dims
+        const total=nx*ny
+        const segmentCount=Math.floor(total/2)
+        if(!segmentCount){
+            return null
+        }
+        const world=this.axisWorld()
+        const positions=new Float32Array(segmentCount*6)
+        let written=0
+        const point=index=>[
+            wave.core[wave.index(index,0,0)],
+            wave.core[wave.index(index,0,1)],
+            wave.core[wave.index(index,0,2)]
+        ]
+        for(let segment=0;segment<segmentCount;segment++){
+            const start=point(segment*2)
+            const end=point(segment*2+1)
+            if(![...start,...end].every(Number.isFinite)) continue
+            positions[written*6]=world.x(start[0])
+            positions[written*6+1]=world.y(start[1])
+            positions[written*6+2]=world.z(start[2])
+            positions[written*6+3]=world.x(end[0])
+            positions[written*6+4]=world.y(end[1])
+            positions[written*6+5]=world.z(end[2])
+            written++
+        }
+        const geometry=new THREE.BufferGeometry()
+        geometry.setAttribute("position",new THREE.BufferAttribute(positions,3))
+        geometry.setDrawRange(0,written*2)
+        const opacity=Number.isFinite(trace.options?.opacity)?trace.options.opacity:1
+        const material=new THREE.LineBasicMaterial({
+            color:trace.options?.color??"#ffffff",
+            opacity,
+            transparent:opacity<1,
+            depthTest:true,
+            depthWrite:false
+        })
+        const lines=new THREE.LineSegments(geometry,material)
+        lines.name=trace.title??"segments"
+        lines.userData.traceId=trace.id
+        return lines
     }
 
     /* --- the frame: render on demand --------------------------------- */

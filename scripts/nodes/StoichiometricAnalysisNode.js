@@ -2,7 +2,7 @@ import {NodeWithAccordion} from "../core/index.js"
 import {Accordion} from "../ui/Accordion.js"
 import {Dialog} from "../ui/Dialog.js"
 import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
-import {Wave,Scatter3DTrace} from "../formats.js"
+import {Wave,Scatter3DTrace,Segment3DTrace} from "../formats.js"
 import {Formula,Stoichiometry,FormulaCollection} from "../chemistry.js"
 import {CE,stylize} from "../util.js"
 import {traceColor} from "./formulaCollectionHelpers.js"
@@ -16,6 +16,28 @@ const AXIS_VIEW_ANGLES={
     Z:{theta:0,phi:Math.PI/2}
 }
 
+/* One hue per quotient class, walked by the golden angle so neighbouring class
+   numbers are never neighbouring colours. The classes are not ordered in any
+   meaningful way — they are residue ids — so a ramp would imply a progression
+   that does not exist. */
+const GROUP_HUE_STEP=0.6180339887498949
+const hslToHex=(hue,saturation,lightness)=>{
+    const channel=(p,q,t)=>{
+        if(t<0) t+=1
+        if(t>1) t-=1
+        if(t<1/6) return p+(q-p)*6*t
+        if(t<1/2) return q
+        if(t<2/3) return p+(q-p)*(2/3-t)*6
+        return p
+    }
+    const q=lightness<0.5?lightness*(1+saturation):lightness+saturation-lightness*saturation
+    const p=2*lightness-q
+    return "#"+[channel(p,q,hue+1/3),channel(p,q,hue),channel(p,q,hue-1/3)]
+        .map(value=>Math.round(Math.max(0,Math.min(1,value))*255).toString(16).padStart(2,"0"))
+        .join("")
+}
+const groupColor=index=>hslToHex((index*GROUP_HUE_STEP)%1,0.62,0.56)
+
 export class StoichiometricAnalysisNode extends NodeWithAccordion{
     static socketTypes={
         inputs:[SOCKET.FORMULA_COLLECTION,SOCKET.FORMULA_COLLECTION],
@@ -26,7 +48,8 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.parameters.elements=["C","H","O","N"]
         this.parameters.projection={
             x:0,y:1,z:2,showCloud:true,showProjections:true,pointSize:3,
-            orthographic:false,axis:null
+            orthographic:false,axis:null,
+            colorBy:"collection",showPatternVectors:false
         }
         this.parameters.pca={x:0,y:1,z:2}
         this.parameters.fit={}
@@ -42,6 +65,8 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.loadedTable=null
         this.formulaCache=new Map()
         this.patternCache=new Map()
+        this.compositionCache=new Map()
+        this.latticeCache=new Map()
         this.viewPanels={}
         this.plot=null
         this.axisButtons={}
@@ -564,7 +589,13 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         return formula
     }
 
-    recompute(){
+    /* The MODEL half: everything that depends on the inputs and the ordered
+       patterns — compositions, the cumulative integer lattices, the quotient
+       classes. It deliberately does NOT look at `parameters.elements`: the
+       chosen dimensions of the 3D view are a projection of the same
+       stoichiometry, not a different one. Keeping the two apart is what makes
+       changing an axis cheap instead of rebuilding every lattice. */
+    recomputeModel(){
         this.patternErrors=[]
         const patterns=this.patterns().map((text,index)=>({
             text,
@@ -576,31 +607,37 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         )
         const usedSymbols=new Set()
         for(const record of formulaRecords){
-            for(const [element] of this.writtenElementCounts(record.formula)){
-                usedSymbols.add(element.symbol)
+            for(const symbol of this.compositionOf(record.formula).keys()){
+                usedSymbols.add(symbol)
             }
         }
         for(const pattern of patterns){
-            if(!pattern.formula||!this.writtenElementCounts(pattern.formula).size){
+            if(!pattern.formula||!this.compositionOf(pattern.formula).size){
                 this.patternErrors.push(`pattern "${pattern.text}" has no readable stoichiometry`)
                 continue
             }
-            for(const [element] of this.writtenElementCounts(pattern.formula)){
-                usedSymbols.add(element.symbol)
+            for(const symbol of this.compositionOf(pattern.formula).keys()){
+                usedSymbols.add(symbol)
             }
         }
         this.stoichiometricDimensions=(this.loadedTable?.elements??[])
             .filter(element=>usedSymbols.has(element.symbol))
             .map(element=>element.symbol)
         const dimensionIndex=new Map(this.stoichiometricDimensions.map((symbol,index)=>[symbol,index]))
+        const vectorCache=new Map()
         const vectorFor=formula=>{
+            const cacheKey=formula?.key??String(formula)
+            if(vectorCache.has(cacheKey)){
+                return vectorCache.get(cacheKey)
+            }
             const vector=new Array(this.stoichiometricDimensions.length).fill(0)
-            for(const [element,count] of this.writtenElementCounts(formula)){
-                const index=dimensionIndex.get(element.symbol)
+            for(const [symbol,count] of this.compositionOf(formula)){
+                const index=dimensionIndex.get(symbol)
                 if(index!==undefined){
                     vector[index]=count
                 }
             }
+            vectorCache.set(cacheKey,vector)
             return vector
         }
         this.collectionPoints=this.inputCollections.map(collection=>({
@@ -612,23 +649,36 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 collection,
                 intensity:record.intensity,
                 targets:record.targets,
-                values:this.elements().map(symbol=>this.countElement(record.formula,symbol)),
+                counts:this.compositionOf(record.formula),
                 stoichiometry:vectorFor(record.formula)
             }))
         }))
         this.projectionLevels=[]
         const prefix=[]
+        const prefixTexts=[]
         let parentGroups=null
+        const dimensionSignature=this.stoichiometricDimensions.join(",")
+        const latticeCache=this.latticeCache??(this.latticeCache=new Map())
         for(const pattern of patterns){
-            if(!pattern.formula||!this.writtenElementCounts(pattern.formula).size){
+            if(!pattern.formula||!this.compositionOf(pattern.formula).size){
                 continue
             }
             prefix.push(vectorFor(pattern.formula))
+            prefixTexts.push(pattern.text)
+            if(!this.stoichiometricDimensions.length){
+                continue
+            }
             const matrix=this.stoichiometricDimensions.map((_,rowIndex)=>
                 prefix.map(vector=>vector[rowIndex])
             )
-            const lattice=columnLatticeBasis(matrix)
+            const cacheKey=`${dimensionSignature}#${prefixTexts.join("|")}`
+            let lattice=latticeCache.get(cacheKey)
+            if(!lattice){
+                lattice=columnLatticeBasis(matrix)
+                latticeCache.set(cacheKey,lattice)
+            }
             const previousLattice=parentGroups?.lattice??null
+            const gainedRank=lattice.rank-(previousLattice?.rank??0)
             const groups=new Map()
             for(const collection of this.collectionPoints){
                 for(const point of collection.points){
@@ -651,6 +701,13 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 pattern:pattern.text,
                 index:pattern.index,
                 lattice,
+                rank:lattice.rank,
+                quotientIndex:lattice.index,
+                freeDimensions:lattice.dimension-lattice.rank,
+                gainedRank,
+                redundant:gainedRank===0,
+                vectors:prefix.map(vector=>[...vector]),
+                patternTexts:[...prefixTexts],
                 groups:[...groups.values()].sort((left,right)=>
                     right.formulas.length-left.formulas.length||left.key.localeCompare(right.key)
                 )
@@ -665,6 +722,46 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             parentGroups=this.projectionLevels[this.projectionLevels.length-1]
         }
         this.pointTotal=this.collectionPoints.reduce((total,collection)=>total+collection.points.length,0)
+    }
+
+    /* The PROJECTION half: the per-element coordinate arrays the 3D view reads.
+       Only this runs when the selected elements change. */
+    recomputeProjection(){
+        const elements=this.elements()
+        for(const collection of this.collectionPoints){
+            for(const point of collection.points){
+                point.values=elements.map(symbol=>point.counts?.get(symbol)||0)
+            }
+        }
+    }
+
+    recompute(){
+        this.recomputeModel()
+        this.recomputeProjection()
+    }
+
+    /* The written stoichiometry of a formula, keyed by element symbol, cached
+       by the formula's identity. It is read once per formula per model rebuild
+       instead of once per element per point per level. */
+    compositionOf(formula){
+        if(!formula){
+            return new Map()
+        }
+        const cacheKey=formula.key??String(formula)
+        const cache=this.compositionCache??(this.compositionCache=new Map())
+        if(cache.has(cacheKey)){
+            return cache.get(cacheKey)
+        }
+        const counts=new Map()
+        for(const [element,count] of this.writtenElementCounts(formula)){
+            const symbol=element?.symbol
+            if(!symbol){
+                continue
+            }
+            counts.set(symbol,(counts.get(symbol)||0)+(Number(count)||0))
+        }
+        cache.set(cacheKey,counts)
+        return counts
     }
 
     parsePattern(text){
@@ -790,57 +887,119 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             return
         }
         this.seriesSummary.textContent=this.patterns().length
-            ?`${this.pointTotal} formula${this.pointTotal===1?"":"s"} · cumulative integer-lattice quotients`
+            ?`${this.pointTotal} formula${this.pointTotal===1?"":"s"} · ${this.stoichiometricDimensions.length} dimension${this.stoichiometricDimensions.length===1?"":"s"} · cumulative integer-lattice quotients`
             :"Add an ordered pattern to build stoichiometric groups."
         this.seriesLevels.replaceChildren()
+        const dimensionCaption=this.stoichiometricDimensions.length
+            ?`[${this.stoichiometricDimensions.join(", ")}]`
+            :"[]"
+        /* ONE FOLDER PER RANK. The levels are cumulative, so rank only grows;
+           grouping consecutive levels by rank leaves each rank a single
+           collapsible block whose header sits right where the previous rank
+           ends. Folding rank 1 therefore reveals rank 2 without scrolling
+           through rank 1's groups first. Levels that add no rank (redundant
+           patterns) fall into the same folder as their parent rank. */
+        const rankFolders=[]
+        const rankFolderByRank=new Map()
         for(const level of this.projectionLevels){
-            const section=CE("section",{className:"sa-series-level"},[])
-            stylize(section,{display:"grid",gap:"4px",paddingTop:"6px",borderTop:"1px solid rgba(255,255,255,0.14)"})
-            const heading=CE("div",{},[`After ${level.index+1}: ${level.pattern} · ${level.groups.length} group${level.groups.length===1?"":"s"}`])
-            stylize(heading,{fontWeight:"600"})
-            section.appendChild(heading)
-            if(!level.groups.length){
-                section.appendChild(CE("div",{},["No formulas in this level."]))
-            }
-            for(const [groupIndex,group] of level.groups.entries()){
-                const details=CE("details",{},[])
-                stylize(details,{padding:"3px 5px",border:"1px solid rgba(255,255,255,0.12)",borderRadius:"3px",background:"rgba(255,255,255,0.025)"})
-                const parent=group.parentNumber?` · from group ${group.parentNumber}`:""
-                const summary=CE("summary",{},[
-                    `Group ${groupIndex+1}${parent} · ${group.formulas.length} formula${group.formulas.length===1?"":"s"} · ΣI ${this.formatIntensity(group.intensity)} · ${group.targetCount} targets`
-                ])
-                stylize(summary,{cursor:"pointer"})
-                details.appendChild(summary)
-                const members=CE("div",{},[])
-                stylize(members,{display:"grid",gap:"3px",padding:"5px 0 2px 8px"})
-                for(const point of group.formulas){
-                    const formulaRow=CE("div",{},[])
-                    stylize(formulaRow,{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto",gap:"6px",alignItems:"baseline"})
-                    const label=CE("span",{},[`${point.notation} · ${point.collection.name}`])
-                    stylize(label,{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"})
-                    const intensity=CE("span",{},[`I ${this.formatIntensity(point.intensity)}`])
-                    stylize(intensity,{fontFamily:"monospace",fontSize:"0.78em",whiteSpace:"nowrap"})
-                    formulaRow.append(label,intensity)
-                    members.appendChild(formulaRow)
-                    if(point.targets.length){
-                        const targets=CE("details",{},[])
-                        const targetSummary=CE("summary",{},[`${point.targets.length} measured target${point.targets.length===1?"":"s"}`])
-                        stylize(targetSummary,{cursor:"pointer",fontSize:"0.8em",opacity:"0.75"})
-                        const targetRows=point.targets.map(target=>{
-                            const mz=Number.isFinite(target.mz)?target.mz.toFixed(5):"—"
-                            const targetIntensity=this.formatIntensity(target.intensity)
-                            const error=Number.isFinite(target.errorPpm)?` · ${target.errorPpm.toFixed(2)} ppm`:""
-                            return CE("div",{},[`m/z ${mz} · I ${targetIntensity}${error}`])
-                        })
-                        stylize(targets,{paddingLeft:"12px"})
-                        targets.append(targetSummary,...targetRows)
-                        members.appendChild(targets)
-                    }
+            let folder=rankFolderByRank.get(level.rank)
+            if(!folder){
+                folder={
+                    rank:level.rank,
+                    dimension:level.lattice.dimension,
+                    levels:[],
+                    groupCount:0
                 }
-                details.appendChild(members)
-                section.appendChild(details)
+                rankFolderByRank.set(level.rank,folder)
+                rankFolders.push(folder)
             }
-            this.seriesLevels.appendChild(section)
+            folder.levels.push(level)
+            folder.groupCount+=level.groups.length
+        }
+        for(const rankFolder of rankFolders){
+            const folder=CE("details",{className:"sa-rank-folder"},[])
+            folder.open=true
+            stylize(folder,{display:"grid",gap:"6px",padding:"4px 0",borderTop:"2px solid rgba(255,255,255,0.22)"})
+            const free=Math.max(0,rankFolder.dimension-rankFolder.rank)
+            const folderSummary=CE("summary",{},[
+                `Rank ${rankFolder.rank}/${rankFolder.dimension} · ${rankFolder.groupCount} group${rankFolder.groupCount===1?"":"s"} · ${free} free dimension${free===1?"":"s"} · ${rankFolder.levels.length} pattern${rankFolder.levels.length===1?"":"s"}`
+            ])
+            stylize(folderSummary,{cursor:"pointer",fontWeight:"700",padding:"2px 0"})
+            folder.appendChild(folderSummary)
+            for(const level of rankFolder.levels){
+                const section=CE("section",{className:"sa-series-level"},[])
+                stylize(section,{display:"grid",gap:"4px",paddingTop:"6px",borderTop:"1px solid rgba(255,255,255,0.14)"})
+                const quotient=level.quotientIndex===null
+                    ?"infinite quotient"
+                    :`index ${this.formatIntensity(level.quotientIndex)}`
+                const heading=CE("div",{},[
+                    `After ${level.index+1}: ${level.pattern} · ${level.groups.length} group${level.groups.length===1?"":"s"}`,
+                    ` · rank ${level.rank}/${level.lattice.dimension} · ${quotient} · +${level.gainedRank} constraint${level.gainedRank===1?"":"s"}`
+                ])
+                stylize(heading,{
+                    fontWeight:"600",
+                    opacity:level.redundant?"0.6":"1"
+                })
+                section.appendChild(heading)
+                if(level.redundant){
+                    const warning=CE("div",{},[
+                        "This pattern adds no new class: it lies in the cumulative lattice."
+                    ])
+                    stylize(warning,{fontSize:"0.78em",opacity:"0.7",fontStyle:"italic"})
+                    section.appendChild(warning)
+                }
+                if(!level.groups.length){
+                    section.appendChild(CE("div",{},["No formulas in this level."]))
+                }
+                for(const [groupIndex,group] of level.groups.entries()){
+                    const details=CE("details",{},[])
+                    stylize(details,{padding:"3px 5px",border:"1px solid rgba(255,255,255,0.12)",borderRadius:"3px",background:"rgba(255,255,255,0.025)"})
+                    const parent=group.parentNumber?` · from group ${group.parentNumber}`:""
+                    const summary=CE("summary",{},[
+                        `Group ${groupIndex+1}${parent} · ${group.formulas.length} formula${group.formulas.length===1?"":"s"} · ΣI ${this.formatIntensity(group.intensity)} · ${group.targetCount} targets`
+                    ])
+                    stylize(summary,{cursor:"pointer"})
+                    details.appendChild(summary)
+                    const representative=CE("div",{},[`representative ${dimensionCaption} = [${group.representative.join(", ")}]`])
+                    stylize(representative,{
+                        fontFamily:"monospace",
+                        fontSize:"0.78em",
+                        opacity:"0.8",
+                        padding:"2px 0 0 0"
+                    })
+                    details.appendChild(representative)
+                    const members=CE("div",{},[])
+                    stylize(members,{display:"grid",gap:"3px",padding:"5px 0 2px 8px"})
+                    for(const point of group.formulas){
+                        const formulaRow=CE("div",{},[])
+                        stylize(formulaRow,{display:"grid",gridTemplateColumns:"minmax(0,1fr) auto",gap:"6px",alignItems:"baseline"})
+                        const label=CE("span",{},[`${point.notation} · ${point.collection.name}`])
+                        stylize(label,{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"})
+                        const intensity=CE("span",{},[`I ${this.formatIntensity(point.intensity)}`])
+                        stylize(intensity,{fontFamily:"monospace",fontSize:"0.78em",whiteSpace:"nowrap"})
+                        formulaRow.append(label,intensity)
+                        members.appendChild(formulaRow)
+                        if(point.targets.length){
+                            const targets=CE("details",{},[])
+                            const targetSummary=CE("summary",{},[`${point.targets.length} measured target${point.targets.length===1?"":"s"}`])
+                            stylize(targetSummary,{cursor:"pointer",fontSize:"0.8em",opacity:"0.75"})
+                            const targetRows=point.targets.map(target=>{
+                                const mz=Number.isFinite(target.mz)?target.mz.toFixed(5):"—"
+                                const targetIntensity=this.formatIntensity(target.intensity)
+                                const error=Number.isFinite(target.errorPpm)?` · ${target.errorPpm.toFixed(2)} ppm`:""
+                                return CE("div",{},[`m/z ${mz} · I ${targetIntensity}${error}`])
+                            })
+                            stylize(targets,{paddingLeft:"12px"})
+                            targets.append(targetSummary,...targetRows)
+                            members.appendChild(targets)
+                        }
+                    }
+                    details.appendChild(members)
+                    section.appendChild(details)
+                }
+                folder.appendChild(section)
+            }
+            this.seriesLevels.appendChild(folder)
         }
     }
 
@@ -1084,6 +1243,39 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         })
         sizeRow.append(sizeLabel,sizeInput)
         checks.appendChild(sizeRow)
+        const colourRow=CE("div",{},[])
+        stylize(colourRow,{display:"grid",gridTemplateColumns:"1fr minmax(0,1.4fr)",gap:"6px",alignItems:"center"})
+        const colourLabel=CE("label",{},["Colour by"])
+        const colourSelect=CE("select",{},[])
+        stylize(colourSelect,{minWidth:"0",padding:"2px 4px"})
+        colourSelect.appendChild(CE("option",{value:"collection"},["Formula collection"]))
+        for(const level of this.projectionLevels){
+            colourSelect.appendChild(CE("option",{value:String(level.index)},[
+                `Level ${level.index+1} · ${level.pattern} (${level.groups.length})`
+            ]))
+        }
+        const colourValue=this.colorLevel()?String(this.colorLevel().index):"collection"
+        colourSelect.value=colourValue
+        colourSelect.addEventListener("change",()=>{
+            this.parameters.projection.colorBy=colourSelect.value==="collection"
+                ?"collection"
+                :Number(colourSelect.value)
+            this.refreshPlot()
+            this.origin?.saveSessionSoon?.()
+        })
+        colourRow.append(colourLabel,colourSelect)
+        checks.appendChild(colourRow)
+        if(this.projectionLevels.length){
+            checks.appendChild(this.checkboxRow(
+                "Show pattern vectors",
+                this.parameters.projection.showPatternVectors===true,
+                checked=>{
+                    this.parameters.projection.showPatternVectors=checked
+                    this.refreshPlot()
+                    this.origin?.saveSessionSoon?.()
+                }
+            ))
+        }
         this.projectionControls.appendChild(checks)
     }
 
@@ -1217,6 +1409,48 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         return wave
     }
 
+    colorLevel(){
+        const colorBy=this.parameters.projection?.colorBy
+        if(colorBy==="collection"||colorBy===undefined||colorBy===null){
+            return null
+        }
+        const levelIndex=Number(colorBy)
+        if(!Number.isFinite(levelIndex)){
+            return null
+        }
+        return this.projectionLevels.find(level=>level.index===levelIndex)??null
+    }
+
+    /* The 3D view of a cumulative lattice: the generator of every pattern up to
+       the chosen level, anchored at the origin of the elemental space. These are
+       the directions the quotient ignores, so drawing them beside the classes
+       says exactly what the projection is collapsing. */
+    patternVectorTraces(level,axes,labels){
+        if(!level){
+            return []
+        }
+        const elements=this.elements()
+        const dimensionIndex=new Map(this.stoichiometricDimensions.map((symbol,index)=>[symbol,index]))
+        const origin=elements.map(()=>0)
+        const traces=[]
+        level.vectors.forEach((vector,patternIndex)=>{
+            const values=elements.map(symbol=>{
+                const index=dimensionIndex.get(symbol)
+                return index===undefined?0:Number(vector[index])||0
+            })
+            if(!values.some(value=>value!==0)){
+                return
+            }
+            traces.push(new Segment3DTrace({
+                id:`sa-pattern-${level.index}-${patternIndex}`,
+                title:`${level.patternTexts[patternIndex]} — pattern vector`,
+                wave:this.waveFor([{values:origin},{values}],axes,labels),
+                options:{color:traceColor(patternIndex),opacity:0.9}
+            }))
+        })
+        return traces
+    }
+
     refreshPlot(){
         if(!this.plot){
             return
@@ -1232,6 +1466,15 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 this.plotSummary.textContent=`${this.pointTotal} formula${this.pointTotal===1?"":"s"} · no axis selected`
             }
             return
+        }
+        const colorLevel=this.colorLevel()
+        const groupIndex=colorLevel?new Map():null
+        if(colorLevel){
+            colorLevel.groups.forEach((group,index)=>{
+                for(const point of group.formulas){
+                    groupIndex.set(point,index)
+                }
+            })
         }
         const mins=[Infinity,Infinity,Infinity]
         for(const collection of this.collectionPoints){
@@ -1255,12 +1498,19 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 return
             }
             const color=traceColor(index)
+            const pointColors=groupIndex
+                ?collection.points.map(point=>groupColor(groupIndex.get(point)??0))
+                :null
+            const cloudOptions={size:pointSize,color,opacity:0.92}
+            if(pointColors){
+                cloudOptions.pointColors=pointColors
+            }
             if(this.parameters.projection.showCloud!==false){
                 traces.push(new Scatter3DTrace({
                     id:`sa-cloud-${index}`,
                     title:collection.name,
                     wave:this.waveFor(collection.points,axes,labels),
-                    options:{size:pointSize,color,opacity:0.92}
+                    options:{...cloudOptions}
                 }))
             }
             if(this.parameters.projection.showProjections!==false){
@@ -1274,11 +1524,18 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                         id:`sa-${plane.name}-${index}`,
                         title:`${collection.name} — ${plane.name}`,
                         wave:this.waveFor(collection.points,plane.waveAxes,labels,plane.constants),
-                        options:{size:Math.max(1,pointSize-1),color,opacity:0.35}
+                        options:{...cloudOptions,size:Math.max(1,pointSize-1),opacity:0.35}
                     }))
                 }
             }
         })
+        if(this.parameters.projection.showPatternVectors===true){
+            const vectorLevel=colorLevel??this.projectionLevels[this.projectionLevels.length-1]??null
+            traces.push(...this.patternVectorTraces(vectorLevel,axes,labels))
+            for(let index=0;index<3;index++){
+                mins[index]=Math.min(mins[index],0)
+            }
+        }
         this.plot.setTraces(traces)
         this.applyRestoredView()
         if(this.plotSummary){
@@ -1289,6 +1546,12 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             const parts=[`${this.pointTotal} formula${this.pointTotal===1?"":"s"}`]
             if(used){
                 parts.push(used)
+            }
+            if(colorLevel){
+                parts.push(`coloured by level ${colorLevel.index+1} (${colorLevel.pattern}) · ${colorLevel.groups.length} class${colorLevel.groups.length===1?"":"es"}`)
+            }
+            if(this.parameters.projection.showPatternVectors===true&&this.projectionLevels.length){
+                parts.push("pattern vectors shown")
             }
             if(elements.length>3){
                 parts.push("other elements held out of the 3D view")
@@ -1335,9 +1598,22 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 this.parameters.projection[key]=list.indexOf(selected)
             }
         })
-        this.recompute()
-        this.renderAll()
+        this.recomputeProjection()
+        this.renderProjectionUI()
         this.origin?.saveSessionSoon?.()
+    }
+
+    /* A change of the selected elements touches the axes and the plotted
+       coordinates only. The quotient classes — and their DOM — are a property
+       of the patterns and the inputs, so they are left alone. */
+    renderProjectionUI(){
+        if(!this.accordion){
+            return
+        }
+        this.renderElements()
+        this.renderProjectionControls()
+        this.renderReadout()
+        this.refreshPlot()
     }
 
     syncUI(){

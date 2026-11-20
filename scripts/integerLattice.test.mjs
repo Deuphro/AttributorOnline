@@ -59,3 +59,16 @@ for(let sample=0;sample<80;sample++){
 }
 
 console.log("cumulative pattern quotients preserve exact stoichiometric equivalence")
+
+const fullRank=columnLatticeBasis([[2,1],[1,1]])
+assert(fullRank.rank===2&&fullRank.index===1,
+    `a unimodular lattice should have rank 2 and index 1, got ${JSON.stringify(fullRank)}`)
+const stretched=columnLatticeBasis([[2,0],[0,3]])
+assert(stretched.rank===2&&stretched.index===6,
+    `diagonal (2,3) should have rank 2 and index 6, got ${JSON.stringify(stretched)}`)
+const deficient=columnLatticeBasis([[2,4],[0,0]])
+assert(deficient.rank===1&&deficient.index===null,
+    `a rank-deficient lattice has no finite index, got ${JSON.stringify(deficient)}`)
+assert(prefixLattice(1).rank===1&&prefixLattice(1).index===null,
+    "a single pattern in four dimensions cannot be full rank")
+console.log("lattice rank and finite quotient index are reported exactly")
