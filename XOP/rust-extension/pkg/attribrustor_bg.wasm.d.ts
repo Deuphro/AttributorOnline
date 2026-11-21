@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_calibrationfitresult_free: (a: number, b: number) => void;
+export const __wbg_distributionfitresult_free: (a: number, b: number) => void;
 export const __wbg_forest_free: (a: number, b: number) => void;
 export const __wbg_persistenceanalysis_free: (a: number, b: number) => void;
 export const __wbg_persistenceclassification_free: (a: number, b: number) => void;
@@ -27,6 +28,12 @@ export const classify_persistence_0d: (a: number, b: number, c: number, d: numbe
 export const compute: (a: number, b: number) => number;
 export const crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
 export const crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: any) => [number, number, number, number];
+export const distribution_fit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number) => [number, number, number];
+export const distributionfitresult_converged: (a: number) => number;
+export const distributionfitresult_iterations: (a: number) => number;
+export const distributionfitresult_parameters: (a: number) => [number, number];
+export const distributionfitresult_sse: (a: number) => number;
+export const distributionfitresult_y_pred: (a: number) => [number, number];
 export const fkmd: (a: number, b: number, c: number) => [number, number];
 export const forest_candidates: (a: number) => number;
 export const forest_component_count: (a: number) => number;

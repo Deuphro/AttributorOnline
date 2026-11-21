@@ -22,6 +22,7 @@ const MAX_RESPAWNS=3
 import {growForest} from "./forest.js"
 //Le repli local de l'EM est le module de référence, comme le worker l'importe.
 import {fitGmm2d} from "./emGmm.js"
+import {fitDistributionKernelJS} from "./distributionFitKernel.js"
 class WorkerPool{
     constructor(size){
         this.size=Math.max(1,Math.min(size??((navigator.hardwareConcurrency||2)-1),4))
@@ -316,6 +317,9 @@ function runKernelLocally(kernel,payload){
     }
     if(kernel==="calibrationApply2D"){
         return runCalibrationApply2DLocal(payload)
+    }
+    if(kernel==="distributionFit"){
+        return fitDistributionKernelJS(payload)
     }
     throw new Error(`unknown kernel "${kernel}"`)
 }

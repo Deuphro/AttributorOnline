@@ -2,12 +2,14 @@ import {NodeWithAccordion} from "../core/index.js"
 import {Accordion} from "../ui/Accordion.js"
 import {Dialog} from "../ui/Dialog.js"
 import {Plot3DWebGL} from "../ui/Plot3DWebGL.js"
-import {Wave,Scatter3DTrace,Segment3DTrace} from "../formats.js"
+import {Plot2D} from "../ui/Plot2D.js"
+import {Wave,XYTrace,Scatter3DTrace,Segment3DTrace} from "../formats.js"
 import {Formula,Stoichiometry,FormulaCollection} from "../chemistry.js"
 import {CE,stylize} from "../util.js"
 import {traceColor} from "./formulaCollectionHelpers.js"
 import {SOCKET} from "../socketTypes.js"
 import {columnLatticeBasis,quotientRepresentative} from "../math/integerLattice.js"
+import {fitDistribution} from "../distributionFit.js"
 
 const AXIS_KEYS=["x","y","z"]
 const AXIS_VIEW_ANGLES={
@@ -52,7 +54,14 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             colorBy:"collection",showPatternVectors:false
         }
         this.parameters.pca={x:0,y:1,z:2}
-        this.parameters.fit={}
+        this.parameters.fit={byRank:{}}
+        this.fitResults=[]
+        this.fitRevision=0
+        this.fitInProgress=false
+        this.selectedFitGroupKey=null
+        this.hoveredFitGroupKey=null
+        this.fitPlot=null
+        this.parameterPlot=null
 
         this.parameters.patterns=["CH2"]
         this.patternErrors=[]
@@ -142,12 +151,9 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         stylize(content,{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:"6px",padding:"4px"})
         this.projectionControls=CE("div",{className:"sa-projections"},[])
         this.pcaControls=CE("div",{className:"sa-series"},[])
-        this.fitControls=this.placeholderSection(
-            "Model fit",
-            "No model definition is available yet.",
-            "Fit model"
-        )
+        this.fitControls=CE("div",{className:"sa-fit-controls"},[])
         content.append(this.projectionControls,this.pcaControls,this.fitControls)
+        this.renderFitControls()
     }
 
     placeholderSection(title,text,buttonLabel){
@@ -322,17 +328,11 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         const content=this.viewPanels.models.DOMelt.content
         content.replaceChildren()
         stylize(content,{display:"grid",gap:"6px",padding:"8px",fontSize:"0.9em",lineHeight:"1.35"})
-        content.append(CE("div",{},[
-            "Fitted models on sub-graphs will live here."
-        ]))
-        const placeholder=CE("div",{},["No model fitted yet."])
-        stylize(placeholder,{
-            padding:"10px",
-            border:"1px dashed rgba(255,255,255,0.2)",
-            borderRadius:"4px",
-            opacity:"0.65"
-        })
-        content.appendChild(placeholder)
+        this.modelsSummary=CE("div",{},[])
+        this.modelsList=CE("div",{className:"sa-fitted-model-list"},[])
+        stylize(this.modelsList,{display:"grid",gap:"6px"})
+        content.append(this.modelsSummary,this.modelsList)
+        this.renderModelsView()
     }
 
     setupUI(){
@@ -432,7 +432,9 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 this.renderPatterns()
                 this.renderElements()
                 this.renderProjectionControls()
+                this.renderFitControls()
                 this.renderProjectionLevels()
+                this.renderModelsView()
             }
         })
     }
@@ -654,6 +656,9 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             }))
         }))
         this.projectionLevels=[]
+        this.fitResults=[]
+        this.fitRevision++
+        this.fitInProgress=false
         const prefix=[]
         const prefixTexts=[]
         let parentGroups=null
@@ -832,7 +837,9 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.renderPatterns()
         this.renderElements()
         this.renderProjectionControls()
+        this.renderFitControls()
         this.renderProjectionLevels()
+        this.renderModelsView()
         this.renderReadout()
         this.refreshPlot()
     }
@@ -995,11 +1002,394 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                         }
                     }
                     details.appendChild(members)
+                    if(level===this.rankOneLevel()){
+                        const fit=this.fitResults.find(result=>result.groupKey===group.key)
+                        details.appendChild(this.renderGroupFit(fit))
+                    }
                     section.appendChild(details)
                 }
                 folder.appendChild(section)
             }
             this.seriesLevels.appendChild(folder)
+        }
+    }
+
+    rankOneLevel(){
+        return this.projectionLevels.find(level=>level.rank===1&&level.gainedRank>0)??null
+    }
+
+    fitConfig(rank=1){
+        const byRank=this.parameters.fit?.byRank??{}
+        return byRank[String(rank)]??{model:"flory_schulz",poisson_limit:true,N:1e9,distribution:"number"}
+    }
+
+    saveFitConfig(rank,patch){
+        if(!this.parameters.fit||typeof this.parameters.fit!=="object") this.parameters.fit={}
+        if(!this.parameters.fit.byRank||typeof this.parameters.fit.byRank!=="object") this.parameters.fit.byRank={}
+        this.parameters.fit.byRank[String(rank)]={...this.fitConfig(rank),...patch}
+        this.fitResults=[]
+        this.fitRevision++
+        this.fitInProgress=false
+        this.renderFitControls()
+        this.renderProjectionLevels()
+        this.renderModelsView()
+        this.origin?.saveSessionSoon?.()
+    }
+
+    renderFitControls(){
+        if(!this.fitControls) return
+        this.fitPlot?.dispose?.()
+        this.parameterPlot?.dispose?.()
+        this.fitPlot=null
+        this.parameterPlot=null
+        this.fitControls.replaceChildren()
+        stylize(this.fitControls,{
+            display:"grid",gap:"5px",padding:"5px 6px",
+            border:"1px solid rgba(255,255,255,0.14)",borderRadius:"4px",
+            background:"rgba(255,255,255,0.025)",fontSize:"0.82em"
+        })
+        const heading=CE("div",{},["Model fit"])
+        stylize(heading,{fontWeight:"600"})
+        const level=this.rankOneLevel()
+        if(!level){
+            const note=CE("div",{},["A rank-one pattern series with measured targets is needed to fit a distribution."])
+            stylize(note,{opacity:"0.65",lineHeight:"1.3"})
+            this.fitControls.append(heading,note)
+            return
+        }
+        const rank=1
+        const config=this.fitConfig(rank)
+        const field=(labelText,control)=>{
+            const row=CE("div",{},[])
+            stylize(row,{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1.2fr)",gap:"6px",alignItems:"center"})
+            row.append(CE("label",{},[labelText]),control)
+            return row
+        }
+        const model=CE("select",{},[])
+        model.append(
+            CE("option",{value:"wesslau"},["Weßlau"]),
+            CE("option",{value:"flory_schulz"},["Flory–Schulz"]),
+            CE("option",{value:"schulz_zimm"},["Schulz–Zimm"])
+        )
+        model.value=config.model
+        model.addEventListener("change",()=>this.saveFitConfig(rank,{model:model.value}))
+        this.fitControls.append(heading,field("Rank",CE("span",{},["1 · discrete curve"])),field("Distribution",model))
+        if(config.model==="wesslau"){
+            this.fitControls.appendChild(this.checkboxRow("Poisson limit",config.poisson_limit!==false,checked=>
+                this.saveFitConfig(rank,{poisson_limit:checked})
+            ))
+            if(config.poisson_limit===false){
+                const trials=CE("input",{type:"number",min:"1",step:"any"},[])
+                trials.value=String(config.N??1e9)
+                trials.addEventListener("change",()=>this.saveFitConfig(rank,{N:Math.max(1,Number(trials.value)||1e9)}))
+                this.fitControls.appendChild(field("N trials",trials))
+            }
+        }else if(config.model==="flory_schulz"){
+            const distribution=CE("select",{},[])
+            distribution.append(CE("option",{value:"number"},["Number fraction"]),CE("option",{value:"mass"},["Mass fraction"]))
+            distribution.value=config.distribution??"number"
+            distribution.addEventListener("change",()=>this.saveFitConfig(rank,{distribution:distribution.value}))
+            this.fitControls.appendChild(field("Flory form",distribution))
+        }
+        const note=CE("div",{},[`X is the repeat index; mass unit is derived from ${level.pattern}.`])
+        stylize(note,{opacity:"0.6",fontSize:"0.92em"})
+        this.fitControls.appendChild(note)
+        const fitButton=CE("button",{type:"button",disabled:this.fitInProgress},[this.fitInProgress?"Fitting…":"Fit rank-one groups"])
+        stylize(fitButton,{padding:"3px 6px",justifySelf:"start"})
+        fitButton.addEventListener("click",()=>this.fitRankOne())
+        this.fitControls.appendChild(fitButton)
+        const selectedRow=CE("div",{},[])
+        stylize(selectedRow,{display:"grid",gridTemplateColumns:"auto minmax(0,1fr)",gap:"6px",alignItems:"center"})
+        selectedRow.append(CE("label",{},["Fit curve"]),this.fitGroupSelect())
+        this.fitControls.appendChild(selectedRow)
+        this.fitChartHost=CE("div",{className:"sa-fit-chart"},[])
+        stylize(this.fitChartHost,{width:"100%",height:"210px",minWidth:"0",borderTop:"1px solid rgba(255,255,255,0.12)"})
+        this.fitControls.appendChild(this.fitChartHost)
+        const parameterHeading=CE("div",{},["Group parameter map"])
+        stylize(parameterHeading,{fontWeight:"600",paddingTop:"4px",borderTop:"1px solid rgba(255,255,255,0.14)"})
+        this.fitControls.appendChild(parameterHeading)
+        const axesRow=CE("div",{},[])
+        stylize(axesRow,{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto minmax(0,1fr)",gap:"4px",alignItems:"center"})
+        this.parameterXSelect=this.parameterAxisSelect("x")
+        this.parameterYSelect=this.parameterAxisSelect("y")
+        axesRow.append(CE("label",{},["X"]),this.parameterXSelect,CE("label",{},["Y"]),this.parameterYSelect)
+        this.fitControls.appendChild(axesRow)
+        this.parameterChartHost=CE("div",{className:"sa-parameter-chart"},[])
+        stylize(this.parameterChartHost,{width:"100%",height:"190px",minWidth:"0",borderTop:"1px solid rgba(255,255,255,0.08)"})
+        this.fitControls.appendChild(this.parameterChartHost)
+        this.fitViewStatus=CE("div",{},[])
+        stylize(this.fitViewStatus,{fontSize:"0.76em",opacity:"0.7",minHeight:"1.2em"})
+        this.fitControls.appendChild(this.fitViewStatus)
+        this.renderFitPlots()
+    }
+
+    fitGroupSelect(){
+        const select=CE("select",{className:"sa-fit-group-select"},[])
+        const successful=this.fitResults.filter(result=>!result.error)
+        if(!successful.length){
+            select.appendChild(CE("option",{value:""},[this.fitInProgress?"Fitting groups…":"Run a fit to inspect groups"]))
+            select.disabled=true
+        }else{
+            successful.forEach(result=>select.appendChild(CE("option",{value:result.groupKey},[
+                `Group ${result.groupIndex} · ${result.model}`
+            ])))
+            const selected=successful.find(result=>result.groupKey===this.selectedFitGroupKey)??successful[0]
+            this.selectedFitGroupKey=selected.groupKey
+            select.value=selected.groupKey
+            select.addEventListener("change",()=>{
+                this.selectedFitGroupKey=select.value
+                this.hoveredFitGroupKey=null
+                this.renderFitPlots()
+            })
+        }
+        stylize(select,{minWidth:"0",padding:"2px 4px"})
+        return select
+    }
+
+    parameterNamesForModel(model){
+        return model==="wesslau"?["alpha","mu","amplitude"]
+            :model==="flory_schulz"?["a","amplitude"]
+                :["z","Mn","amplitude"]
+    }
+
+    parameterAxisSelect(axis){
+        const select=CE("select",{},[])
+        const names=this.parameterNamesForModel(this.fitConfig(1).model)
+        names.forEach(name=>select.appendChild(CE("option",{value:name},[name])))
+        const config=this.fitConfig(1)
+        const fallback=axis==="x"?(config.parameterX??names[0]):(config.parameterY??names[1]??names[0])
+        select.value=names.includes(fallback)?fallback:names[0]
+        select.addEventListener("change",()=>this.setParameterAxis(axis,select.value))
+        stylize(select,{minWidth:"0",padding:"2px 4px"})
+        return select
+    }
+
+    setParameterAxis(axis,value){
+        const key=axis==="x"?"parameterX":"parameterY"
+        if(!this.parameters.fit?.byRank){
+            this.parameters.fit={...(this.parameters.fit??{}),byRank:{}}
+        }
+        this.parameters.fit.byRank["1"]={...this.fitConfig(1),[key]:value}
+        this.origin?.saveSessionSoon?.()
+        this.renderFitPlots()
+    }
+
+    fitPointsForGroup(level,group){
+        const generator=level.vectors[0]
+        const axis=generator.findIndex(value=>value!==0)
+        if(axis<0) return null
+        const coefficients=group.formulas.map(point=>
+            (point.stoichiometry[axis]-group.representative[axis])/generator[axis]
+        )
+        if(coefficients.some(value=>!Number.isSafeInteger(Math.round(value))||Math.abs(value-Math.round(value))>1e-8)) return null
+        const firstIndex=coefficients.reduce((minimum,value)=>Math.min(minimum,Math.round(value)),Infinity)
+        const pattern=this.parsePattern(level.patternTexts[0])
+        const massUnit=Math.abs(Number(pattern?.mass))
+        const basePoint=group.formulas[coefficients.findIndex(value=>Math.round(value)===firstIndex)]
+        const baseMass=Number(basePoint?.formula?.mass)
+        if(!(massUnit>0)||!Number.isFinite(baseMass)) return null
+        const m0=Math.max(1e-6,baseMass-massUnit)
+        const intensityByIndex=new Map()
+        group.formulas.forEach((point,index)=>{
+            const x=Math.round(coefficients[index])-firstIndex+1
+            for(const target of point.targets){
+                if(Number.isFinite(target.intensity)&&target.intensity>=0){
+                    intensityByIndex.set(x,(intensityByIndex.get(x)??0)+target.intensity)
+                }
+            }
+        })
+        const points=[...intensityByIndex].map(([x,y])=>({x,y}))
+        points.sort((left,right)=>left.x-right.x)
+        return {x:Float64Array.from(points,point=>point.x),y:Float64Array.from(points,point=>point.y),m0,massUnit}
+    }
+
+    async fitRankOne(){
+        const level=this.rankOneLevel()
+        if(!level||this.fitInProgress) return
+        const revision=++this.fitRevision
+        const config={...this.fitConfig(1)}
+        this.fitInProgress=true
+        this.renderFitControls()
+        const results=await Promise.all(level.groups.map(async(group,index)=>{
+            const data=this.fitPointsForGroup(level,group)
+            if(!data||data.x.length<2){
+                return {groupKey:group.key,groupIndex:index+1,pattern:level.pattern,error:"At least two targets are required in this group."}
+            }
+            try{
+                const fitted=await fitDistribution(data.x,data.y,{
+                    model:config.model,m0:data.m0,massUnit:data.massUnit,
+                    xIsIndex:true,
+                    poisson_limit:config.poisson_limit,N:config.N,
+                    distribution:config.distribution
+                })
+                return {groupKey:group.key,groupIndex:index+1,pattern:level.pattern,...data,...fitted}
+            }catch(error){
+                return {groupKey:group.key,groupIndex:index+1,pattern:level.pattern,error:error?.message??String(error)}
+            }
+        }))
+        if(revision!==this.fitRevision) return
+        this.fitResults=results
+        this.fitInProgress=false
+        this.renderFitControls()
+        this.renderProjectionLevels()
+        this.renderModelsView()
+        this.origin?.saveSessionSoon?.()
+    }
+
+    makeXYTrace(id,title,pairs,labels,options={}){
+        const wave=Wave.fromPairs(pairs,{},labels)
+        return new XYTrace({id,title,wave,options})
+    }
+
+    setFitPlotLabels(plot,xLabel,yLabel){
+        plot.parameters.axis.bottom.autoLabel=false
+        plot.parameters.axis.bottom.label=xLabel
+        plot.parameters.axis.left.autoLabel=false
+        plot.parameters.axis.left.label=yLabel
+    }
+
+    renderFitPlots(){
+        if(!this.fitChartHost||!this.parameterChartHost) return
+        const successful=this.fitResults.filter(result=>!result.error)
+        const selectedKey=this.hoveredFitGroupKey??this.selectedFitGroupKey??successful[0]?.groupKey
+        const selected=successful.find(result=>result.groupKey===selectedKey)??successful[0]??null
+        this.selectedFitGroupKey=selected?.groupKey??null
+        if(!this.fitPlot){
+            this.fitPlot=new Plot2D([],"Stoichiometric group fit",this.origin,this.fitChartHost)
+        }
+        if(!this.parameterPlot){
+            this.parameterPlot=new Plot2D([],"Fitted group parameters",this.origin,this.parameterChartHost)
+        }
+        this.setFitPlotLabels(this.fitPlot,"Repeat index k","Intensity")
+        if(selected){
+            const measured=Array.from(selected.x,(x,index)=>[x,selected.y[index]])
+            const fitted=Array.from(selected.x,(x,index)=>[x,selected.yPred[index]])
+            this.fitPlot.setTraces([
+                this.makeXYTrace(`fit-measured-${selected.groupKey}`,`Group ${selected.groupIndex} measured`,measured,
+                    ["Repeat index k","Intensity"],{mode:"points",color:"#64c7b5",line:{size:1},marker:{shape:"circle",size:5}}),
+                this.makeXYTrace(`fit-model-${selected.groupKey}`,`${selected.model} fit`,fitted,
+                    ["Repeat index k","Intensity"],{mode:"lines-between-points",color:"#ffb454",line:{size:2}})
+            ])
+        }else{
+            this.fitPlot.setTraces([])
+        }
+        this.fitPlot.drawGraph()
+
+        const names=this.parameterNamesForModel(this.fitConfig(1).model)
+        const xName=names.includes(this.fitConfig(1).parameterX)?this.fitConfig(1).parameterX:names[0]
+        const yName=names.includes(this.fitConfig(1).parameterY)?this.fitConfig(1).parameterY:(names[1]??names[0])
+        const parameterPairs=successful.map(result=>[
+            result.parameters[xName],result.parameters[yName]
+        ])
+        this.setFitPlotLabels(this.parameterPlot,xName,yName)
+        const pointColor=result=>result.groupKey===selected?.groupKey?"#ffb454":"#64c7b5"
+        this.parameterPlot.setTraces(parameterPairs.length?[this.makeXYTrace(
+            "fit-parameter-map",`${yName} vs ${xName}`,parameterPairs,[xName,yName],{
+                mode:"points",color:"#64c7b5",line:{size:1},marker:{shape:"circle",size:7},
+                onPointHover:({pointIndex})=>{
+                    const result=successful[pointIndex]
+                    if(!result) return
+                    this.hoveredFitGroupKey=result.groupKey
+                    this.fitViewStatus.textContent=`Previewing group ${result.groupIndex} · ${xName} ${this.formatIntensity(result.parameters[xName])} · ${yName} ${this.formatIntensity(result.parameters[yName])}`
+                    this.renderSelectedFitPlot(result)
+                },
+                onPointLeave:()=>{
+                    this.hoveredFitGroupKey=null
+                    this.renderFitPlots()
+                },
+                onPointClick:({pointIndex})=>{
+                    const result=successful[pointIndex]
+                    if(!result) return
+                    this.selectedFitGroupKey=result.groupKey
+                    this.hoveredFitGroupKey=null
+                    const select=this.fitControls.querySelector(".sa-fit-group-select")
+                    if(select) select.value=result.groupKey
+                    this.fitViewStatus.textContent=`Selected group ${result.groupIndex}`
+                    this.renderSelectedFitPlot(result)
+                },
+                pointColor:index=>pointColor(successful[index])
+            }
+        )]:[])
+        this.parameterPlot.drawGraph()
+        if(!selected){
+            this.fitViewStatus.textContent=this.fitResults.length
+                ?"No group has enough valid targets to draw a fit."
+                :"Run a fit to populate the group curve and parameter map."
+        }else if(!this.hoveredFitGroupKey){
+            this.fitViewStatus.textContent=`Showing group ${selected.groupIndex} · hover a parameter point to preview; click to pin.`
+        }
+    }
+
+    renderSelectedFitPlot(result){
+        if(!this.fitPlot||!result||result.error) return
+        const measured=Array.from(result.x,(x,index)=>[x,result.y[index]])
+        const fitted=Array.from(result.x,(x,index)=>[x,result.yPred[index]])
+        this.fitPlot.setTraces([
+            this.makeXYTrace(`fit-measured-${result.groupKey}`,`Group ${result.groupIndex} measured`,measured,
+                ["Repeat index k","Intensity"],{mode:"points",color:"#64c7b5",line:{size:1},marker:{shape:"circle",size:5}}),
+            this.makeXYTrace(`fit-model-${result.groupKey}`,`${result.model} fit`,fitted,
+                ["Repeat index k","Intensity"],{mode:"lines-between-points",color:"#ffb454",line:{size:2}})
+        ])
+        this.setFitPlotLabels(this.fitPlot,"Repeat index k","Intensity")
+        this.fitPlot.drawGraph()
+    }
+
+    renderGroupFit(result){
+        const box=CE("div",{className:"sa-group-fit"},[])
+        stylize(box,{display:"grid",gap:"3px",padding:"5px 0 2px 8px",borderTop:"1px solid rgba(255,255,255,0.1)"})
+        if(!result){
+            const message=CE("div",{},["No fit run for this group."])
+            stylize(message,{fontSize:"0.78em",opacity:"0.6"})
+            box.appendChild(message)
+            return box
+        }
+        if(result.error){
+            const message=CE("div",{},[`Fit unavailable: ${result.error}`])
+            stylize(message,{fontSize:"0.78em",color:"#ffb4a8"})
+            box.appendChild(message)
+            return box
+        }
+        const select=CE("button",{type:"button"},["Show fit in right panel"])
+        stylize(select,{fontSize:"0.76em",padding:"2px 5px",justifySelf:"start"})
+        select.addEventListener("click",()=>{
+            this.selectedFitGroupKey=result.groupKey
+            this.hoveredFitGroupKey=null
+            const groupSelect=this.fitControls?.querySelector(".sa-fit-group-select")
+            if(groupSelect) groupSelect.value=result.groupKey
+            this.fitViewStatus.textContent=`Selected group ${result.groupIndex}`
+            this.renderSelectedFitPlot(result)
+        })
+        box.appendChild(select)
+        const metrics=CE("div",{},[
+            `RMSE ${this.formatIntensity(result.rmse)} · R² ${result.r2===null?"n/a":result.r2.toFixed(4)} · χ²red ${result.chi2Red===null?"n/a":this.formatIntensity(result.chi2Red)}`
+        ])
+        stylize(metrics,{fontSize:"0.76em",opacity:"0.75"})
+        box.appendChild(metrics)
+        return box
+    }
+
+    renderModelsView(){
+        if(!this.modelsSummary||!this.modelsList) return
+        this.modelsSummary.textContent=this.fitResults.length
+            ?`${this.fitResults.filter(result=>!result.error).length} rank-one group fits · measured intensity vs repeat index`
+            :"No model fitted yet. Choose a distribution in the right panel and run the fit."
+        this.modelsList.replaceChildren()
+        for(const result of this.fitResults){
+            const card=CE("section",{},[])
+            stylize(card,{display:"grid",gap:"3px",padding:"5px 6px",borderTop:"1px solid rgba(255,255,255,0.14)"})
+            const title=CE("div",{},[`Rank 1 · ${result.pattern} · Group ${result.groupIndex}`])
+            stylize(title,{fontWeight:"600"})
+            card.appendChild(title)
+            if(result.error){
+                card.appendChild(CE("div",{},[result.error]))
+            }else{
+                const params=Object.entries(result.parameters).map(([name,value])=>`${name}=${this.formatIntensity(value)}`).join(" · ")
+                card.appendChild(CE("div",{},[`${result.model} · ${params}`]))
+                card.appendChild(CE("div",{},[
+                    `n=${result.x.length} · RMSE ${this.formatIntensity(result.rmse)} · R² ${result.r2===null?"n/a":result.r2.toFixed(4)} · χ²red ${result.chi2Red===null?"n/a":this.formatIntensity(result.chi2Red)} · AICc ${Number.isFinite(result.aicc)?this.formatIntensity(result.aicc):"n/a"}`
+                ]))
+            }
+            this.modelsList.appendChild(card)
         }
     }
 

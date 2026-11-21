@@ -9,6 +9,17 @@ export class CalibrationFitResult {
     readonly rmse: number;
 }
 
+export class DistributionFitResult {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    readonly converged: boolean;
+    readonly iterations: number;
+    readonly parameters: Float64Array;
+    readonly sse: number;
+    readonly y_pred: Float64Array;
+}
+
 /**
  * Ce que rend `forest_grow`.
  *
@@ -329,6 +340,8 @@ export function crible_heap(item_masses: Float64Array, item_charges: Float64Arra
  */
 export function crible_mixed_radix(item_masses: Float64Array, item_charges: Float64Array, log_probs: Float64Array, caps: Uint32Array, masses: Float64Array, max_mass: number, min_mass: number, ppm: number, best_matches: number, plan: any): Reading[];
 
+export function distribution_fit(x: Float64Array, y: Float64Array, model_name: string, initial: Float64Array, lower: Float64Array, upper: Float64Array, m0: number, mass_unit: number, x_is_index: boolean, poisson_limit: boolean, trials: number, mass_weighted: boolean, max_iterations: number): DistributionFitResult;
+
 /**
  * Applies the F-KMD transform to a canonical core.
  *
@@ -533,6 +546,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_calibrationfitresult_free: (a: number, b: number) => void;
+    readonly __wbg_distributionfitresult_free: (a: number, b: number) => void;
     readonly __wbg_forest_free: (a: number, b: number) => void;
     readonly __wbg_persistenceanalysis_free: (a: number, b: number) => void;
     readonly __wbg_persistenceclassification_free: (a: number, b: number) => void;
@@ -558,6 +572,12 @@ export interface InitOutput {
     readonly compute: (a: number, b: number) => number;
     readonly crible_heap: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly crible_mixed_radix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: any) => [number, number, number, number];
+    readonly distribution_fit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number) => [number, number, number];
+    readonly distributionfitresult_converged: (a: number) => number;
+    readonly distributionfitresult_iterations: (a: number) => number;
+    readonly distributionfitresult_parameters: (a: number) => [number, number];
+    readonly distributionfitresult_sse: (a: number) => number;
+    readonly distributionfitresult_y_pred: (a: number) => [number, number];
     readonly fkmd: (a: number, b: number, c: number) => [number, number];
     readonly forest_candidates: (a: number) => number;
     readonly forest_component_count: (a: number) => number;

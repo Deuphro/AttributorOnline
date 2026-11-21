@@ -36,6 +36,65 @@ export class CalibrationFitResult {
 }
 if (Symbol.dispose) CalibrationFitResult.prototype[Symbol.dispose] = CalibrationFitResult.prototype.free;
 
+export class DistributionFitResult {
+    static __wrap(ptr) {
+        const obj = Object.create(DistributionFitResult.prototype);
+        obj.__wbg_ptr = ptr;
+        DistributionFitResultFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        DistributionFitResultFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_distributionfitresult_free(ptr, 0);
+    }
+    /**
+     * @returns {boolean}
+     */
+    get converged() {
+        const ret = wasm.distributionfitresult_converged(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @returns {number}
+     */
+    get iterations() {
+        const ret = wasm.distributionfitresult_iterations(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    get parameters() {
+        const ret = wasm.distributionfitresult_parameters(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @returns {number}
+     */
+    get sse() {
+        const ret = wasm.distributionfitresult_sse(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    get y_pred() {
+        const ret = wasm.distributionfitresult_y_pred(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+}
+if (Symbol.dispose) DistributionFitResult.prototype[Symbol.dispose] = DistributionFitResult.prototype.free;
+
 /**
  * Ce que rend `forest_grow`.
  *
@@ -1120,6 +1179,42 @@ export function crible_mixed_radix(item_masses, item_charges, log_probs, caps, m
 }
 
 /**
+ * @param {Float64Array} x
+ * @param {Float64Array} y
+ * @param {string} model_name
+ * @param {Float64Array} initial
+ * @param {Float64Array} lower
+ * @param {Float64Array} upper
+ * @param {number} m0
+ * @param {number} mass_unit
+ * @param {boolean} x_is_index
+ * @param {boolean} poisson_limit
+ * @param {number} trials
+ * @param {boolean} mass_weighted
+ * @param {number} max_iterations
+ * @returns {DistributionFitResult}
+ */
+export function distribution_fit(x, y, model_name, initial, lower, upper, m0, mass_unit, x_is_index, poisson_limit, trials, mass_weighted, max_iterations) {
+    const ptr0 = passArrayF64ToWasm0(x, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(y, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(model_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArrayF64ToWasm0(initial, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passArrayF64ToWasm0(lower, wasm.__wbindgen_malloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ptr5 = passArrayF64ToWasm0(upper, wasm.__wbindgen_malloc);
+    const len5 = WASM_VECTOR_LEN;
+    const ret = wasm.distribution_fit(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, m0, mass_unit, x_is_index, poisson_limit, trials, mass_weighted, max_iterations);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return DistributionFitResult.__wrap(ret[0]);
+}
+
+/**
  * Applies the F-KMD transform to a canonical core.
  *
  * Returns a FLAT, non-interleaved `[x'0..x'N, y'0..y'N]` — the same layout the
@@ -1754,6 +1849,9 @@ function __wbg_get_imports() {
 const CalibrationFitResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_calibrationfitresult_free(ptr, 1));
+const DistributionFitResultFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_distributionfitresult_free(ptr, 1));
 const ForestFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_forest_free(ptr, 1));

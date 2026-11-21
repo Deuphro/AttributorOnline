@@ -1091,7 +1091,24 @@ export class Plot2D{
         const stickBaseY=owner.stickBaseline()
         mergedTraceGroups.each(function(trace){
             const group=d3.select(this)
-            const tracePoints=trace.points.filter(pair=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
+            const indexedPoints=trace.points
+                .map((pair,index)=>({pair,index}))
+                .filter(({pair})=>Array.isArray(pair)&&Number.isFinite(pair[0])&&Number.isFinite(pair[1]))
+            const pointIndexByPair=new Map(indexedPoints.map(({pair,index})=>[pair,index]))
+            const tracePoints=indexedPoints.map(({pair})=>pair)
+            const bindPointEvents=selection=>selection
+                .on("pointerenter",(event,pair)=>{
+                    const pointIndex=pointIndexByPair.get(pair)??-1
+                    trace.options.onPointHover?.({event,pair,pointIndex,trace})
+                })
+                .on("pointerleave",(event,pair)=>{
+                    const pointIndex=pointIndexByPair.get(pair)??-1
+                    trace.options.onPointLeave?.({event,pair,pointIndex,trace})
+                })
+                .on("click",(event,pair)=>{
+                    const pointIndex=pointIndexByPair.get(pair)??-1
+                    trace.options.onPointClick?.({event,pair,pointIndex,trace})
+                })
             const color=trace.options.color
             const showLine=(trace.options.mode==="lines-between-points"||trace.options.mode==="lines-and-points"||trace.options.mode==="sticks-to-zero"||trace.options.mode==="segments")
             const showMarkers=(trace.options.mode==="points"||trace.options.mode==="lines-and-points")
@@ -1125,29 +1142,31 @@ export class Plot2D{
             if(pathD){
                 circles.remove()
                 const markerSelection=paths.data(tracePoints)
-                markerSelection.enter()
+                bindPointEvents(markerSelection.enter()
                     .append("path")
                     .attr("class","point")
                     .merge(markerSelection)
                     .attr("d",pathD)
                     .attr("transform",pair=>`translate(${xScale(pair[0])},${yScale(pair[1])})`)
-                    .attr("fill",(marker.shape==="cross"||marker.shape==="plus")?"none":color)
-                    .attr("stroke",(marker.shape==="cross"||marker.shape==="plus")?color:"rgb(110, 122, 138)")
-                    .attr("stroke-width",Math.max(1,(trace.options.line?.size??1)))
+                    .attr("fill",(pair,index)=>(marker.shape==="cross"||marker.shape==="plus")
+                        ?"none":trace.options.pointColor?.(pointIndexByPair.get(pair)??index,pair)??color)
+                    .attr("stroke",(pair,index)=>(marker.shape==="cross"||marker.shape==="plus")
+                        ?(trace.options.pointColor?.(pointIndexByPair.get(pair)??index,pair)??color):"rgb(110, 122, 138)")
+                    .attr("stroke-width",Math.max(1,(trace.options.line?.size??1))))
                 markerSelection.exit().remove()
             }else{
                 paths.remove()
                 const tracePointsSelection=circles
                     .data(tracePoints)
-                tracePointsSelection.enter()
+                bindPointEvents(tracePointsSelection.enter()
                     .append("circle")
                     .attr("class","point")
                     .merge(tracePointsSelection)
                     .attr("cx",pair=>xScale(pair[0]))
                     .attr("cy",pair=>yScale(pair[1]))
                     .attr("r",marker.size??4)
-                    .attr("fill",color)
-                    .attr("stroke","rgb(110, 122, 138)")
+                    .attr("fill",(pair,index)=>trace.options.pointColor?.(pointIndexByPair.get(pair)??index,pair)??color)
+                    .attr("stroke","rgb(110, 122, 138)"))
                 tracePointsSelection.exit().remove()
             }
         })

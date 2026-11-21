@@ -5,6 +5,7 @@ mod attribution;
 mod barycentric;
 mod bruker;
 mod calibration;
+mod distribution_fit;
 mod emgmm;
 mod fkmd;
 mod forest;
@@ -28,6 +29,7 @@ pub use attribution::{crible_heap, STRIDE};
 pub use forest::{forest_grow, Forest, EDGE_STRIDE};
 pub use fkmd::fkmd;
 pub use calibration::{calibration_fit, calibration_apply, CalibrationFitResult};
+pub use distribution_fit::{distribution_fit, DistributionFitResult};
 pub use persistence::{
     classify_persistence_0d, persistent_homology_0d_waves, PersistenceAnalysis,
     PersistenceClassification,

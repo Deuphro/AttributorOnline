@@ -73,7 +73,7 @@ const recomputeContext={
         records:["C6H12","C7H14","C6H12O"].map((notation,index)=>({
             formula:Formula.parse(notation,table),
             intensity:(index+1)*10,
-            targets:[]
+            targets:index===0?[{intensity:5},{intensity:2}]:[{intensity:(index+1)*5}]
         }))
     }]
 }
@@ -103,3 +103,10 @@ if(!Array.isArray(firstLevel.groups[0].representative)||
     throw new Error("every quotient class must expose a representative of the stoichiometric dimensions")
 }
 console.log("quotient levels expose rank, increment and canonical representatives")
+const fitPoints=new Function(`return function(level,group){${extractMethod("fitPointsForGroup")}}`)()
+const fitData=fitPoints.call(recomputeContext,firstLevel,firstLevel.groups.find(group=>group.formulas.length===2))
+if(!fitData||fitData.x.length!==2||fitData.y.join(",")!=="7,10"||fitData.x.join(",")!=="1,2"||
+   !(fitData.m0>0)||!(fitData.massUnit>0)){
+    throw new Error(`rank-one repeat indices or intensities were extracted incorrectly: ${JSON.stringify(fitData)}`)
+}
+console.log("rank-one groups expose repeat indices, target intensities and mass conversion")

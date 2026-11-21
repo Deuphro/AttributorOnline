@@ -9,6 +9,7 @@ import {growForest} from "./forest.js"
 /* Le repli JS de l'EM est le MÊME calcul, importé plutôt que recopié: une
    copie dériverait du noyau sans que rien ne le dise. */
 import {fitGmm2d,unpackGmm2dFlat} from "./emGmm.js"
+import {fitDistributionKernelJS} from "./distributionFitKernel.js"
 
 let wasmReady=null
 //Log-histogram bar density, kept in step with LOG_BINS_PER_DECADE in trim.rs
@@ -534,6 +535,34 @@ async houghTransform({core,params}){
         }catch(err){
             console.warn("[kernelWorker] rust calibration_fit unavailable, JS fallback:",err)
             return calibrationFitJS(refX,refY,mode)
+        }
+    },
+    async distributionFit({x,y,model,initial,lower,upper,options={},maxIterations=300}){
+        try{
+            await ensureWasm()
+            if(typeof rust.distribution_fit!=="function"){
+                throw new Error("rust distribution_fit is missing (stale pkg build?)")
+            }
+            const result=rust.distribution_fit(
+                Float64Array.from(x),Float64Array.from(y),model,
+                Float64Array.from(initial),Float64Array.from(lower),Float64Array.from(upper),
+                options.m0,options.massUnit,options.xIsIndex===true,options.poissonLimit,options.trials,
+                options.massWeighted,maxIterations
+            )
+            try{
+                return {
+                    parameters:toFloat64(result.parameters),
+                    yPred:toFloat64(result.y_pred),
+                    sse:result.sse,
+                    converged:result.converged,
+                    iterations:result.iterations
+                }
+            }finally{
+                result.free()
+            }
+        }catch(error){
+            console.warn("[kernelWorker] rust distribution fit unavailable, JS fallback:",error)
+            return fitDistributionKernelJS({x,y,model,initial,lower,upper,options,maxIterations})
         }
     },
     async calibrationApply({x,coeffs,mode}){
