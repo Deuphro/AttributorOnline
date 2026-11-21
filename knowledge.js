@@ -10,7 +10,7 @@
    BM25 rather than embeddings, deliberately. An embedding model would be a
    second multi-hundred-megabyte resident next to the coder model on the same
    box, would cost a second of latency per question, and would buy very little
-   on a corpus of sixteen technical cards whose own author already listed the
+   on a corpus of a few dozen technical cards whose own author already listed the
    synonyms we need. Term scoring with a French->English bridge answers "comment
    je détecte mes pics" correctly and instantly.
 
@@ -75,7 +75,10 @@ function findFrontpage() {
    exactly the set that cannot be guessed. */
 const FRENCH_TERMS = {
   pic: ["peak"], pics: ["peak"], Detecter: ["peak", "picking"], detection: ["peak", "picking"],
-  detecte: ["peak", "picking"], Creux: ["valley"], signal: ["signal"], signaux: ["signal"],
+  detecte: ["peak", "picking"], detecter: ["peak", "picking"], detectes: ["peak", "picking"],
+  detectent: ["peak", "picking"],
+  analyse: ["analysis"], analyser: ["analysis", "analyze"], analyses: ["analysis"],
+  Creux: ["valley"], signal: ["signal"], signaux: ["signal"],
   bruit: ["noise"], seuil: ["threshold"], seuils: ["threshold"], resolution: ["resolution"],
   ligne: ["line"], lignes: ["line"], courbe: ["curve"], Courbes: ["curve"], tracer: ["plot", "trace"],
   Tracé: ["plot", "trace"], tracage: ["plot", "trace"], graphique: ["plot", "graph"],
@@ -131,7 +134,62 @@ const FRENCH_TERMS = {
   flux: ["flow"], empiler: ["stack"], empilage: ["stack"],
   cible: ["target"], cibles: ["target"],
   groupement: ["group"], groupements: ["group"],
-  sankey: ["sankey"]
+  groupe: ["group"], groupes: ["group"],
+  sankey: ["sankey"],
+  /* ---- funnel, isotope ratios and re-inspection ---- */
+  entonnoir: ["funnel"], funnel: ["funnel"], masque: ["mask"],
+  rapport: ["ratio"], rapports: ["ratio"], ratio: ["ratio"], ratios: ["ratio"],
+  delta: ["delta"], ecart: ["delta", "error"], ecarts: ["delta", "error"],
+  satellite: ["satellite"], satellites: ["satellite"],
+  simule: ["simulated", "simulate"], simulee: ["simulated"], simules: ["simulated"],
+  simulation: ["simulated", "simulation"], simulations: ["simulated", "simulation"],
+  proposition: ["proposal"], propositions: ["proposal"], candidat: ["proposal", "candidate"],
+  candidats: ["proposal", "candidate"],
+  mariage: ["marriage"], mariages: ["marriage"], marier: ["marriage", "marry"],
+  marie: ["marriage"], mariee: ["marriage"], epouser: ["marriage"],
+  fiance: ["engaged"], fiancee: ["engaged"], fiancailles: ["engaged"],
+  reinspection: ["re-inspection", "inspection"], inspection: ["inspection"],
+  verifier: ["inspect"], verification: ["inspection"],
+  swap: ["swap"], swaps: ["swap"], echange: ["swap"], echanger: ["swap"],
+  echanges: ["swap"],
+  coerence: ["coherence"], coherence: ["coherence"], coherent: ["coherence"],
+  valider: ["validate"], validation: ["validate"], annuler: ["revert", "undo"],
+  revert: ["revert"], annulation: ["revert"],
+  bruteforce: ["brute", "force"], brute: ["brute"], recapitulatif: ["recap", "summary"],
+  recap: ["recap"], cumulee: ["cumulative"], cumul: ["cumulative"],
+  cumulative: ["cumulative"],
+  /* ---- EM / Gaussian mixtures ---- */
+  melange: ["mixture"], mixtures: ["mixture"], mixture: ["mixture"],
+  gaussienne: ["gaussian"], gaussiennes: ["gaussian"], gaussian: ["gaussian"],
+  em: ["em", "gmm"], gmm: ["gmm", "mixture"],
+  covariance: ["covariance"], ellipse: ["ellipse"], ellipses: ["ellipse"],
+  bic: ["bic"], aicc: ["aicc"], aic: ["aic"],
+  /* ---- stoichiometric analysis, lattice and distributions ---- */
+  stoechiometrie: ["stoichiometric", "stoichiometry"],
+  stoechiometrique: ["stoichiometric", "stoichiometry"],
+  stoichiometrie: ["stoichiometric", "stoichiometry"],
+  stoichiometrique: ["stoichiometric", "stoichiometry"],
+  motif: ["pattern"], motifs: ["pattern"], pattern: ["pattern"], patterns: ["pattern"],
+  ordonne: ["ordered"], ordonnee: ["ordered"], ordonnes: ["ordered"], ordonnees: ["ordered"],
+  ch2: ["ch\u2082"], h2: ["h\u2082"], o2: ["o\u2082"],
+  treillis: ["lattice"], lattice: ["lattice"], maille: ["lattice"], mailles: ["lattice"],
+  entier: ["integer"], entiere: ["integer"], entiers: ["integer"], entieres: ["integer"],
+  matrice: ["matrix"], matrices: ["matrix"], determinant: ["determinant"],
+  base: ["basis"], bases: ["basis"], indice: ["index"], indices: ["index"],
+  quotient: ["quotient"], quotients: ["quotient"],
+  classe: ["class", "group"], classes: ["class", "group"],
+  rang: ["rank"], rangs: ["rank"], dimension: ["dimension"], dimensions: ["dimension"],
+  distribution: ["distribution", "fit"], distributions: ["distribution", "fit"],
+  loi: ["distribution"], lois: ["distribution"],
+  ajustement: ["fit", "fitting"], ajuster: ["fit", "fitting"], fit: ["fit"],
+  polymere: ["polymer"], polymeres: ["polymer"], polymerisation: ["polymerization"],
+  molaire: ["molar"], serie: ["series"], series: ["series"],
+  projection: ["projection", "project"], projeter: ["projection", "project"],
+  nuage: ["cloud", "scatter"], nuages: ["cloud", "scatter"],
+  tridimensionnel: ["3d", "three", "dimensional"], tridimensionnelle: ["3d", "three", "dimensional"],
+  orthographique: ["orthographic"], ortho: ["orthographic"],
+  perspective: ["perspective"], intensite: ["intensity"], intensites: ["intensity"],
+  wesslau: ["wesslau"], flory: ["flory"], schulz: ["schulz"], zimm: ["zimm"]
 };
 
 /* ---- tokenisation -------------------------------------------------------- */

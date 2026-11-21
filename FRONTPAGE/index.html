@@ -456,28 +456,51 @@
             before you trust a group table.</p>
         </div>
 
+        <div class="card star">
+            <h3>🧪 Isotopic funnel &amp; re-inspection</h3>
+            <p>A peak is rarely explained by one formula and one formula only. The funnel pairs every
+            proposed reading with its M+1 satellite, measures <code>d = measured/natural − 1</code>, and
+            draws the cloud where a healthy interpretation gathers near the origin. A <strong>2D Gaussian
+            mixture fitted by EM</strong> marks that healthy component; <strong>simulated satellites</strong>
+            recover isotopologues the sieve never proposed. Every peak can be re-married to the formula
+            with the better <code>d</code>, and each choice survives the next resolve.</p>
+        </div>
+
         <div class="card">
             <h3>🧬 Formula collections &amp; clustering</h3>
             <p>The attributed formulas are a live, editable, exportable set — browsable by molecule,
-            formula or peak, annotatable. They can be <strong>clustered</strong> by k-means or by
-            <strong>spectral partitioning</strong> (optionally on a PCA rotation, over the targets or
-            over the plotted graph), and each partition becomes real sub-collections you can calibrate,
-            plot or feed onward.</p>
+            formula or peak, annotatable. They can be <strong>clustered</strong> by k-means, by
+            <strong>spectral partitioning</strong>, or by a <strong>Gaussian mixture fitted with EM</strong>
+            (BIC-chosen or fixed <em>k</em>), optionally on a PCA rotation, over the targets or over the
+            plotted graph. Each partition becomes real sub-collections you can calibrate, plot or feed
+            onward.</p>
+        </div>
+
+        <div class="card star">
+            <h3>🧊 3D stoichiometric analysis</h3>
+            <p>Read attributed collections as integer vectors over their elements. <strong>Ordered
+            patterns</strong> (CH₂, H₂, O…) build a cumulative <strong>integer lattice</strong>; each level
+            quotients the formulas into stoichiometric classes, whose rank and free dimensions say exactly
+            what the patterns constrain. The classes are plotted in 3D, projected onto the element axes, and
+            fitted group by group with <strong>Weßlau, Flory–Schulz or Schulz–Zimm</strong> mass
+            distributions.</p>
         </div>
 
         <div class="card">
             <h3>⚡ Rust / WebAssembly compute</h3>
             <p>The numerical kernels — sieve, persistent homology, width filter, Hough, calibration,
-            PCA, clustering — are written in Rust and compiled to WebAssembly. The same algorithms run
-            as a JavaScript fallback when WASM is unavailable, with identical decision rules.</p>
+            PCA, k-means, spectral partitioning, EM/Gaussian mixtures and distribution fitting — are
+            written in Rust and compiled to WebAssembly. The same algorithms run as a JavaScript fallback
+            when WASM is unavailable, with identical decision rules.</p>
         </div>
 
         <div class="card">
             <h3>📈 Large-data rendering</h3>
             <p>Interactive <strong>WebGL</strong> plots and surfaces — spectra, Kendrick axes, calibration
-            error surfaces, the Hough voting plane, van Krevelen spaces — stay fluid while panning and
-            zooming over datasets where a DOM plot would choke. The formula list is virtualised, and
-            markers adapt to the pixel density instead of scaling with the zoom.</p>
+            error surfaces, the Hough voting plane, van Krevelen spaces, and the 3D stoichiometric cloud
+            with its projections and pattern vectors — stay fluid while panning and zooming over datasets
+            where a DOM plot would choke. The formula list is virtualised, and markers adapt to the pixel
+            density instead of scaling with the zoom.</p>
         </div>
 
         <div class="card">
@@ -566,6 +589,10 @@
             <h3>🧬 Formula Collection</h3>
             <p>What came out — read, annotate, cluster and split it.</p>
         </div>
+        <div class="card small">
+            <h3>🧊 Stoichiometric analysis</h3>
+            <p>What do the formulas have in common — which patterns generate them, and what mass distribution do they follow?</p>
+        </div>
     </div>
 
     <h2>Ecosystem</h2>
@@ -648,7 +675,8 @@ index(i, 1)          // Y of point i</pre>
                 <tr><td>Display</td><td><strong>Simple XY plot</strong></td><td>1 anchor — waves to draw</td><td>— (display only)</td></tr>
                 <tr><td>Display</td><td><strong>F-KMD</strong></td><td>1 anchor — XY waves</td><td>1 — defect wave per input</td></tr>
                 <tr><td>Chemistry</td><td><strong>Formula collections</strong></td><td>1 — FormulaCollections</td><td>1 — the current collection</td></tr>
-                <tr><td>Chemistry</td><td><strong>Attribution</strong></td><td>1 anchor — XY waves</td><td>2 — attributions, network trees</td></tr>
+                <tr><td>Chemistry</td><td><strong>Attribution</strong></td><td>2 — XY waves, then pattern collections</td><td>2 — attributions, network trees</td></tr>
+                <tr><td>Chemistry</td><td><strong>Stoichiometric analysis</strong></td><td>2 — collections (multiplexed), then one optional collection</td><td>— (3D views and fits)</td></tr>
                 <tr><td>Tools</td><td><strong>Mass Calculator</strong></td><td>— (formula typed or clicked)</td><td>— (dialog only)</td></tr>
                 <tr><td>Tools</td><td><strong>Chat</strong></td><td>— (WebSocket)</td><td>—</td></tr>
             </table>
@@ -668,7 +696,7 @@ index(i, 1)          // Y of point i</pre>
         </p>
 
         <div class="node-toolbar" id="nodeToolbar">
-            <input type="search" id="nodeSearch" placeholder="Search the nodes — otsu, hough, mz, clustering, envelope…" aria-label="Search the node reference" />
+            <input type="search" id="nodeSearch" placeholder="Search the nodes — otsu, hough, mz, clustering, envelope, stoichiometric, funnel…" aria-label="Search the node reference" />
             <div class="chipset" id="nodeChips"></div>
             <span class="node-count" id="nodeCount"></span>
         </div>
@@ -1941,7 +1969,7 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
             </li>
         </ul>
 
-        <h4 data-node="attribution" data-menu="Chemistry" data-keys="attribution formula sieve enumerate exhaustive mixed radix odometer counter canonical form dependence log probability ppm error best matches group brick adduct charge combinatory ionising plan worker wasm fallback">Attribution <span class="badge">exhaustive</span> <span class="badge">mixed-radix</span></h4>
+        <h4 data-node="attribution" data-menu="Chemistry" data-keys="attribution formula sieve enumerate exhaustive mixed radix odometer counter canonical form dependence log probability ppm error best matches group brick adduct charge combinatory ionising plan worker wasm fallback funnel mask isotope isotopologue isotopic ratio delta re-inspection marriage proposal em gmm gaussian mixture cluster swap simulated satellite brute force recap">Attribution <span class="badge">exhaustive</span> <span class="badge">mixed-radix</span> <span class="badge">isotopic funnel</span></h4>
         <p>
             Given a spectrum (XY peaks), a list of <strong>combining groups</strong> (neutral bricks:
             CH<sub>2</sub>, O, NH, C…) and a list of <strong>ionising groups</strong> (adducts:
@@ -2096,6 +2124,80 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
                 <strong>same plan</strong> but its own peak list. The readout sums across the batch.</li>
         </ul>
 
+        <h5>Proposals, marriages and re-inspection</h5>
+        <p>
+            The sieve returns <strong>readings</strong>, one per (formula, peak) couple. The collection
+            turns them into two relations, and the distinction is the whole re-inspection screen:
+        </p>
+        <ul>
+            <li><strong>Proposal</strong> — every formula the sieve proposed for a point, ranked by
+                <code>|ppm|</code> then by decreasing log-probability. A formula can be proposed on a
+                point it did not marry.</li>
+            <li><strong>Marriage</strong> — the single explanation actually attached to a point. The
+                default is the best proposal; the views, counts and intensities are computed on
+                marriages, never on proposals, so one peak is never counted several times.</li>
+        </ul>
+        <p>
+            A point may therefore be <em>engaged only</em> (<code>marriage: null</code>): its proposals
+            stay available, but it is explicitly not married. Without that distinction a refused marriage
+            would silently re-marry itself on the next render. Re-inspection choices are stored per
+            <code>wave#point</code> and <strong>survive the resolve</strong>, because they cannot be
+            reconstructed from any parameter.
+        </p>
+
+        <h5>Isotopic funnel <span class="badge">funnel mask</span> <span class="badge">EM/GMM</span></h5>
+        <p>
+            Two isobaric compositions are indistinguishable on mass alone; what they do not share is their
+            <strong>isotopic ratio</strong>. The funnel mask pairs each reading with its first heavy
+            satellite — by default the lightest isotope and the next one, ¹²C → ¹³C — and reports
+            <code>d = measured/natural − 1</code>. A healthy interpretation gathers around
+            <code>d = 0</code>, and the plot lets the user see both the current marriage and the
+            challengers it could have chosen.
+        </p>
+        <p>
+            Each ratio has <strong>three possible sources</strong>, in this order:
+        </p>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li><strong>Proposed pair</strong> — both formulas come from the sieve.</li>
+            <li><strong>Simulated satellite</strong> — the heavy formula is computed from the base mass
+                plus the isotopic shift, then the real peak is searched in the ppm window. The base
+                reading's measured error is carried onto the prediction, because calibration shifts both
+                satellites the same way.</li>
+            <li><strong>Nothing</strong> — the peak has no partner and produces no ratio.</li>
+        </ol>
+        <p>
+            The x-axis can be signal, average pair mass, element count, cumulative <code>|ppm|</code> or
+            signed <code>Δppm</code>; the y-axis can be <code>d</code>, the isotopic ratio
+            <code>(I(M+1)/I(M))/N</code>, or the raw intensity ratio. The element and isotope pair are
+            chosen once for the batch, so two spectra are always read on the same axes.
+        </p>
+        <p>
+            <strong>EM/GMM on the funnel.</strong> A rectangle cannot express "the healthy cloud": its
+            shape is not rectangular, and two populations can overlap in x as well as in y while still
+            being separable in the plane. An <strong>expectation–maximization fit of a 2D Gaussian
+            mixture</strong> — fixed <em>k</em> or chosen by BIC — describes it, and the component whose
+            mean is nearest the origin is set apart. Simulated satellites that fall inside that component
+            are flagged, can be validated in one gesture, and the validation can be reverted.
+        </p>
+        <p>
+            <strong>Swaps and simulated creations.</strong> A <em>swap</em> re-marries a peak to a
+            proposed formula with a better <code>d</code>; a <em>new isotopologue</em> adds a satellite no
+            formula claimed; a <em>challenged marriage</em> is a competition with an in-place formula. Each
+            family is grouped by stoichiometric permutation, can be applied alone or by group, previewed on
+            hover, and shown as a pair spectrum. Hovering a funnel marker publishes the source wave and
+            point index, so the spectra elsewhere light up the same peak.
+        </p>
+
+        <h5>Brute force recap</h5>
+        <p>
+            The recap answers the question the sieve raises — <em>if I tighten the window, what do I
+            lose?</em> — with a <strong>cumulative curve</strong>: the share of <strong>targets</strong>
+            explained below each error threshold. The denominator is the number of targets, never the
+            number of readings, because a peak carrying three formulas is still one peak; an unattributed
+            peak lowers the curve, which is precisely what should be seen. The histogram and the funnel
+            have their own sections rather than sharing one row: they answer different questions.
+        </p>
+
         <h5>Error conditions</h5>
         <ul>
             <li><span class="badge req">error</span> no periodic table loaded (awaited on demand).</li>
@@ -2112,7 +2214,9 @@ Y' = X' − round(X')             mass defect, in [−0.5, +0.5]</pre>
         <h5>Session behaviour</h5>
         <p>
             The two group tables (combining, ionising), global ratio, charge min/max, bestMatches, ppm,
-            and the stale flag are serialised. The network's intentions travel too — the link list, the
+            and the stale flag are serialised. The re-inspection marriages and the funnel's element and
+            isotope pair travel too — they are decisions, not recomputable results. The network's
+            intentions travel as well — the link list, the
             link window, the degree cap, the charge, the tree selection and the minimum tree size — but
             never the trees themselves: they are derived from the settings and the input waves, and a
             session carrying them would show a forest that nothing in the session could reproduce. The
@@ -2594,7 +2698,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
    → output wave [X′…, Y…]   (per input wave, Y untouched)
    → optional: 3D surface wave [40, 32, 3] over the references' (m/z, intensity) box</pre>
 
-        <h4 data-node="formulaCollection" data-menu="Chemistry" data-keys="collection browse edit annotate molecule fold isotopologue clustering kmeans k-means spectral partitioning ng jordan weiss affinity knn graph sigma pca principal component projection standardisation partition sub-collection van krevelen barycentric csv export notes">FormulaCollection <span class="badge">named set</span> <span class="badge">ppm matching</span> <span class="badge">molecule folding</span></h4>
+        <h4 data-node="formulaCollection" data-menu="Chemistry" data-keys="collection browse edit annotate molecule fold isotopologue clustering kmeans k-means spectral partitioning ng jordan weiss affinity knn graph sigma pca principal component projection standardisation partition sub-collection van krevelen barycentric csv export notes proposals marriage gmm em gaussian mixture expectation maximization bic covariance">FormulaCollection <span class="badge">named set</span> <span class="badge">ppm matching</span> <span class="badge">molecule folding</span></h4>
         <p>
             A <strong>FormulaCollection</strong> is a named, deduplicated set of formulas with their
             measured peaks attached. It is the <strong>currency of attribution</strong>: the Attribution
@@ -2641,13 +2745,19 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                 </td>
             </tr>
             <tr>
-                <td>Points & matching</td>
+                <td>Points &amp; matching</td>
                 <td>
-                    <code>setPoints([{mz, intensity, key?}])</code> — replaces the measured points and
-                    re-matches. <code>match()</code> sorts entries by m/z, then for each point finds the
-                    nearest formula by binary search (<code>O(log n)</code>). A point with a <code>key</code>
-                    is matched by identity (producer's decision), otherwise by proximity. A point outside
-                    <code>ppm</code> of every formula is recorded as a diagnostic, not silently dropped.
+                    <code>setPoints([{mz, intensity, key?, proposals?, marriage?}])</code> — replaces the
+                    measured points and re-matches. <code>match()</code> sorts entries by m/z, then for each
+                    point finds the nearest formula by binary search (<code>O(log n)</code>). A point with a
+                    <code>key</code> is matched by identity (producer's decision), otherwise by proximity. A
+                    point outside <code>ppm</code> of every formula is recorded as a diagnostic, not silently
+                    dropped.<br>
+                    It derives <strong>two relations</strong>: <code>entry.proposals</code> (every formula
+                    proposed for a point, with its rank) and <code>entry.targets</code> (the marriage, one
+                    explanation). A point may carry <code>point.proposals</code> and an explicit
+                    <code>point.marriage</code>; <code>marriage: null</code> means engaged-only, and
+                    <code>applyMarriages(choices)</code> turns re-inspection choices into marriages.
                 </td>
             </tr>
             <tr>
@@ -2762,7 +2872,7 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                 full collection as JSON (session-compatible descriptor).</li>
         </ul>
 
-        <h5>Clustering <span class="badge">k-means</span> <span class="badge">spectral</span> <span class="badge">PCA</span></h5>
+        <h5>Clustering <span class="badge">k-means</span> <span class="badge">spectral</span> <span class="badge">Gaussian mixture</span> <span class="badge">PCA</span></h5>
         <p>
             An attributed collection is a cloud of points, and the interesting question about a cloud is
             rarely <em>where are the outliers</em> — it is <em>how many populations are in there</em>.
@@ -2772,9 +2882,11 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             back onto the list, the graph and the cluster centres.
         </p>
         <p>
-            There are exactly <strong>two algorithms</strong>, and they are not variants of one another:
+            There are exactly <strong>three algorithms</strong>, and they are not variants of one another:
             k-means looks for compact, roughly spherical groups; spectral partitioning looks for groups
-            separated by the <em>shape</em> of the data, whether or not they are round.
+            separated by the <em>shape</em> of the data, whether or not they are round; a Gaussian mixture
+            fitted by EM models each population as a full-covariance ellipse, so unequal sizes and
+            elongated families are represented instead of being cut in half.
         </p>
 
         <h6>Before the algorithm — what a point is</h6>
@@ -2912,6 +3024,33 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
             and the graph fragments, too large and it collapses to one blob.
         </p>
 
+        <h6>Algorithm 3 — Gaussian mixture (EM)</h6>
+        <p>
+            A mixture of 2D Gaussians is fitted by <strong>expectation–maximization</strong>: each point
+            gets a responsibility toward each component, then each component's mean and full covariance
+            are recomputed from those responsibilities, until the log-likelihood settles or
+            <code>maxIter</code> is reached. Unlike k-means, a component is <strong>not a sphere</strong> —
+            it is an ellipse, and its orientation is learned from the data. A component that is
+            elongated, tilted or smaller than its neighbour is therefore modelled as what it is rather
+            than split along its length.
+        </p>
+        <ul>
+            <li><strong>Number of components.</strong> The panel fixes <em>k</em> (the requested cluster
+                count); when the kernel is asked to choose, it selects the number of components by
+                <strong>BIC</strong>. Fixing <em>k</em> keeps the picture equal to the requested count.</li>
+            <li><strong>Initialisation.</strong> k-means++ in the standardised space, then a few Lloyd
+                passes, so EM does not start from a uniform draw that often leaves an empty component.
+                Parameters are converted back to the original units.</li>
+            <li><strong>Deterministic seed.</strong> The same data and <code>seed</code> give the same
+                mixture; a different seed may give a different local optimum, as with k-means.</li>
+            <li><strong>Two dimensions, guaranteed.</strong> The EM kernel is 2D. On a three-target source,
+                or when PCA is set to keep a single component, the node <strong>projects onto two
+                components</strong> instead of failing; the graph source is already 2D and is used as is.
+                An explicit projection is better than a silent refusal.</li>
+            <li><strong>Output.</strong> Labels and assignments behave exactly like k-means labels: the
+                graph, the list and the cluster centres are driven by the same assignments.</li>
+        </ul>
+
         <h6>Controls</h6>
         <table class="spec">
             <tr>
@@ -2922,16 +3061,18 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
                 selected. Turning it on runs immediately; turning it off clears the partition.</td></tr>
             <tr><td><strong>Clusters</strong></td><td><code>nClusters</code>, 2…20, default 2. Typed by
                 the user — there is no automatic estimate of <em>k</em>.</td></tr>
-            <tr><td><strong>Mode</strong></td><td><code>kmeans</code> or <code>spectral</code>.</td></tr>
+            <tr><td><strong>Mode</strong></td><td><code>kmeans</code>, <code>spectral</code> or
+                <code>gmm</code> (Gaussian mixture fitted by EM).</td></tr>
             <tr><td><strong>Source</strong></td><td><code>targets</code> or <code>graph</code>.</td></tr>
             <tr><td><strong>PCA components</strong></td><td><code>−1 … 50</code>, default <code>0</code>
-                (all).</td></tr>
+                (all). For <code>gmm</code>, the effective floor is two components, since the EM kernel
+                is 2D.</td></tr>
             <tr><td><strong>Sigma</strong></td><td><code>0</code> = auto-estimate. Only shown for spectral.</td></tr>
             <tr><td><strong>k-NN</strong></td><td><code>1 … 50</code>, default 10. Only shown for
                 spectral.</td></tr>
-            <tr><td><strong>Max iterations</strong></td><td><code>10 … 1000</code>, default 100. Only shown
-                for k-means.</td></tr>
-            <tr><td><strong>Seed</strong></td><td>Default 42. Affects k-means only; spectral ignores it by
+            <tr><td><strong>Max iterations</strong></td><td><code>10 … 1000</code>, default 100. Shown for
+                k-means and EM.</td></tr>
+            <tr><td><strong>Seed</strong></td><td>Default 42. Affects k-means and EM; spectral ignores it by
                 construction.</td></tr>
             <tr><td><strong>Run</strong></td><td>Every control re-runs on change. A burst of changes is
                 coalesced: the pipeline is re-entered at most once per settle, not once per click.</td></tr>
@@ -2969,12 +3110,13 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
 
         <h6>Compute</h6>
         <p>
-            Three Rust kernels — <code>pca</code>, <code>kmeans</code>, <code>spectral</code> — run in the
-            worker pool and exchange flat <code>Float64Array</code> buffers only. Each has a JavaScript
-            mirror implementing the same decision rules, used when WebAssembly or workers are
-            unavailable; parity tests compare them on real and synthetic data, including the concentric
-            rings that spectral partitioning exists to separate. The node's own bottleneck is
-            re-colouring the graph, not the kernel.
+            Four Rust kernels — <code>pca</code>, <code>kmeans</code>, <code>spectral</code> and
+            <code>emGmm2d</code> — run in the worker pool and exchange flat <code>Float64Array</code>
+            buffers only. Each has a JavaScript mirror implementing the same decision rules, used when
+            WebAssembly or workers are unavailable; parity tests compare them on real and synthetic data,
+            including the concentric rings that spectral partitioning exists to separate. The EM/GMM kernel
+            is the same one the isotopic funnel uses. The node's own bottleneck is re-colouring the graph,
+            not the kernel.
         </p>
 
         <h5>Error conditions</h5>
@@ -3005,6 +3147,181 @@ forestGroups[]                             // the panel on the right, INDEPENDEN
     → VirtualRowList renders visible window
     → Graph renders currentCollection.toPairs() (mode-dependent transform)
     → output[0] = currentCollection (for downstream)</pre>
+
+        <h4 data-node="stoichiometricAnalysis" data-menu="Chemistry" data-keys="stoichiometric analysis 3d webgl formula collection elements patterns lattice integer lattice quotient rank free dimensions groups series projection scatter segment pattern vectors fit distribution wesslau flory schulz zimm schulz-zimm mass distribution polymerization polymer repeat index aic bic rmse chi2">Stoichiometric analysis <span class="badge">3D</span> <span class="badge">integer lattice</span> <span class="badge">distribution fits</span></h4>
+        <p>
+            The Attribution node answers <em>which formula fits this peak</em>. This node answers the
+            next question: <strong>what do the attributed formulas have in common?</strong> It reads one
+            or more FormulaCollections, turns every formula into an <strong>integer vector over the
+            elements it writes</strong>, and lets the user name the <strong>ordered patterns</strong> —
+            CH₂, H₂, O… — that are supposed to generate the series. Each pattern is a direction, the
+            patterns together build a cumulative lattice, and the formulas are grouped by the classes
+            that lattice leaves free.
+        </p>
+
+        <table class="spec">
+            <tr>
+                <th style="width:180px">Item</th>
+                <th>Specification</th>
+            </tr>
+            <tr>
+                <td>Inputs</td>
+                <td>
+                    <strong>2 inputs.</strong><br>
+                    <strong>Input 0</strong> — formula collections, multiplexed: several producers may
+                    publish here and all are read.<br>
+                    <strong>Input 1</strong> — one optional collection; only the first one is kept, and a
+                    diagnostic is logged when more arrive.<br>
+                    Accepted values: <code>FormulaCollection</code>, <code>Formula</code>,
+                    <code>Stoichiometry</code>, a string notation, an array of any of these, or a
+                    descriptor <code>{name, formulas|entries|items, points}</code>.
+                </td>
+            </tr>
+            <tr>
+                <td>Outputs</td>
+                <td><strong>none</strong> — a terminal analysis node. Its result is the analysis dialog:
+                    the 3D view, the stoichiometric series and the fitted models.</td>
+            </tr>
+            <tr>
+                <td>Point set</td>
+                <td>
+                    Each collection is deduplicated by formula <strong>key</strong>. A formula's
+                    intensity is its own <code>intensity</code> when supplied, otherwise the sum of its
+                    matched <code>targets</code>. The stoichiometry used is the <strong>written</strong>
+                    one: isotopes of the same element are summed, so <code>¹³CH₂</code> counts as one
+                    carbon just like <code>¹²CH₂</code>.
+                </td>
+            </tr>
+        </table>
+
+        <h5>The model — ordered patterns and a cumulative lattice</h5>
+        <p>
+            The node does not fit an arbitrary line through the data. It builds the lattice the
+            <em>user's chemistry</em> defines, one pattern at a time, and asks what each pattern adds:
+        </p>
+        <ol style="color:#b9c4d0;font-size:0.94em;margin:10px 0 10px 22px;">
+            <li><strong>Dimensions.</strong> The elements actually written by the formulas and patterns
+                form the ambient space — say C, H, O, N. A formula becomes a vector of counts in that
+                space.</li>
+            <li><strong>Ordered patterns.</strong> Patterns are applied as a growing prefix. After
+                <code>CH₂</code>, the lattice is generated by that one direction; after
+                <code>CH₂, H₂</code>, by both; and so on. The order is the cascade depth, not a set.</li>
+            <li><strong>Integer lattice basis.</strong> For each prefix, the pattern vectors are put in a
+                column matrix and reduced to an exact integer basis (<code>columnLatticeBasis</code>),
+                whose <strong>rank</strong> is the number of independent constraints and whose
+                <strong>index</strong> — the determinant, computed exactly in BigInt — is the finite
+                quotient size.</li>
+            <li><strong>Quotient classes.</strong> Two formulas are in the same class when their
+                difference lies in the lattice: <code>quotientRepresentative</code> picks the class
+                representative. The class's <strong>free dimensions</strong>
+                (<code>dimension − rank</code>) say exactly what the patterns do <em>not</em> explain.</li>
+            <li><strong>Redundancy.</strong> A pattern that adds no rank (<code>gainedRank = 0</code>)
+                lies in the lattice already built; it is reported, not silently accepted, because an
+                "independent" pattern that constrains nothing is a wrong hypothesis about the data.</li>
+        </ol>
+        <p>
+            Levels are cumulative and their rank only grows, so they are folded by rank: folding rank 1
+            reveals rank 2 without scrolling back through rank 1's groups. Every group also names its
+            <strong>parent group</strong> in the previous level, which makes the refinement readable as
+            a tree of increasingly constrained classes.
+        </p>
+
+        <h5>The 3D view</h5>
+        <p>
+            The chosen elements become the three plot axes; an axis set to <em>(none)</em> holds a
+            constant, which is how a 2D projection is obtained from the same model. Formally there is
+            only a <strong>projection</strong> of the stoichiometry, never a second model: changing an
+            axis re-reads coordinates, not lattices.
+        </p>
+        <ul>
+            <li><strong>Cloud and projections.</strong> One scatter trace per collection, plus its
+                shadow on the XY, XZ and YZ planes at the minimum of the held-out axis. Point size is
+                configurable; hidden elements are reported as <em>held out of the 3D view</em>.</li>
+            <li><strong>Colouring.</strong> By formula collection, or by any quotient level. Classes are
+                residue ids, not an ordered scale, so they are coloured by the golden angle — adjacent
+                class numbers never get adjacent hues, and no ramp implies a progression.</li>
+            <li><strong>Pattern vectors.</strong> The generators of the chosen level can be drawn from
+                the origin as 3D segments: they are precisely the directions the quotient ignores, so
+                seeing them beside the classes says what is being collapsed.</li>
+            <li><strong>Camera.</strong> Perspective or orthographic; buttons look straight down X, Y or
+                Z, which turns the view into the corresponding 2D scatter. Axis rules and the camera
+                state travel with the session.</li>
+        </ul>
+
+        <h5>Distribution fits <span class="badge">Weßlau</span> <span class="badge">Flory–Schulz</span> <span class="badge">Schulz–Zimm</span></h5>
+        <p>
+            When a level is rank one — a single pattern generating a discrete series — each quotient
+            class is a series of formulas spaced by that pattern. Its measured targets give one point per
+            repeat index <code>k</code>, with intensity summed over the targets at that index. The node
+            fits a <strong>molar-mass distribution</strong> to that curve:
+        </p>
+        <table class="spec">
+            <tr>
+                <th style="width:170px">Model</th>
+                <th>Parameters</th>
+            </tr>
+            <tr><td><strong>Weßlau</strong></td><td><code>alpha</code>, <code>mu</code>,
+                <code>amplitude</code>; Poisson limit by default, or a finite <code>N</code> for the
+                finite-binomial variance.</td></tr>
+            <tr><td><strong>Flory–Schulz</strong></td><td><code>a</code>, <code>amplitude</code>, in
+                either the number or the mass distribution.</td></tr>
+            <tr><td><strong>Schulz–Zimm</strong></td><td>shape <code>z</code>, number-average mass
+                <code>Mn</code>, <code>amplitude</code>; dispersity follows as
+                <code>Đ = 1 + 1/z</code>.</td></tr>
+        </table>
+        <p>
+            Each successful fit reports RMSE, R², reduced χ², AIC/AICc and the convergence state, draws
+            the measured points against the fitted curve, and contributes one point to a
+            <strong>group parameter map</strong> — hover a point to preview its curve, click to pin it.
+            A group with fewer than two targets is reported as unfit rather than drawn as a line through
+            one point. The fit runs through the Rust/WASM <code>distribution_fit</code> kernel, with a
+            JavaScript mirror for environments without WASM or workers.
+        </p>
+
+        <h5>Error conditions</h5>
+        <ul>
+            <li><span class="badge warn">no table</span> the periodic table is not loaded yet — formulas
+                cannot be read; the node waits for it.</li>
+            <li><span class="badge warn">unreadable formula</span> a notation cannot be parsed; it is
+                reported in the readout and skipped.</li>
+            <li><span class="badge warn">unreadable pattern</span> a pattern has no readable stoichiometry;
+                it produces no level.</li>
+            <li><span class="badge warn">redundant pattern</span> a pattern adds no rank to the cumulative
+                lattice.</li>
+            <li><span class="badge warn">optional input</span> more than one collection reached input 1;
+                only the first is kept.</li>
+            <li><span class="badge warn">fit unavailable</span> a rank-one group has fewer than two
+                targets, or its indices are not integers along the pattern.</li>
+        </ul>
+
+        <h5>Session behaviour</h5>
+        <p>
+            The selected elements, the ordered patterns, the projection axes, the camera type, the
+            colouring level, the point size and the fit configuration per rank are serialised. The input
+            collections are <strong>not</strong> serialised — they are re-published by their producers on
+            the next resolve. The quotient classes and the fits are derived from the settings and the
+            inputs, so they are recomputed rather than restored.
+        </p>
+
+        <h5>Data flow</h5>
+        <pre>input[0]: formula collections (multiplexed)
+input[1]: one optional collection
+    → collectInputs()
+        → records {formula, intensity, targets[]}         // deduplicated by key
+    → recomputeModel()
+        → compositionOf(formula)                          // written counts per element
+        → stoichiometric vector over used elements
+        → for each ordered pattern prefix:
+            columnLatticeBasis(matrix) → {rank, index, basis}
+            quotientRepresentative(vector, lattice) → class key
+        → projectionLevels[] {pattern, rank, freeDimensions, groups[]}
+    → recomputeProjection()
+        → per point, the 3 chosen element counts
+    → Scatter3DTrace cloud + XY / XZ / YZ projections
+    → Segment3DTrace pattern vectors (optional)
+    → rank-one level → fitPointsForGroup()
+        → fitDistribution(k, intensity)                   // distribution_fit kernel
+        → {parameters, yPred, rmse, r2, chi2Red, aicc}</pre>
 
         <h4 data-node="simpleXYPlot" data-menu="Display" data-keys="plot display webgl xy trace axes linear log zoom pan canvas svg markers sticks colours legend">Simple XY plot <span class="badge">display</span> <span class="badge">no output</span></h4>
         <p>
