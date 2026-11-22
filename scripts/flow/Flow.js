@@ -706,19 +706,26 @@ export class Flow{
         }
         if(compatible.length===0) return
         const {x,y}=pos
+        /* pos est exprimé dans le repère du field SVG. On le convertit en
+           coordonnées écran et on monte le menu sur document.body en
+           position:fixed : il échappe ainsi à l'overflow:auto et au stacking
+           context du container (le plan du flow) et s'affiche par-dessus tout. */
+        const fieldRect=this.field.node().getBoundingClientRect()
+        const viewX=fieldRect.left+x
+        const viewY=fieldRect.top+y
         const menu=CE("div",{
             className:"node-menu",
             style:{
-                position:"absolute",
-                left:Math.round(x)+"px",
-                top:Math.round(y)+"px",
+                position:"fixed",
+                left:Math.round(viewX)+"px",
+                top:Math.round(viewY)+"px",
                 minWidth:"160px",
                 background:"#1e1e1e",
                 color:"#eee",
                 border:"1px solid #444",
                 borderRadius:"6px",
                 boxShadow:"0 4px 12px rgba(0,0,0,0.5)",
-                zIndex:1000,
+                zIndex:2147483647,
                 fontFamily:'sans-serif',
                 fontSize:"13px",
                 maxHeight:"260px",
@@ -730,7 +737,7 @@ export class Flow{
             document.removeEventListener("mousedown",_closeOnOutside)
         }
         const _closeOnOutside=(e)=>{
-            if(!this.container.contains(e.target)) close()
+            if(!this.container.contains(e.target) && !menu.contains(e.target)) close()
         }
         document.addEventListener("mousedown",_closeOnOutside)
         for(const {name, Constructor} of compatible){
@@ -753,7 +760,16 @@ export class Flow{
             }
             menu.appendChild(item)
         }
-        this.container.appendChild(menu)
+        document.body.appendChild(menu)
+        /* Recalage dans la fenêtre : si le menu dépasse à droite ou en bas, on
+           le ramène pour que la totalité des items reste visible sans scroller. */
+        const menuRect=menu.getBoundingClientRect()
+        if(menuRect.right>window.innerWidth-8){
+            menu.style.left=Math.max(8,window.innerWidth-menuRect.width-8)+"px"
+        }
+        if(menuRect.bottom>window.innerHeight-8){
+            menu.style.top=Math.max(8,window.innerHeight-menuRect.height-8)+"px"
+        }
     }
     /* Crée le node choisi, le place à la position du curseur et relie
        automatiquement selon la direction du drag. */

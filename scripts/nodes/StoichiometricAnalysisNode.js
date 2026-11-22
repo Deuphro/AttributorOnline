@@ -41,6 +41,7 @@ const hslToHex=(hue,saturation,lightness)=>{
 const groupColor=index=>hslToHex((index*GROUP_HUE_STEP)%1,0.62,0.56)
 
 export class StoichiometricAnalysisNode extends NodeWithAccordion{
+    static menuTitle="Stoichiometric Analysis"
     static socketTypes={
         inputs:[SOCKET.FORMULA_COLLECTION,SOCKET.FORMULA_COLLECTION],
         outputs:[]
@@ -268,7 +269,26 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 onUnfold?.()
             }
         }
-        head.addEventListener("click",toggle)
+        /* Le pli doit répondre au PREMIER appui, pas au premier clic. Un clic
+           sur un en-tête focusable peut être perdu lorsque le navigateur
+           déplace la cible entre le mousedown et le mouseup (focus/scroll du
+           panneau), ce qui donnait l'impression qu'il fallait cliquer deux
+           fois. On bascule donc dès le pointerdown pour la souris, et sur le
+           click pour le tactile/le stylet, où le click reste le signal fiable
+           après un éventuel défilement. */
+        let lastPointerType="mouse"
+        head.addEventListener("pointerdown",event=>{
+            lastPointerType=event.pointerType||"mouse"
+            if(lastPointerType!=="mouse"||event.button!==0){
+                return
+            }
+            toggle()
+        })
+        head.addEventListener("click",()=>{
+            if(lastPointerType==="touch"||lastPointerType==="pen"){
+                toggle()
+            }
+        })
         head.addEventListener("keydown",event=>{
             if(event.key==="Enter"||event.key===" "){
                 event.preventDefault()
@@ -926,16 +946,44 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         for(const rankFolder of rankFolders){
             const folder=CE("details",{className:"sa-rank-folder"},[])
             folder.open=true
-            stylize(folder,{display:"grid",gap:"6px",padding:"4px 0",borderTop:"2px solid rgba(255,255,255,0.22)"})
+            /* L'intitulé du rang est l'en-tête du cadre, pas une ligne de plus
+               au même niveau que les groupes: le summary occupe toute la
+               largeur du haut du cadre, et les niveaux/groupes vivent en
+               dessous, avec leur propre retrait. */
+            stylize(folder,{
+                display:"flex",
+                flexDirection:"column",
+                gap:"0",
+                padding:"0",
+                overflow:"hidden",
+                border:"1px solid rgba(255,255,255,0.18)",
+                borderRadius:"4px",
+                background:"rgba(255,255,255,0.035)"
+            })
             const free=Math.max(0,rankFolder.dimension-rankFolder.rank)
             const folderSummary=CE("summary",{},[
                 `Rank ${rankFolder.rank}/${rankFolder.dimension} · ${rankFolder.groupCount} group${rankFolder.groupCount===1?"":"s"} · ${free} free dimension${free===1?"":"s"} · ${rankFolder.levels.length} pattern${rankFolder.levels.length===1?"":"s"}`
             ])
-            stylize(folderSummary,{cursor:"pointer",fontWeight:"700",padding:"2px 0"})
+            stylize(folderSummary,{
+                cursor:"pointer",
+                fontWeight:"700",
+                fontSize:"1.02em",
+                letterSpacing:"0.3px",
+                padding:"7px 9px",
+                margin:"0",
+                background:"rgba(255,255,255,0.09)",
+                borderBottom:"1px solid rgba(255,255,255,0.18)"
+            })
+            folderSummary.addEventListener("mouseenter",()=>{
+                folderSummary.style.background="rgba(174,242,46,0.16)"
+            })
+            folderSummary.addEventListener("mouseleave",()=>{
+                folderSummary.style.background="rgba(255,255,255,0.09)"
+            })
             folder.appendChild(folderSummary)
             for(const level of rankFolder.levels){
                 const section=CE("section",{className:"sa-series-level"},[])
-                stylize(section,{display:"grid",gap:"4px",paddingTop:"6px",borderTop:"1px solid rgba(255,255,255,0.14)"})
+                stylize(section,{display:"grid",gap:"4px",padding:"6px 9px",borderTop:"1px solid rgba(255,255,255,0.14)"})
                 const quotient=level.quotientIndex===null
                     ?"infinite quotient"
                     :`index ${this.formatIntensity(level.quotientIndex)}`

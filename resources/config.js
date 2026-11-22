@@ -78,7 +78,7 @@ const defaultMenu={
             //masses. Folding it into the reader would have meant a node that is
             //one thing or the other depending on which cable arrived.
             "Attribution":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Attribution',type:'attribution'}}}))},
-            "Stoichiometric analysis":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Stoichiometric analysis',type:'stoichiometricAnalysis'}}}))}
+            "Stoichiometric Analysis":()=>{dispatchEvent(new CustomEvent('createNode',{detail:{msg:{title:'Stoichiometric Analysis',type:'stoichiometricAnalysis'}}}))}
         },
         "Flow":{
             Resolve:(e)=>{dispatchEvent(new CustomEvent('resolveFlow',{detail:{msg:""}}))},
