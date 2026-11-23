@@ -471,6 +471,10 @@ export class Plot3DWebGL{
            units, color, label}. Changed rules take effect on the next
            requestOverlay()/drawGraph — there is no watcher, by design. */
         this.axisRules=[]
+        /* Points to ring with a white halo, in the SAME data coordinates as the
+           traces (scatter: x/y/z coordinates). Projected on every overlay draw,
+           so the halos follow an orbit for free. */
+        this.highlightPoints=[]
         this.bounds=null
         this._orthographic=false
         this.defaultAngles=defaultAngles
@@ -1021,6 +1025,18 @@ export class Plot3DWebGL{
             this.drawOverlay()
         })
     }
+    /* HIGHLIGHT HALOS. `points` are DATA coordinates, the same ones the scatter
+       traces carry ({x,y,z}); the axis->world mapping and the projection are
+       the plot's business, so a caller never has to know the camera. An empty
+       list clears the halos. */
+    setHighlight(points){
+        this.highlightPoints=Array.isArray(points)?points:[]
+        this.requestOverlay()
+        return this
+    }
+    clearHighlight(){
+        return this.setHighlight([])
+    }
     drawFrame(){
         if(!this.glLayer) return
         this.glLayer.render()
@@ -1106,6 +1122,41 @@ export class Plot3DWebGL{
         this.drawRules(svg,width,height)
         this.drawTicks(svg,bounds,width,height)
         this.drawAxisGuide(svg,width,height)
+        this.drawHighlights(svg)
+    }
+    /* White halos over the points a caller asked to highlight. SVG circles in
+       the overlay, projected with the same project() as the box and the ticks:
+       no GPU buffer to rebuild when the selection changes, and the halos stay
+       readable above the traces (the overlay is drawn after the canvas). */
+    drawHighlights(svg){
+        const points=Array.isArray(this.highlightPoints)?this.highlightPoints:[]
+        if(!points.length) return
+        const ns="http://www.w3.org/2000/svg"
+        const world=this.axisWorld()
+        const group=document.createElementNS(ns,"g")
+        group.setAttribute("class","gl3d-highlights")
+        for(const point of points){
+            if(!point) continue
+            const x=Number(point.x)
+            const y=Number(point.y)
+            const z=Number(point.z)
+            if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z)) continue
+            const projected=this.project(world.x(x),world.y(y),world.z(z))
+            if(projected.behind) continue
+            const halo=document.createElementNS(ns,"circle")
+            halo.setAttribute("cx",projected.x)
+            halo.setAttribute("cy",projected.y)
+            halo.setAttribute("r","8")
+            halo.setAttribute("fill","rgba(255,255,255,0.10)")
+            halo.setAttribute("stroke","rgba(255,255,255,0.95)")
+            halo.setAttribute("stroke-width","1.4")
+            halo.setAttribute("vector-effect","non-scaling-stroke")
+            halo.setAttribute("style","filter:drop-shadow(0 0 3px rgba(255,255,255,0.95)) drop-shadow(0 0 6px rgba(160,210,255,0.55))")
+            group.appendChild(halo)
+        }
+        if(group.childNodes.length){
+            svg.appendChild(group)
+        }
     }
     /* The twelve edges of the CUBE, at the world corners. Not the data
        corners: those would be 100 x 1e7 x 1 for a real error surface, and a

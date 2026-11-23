@@ -61,6 +61,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.fitInProgress=false
         this.selectedFitGroupKey=null
         this.hoveredFitGroupKey=null
+        this.hoveredSeriesGroup=null
         this.fitPlot=null
         this.parameterPlot=null
 
@@ -679,6 +680,8 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.fitResults=[]
         this.fitRevision++
         this.fitInProgress=false
+        this.hoveredSeriesGroup=null
+        this.hoveredFitGroupKey=null
         const prefix=[]
         const prefixTexts=[]
         let parentGroups=null
@@ -1050,6 +1053,18 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                         }
                     }
                     details.appendChild(members)
+                    /* Survol d'un groupe : les points qui lui appartiennent
+                       sont entourés d'un halo dans la vue 3D. */
+                    details.addEventListener("mouseenter",()=>{
+                        this.hoveredSeriesGroup=group
+                        this.refreshPlotHighlight()
+                    })
+                    details.addEventListener("mouseleave",()=>{
+                        if(this.hoveredSeriesGroup===group){
+                            this.hoveredSeriesGroup=null
+                            this.refreshPlotHighlight()
+                        }
+                    })
                     if(level===this.rankOneLevel()){
                         const fit=this.fitResults.find(result=>result.groupKey===group.key)
                         details.appendChild(this.renderGroupFit(fit))
@@ -1075,6 +1090,11 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         if(!this.parameters.fit||typeof this.parameters.fit!=="object") this.parameters.fit={}
         if(!this.parameters.fit.byRank||typeof this.parameters.fit.byRank!=="object") this.parameters.fit.byRank={}
         this.parameters.fit.byRank[String(rank)]={...this.fitConfig(rank),...patch}
+        /* The metrics change scale with the model/distribution: an old bound
+           measured on AICc says nothing about a new RMSE, so the numeric
+           bounds are dropped (the chosen metric is kept). */
+        const quality=this.qualityFilterConfig()
+        this.parameters.fit.quality={...quality,min:null,max:null}
         this.fitResults=[]
         this.fitRevision++
         this.fitInProgress=false
@@ -1082,6 +1102,249 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.renderProjectionLevels()
         this.renderModelsView()
         this.origin?.saveSessionSoon?.()
+    }
+
+    /* A [min,max] on the number of measured points (repeat indices) a group
+       must have before it is fitted. Defaults to at least one point and no
+       upper bound; `null` max means open. */
+    pointsFilterConfig(){
+        const points=this.parameters.fit?.points
+        const source=points&&typeof points==="object"?points:{}
+        const parse=value=>value===null||value===undefined||!Number.isFinite(Number(value))
+            ?null:Math.max(0,Math.floor(Number(value)))
+        let min=parse(source.min)
+        let max=parse(source.max)
+        if(min===null) min=1
+        if(max!==null&&min>max) [min,max]=[max,min]
+        return {min,max}
+    }
+
+    savePointsFilter(patch){
+        const next={...this.pointsFilterConfig(),...patch}
+        this.parameters.fit={...(this.parameters.fit??{}),points:next}
+        this.origin?.saveSessionSoon?.()
+        this.renderFitControls()
+    }
+
+    /* The fit-quality metrics the distribution fit already reports. The
+       direction is informational (shown in the dropdown); the filter itself
+       is a plain [min,max] on the chosen value. */
+    qualityMetrics(){
+        return [
+            {key:"rmse",label:"RMSE",better:"lower"},
+            {key:"sse",label:"SSE",better:"lower"},
+            {key:"chi2Red",label:"χ²red",better:"lower"},
+            {key:"r2",label:"R²",better:"higher"},
+            {key:"aic",label:"AIC",better:"lower"},
+            {key:"aicc",label:"AICc",better:"lower"},
+            {key:"bic",label:"BIC",better:"lower"}
+        ]
+    }
+
+    qualityFilterConfig(){
+        const quality=this.parameters.fit?.quality
+        const source=quality&&typeof quality==="object"?quality:{}
+        const keys=this.qualityMetrics().map(metric=>metric.key)
+        const finite=value=>value!==null&&value!==undefined&&Number.isFinite(Number(value))
+        return {
+            metric:keys.includes(source.metric)?source.metric:"rmse",
+            min:finite(source.min)?Number(source.min):null,
+            max:finite(source.max)?Number(source.max):null
+        }
+    }
+
+    saveQualityFilter(patch,{rebuild=false}={}){
+        const next={...this.qualityFilterConfig(),...patch}
+        this.parameters.fit={...(this.parameters.fit??{}),quality:next}
+        this.origin?.saveSessionSoon?.()
+        if(rebuild){
+            this.renderFitControls()
+        }else{
+            this.renderFitPlots()
+        }
+    }
+
+    qualityValue(result,metric){
+        const value=Number(result?.[metric])
+        return Number.isFinite(value)?value:null
+    }
+
+    applyQualityFilter(results,filter){
+        const {metric,min,max}=filter
+        if(!Number.isFinite(min)&&!Number.isFinite(max)){
+            return results
+        }
+        return results.filter(result=>{
+            const value=this.qualityValue(result,metric)
+            if(value===null) return false
+            if(Number.isFinite(min)&&value<min) return false
+            if(Number.isFinite(max)&&value>max) return false
+            return true
+        })
+    }
+
+    filteredSuccessfulFits(){
+        const successful=this.fitResults.filter(result=>!result.error)
+        return this.applyQualityFilter(successful,this.qualityFilterConfig())
+    }
+
+    qualityStep(span){
+        if(!(span>0)) return "any"
+        const step=Math.pow(10,Math.floor(Math.log10(span))-2)
+        return Number.isFinite(step)&&step>0?String(step):"any"
+    }
+
+    /* A dual-thumb range slider (min/max) on the chosen quality metric. Built
+       by hand because HTML has no range input with two thumbs; the two native
+       ranges are stacked and their transparent tracks share one painted track,
+       which is the same construction the XY-plot node uses. */
+    qualityFilterBlock(successful){
+        const metrics=this.qualityMetrics()
+        const filter=this.qualityFilterConfig()
+        const metric=metrics.find(item=>item.key===filter.metric)??metrics[0]
+        const box=CE("div",{className:"sa-quality-filter"},[])
+        stylize(box,{display:"grid",gap:"4px",paddingTop:"5px",borderTop:"1px solid rgba(255,255,255,0.14)"})
+        const heading=CE("div",{},["Quality filter"])
+        stylize(heading,{fontWeight:"600"})
+        const metricRow=CE("div",{},[])
+        stylize(metricRow,{display:"grid",gridTemplateColumns:"auto minmax(0,1fr)",gap:"6px",alignItems:"center"})
+        const metricSelect=CE("select",{title:"Quality metric used to filter the fitted groups"},[])
+        for(const item of metrics){
+            metricSelect.appendChild(CE("option",{value:item.key},[
+                `${item.label} · ${item.better==="higher"?"higher":"lower"} is better`
+            ]))
+        }
+        metricSelect.value=filter.metric
+        metricSelect.addEventListener("change",()=>{
+            this.saveQualityFilter({metric:metricSelect.value,min:null,max:null},{rebuild:true})
+        })
+        metricRow.append(CE("label",{},["Metric"]),metricSelect)
+        box.append(heading,metricRow)
+
+        const values=successful
+            .map(result=>this.qualityValue(result,filter.metric))
+            .filter(value=>value!==null)
+        if(values.length<2){
+            /* A single (or no) fitted value cannot form a range: drop any stored
+               bounds so a lone fit is not hidden by a stale filter. */
+            if(values.length===1&&(Number.isFinite(filter.min)||Number.isFinite(filter.max))){
+                this.parameters.fit={...(this.parameters.fit??{}),quality:{metric:filter.metric,min:null,max:null}}
+            }
+            const note=CE("div",{},[
+                values.length
+                    ?"A single fitted value: no range to filter."
+                    :"Run a fit to filter by quality."
+            ])
+            stylize(note,{opacity:"0.6",fontSize:"0.95em"})
+            box.appendChild(note)
+            return box
+        }
+
+        let loBound=Math.min(...values)
+        let hiBound=Math.max(...values)
+        if(!(hiBound>loBound)){
+            const padding=Math.abs(loBound)*0.1||1
+            loBound-=padding
+            hiBound+=padding
+        }
+        const clamp=value=>Math.min(Math.max(value,loBound),hiBound)
+        const initMin=Number.isFinite(filter.min)?clamp(filter.min):loBound
+        const initMax=Number.isFinite(filter.max)?clamp(filter.max):hiBound
+        /* The metric's data range moves as fits are added/removed. Keep stored
+           bounds inside the current range so a stale value cannot silently hide
+           every group while the slider thumb sits at the edge. */
+        const adjusted={}
+        if(Number.isFinite(filter.min)&&filter.min!==initMin) adjusted.min=initMin
+        if(Number.isFinite(filter.max)&&filter.max!==initMax) adjusted.max=initMax
+        if(Object.keys(adjusted).length){
+            this.parameters.fit={...(this.parameters.fit??{}),quality:{...filter,...adjusted}}
+        }
+        const step=this.qualityStep(hiBound-loBound)
+        const rangeRow=CE("div",{},[])
+        stylize(rangeRow,{display:"grid",gridTemplateColumns:"auto minmax(0,1fr)",gap:"6px",alignItems:"center"})
+        const rangeLabel=CE("span",{},["Range"])
+        stylize(rangeLabel,{fontSize:"0.85em"})
+        const sliders=CE("div",{},[])
+        stylize(sliders,{position:"relative",height:"1.6em",minWidth:"0",overflow:"hidden"})
+        const track=CE("div",{},[])
+        stylize(track,{
+            position:"absolute",left:"0",right:"0",top:"50%",height:"4px",
+            transform:"translateY(-50%)",borderRadius:"2px",background:"rgba(255,255,255,0.25)"
+        })
+        const fill=CE("div",{},[])
+        stylize(fill,{
+            position:"absolute",top:"50%",height:"4px",transform:"translateY(-50%)",
+            borderRadius:"2px",background:"#3498db",pointerEvents:"none"
+        })
+        const lowInput=CE("input",{
+            type:"range",min:String(loBound),max:String(hiBound),step,value:String(initMin)
+        },[])
+        const highInput=CE("input",{
+            type:"range",min:String(loBound),max:String(hiBound),step,value:String(initMax)
+        },[])
+        for(const thumb of [lowInput,highInput]){
+            thumb.classList.add("dual")
+            stylize(thumb,{position:"absolute",inset:"0",width:"100%",background:"transparent",pointerEvents:"none"})
+        }
+        const paint=()=>{
+            const a=Number(lowInput.value)
+            const b=Number(highInput.value)
+            const lowPct=((Math.min(a,b)-loBound)/(hiBound-loBound))*100
+            const highPct=((Math.max(a,b)-loBound)/(hiBound-loBound))*100
+            stylize(fill,{left:`${lowPct}%`,width:`${Math.max(0,highPct-lowPct)}%`})
+            lowInput.style.zIndex=a<=b?"3":"2"
+            highInput.style.zIndex=a<=b?"2":"3"
+        }
+        const numbersRow=CE("div",{},[])
+        stylize(numbersRow,{
+            display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",
+            gap:"4px",minWidth:"0",gridColumn:"1 / -1"
+        })
+        const lowNumber=CE("input",{
+            type:"number",step:"any",value:String(initMin),title:`${metric.label} lower bound`
+        },[])
+        const highNumber=CE("input",{
+            type:"number",step:"any",value:String(initMax),title:`${metric.label} upper bound`
+        },[])
+        stylize(lowNumber,{width:"100%"})
+        stylize(highNumber,{width:"100%"})
+        numbersRow.append(lowNumber,highNumber)
+        const parseOk=value=>value!==""&&value!=="-"&&Number.isFinite(Number(value))
+        const apply=(a,b,from)=>{
+            a=Number(a); b=Number(b)
+            if(!Number.isFinite(a)||!Number.isFinite(b)) return
+            if(a>b) [a,b]=[b,a]
+            a=clamp(a); b=clamp(b)
+            lowInput.value=String(a)
+            highInput.value=String(b)
+            if(from!=="numbers"){
+                lowNumber.value=String(a)
+                highNumber.value=String(b)
+            }
+            paint()
+            this.saveQualityFilter({metric:filter.metric,min:a,max:b})
+        }
+        const commitNumbers=()=>{
+            if(!parseOk(lowNumber.value)||!parseOk(highNumber.value)) return
+            apply(lowNumber.value,highNumber.value,"numbers")
+            lowNumber.value=String(Number(lowInput.value))
+            highNumber.value=String(Number(highInput.value))
+            this.renderFitControls()
+        }
+        lowInput.addEventListener("input",()=>apply(lowInput.value,highInput.value,"sliders"))
+        highInput.addEventListener("input",()=>apply(lowInput.value,highInput.value,"sliders"))
+        /* On release, rebuild the controls so the fit-group dropdown lists the
+           same filtered set as the map (during the drag the map already updates
+           live, but rebuilding then would fight the gesture). */
+        lowInput.addEventListener("change",()=>this.renderFitControls())
+        highInput.addEventListener("change",()=>this.renderFitControls())
+        lowNumber.addEventListener("change",commitNumbers)
+        highNumber.addEventListener("change",commitNumbers)
+        sliders.append(track,fill,lowInput,highInput)
+        rangeRow.append(rangeLabel,sliders)
+        box.append(rangeRow,numbersRow)
+        paint()
+        return box
     }
 
     renderFitControls(){
@@ -1107,6 +1370,9 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         }
         const rank=1
         const config=this.fitConfig(rank)
+        const successfulFits=this.fitResults.filter(result=>!result.error)
+        const groupPointCounts=level.groups.map(group=>this.fitPointsForGroup(level,group)?.x.length??0)
+        const maxGroupPoints=groupPointCounts.length?Math.max(...groupPointCounts):0
         const field=(labelText,control)=>{
             const row=CE("div",{},[])
             stylize(row,{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1.2fr)",gap:"6px",alignItems:"center"})
@@ -1142,10 +1408,35 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         const note=CE("div",{},[`X is the repeat index; mass unit is derived from ${level.pattern}.`])
         stylize(note,{opacity:"0.6",fontSize:"0.92em"})
         this.fitControls.appendChild(note)
+        const pointsFilter=this.pointsFilterConfig()
         const fitButton=CE("button",{type:"button",disabled:this.fitInProgress},[this.fitInProgress?"Fitting…":"Fit rank-one groups"])
-        stylize(fitButton,{padding:"3px 6px",justifySelf:"start"})
+        stylize(fitButton,{padding:"3px 6px"})
         fitButton.addEventListener("click",()=>this.fitRankOne())
-        this.fitControls.appendChild(fitButton)
+        const pointInput=(placeholder,value,title)=>CE("input",{
+            type:"number",min:"0",step:"1",value:value===null?"":String(value),placeholder,title
+        },[])
+        const pointsMin=pointInput("min",pointsFilter.min,"Minimum measured points in a group")
+        const defaultMax=Math.max(maxGroupPoints,pointsFilter.min??1)
+        const pointsMaxValue=pointsFilter.max===null?defaultMax:Math.min(pointsFilter.max,defaultMax)
+        const pointsMax=pointInput("max",pointsMaxValue,"Maximum measured points in a group")
+        stylize(pointsMin,{width:"3.6em"})
+        stylize(pointsMax,{width:"3.6em"})
+        const parsePointBound=value=>value===""||value==="-"||!Number.isFinite(Number(value))
+            ?null:Math.max(0,Math.floor(Number(value)))
+        const commitPoints=()=>this.savePointsFilter({
+            min:parsePointBound(pointsMin.value),
+            max:parsePointBound(pointsMax.value)
+        })
+        pointsMin.addEventListener("change",commitPoints)
+        pointsMax.addEventListener("change",commitPoints)
+        const pointsLabel=CE("span",{},["Points"])
+        stylize(pointsLabel,{fontSize:"0.85em",opacity:"0.8"})
+        const pointsDash=CE("span",{},["–"])
+        const pointsRow=CE("div",{},[pointsLabel,pointsMin,pointsDash,pointsMax])
+        stylize(pointsRow,{display:"flex",gap:"4px",alignItems:"center",minWidth:"0"})
+        const fitRow=CE("div",{},[fitButton,pointsRow])
+        stylize(fitRow,{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"})
+        this.fitControls.appendChild(fitRow)
         const selectedRow=CE("div",{},[])
         stylize(selectedRow,{display:"grid",gridTemplateColumns:"auto minmax(0,1fr)",gap:"6px",alignItems:"center"})
         selectedRow.append(CE("label",{},["Fit curve"]),this.fitGroupSelect())
@@ -1157,11 +1448,15 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         stylize(parameterHeading,{fontWeight:"600",paddingTop:"4px",borderTop:"1px solid rgba(255,255,255,0.14)"})
         this.fitControls.appendChild(parameterHeading)
         const axesRow=CE("div",{},[])
-        stylize(axesRow,{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto minmax(0,1fr)",gap:"4px",alignItems:"center"})
+        stylize(axesRow,{display:"grid",gridTemplateColumns:"auto minmax(0,1fr) auto auto minmax(0,1fr) auto",gap:"4px",alignItems:"center"})
         this.parameterXSelect=this.parameterAxisSelect("x")
         this.parameterYSelect=this.parameterAxisSelect("y")
-        axesRow.append(CE("label",{},["X"]),this.parameterXSelect,CE("label",{},["Y"]),this.parameterYSelect)
+        axesRow.append(
+            CE("label",{},["X"]),this.parameterXSelect,this.parameterScaleToggle("x"),
+            CE("label",{},["Y"]),this.parameterYSelect,this.parameterScaleToggle("y")
+        )
         this.fitControls.appendChild(axesRow)
+        this.fitControls.appendChild(this.qualityFilterBlock(successfulFits))
         this.parameterChartHost=CE("div",{className:"sa-parameter-chart"},[])
         stylize(this.parameterChartHost,{width:"100%",height:"190px",minWidth:"0",borderTop:"1px solid rgba(255,255,255,0.08)"})
         this.fitControls.appendChild(this.parameterChartHost)
@@ -1173,9 +1468,16 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
 
     fitGroupSelect(){
         const select=CE("select",{className:"sa-fit-group-select"},[])
-        const successful=this.fitResults.filter(result=>!result.error)
+        const available=this.fitResults.filter(result=>!result.error)
+        const successful=this.filteredSuccessfulFits()
         if(!successful.length){
-            select.appendChild(CE("option",{value:""},[this.fitInProgress?"Fitting groups…":"Run a fit to inspect groups"]))
+            select.appendChild(CE("option",{value:""},[
+                this.fitInProgress
+                    ?"Fitting groups…"
+                    :available.length
+                        ?"No fit passes the quality filter"
+                        :"Run a fit to inspect groups"
+            ]))
             select.disabled=true
         }else{
             successful.forEach(result=>select.appendChild(CE("option",{value:result.groupKey},[
@@ -1188,6 +1490,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                 this.selectedFitGroupKey=select.value
                 this.hoveredFitGroupKey=null
                 this.renderFitPlots()
+                this.refreshPlotHighlight()
             })
         }
         stylize(select,{minWidth:"0",padding:"2px 4px"})
@@ -1195,15 +1498,41 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
     }
 
     parameterNamesForModel(model){
-        return model==="wesslau"?["alpha","mu","amplitude"]
+        const parameters=model==="wesslau"?["alpha","mu","amplitude"]
             :model==="flory_schulz"?["a","amplitude"]
                 :["z","Mn","amplitude"]
+        return [...parameters,...this.qualityParameterNames()]
+    }
+
+    /* Fit-quality values usable as parameter-map axes. Stored at the top level
+       of a fit result (not under `parameters`). */
+    qualityParameterNames(){
+        return ["r2","chi2Red"]
+    }
+
+    parameterLabel(name){
+        return name==="r2"?"R²":name==="chi2Red"?"χ²red":name
+    }
+
+    parameterValue(result,name){
+        const value=this.qualityParameterNames().includes(name)
+            ?result?.[name]
+            :result?.parameters?.[name]
+        if(value===null||value===undefined) return null
+        const number=Number(value)
+        return Number.isFinite(number)?number:null
+    }
+
+    qualitySummary(result){
+        const r2=this.parameterValue(result,"r2")
+        const chi2=this.parameterValue(result,"chi2Red")
+        return `R² ${r2===null?"n/a":r2.toFixed(4)} · χ²red ${chi2===null?"n/a":this.formatIntensity(chi2)}`
     }
 
     parameterAxisSelect(axis){
         const select=CE("select",{},[])
         const names=this.parameterNamesForModel(this.fitConfig(1).model)
-        names.forEach(name=>select.appendChild(CE("option",{value:name},[name])))
+        names.forEach(name=>select.appendChild(CE("option",{value:name},[this.parameterLabel(name)])))
         const config=this.fitConfig(1)
         const fallback=axis==="x"?(config.parameterX??names[0]):(config.parameterY??names[1]??names[0])
         select.value=names.includes(fallback)?fallback:names[0]
@@ -1220,6 +1549,28 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.parameters.fit.byRank["1"]={...this.fitConfig(1),[key]:value}
         this.origin?.saveSessionSoon?.()
         this.renderFitPlots()
+    }
+
+    setParameterScale(axis,log){
+        const key=axis==="x"?"parameterXLog":"parameterYLog"
+        if(!this.parameters.fit?.byRank){
+            this.parameters.fit={...(this.parameters.fit??{}),byRank:{}}
+        }
+        this.parameters.fit.byRank["1"]={...this.fitConfig(1),[key]:!!log}
+        this.origin?.saveSessionSoon?.()
+        this.renderFitPlots()
+    }
+
+    parameterScaleToggle(axis){
+        const key=axis==="x"?"parameterXLog":"parameterYLog"
+        const checked=this.fitConfig(1)[key]===true
+        const input=CE("input",{type:"checkbox",checked,title:`Logarithmic ${axis.toUpperCase()} axis`},[])
+        input.addEventListener("change",()=>this.setParameterScale(axis,input.checked))
+        const text=CE("span",{},["log"])
+        stylize(text,{fontSize:"0.8em",opacity:"0.8"})
+        const wrap=CE("label",{},[input,text])
+        stylize(wrap,{display:"inline-flex",gap:"2px",alignItems:"center",cursor:"pointer"})
+        return wrap
     }
 
     fitPointsForGroup(level,group){
@@ -1256,10 +1607,14 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         if(!level||this.fitInProgress) return
         const revision=++this.fitRevision
         const config={...this.fitConfig(1)}
+        const pointsFilter=this.pointsFilterConfig()
         this.fitInProgress=true
         this.renderFitControls()
-        const results=await Promise.all(level.groups.map(async(group,index)=>{
+        const results=(await Promise.all(level.groups.map(async(group,index)=>{
             const data=this.fitPointsForGroup(level,group)
+            const count=data?.x.length??0
+            if(pointsFilter.min!==null&&count<pointsFilter.min) return null
+            if(pointsFilter.max!==null&&count>pointsFilter.max) return null
             if(!data||data.x.length<2){
                 return {groupKey:group.key,groupIndex:index+1,pattern:level.pattern,error:"At least two targets are required in this group."}
             }
@@ -1274,7 +1629,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             }catch(error){
                 return {groupKey:group.key,groupIndex:index+1,pattern:level.pattern,error:error?.message??String(error)}
             }
-        }))
+        }))).filter(Boolean)
         if(revision!==this.fitRevision) return
         this.fitResults=results
         this.fitInProgress=false
@@ -1298,7 +1653,8 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
 
     renderFitPlots(){
         if(!this.fitChartHost||!this.parameterChartHost) return
-        const successful=this.fitResults.filter(result=>!result.error)
+        const allSuccessful=this.fitResults.filter(result=>!result.error)
+        const successful=this.applyQualityFilter(allSuccessful,this.qualityFilterConfig())
         const selectedKey=this.hoveredFitGroupKey??this.selectedFitGroupKey??successful[0]?.groupKey
         const selected=successful.find(result=>result.groupKey===selectedKey)??successful[0]??null
         this.selectedFitGroupKey=selected?.groupKey??null
@@ -1326,27 +1682,37 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         const names=this.parameterNamesForModel(this.fitConfig(1).model)
         const xName=names.includes(this.fitConfig(1).parameterX)?this.fitConfig(1).parameterX:names[0]
         const yName=names.includes(this.fitConfig(1).parameterY)?this.fitConfig(1).parameterY:(names[1]??names[0])
-        const parameterPairs=successful.map(result=>[
-            result.parameters[xName],result.parameters[yName]
+        const xLabel=this.parameterLabel(xName)
+        const yLabel=this.parameterLabel(yName)
+        const mapResults=successful.filter(result=>
+            this.parameterValue(result,xName)!==null&&this.parameterValue(result,yName)!==null
+        )
+        const parameterPairs=mapResults.map(result=>[
+            this.parameterValue(result,xName),this.parameterValue(result,yName)
         ])
-        this.setFitPlotLabels(this.parameterPlot,xName,yName)
+        this.setFitPlotLabels(this.parameterPlot,xLabel,yLabel)
+        const parameterConfig=this.fitConfig(1)
+        this.parameterPlot.parameters.axis.bottom.scale=parameterConfig.parameterXLog===true?"log":"linear"
+        this.parameterPlot.parameters.axis.left.scale=parameterConfig.parameterYLog===true?"log":"linear"
         const pointColor=result=>result.groupKey===selected?.groupKey?"#ffb454":"#64c7b5"
         this.parameterPlot.setTraces(parameterPairs.length?[this.makeXYTrace(
-            "fit-parameter-map",`${yName} vs ${xName}`,parameterPairs,[xName,yName],{
+            "fit-parameter-map",`${yLabel} vs ${xLabel}`,parameterPairs,[xLabel,yLabel],{
                 mode:"points",color:"#64c7b5",line:{size:1},marker:{shape:"circle",size:7},
                 onPointHover:({pointIndex})=>{
-                    const result=successful[pointIndex]
+                    const result=mapResults[pointIndex]
                     if(!result) return
                     this.hoveredFitGroupKey=result.groupKey
-                    this.fitViewStatus.textContent=`Previewing group ${result.groupIndex} · ${xName} ${this.formatIntensity(result.parameters[xName])} · ${yName} ${this.formatIntensity(result.parameters[yName])}`
+                    this.fitViewStatus.textContent=`Previewing group ${result.groupIndex} · ${xLabel} ${this.formatIntensity(this.parameterValue(result,xName))} · ${yLabel} ${this.formatIntensity(this.parameterValue(result,yName))} · ${this.qualitySummary(result)}`
                     this.renderSelectedFitPlot(result)
+                    this.refreshPlotHighlight()
                 },
                 onPointLeave:()=>{
                     this.hoveredFitGroupKey=null
                     this.renderFitPlots()
+                    this.refreshPlotHighlight()
                 },
                 onPointClick:({pointIndex})=>{
-                    const result=successful[pointIndex]
+                    const result=mapResults[pointIndex]
                     if(!result) return
                     this.selectedFitGroupKey=result.groupKey
                     this.hoveredFitGroupKey=null
@@ -1354,18 +1720,22 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                     if(select) select.value=result.groupKey
                     this.fitViewStatus.textContent=`Selected group ${result.groupIndex}`
                     this.renderSelectedFitPlot(result)
+                    this.refreshPlotHighlight()
                 },
-                pointColor:index=>pointColor(successful[index])
+                pointColor:index=>pointColor(mapResults[index])
             }
         )]:[])
         this.parameterPlot.drawGraph()
         if(!selected){
-            this.fitViewStatus.textContent=this.fitResults.length
-                ?"No group has enough valid targets to draw a fit."
-                :"Run a fit to populate the group curve and parameter map."
+            this.fitViewStatus.textContent=allSuccessful.length&&!successful.length
+                ?"No fitted group passes the quality filter."
+                :this.fitResults.length
+                    ?"No group has enough valid targets to draw a fit."
+                    :"Run a fit to populate the group curve and parameter map."
         }else if(!this.hoveredFitGroupKey){
             this.fitViewStatus.textContent=`Showing group ${selected.groupIndex} · hover a parameter point to preview; click to pin.`
         }
+        this.refreshPlotHighlight()
     }
 
     renderSelectedFitPlot(result){
@@ -1406,6 +1776,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             if(groupSelect) groupSelect.value=result.groupKey
             this.fitViewStatus.textContent=`Selected group ${result.groupIndex}`
             this.renderSelectedFitPlot(result)
+            this.refreshPlotHighlight()
         })
         box.appendChild(select)
         const metrics=CE("div",{},[
@@ -1437,6 +1808,18 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                     `n=${result.x.length} · RMSE ${this.formatIntensity(result.rmse)} · R² ${result.r2===null?"n/a":result.r2.toFixed(4)} · χ²red ${result.chi2Red===null?"n/a":this.formatIntensity(result.chi2Red)} · AICc ${Number.isFinite(result.aicc)?this.formatIntensity(result.aicc):"n/a"}`
                 ]))
             }
+            card.addEventListener("mouseenter",()=>{
+                this.hoveredFitGroupKey=result.groupKey
+                this.refreshPlotHighlight()
+                card.style.background="rgba(255,255,255,0.04)"
+            })
+            card.addEventListener("mouseleave",()=>{
+                if(this.hoveredFitGroupKey===result.groupKey){
+                    this.hoveredFitGroupKey=null
+                    this.refreshPlotHighlight()
+                }
+                card.style.background=""
+            })
             this.modelsList.appendChild(card)
         }
     }
@@ -1831,6 +2214,33 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         return Number.isFinite(value)?Math.max(1,Math.min(12,value)):3
     }
 
+    /* The exact data-space position the 3D cloud gives this point, so a halo
+       lands on the right dot whatever axes are currently selected. Points on a
+       suppressed axis use the same 0 constant as the main cloud. */
+    highlightCoordinatesFor(point){
+        const axes=AXIS_KEYS.map(key=>this.axisValue(key))
+        const coordinate=axis=>axis<0?0:Number(point?.values?.[axis])||0
+        return {x:coordinate(axes[0]),y:coordinate(axes[1]),z:coordinate(axes[2])}
+    }
+
+    /* One place decides what is ringed: a group hovered in the series wins,
+       otherwise the fitted group currently shown or hovered in the parameter
+       map. Keeps the two interactions from fighting over the 3D view. */
+    refreshPlotHighlight(){
+        if(!this.plot){
+            return
+        }
+        let formulas=this.hoveredSeriesGroup?.formulas??null
+        if(!formulas){
+            const key=this.hoveredFitGroupKey??this.selectedFitGroupKey
+            if(key){
+                const group=this.rankOneLevel()?.groups?.find(candidate=>candidate.key===key)??null
+                formulas=group?.formulas??null
+            }
+        }
+        this.plot.setHighlight((formulas??[]).map(point=>this.highlightCoordinatesFor(point)))
+    }
+
     waveFor(points,axes,labels,constants=[0,0,0]){
         const wave=new Wave(points.length,1,3)
         wave.labels=Wave.normalizeLabels(labels,["x","y","z"])
@@ -1899,6 +2309,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.plot.axisLabels={x:labels[0],y:labels[1],z:labels[2]}
         if(!axes.some(index=>index>=0)){
             this.plot.setTraces([])
+            this.plot.clearHighlight()
             this.applyRestoredView()
             if(this.plotSummary){
                 this.plotSummary.textContent=`${this.pointTotal} formula${this.pointTotal===1?"":"s"} · no axis selected`
@@ -1999,6 +2410,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             }
             this.plotSummary.textContent=parts.join(" · ")
         }
+        this.refreshPlotHighlight()
     }
 
     addElement(raw){
