@@ -475,6 +475,12 @@ export class Plot3DWebGL{
            traces (scatter: x/y/z coordinates). Projected on every overlay draw,
            so the halos follow an orbit for free. */
         this.highlightPoints=[]
+        /* Segments ({a:{x,y,z}, b:{x,y,z}}) drawn as a thin glowing ray, in
+           the same data coordinates as the points. */
+        this.highlightLines=[]
+        /* Polygons (arrays of {x,y,z}) drawn as a faint white plane with a
+           glowing outline, in the same data coordinates. */
+        this.highlightPlanes=[]
         this.bounds=null
         this._orthographic=false
         this.defaultAngles=defaultAngles
@@ -1026,16 +1032,18 @@ export class Plot3DWebGL{
         })
     }
     /* HIGHLIGHT HALOS. `points` are DATA coordinates, the same ones the scatter
-       traces carry ({x,y,z}); the axis->world mapping and the projection are
-       the plot's business, so a caller never has to know the camera. An empty
-       list clears the halos. */
-    setHighlight(points){
+       traces carry ({x,y,z}); `lines` are optional segments {a,b} and `planes`
+       optional polygons (arrays of points) in those same coordinates. An empty
+       list clears them. */
+    setHighlight(points,lines=[],planes=[]){
         this.highlightPoints=Array.isArray(points)?points:[]
+        this.highlightLines=Array.isArray(lines)?lines:[]
+        this.highlightPlanes=Array.isArray(planes)?planes:[]
         this.requestOverlay()
         return this
     }
     clearHighlight(){
-        return this.setHighlight([])
+        return this.setHighlight([],[],[])
     }
     drawFrame(){
         if(!this.glLayer) return
@@ -1124,25 +1132,108 @@ export class Plot3DWebGL{
         this.drawAxisGuide(svg,width,height)
         this.drawHighlights(svg)
     }
-    /* White halos over the points a caller asked to highlight. SVG circles in
-       the overlay, projected with the same project() as the box and the ticks:
-       no GPU buffer to rebuild when the selection changes, and the halos stay
-       readable above the traces (the overlay is drawn after the canvas). */
+    /* White halos and rays over the selection a caller asked to highlight. SVG
+       in the overlay, projected with the same project() as the box and the
+       ticks: no GPU buffer to rebuild when the selection changes, and the
+       marks stay readable above the traces (the overlay is drawn after the
+       canvas). */
     drawHighlights(svg){
         const points=Array.isArray(this.highlightPoints)?this.highlightPoints:[]
-        if(!points.length) return
+        const lines=Array.isArray(this.highlightLines)?this.highlightLines:[]
+        const planes=Array.isArray(this.highlightPlanes)?this.highlightPlanes:[]
+        if(!points.length&&!lines.length&&!planes.length) return
         const ns="http://www.w3.org/2000/svg"
         const world=this.axisWorld()
+        const project=point=>{
+            const x=Number(point?.x)
+            const y=Number(point?.y)
+            const z=Number(point?.z)
+            if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z)) return null
+            const projected=this.project(world.x(x),world.y(y),world.z(z))
+            return projected.behind?null:projected
+        }
+        const withAlpha=(color,alpha)=>{
+            const match=/^#([0-9a-f]{6})$/i.exec(color??"")
+            if(!match) return `rgba(255,255,255,${alpha})`
+            const value=parseInt(match[1],16)
+            return `rgba(${(value>>16)&255},${(value>>8)&255},${value&255},${alpha})`
+        }
+        const planeGroup=document.createElementNS(ns,"g")
+        planeGroup.setAttribute("class","gl3d-highlight-planes")
+        for(const plane of planes){
+            const corners=Array.isArray(plane)?plane:plane?.points
+            if(!Array.isArray(corners)||corners.length<3) continue
+            const color=Array.isArray(plane)?null:plane?.color
+            const projected=corners.map(project)
+            if(projected.some(point=>!point)) continue
+            const polygon=document.createElementNS(ns,"polygon")
+            polygon.setAttribute("points",projected.map(point=>`${point.x},${point.y}`).join(" "))
+            polygon.setAttribute("fill","rgba(255,255,255,0.055)")
+            polygon.setAttribute("stroke","rgba(255,255,255,0.6)")
+            polygon.setAttribute("stroke-width","1")
+            polygon.setAttribute("vector-effect","non-scaling-stroke")
+            polygon.setAttribute("style",color
+                ?`filter:drop-shadow(0 0 4px ${withAlpha(color,0.95)}) drop-shadow(0 0 9px ${withAlpha(color,0.45)})`
+                :"filter:drop-shadow(0 0 3px rgba(255,255,255,0.75))")
+            planeGroup.appendChild(polygon)
+        }
+        if(planeGroup.childNodes.length){
+            svg.appendChild(planeGroup)
+        }
+        const rayGroup=document.createElementNS(ns,"g")
+        rayGroup.setAttribute("class","gl3d-highlight-rays")
+        for(const line of lines){
+            const a=project(line?.a)
+            const b=project(line?.b)
+            if(!a||!b) continue
+            const color=line?.color??null
+            const halo=document.createElementNS(ns,"line")
+            halo.setAttribute("x1",a.x)
+            halo.setAttribute("y1",a.y)
+            halo.setAttribute("x2",b.x)
+            halo.setAttribute("y2",b.y)
+            halo.setAttribute("stroke",color??"rgba(255,255,255,0.18)")
+            halo.setAttribute("stroke-opacity",color?"0.55":"1")
+            halo.setAttribute("stroke-width","6")
+            halo.setAttribute("stroke-linecap","round")
+            halo.setAttribute("vector-effect","non-scaling-stroke")
+            halo.setAttribute("style","filter:blur(2px)")
+            const core=document.createElementNS(ns,"line")
+            core.setAttribute("x1",a.x)
+            core.setAttribute("y1",a.y)
+            core.setAttribute("x2",b.x)
+            core.setAttribute("y2",b.y)
+            core.setAttribute("stroke","rgba(255,255,255,0.95)")
+            core.setAttribute("stroke-width","1")
+            core.setAttribute("stroke-linecap","round")
+            core.setAttribute("vector-effect","non-scaling-stroke")
+            core.setAttribute("style",color
+                ?`filter:drop-shadow(0 0 4px ${withAlpha(color,0.95)}) drop-shadow(0 0 8px ${withAlpha(color,0.5)})`
+                :"filter:drop-shadow(0 0 3px rgba(255,255,255,0.9))")
+            rayGroup.append(halo,core)
+        }
+        if(rayGroup.childNodes.length){
+            svg.appendChild(rayGroup)
+        }
         const group=document.createElementNS(ns,"g")
         group.setAttribute("class","gl3d-highlights")
         for(const point of points){
-            if(!point) continue
-            const x=Number(point.x)
-            const y=Number(point.y)
-            const z=Number(point.z)
-            if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z)) continue
-            const projected=this.project(world.x(x),world.y(y),world.z(z))
-            if(projected.behind) continue
+            const projected=project(point)
+            if(!projected) continue
+            const color=point?.color??null
+            if(color){
+                const glow=document.createElementNS(ns,"circle")
+                glow.setAttribute("cx",projected.x)
+                glow.setAttribute("cy",projected.y)
+                glow.setAttribute("r","8")
+                glow.setAttribute("fill","none")
+                glow.setAttribute("stroke",color)
+                glow.setAttribute("stroke-opacity","0.55")
+                glow.setAttribute("stroke-width","6")
+                glow.setAttribute("vector-effect","non-scaling-stroke")
+                glow.setAttribute("style","filter:blur(2px)")
+                group.appendChild(glow)
+            }
             const halo=document.createElementNS(ns,"circle")
             halo.setAttribute("cx",projected.x)
             halo.setAttribute("cy",projected.y)
@@ -1151,7 +1242,9 @@ export class Plot3DWebGL{
             halo.setAttribute("stroke","rgba(255,255,255,0.95)")
             halo.setAttribute("stroke-width","1.4")
             halo.setAttribute("vector-effect","non-scaling-stroke")
-            halo.setAttribute("style","filter:drop-shadow(0 0 3px rgba(255,255,255,0.95)) drop-shadow(0 0 6px rgba(160,210,255,0.55))")
+            halo.setAttribute("style",color
+                ?`filter:drop-shadow(0 0 4px ${withAlpha(color,0.95)}) drop-shadow(0 0 8px ${withAlpha(color,0.5)})`
+                :"filter:drop-shadow(0 0 3px rgba(255,255,255,0.95)) drop-shadow(0 0 6px rgba(160,210,255,0.55))")
             group.appendChild(halo)
         }
         if(group.childNodes.length){

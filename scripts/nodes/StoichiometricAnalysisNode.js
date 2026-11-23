@@ -52,7 +52,8 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.parameters.projection={
             x:0,y:1,z:2,showCloud:true,showProjections:true,pointSize:3,
             orthographic:false,axis:null,
-            colorBy:"collection",showPatternVectors:false
+            colorBy:"collection",showPatternVectors:false,
+            collectionColors:{}
         }
         this.parameters.pca={x:0,y:1,z:2}
         this.parameters.fit={byRank:{}}
@@ -62,6 +63,8 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.selectedFitGroupKey=null
         this.hoveredFitGroupKey=null
         this.hoveredSeriesGroup=null
+        this.hoveredSeriesLevel=null
+        this.hoveredRankFolder=null
         this.fitPlot=null
         this.parameterPlot=null
 
@@ -681,6 +684,8 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.fitRevision++
         this.fitInProgress=false
         this.hoveredSeriesGroup=null
+        this.hoveredSeriesLevel=null
+        this.hoveredRankFolder=null
         this.hoveredFitGroupKey=null
         const prefix=[]
         const prefixTexts=[]
@@ -979,9 +984,15 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             })
             folderSummary.addEventListener("mouseenter",()=>{
                 folderSummary.style.background="rgba(174,242,46,0.16)"
+                this.hoveredRankFolder=rankFolder
+                this.refreshPlotHighlight()
             })
             folderSummary.addEventListener("mouseleave",()=>{
                 folderSummary.style.background="rgba(255,255,255,0.09)"
+                if(this.hoveredRankFolder===rankFolder){
+                    this.hoveredRankFolder=null
+                    this.refreshPlotHighlight()
+                }
             })
             folder.appendChild(folderSummary)
             for(const level of rankFolder.levels){
@@ -1057,11 +1068,13 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
                        sont entourés d'un halo dans la vue 3D. */
                     details.addEventListener("mouseenter",()=>{
                         this.hoveredSeriesGroup=group
+                        this.hoveredSeriesLevel=level
                         this.refreshPlotHighlight()
                     })
                     details.addEventListener("mouseleave",()=>{
                         if(this.hoveredSeriesGroup===group){
                             this.hoveredSeriesGroup=null
+                            this.hoveredSeriesLevel=null
                             this.refreshPlotHighlight()
                         }
                     })
@@ -1868,6 +1881,24 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         this.origin?.saveSessionSoon?.()
     }
 
+    /* Point-cloud colour of a collection: the user override when one was
+       picked in the Inputs panel, otherwise the palette colour. */
+    collectionColor(index){
+        const overrides=this.parameters.projection?.collectionColors
+        const value=overrides&&typeof overrides==="object"?overrides[index]:null
+        return /^#[0-9a-f]{6}$/i.test(String(value??""))?value:traceColor(index)
+    }
+
+    setCollectionColor(index,value){
+        if(!this.parameters.projection) this.parameters.projection={}
+        const overrides={...(this.parameters.projection.collectionColors??{})}
+        overrides[index]=value
+        this.parameters.projection.collectionColors=overrides
+        this.origin?.saveSessionSoon?.()
+        this.refreshPlot()
+        this.refreshPlotHighlight()
+    }
+
     renderInputRecap(){
         if(!this.inputRecap){
             return
@@ -1886,9 +1917,9 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             const row=CE("div",{},[])
             stylize(row,{
                 display:"grid",
-                gridTemplateColumns:"minmax(0,1fr) auto",
+                gridTemplateColumns:"minmax(0,1fr) auto auto",
                 gap:"6px",
-                alignItems:"baseline",
+                alignItems:"center",
                 padding:"3px 0",
                 borderTop:"1px solid rgba(255,255,255,0.08)"
             })
@@ -1900,11 +1931,19 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             ])
             stylize(source,{fontSize:"0.85em",opacity:"0.6",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"})
             left.append(name,source)
+            const colorInput=CE("input",{
+                type:"color",value:this.collectionColor(index),title:"Colour of this cloud (also tints its glow)"
+            },[])
+            stylize(colorInput,{
+                width:"24px",height:"20px",padding:"0",border:"1px solid rgba(255,255,255,0.25)",
+                borderRadius:"3px",background:"transparent",cursor:"pointer"
+            })
+            colorInput.addEventListener("input",()=>this.setCollectionColor(index,colorInput.value))
             const right=CE("div",{},[
                 `${collection.formulas.length} formula${collection.formulas.length===1?"":"s"}`
             ])
             stylize(right,{fontFamily:"monospace",fontSize:"0.78em",opacity:"0.8",whiteSpace:"nowrap"})
-            row.append(left,right)
+            row.append(left,colorInput,right)
             this.inputRecap.appendChild(row)
         })
         const summary=CE("div",{},[
@@ -2223,22 +2262,170 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
         return {x:coordinate(axes[0]),y:coordinate(axes[1]),z:coordinate(axes[2])}
     }
 
-    /* One place decides what is ringed: a group hovered in the series wins,
-       otherwise the fitted group currently shown or hovered in the parameter
-       map. Keeps the two interactions from fighting over the 3D view. */
+    /* Map a stoichiometry-space vector/point (order of stoichiometricDimensions)
+       to the element order the 3D cloud uses. */
+    highlightValuesFromStoichiometry(values){
+        const dimensionIndex=new Map(this.stoichiometricDimensions.map((symbol,index)=>[symbol,index]))
+        return this.elements().map(symbol=>{
+            const index=dimensionIndex.get(symbol)
+            return index===undefined?0:Number(values?.[index])||0
+        })
+    }
+
+    /* A rank-one group is representative + k * generator: two extreme points
+       along that direction are enough to draw the ray. */
+    rankOneHighlightLine(level,group,color){
+        if(!level||!group) return null
+        const basis=level.lattice?.basis
+        if(!Array.isArray(basis)||!basis.length) return null
+        const generator=basis.map(row=>Number(row?.[0])||0)
+        const coordinateAxis=generator.findIndex(value=>value!==0)
+        if(coordinateAxis<0) return null
+        const representative=group.representative
+        if(!Array.isArray(representative)) return null
+        const coefficients=group.formulas.map(point=>
+            (point.stoichiometry[coordinateAxis]-representative[coordinateAxis])/generator[coordinateAxis]
+        ).filter(value=>Number.isFinite(value))
+        if(coefficients.length<2) return null
+        const low=Math.min(...coefficients)
+        const high=Math.max(...coefficients)
+        if(!(high>low)) return null
+        const valuesAt=t=>this.highlightValuesFromStoichiometry(
+            representative.map((value,index)=>(Number(value)||0)+(Number(generator[index])||0)*t)
+        )
+        return {
+            a:this.highlightCoordinatesFor({values:valuesAt(low)}),
+            b:this.highlightCoordinatesFor({values:valuesAt(high)}),
+            color
+        }
+    }
+
+    /* A rank-two group is representative + a*v1 + b*v2: project every member
+       onto the two lattice directions and return the bounding parallelogram in
+       data coordinates. */
+    rankTwoHighlightPlane(level,group,color){
+        if(!level||!group) return null
+        const basis=level.lattice?.basis
+        if(!Array.isArray(basis)||!basis.length||basis[0].length<2) return null
+        const v1=basis.map(row=>Number(row?.[0])||0)
+        const v2=basis.map(row=>Number(row?.[1])||0)
+        const representative=group.representative
+        if(!Array.isArray(representative)) return null
+        const dot=(a,b)=>a.reduce((sum,value,index)=>sum+value*(Number(b[index])||0),0)
+        const g11=dot(v1,v1)
+        const g22=dot(v2,v2)
+        const g12=dot(v1,v2)
+        const determinant=g11*g22-g12*g12
+        if(!(Math.abs(determinant)>1e-12)) return null
+        const extents=group.formulas
+            .map(point=>({x:point.stoichiometry,y:representative}))
+            .map(({x,y})=>{
+                const diff=x.map((value,index)=>(Number(value)||0)-(Number(y[index])||0))
+                const rhs1=dot(diff,v1)
+                const rhs2=dot(diff,v2)
+                return {
+                    a:(rhs1*g22-rhs2*g12)/determinant,
+                    b:(g11*rhs2-g12*rhs1)/determinant
+                }
+            })
+            .filter(coordinate=>Number.isFinite(coordinate.a)&&Number.isFinite(coordinate.b))
+        if(extents.length<2) return null
+        const aMin=Math.min(...extents.map(coordinate=>coordinate.a))
+        const aMax=Math.max(...extents.map(coordinate=>coordinate.a))
+        const bMin=Math.min(...extents.map(coordinate=>coordinate.b))
+        const bMax=Math.max(...extents.map(coordinate=>coordinate.b))
+        if(!(aMax>aMin)||!(bMax>bMin)) return null
+        const valuesAt=(a,b)=>this.highlightValuesFromStoichiometry(
+            representative.map((value,index)=>
+                (Number(value)||0)+(Number(v1[index])||0)*a+(Number(v2[index])||0)*b
+            )
+        )
+        return {
+            points:[
+                [aMin,bMin],[aMax,bMin],[aMax,bMax],[aMin,bMax]
+            ].map(([a,b])=>this.highlightCoordinatesFor({values:valuesAt(a,b)})),
+            color
+        }
+    }
+
+    /* Geometry materialising a group in the 3D view: a ray for rank one, a
+       plane for rank two, nothing beyond. */
+    rankHighlightGeometry(level,group,color){
+        if(!level||!group) return {lines:[],planes:[]}
+        const rank=level.lattice?.rank??level.rank
+        if(rank===1){
+            const line=this.rankOneHighlightLine(level,group,color)
+            return {lines:line?[line]:[],planes:[]}
+        }
+        if(rank===2){
+            const plane=this.rankTwoHighlightPlane(level,group,color)
+            return {lines:[],planes:plane?[plane]:[]}
+        }
+        return {lines:[],planes:[]}
+    }
+
+    /* Colour a formula the way the scatter cloud colours it: by group when the
+       colour is driven by a projection level, otherwise by collection. */
+    highlightColorLookup(){
+        const colorLevel=this.colorLevel()
+        const indexByPoint=new Map()
+        if(colorLevel){
+            colorLevel.groups.forEach((group,index)=>{
+                for(const point of group.formulas) indexByPoint.set(point,index)
+            })
+            return point=>groupColor(indexByPoint.get(point)??0)
+        }
+        this.collectionPoints.forEach((collection,index)=>{
+            for(const point of collection.points) indexByPoint.set(point,index)
+        })
+        return point=>this.collectionColor(indexByPoint.get(point)??0)
+    }
+
+    highlightColorFor(group,lookup){
+        const point=group?.formulas?.[0]
+        return point?lookup(point):null
+    }
+
+    /* One place decides what is drawn: a whole rank folder hovered in the
+       series wins (all its beams, no circles), then a single group hovered in
+       the series, then the fitted group currently shown or hovered in the
+       parameter map. Keeps the interactions from fighting over the 3D view. */
     refreshPlotHighlight(){
         if(!this.plot){
             return
         }
-        let formulas=this.hoveredSeriesGroup?.formulas??null
-        if(!formulas){
+        if(this.hoveredRankFolder){
+            const lines=[]
+            const planes=[]
+            const colorFor=this.highlightColorLookup()
+            for(const level of this.hoveredRankFolder.levels){
+                for(const group of level.groups){
+                    const geometry=this.rankHighlightGeometry(level,group,this.highlightColorFor(group,colorFor))
+                    lines.push(...geometry.lines)
+                    planes.push(...geometry.planes)
+                }
+            }
+            this.plot.setHighlight([],lines,planes)
+            return
+        }
+        let group=this.hoveredSeriesGroup??null
+        let level=this.hoveredSeriesLevel??null
+        const hovered=Boolean(this.hoveredSeriesGroup||this.hoveredFitGroupKey)
+        if(!group){
             const key=this.hoveredFitGroupKey??this.selectedFitGroupKey
             if(key){
-                const group=this.rankOneLevel()?.groups?.find(candidate=>candidate.key===key)??null
-                formulas=group?.formulas??null
+                const rankLevel=this.rankOneLevel()
+                group=rankLevel?.groups?.find(candidate=>candidate.key===key)??null
+                level=rankLevel
             }
         }
-        this.plot.setHighlight((formulas??[]).map(point=>this.highlightCoordinatesFor(point)))
+        const colorFor=group?this.highlightColorLookup():null
+        const color=group?this.highlightColorFor(group,colorFor):null
+        const points=(group?.formulas??[]).map(point=>({...this.highlightCoordinatesFor(point),color}))
+        const geometry=hovered&&group
+            ?this.rankHighlightGeometry(level,group,color)
+            :{lines:[],planes:[]}
+        this.plot.setHighlight(points,geometry.lines,geometry.planes)
     }
 
     waveFor(points,axes,labels,constants=[0,0,0]){
@@ -2346,7 +2533,7 @@ export class StoichiometricAnalysisNode extends NodeWithAccordion{
             if(!collection.points.length){
                 return
             }
-            const color=traceColor(index)
+            const color=this.collectionColor(index)
             const pointColors=groupIndex
                 ?collection.points.map(point=>groupColor(groupIndex.get(point)??0))
                 :null
