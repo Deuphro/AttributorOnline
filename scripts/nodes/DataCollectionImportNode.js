@@ -261,7 +261,7 @@ this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollecti
     buildDataRow(item){
         const isSelectedMultiplex=this.parameters.selectedForMultiplex.includes(item.id)
         const isSelectedOutput=this.parameters.selectedForOutput===item.id
-        const row=CE("div",{style:{display:"grid",gridTemplateColumns:"24px 24px 1fr auto",gap:"6px",alignItems:"center",padding:"4px",border:"1px solid #333",borderRadius:"3px",background:isSelectedOutput?"rgba(120,180,255,0.15)":"transparent"}},[])
+        const row=CE("div",{style:{display:"grid",gridTemplateColumns:"24px 24px 1fr auto auto",gap:"6px",alignItems:"center",padding:"4px",border:"1px solid #333",borderRadius:"3px",background:isSelectedOutput?"rgba(120,180,255,0.15)":"transparent"}},[])
         // Checkbox multiplex (tous les scans de l'item)
         const checkMultiplex=CE("input",{type:"checkbox",checked:isSelectedMultiplex,style:{width:"18px",height:"18px",cursor:"pointer"}},[])
         checkMultiplex.addEventListener("change",()=>{
@@ -288,7 +288,16 @@ this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollecti
         }else{
             infoText+=`${item.pairs?.length||0} point(s)`
         }
-        const info=CE("div",{style:{fontSize:"13px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},[infoText])
+        const info=CE("div",{style:{fontSize:"13px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"},title:"Double-click to rename"},[infoText])
+        info.addEventListener("dblclick",()=>this.renameItem(item))
+        // Bouton renommer
+        const renameBtn=CE("button",{type:"button",title:"Rename this file"},["✎"])
+        stylize(renameBtn,{
+            fontSize:"0.8em",lineHeight:"1",padding:"2px",cursor:"pointer",
+            color:"inherit",background:"rgba(255,255,255,0.08)",
+            border:"1px solid rgba(255,255,255,0.15)",borderRadius:"2px"
+        })
+        renameBtn.addEventListener("click",()=>this.renameItem(item))
         // Bouton supprimer
         const removeBtn=CE("button",{type:"button",title:"Remove this file"},["✕"])
         stylize(removeBtn,{
@@ -349,9 +358,18 @@ this.parameters.enabledScans={}   // <-- ID: booléen par scan pour DataCollecti
                 scanList.appendChild(CE("div",{style:{display:"flex",alignItems:"center",gap:"4px",fontSize:"12px",whiteSpace:"nowrap"}},[scanCb,scanLabel]))
             })
         }
-        row.append(checkMultiplex,radioOutput,info,removeBtn)
+        row.append(checkMultiplex,radioOutput,info,renameBtn,removeBtn)
         if(scanList) row.appendChild(scanList)
         return row
+    }
+    renameItem(item){
+        const newName=prompt("Rename file:",item.name)
+        if(newName===null) return
+        const trimmed=newName.trim()
+        if(!trimmed||trimmed===item.name) return
+        item.name=trimmed
+        this.rebuildWaves()
+        this.renderAccordion()
     }
     setAllScansEnabled(item,enabled){
         const enabledIdx={}
