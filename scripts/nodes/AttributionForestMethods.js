@@ -24,14 +24,47 @@ import {VirtualRowList} from "./VirtualRowList.js"
 let forestBrickListSerial=0
 
 export class AttributionForestMethods{
+    forestState(index=this.forestInputIndex??0){
+        const key=Number.isInteger(index)?index:0
+        this.forestInputStates??=new Map()
+        if(!this.forestInputStates.has(key)){
+            this.forestInputStates.set(key,{
+                selected:new Set(),activeRank:null,treeState:new Map(),
+                duplicates:[],duplicateSerial:-1,merges:new Map(),
+                cut:0,weights:[],suggestion:null,cutAutomatic:false
+            })
+        }
+        return this.forestInputStates.get(key)
+    }
+    get forestSelected(){return this.forestState().selected}
+    set forestSelected(value){this.forestState().selected=value}
+    get forestActiveRank(){return this.forestState().activeRank}
+    set forestActiveRank(value){this.forestState().activeRank=value}
+    get forestTreeState(){return this.forestState().treeState}
+    set forestTreeState(value){this.forestState().treeState=value}
+    get forestDuplicates(){return this.forestState().duplicates}
+    set forestDuplicates(value){this.forestState().duplicates=value}
+    get forestDuplicateSerial(){return this.forestState().duplicateSerial}
+    set forestDuplicateSerial(value){this.forestState().duplicateSerial=value}
+    get forestMerges(){return this.forestState().merges}
+    set forestMerges(value){this.forestState().merges=value}
+    get forestCut(){return this.forestState().cut}
+    set forestCut(value){this.forestState().cut=value}
+    get forestWeights(){return this.forestState().weights}
+    set forestWeights(value){this.forestState().weights=value}
+    get forestSuggestion(){return this.forestState().suggestion}
+    set forestSuggestion(value){this.forestState().suggestion=value}
+    get forestCutAutomatic(){return this.forestState().cutAutomatic}
+    set forestCutAutomatic(value){this.forestState().cutAutomatic=value}
+
     /* LE MERGE, ET C'EST UNE OPÉRATION PUREMENT JS.
        « Grow network » (le noyau) ne sait pas qu'on a fusionné: le graphe
        mergé vit dans `forestMerges` (clé = rank du plus grand arbre) et se
        substitue à ses sources dans `buildForestGraphs`, le layout, la
        propagation et la liste. Recliquer « Grow network » régénère l'état
        brut: rien du merge n'est persisté côté noyau, et c'est voulu. */
-    forestMergedGraphs(baseGraphs){
-        const merges=this.forestMerges
+    forestMergedGraphs(baseGraphs,state=this.forestState()){
+        const merges=state.merges
         if(!(merges?.size)||!Array.isArray(baseGraphs)) return baseGraphs
         const byRank=new Map(baseGraphs.map(g=>[g.rank,g]))
         /* L'ENTRÉE EST LA PROVENANCE, ET NON LA CLÉ DE LA MAP.
@@ -83,12 +116,14 @@ export class AttributionForestMethods{
        existante (`attributeTree` → `propagateForest`). Rend null si tout va
        bien, sinon un message d'erreur pour le readout. */
     async mergeSelectedForests(){
-        const batch=this.forestGraphs?.[0]
+        const inputIndex=this.forestInputIndex??0
+        const state=this.forestState(inputIndex)
+        const batch=this.forestGraphs?.[inputIndex]
         if(!batch?.graphs?.length) return "no network yet — press Grow network"
         if(!this.loadedTable) await this.table()
         if(!this.loadedTable) return "no periodic table yet"
         const drawn=batch.graphs
-            .filter(g=>this.forestSelected.has(g.rank))
+            .filter(g=>state.selected.has(g.rank))
             .sort((a,b)=>(b.size??b.vertices.length)-(a.size??a.vertices.length))
         if(drawn.length<2) return "select at least two trees to merge"
         /* UNE COPIE NE SE FUSIONNE PAS: elle n'a pas de composant dans le
@@ -174,10 +209,10 @@ export class AttributionForestMethods{
         }
         const merged=forestMergeGraphs(drawn,links)
         if(!merged) return "merge produced nothing"
-        if(!this.forestMerges) this.forestMerges=new Map()
-        this.forestMerges.set(merged.rank,merged)
-        this.forestSelected.clear()
-        this.forestSelected.add(merged.rank)
+        state.merges.set(merged.rank,merged)
+        state.selected.clear()
+        state.selected.add(merged.rank)
+        state.activeRank=merged.rank
         this.forestAttributions?.byGraph?.delete(merged)
         for(const {graph} of attributions){
             this.forestAttributions?.byGraph?.delete(graph)
@@ -194,7 +229,8 @@ export class AttributionForestMethods{
            déplacée change la signature: on reconstruit une fois, et les
            identités neuves périmpent naturellement le cache d'attribution. */
         const source=this.forestComponents??[]
-        const signature=this.forestViewSignature()
+        const signature=JSON.stringify(source.map((_,index)=>
+            this.forestViewSignature(this.forestState(index))))
         if(this.forestGraphsOf===source
             &&this.forestGraphsSignature===signature
             &&Array.isArray(this.forestGraphs)) return this.forestGraphs
@@ -202,15 +238,18 @@ export class AttributionForestMethods{
         this.forestGraphsSignature=signature
         this.forestAttributions=null
         this.forestGraphs=[]
-        for(const batch of source){
+        for(let batchIndex=0;batchIndex<source.length;batchIndex++){
+            const batch=source[batchIndex]
             if(!batch) continue
+            const state=this.forestState(batchIndex)
             /* `points.order` est le tri: `points.x[order[i]]` est la i-ème masse
                par ordre croissant, et c'est ce rang que le noyau numérote. */
             const points=batch.points
             const masses=points?Array.from(points.order.map(index=>points.x[index])):[]
             const intensities=points?Array.from(points.order.map(index=>points.y[index])):[]
-            const graphs=this.forestMergedGraphs(forestGraph(batch.components??[],{masses,intensities}))
-            for(const graph of graphs) this.applyForestTreeState(graph)
+            const graphs=this.forestMergedGraphs(
+                forestGraph(batch.components??[],{masses,intensities}),state)
+            for(const graph of graphs) this.applyForestTreeState(graph,state)
             this.forestGraphs.push({
                 title:batch.title??"attribution",
                 sourceWaveId:batch.sourceWaveId,
@@ -221,17 +260,16 @@ export class AttributionForestMethods{
         /* LES COPIES VIVENT À CÔTÉ DE LEUR SOURCE, dans le même lot: une copie
            n'a pas de points propres, elle réutilise le tri de l'arbre d'origine
            et doit donc être dessinée par le même lot. */
-        for(const definition of this.forestDuplicates??[]){
-            const sourceGraph=this.forestGraphByRank(definition.sourceRank)
-            if(!sourceGraph) continue
-            let host=null
-            for(const batch of this.forestGraphs){
-                if(batch.graphs.includes(sourceGraph)){ host=batch; break }
+        for(let batchIndex=0;batchIndex<this.forestGraphs.length;batchIndex++){
+            const state=this.forestState(batchIndex)
+            const batch=this.forestGraphs[batchIndex]
+            for(const definition of state.duplicates){
+                const sourceGraph=batch.graphs.find(graph=>graph.rank===definition.sourceRank)
+                if(!sourceGraph) continue
+                const copy=this.cloneForestGraph(sourceGraph,definition)
+                this.applyForestTreeState(copy,state)
+                batch.graphs.push(copy)
             }
-            if(!host) continue
-            const copy=this.cloneForestGraph(sourceGraph,definition)
-            this.applyForestTreeState(copy)
-            host.graphs.push(copy)
         }
         return this.forestGraphs
     }
@@ -242,12 +280,12 @@ export class AttributionForestMethods{
        lot — à chaque clic sur un sommet, ce qui relancerait l'animation de
        mise en page. La sélection ne change aucun graphe et n'y est pas non
        plus. */
-    forestViewSignature(){
-        const merges=[...(this.forestMerges??new Map()).values()]
+    forestViewSignature(state=this.forestState()){
+        const merges=[...state.merges.values()]
             .map(graph=>`${graph.rank}:${(graph.mergedFrom??[]).join(",")}`)
             .sort()
             .join("|")
-        const duplicates=(this.forestDuplicates??[])
+        const duplicates=state.duplicates
             .map(definition=>`${definition.rank}:${definition.sourceRank}:${definition.colour}`)
             .join("|")
         return `${merges}::${duplicates}`
@@ -255,16 +293,16 @@ export class AttributionForestMethods{
     /* APPLIQUER L'ÉTAT D'UN ARBRE. La racine et la formule imposée survivent
        aux reconstructions parce qu'elles vivent dans `forestTreeState`, clé =
        rang; on les repose sur le graphe neuf au moment où il naît. */
-    applyForestTreeState(graph){
+    applyForestTreeState(graph,state=this.forestState()){
         if(!graph) return graph
-        const state=this.forestTreeState?.get(graph.rank)
-        if(!state) return graph
-        if(Number.isInteger(state.rootIndex)
-            &&(graph.vertices??[]).some(vertex=>vertex.index===state.rootIndex)){
-            graph.rootIndex=state.rootIndex
-            for(const vertex of graph.vertices) vertex.isRoot=vertex.index===state.rootIndex
+        const treeState=state.treeState.get(graph.rank)
+        if(!treeState) return graph
+        if(Number.isInteger(treeState.rootIndex)
+            &&(graph.vertices??[]).some(vertex=>vertex.index===treeState.rootIndex)){
+            graph.rootIndex=treeState.rootIndex
+            for(const vertex of graph.vertices) vertex.isRoot=vertex.index===treeState.rootIndex
         }
-        if(state.rootFormulaOverride?.formula) graph.rootFormulaOverride=state.rootFormulaOverride
+        if(treeState.rootFormulaOverride?.formula) graph.rootFormulaOverride=treeState.rootFormulaOverride
         return graph
     }
     /* UNE COPIE EST UN CLONE PROFOND DE LA GÉOMÉTRIE, PAS DU CALCUL.
@@ -285,13 +323,9 @@ export class AttributionForestMethods{
         return clone
     }
     forestGraphByRank(rank){
-        for(const batch of this.forestGraphs??[]){
-            for(const graph of batch.graphs??[]){
-                if(graph.rank===rank) return graph
-            }
-        }
-        return null
+        return this.activeForestBatch()?.graphs?.find(graph=>graph.rank===rank)??null
     }
+    activeForestBatch(){return this.forestGraphs?.[this.forestInputIndex??0]??null}
     forestRootVertex(graph){
         return (graph?.vertices??[]).find(vertex=>vertex.index===graph.rootIndex)??null
     }
@@ -455,7 +489,7 @@ AFFICHE SEULEMENT LES ARBRES SÉLECTIONNÉS, côte à côte en force-directed.
 forestOverviewLayout({animate=false}={}){
         const box=this.forestPlotBox
         if(!box) return null
-        const batch=this.forestGraphs?.[0]
+        const batch=this.activeForestBatch()
         if(!batch?.graphs?.length) return null
         const width=Math.max(240,Math.round(box.clientWidth||600))
         const height=Math.max(160,Math.round(box.clientHeight||this.forestPlotHeight||260))
@@ -848,7 +882,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             plot?.graphSVG?.select(".forest-root-links").selectAll("*").remove()
             return
         }
-        const batch=this.forestGraphs?.[0]
+        const batch=this.activeForestBatch()
         if(!batch?.graphs?.length) return
         this.forestLayout=layout
         /* LA POSITION DE CHAQUE SOMMET, DANS UN INDEX UNIQUE. Le noyau numérote
@@ -1471,7 +1505,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         }
         const rootA=rootOf(verticesA,sideU.has(graph.rootIndex)?graph.rootIndex:null)
         const rootB=rootOf(verticesB,!sideU.has(graph.rootIndex)?graph.rootIndex:null)
-        const batch=this.forestGraphs?.[0]
+        const batch=this.activeForestBatch()
         let batchIndex=(this.forestGraphs??[]).indexOf(batch)
         if(batchIndex<0) batchIndex=0
         const compRanks=(this.forestComponents?.[batchIndex]?.components??[]).map(item=>item.rank??0)
@@ -1701,7 +1735,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 return
             }
 
-            const batch=this.forestGraphs?.[0]
+            const batch=this.activeForestBatch()
             if(!batch) return
             const allGroups=batch.graphs.map((graph,index)=>({graph,rank:graph.rank??index}))
             const hasSelection=this.forestSelected.size>0
@@ -1832,7 +1866,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         svgNode.addEventListener("click",async (e)=>{
             const data=screenToData(e.clientX,e.clientY)
             if(!data) return
-            const batch=this.forestGraphs?.[0]
+            const batch=this.activeForestBatch()
             if(!batch) return
             const allGroups=batch.graphs.map((graph,index)=>({graph,rank:graph.rank??index}))
             const groups=allGroups.filter(g=>this.forestSelected.has(g.rank))
@@ -1887,12 +1921,11 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
                 graph.rootFormulaOverride=null
 
                 /* Mettre à jour le composant correspondant dans forestComponents. */
-                for(const batchComp of this.forestComponents??[]){
-                    const comp=batchComp.components?.find(c=>c.rank===group.rank)
-                    if(comp){
-                        comp.root=newRootIndex
-                        comp.rootMass=point.mass
-                    }
+                const batchComp=this.forestComponents?.[this.forestInputIndex??0]
+                const comp=batchComp?.components?.find(c=>c.rank===group.rank)
+                if(comp){
+                    comp.root=newRootIndex
+                    comp.rootMass=point.mass
                 }
 
                 /* Invalider le cache d'attribution pour ce graphe. */
@@ -2450,9 +2483,27 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         stylize(forestCaret,{width:"1em",display:"inline-block",textAlign:"center"})
         const forestTitle=CE("span",{},["Forest graph"])
         stylize(forestTitle,{flex:"1 1 auto"})
+        this.forestInputSelect=CE("select",{
+            className:"an-forest-input-select",
+            title:"Choose the input spectrum shown in the forest panel"
+        },[])
+        stylize(this.forestInputSelect,{
+            maxWidth:"45%",minWidth:"90px",height:"1.7em",
+            fontSize:"0.95em",padding:"0 3px",color:"inherit",
+            background:"rgba(255,255,255,0.08)",
+            border:"1px solid rgba(255,255,255,0.2)",borderRadius:"3px"
+        })
+        this.forestInputSelect.addEventListener("click",event=>event.stopPropagation())
+        this.forestInputSelect.addEventListener("keydown",event=>event.stopPropagation())
+        this.forestInputSelect.addEventListener("change",()=>{
+            this.forestInputIndex=Number(this.forestInputSelect.value)||0
+            this.forestLayoutOf=null
+            this.forestSegmentEdit=null
+            this.renderForest()
+        })
         const forestHint=CE("span",{},["click to fold"])
         stylize(forestHint,{fontWeight:"normal",opacity:"0.5"})
-        forestHead.append(forestCaret,forestTitle,forestHint)
+        forestHead.append(forestCaret,forestTitle,this.forestInputSelect,forestHint)
         this.forestPlotPanel.append(forestHead,this.forestPlotBox)
         content.appendChild(this.forestPlotPanel)
 
@@ -5567,7 +5618,16 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            Le noyau trie les candidats par erreur croissante, donc « garder les
            N premiers» et « garder les N meilleurs» sont la même chose — et c'est
            ce second sens qui a un sens physique. */
-        if(!keepCut) this.forestCut=0
+        if(!keepCut){
+            for(const state of this.forestInputStates.values()){
+                state.cut=0
+                state.weights=[]
+                state.suggestion=null
+                state.cutAutomatic=false
+            }
+            for(let index=0;index<this.collectInputWaves().waves.length;index++)
+                this.forestState(index).cut=0
+        }
         this.forestBusy=true
         const {waves,skipped}=this.collectInputWaves()
         this.forestSkipped=skipped
@@ -5611,17 +5671,12 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             const wave=waves[i]
             const title=wave.metadata?.title??`input ${i+1}`
             try{
-                const {forest,points}=await this.growForestAsync(wave,standards,this.forestCut)
+                const state=this.forestState(i)
+                const {forest,points}=await this.growForestAsync(wave,standards,state.cut)
                 forests.push(forest)
-                /* LA COURBE VIENT AVEC L'ARBRE, donc elle ne peut pas dater d'un
-                   autre calcul: elle est rendue par le même appel sur le même
-                   préfixe trié. On ne la prend qu'au PREMIER lot — sinon deux
-                   spectres se disputeraient la même courbe, et le curseur
-                   couperait un graphe avec la courbe de l'autre. */
-                if(i===0){
-                    this.forestWeights=forest.weights??[]
-                    this.forestSuggestion=suggestWeightCut(this.forestWeights)
-                }
+                state.weights=forest.weights??[]
+                state.suggestion=suggestWeightCut(state.weights)
+                state.cutAutomatic=!!state.cut&&state.cut===state.suggestion?.index
                 components.push({
                     title,
                     sourceWaveId:wave.metadata?.sourceWaveId,
@@ -5660,12 +5715,14 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
            les racines choisies et les copies. Un merge ou une copie est une
            opération JS par-dessus le réseau du noyau: un nouveau « Grow
            network » régénère l'état brut. */
-        this.forestSelected.clear()
-        this.forestMerges?.clear()
-        this.forestTreeState?.clear()
-        this.forestDuplicates=[]
-        this.forestDuplicateSerial=-1
-        this.forestActiveRank=null
+        for(const state of this.forestInputStates.values()){
+            state.selected.clear()
+            state.merges.clear()
+            state.treeState.clear()
+            state.duplicates=[]
+            state.duplicateSerial=-1
+            state.activeRank=null
+        }
         this.renderForestButton(false)
         this.forestBusy=false
         this.renderForest()
@@ -5685,16 +5742,20 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        d'un seul chemin de calcul. */
     async autoApplyForestCut(keepCut){
         if(keepCut) return false
-        const suggestion=this.forestSuggestion
-        const weights=this.forestWeights??[]
-        if(!suggestion) return false
-        if(!(suggestion.index>0&&suggestion.index<weights.length)) return false
-        this.forestCut=suggestion.index
+        let changed=false
+        for(const state of this.forestInputStates.values()){
+            const suggestion=state.suggestion
+            const weights=state.weights??[]
+            if(!suggestion||!(suggestion.index>0&&suggestion.index<weights.length)) continue
+            state.cut=suggestion.index
+            state.cutAutomatic=true
+            changed=true
+        }
+        if(!changed) return false
         /* ON SE SOUVIENT QUE C'EST LE PROGRAMME QUI A COUPÉ, parce que la ligne
            du dessous le dira. Écrire « coupure à la marche détectée » sans dire
            qui l'a posée laisserait croire que l'utilisateur l'a choisie — et il
            vient de le voir apparaître. */
-        this.forestCutAutomatic=true
         await this.startForest({keepCut:true})
         return true
     }
@@ -6433,11 +6494,10 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        fenêtre, mais le pool peut avoir été recyclé entre-temps et un `checked`
        posé sur une ligne qui n'est plus la sienne mentirait. */
     setForestCheckedForAll(checked){
-        for(const batch of this.forestGraphs??[]){
-            for(const graph of batch.graphs??[]){
-                if(checked) this.forestSelected.add(graph.rank)
-                else this.forestSelected.delete(graph.rank)
-            }
+        const batch=this.activeForestBatch()
+        for(const graph of batch?.graphs??[]){
+            if(checked) this.forestSelected.add(graph.rank)
+            else this.forestSelected.delete(graph.rank)
         }
         if(checked){
             if(!Number.isInteger(this.forestActiveRank)&&this.forestSelected.size){
@@ -6544,7 +6604,9 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        On utilise stateToFormula du plan pour partager la table périodique
        (pas de duplication → pas de session à 85 Mo). */
     async publishForestCollections(){
-        if(!this.forestSelected.size) {
+        const inputIndex=this.forestInputIndex??0
+        const state=this.forestState(inputIndex)
+        if(!state.selected.size) {
             this.outputs[1]=[]
             return
         }
@@ -6554,7 +6616,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             return
         }
         const ppm=Number(this.parameters.ppm)>0?Number(this.parameters.ppm):10
-        const batch=this.forestGraphs?.[0]
+        const batch=this.forestGraphs?.[inputIndex]
         if(!batch?.graphs?.length) {
             this.outputs[1]=[]
             return
@@ -6569,7 +6631,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
         let fresh=false
         for(const graph of batch.graphs){
             const rank=graph.rank
-            if(!this.forestSelected.has(rank)) continue
+            if(!state.selected.has(rank)) continue
             const known=this.forestAttributions?.byGraph?.has(graph)??false
             const result=await this.attributeTree(graph)
             if(!result) continue
@@ -6607,6 +6669,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
             collection.setPoints(points)
             collections.push(collection)
         }
+        if(inputIndex!==(this.forestInputIndex??0)) return
         this.outputs[1]=collections
         this.resolveChildren()
         /* LES FORMULES ARRIVENT APRÈS LE PREMIER COUP DE PINCEAU: `renderForest`
@@ -6675,6 +6738,7 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
     renderForestList(){
         const list=this.forestTreeList
         if(!list) return
+        this.renderForestInputSelect()
         const rows=this.forestListRows()
         list.setRows(rows.length?rows:[{kind:"empty"}])
         this.syncForestCheckboxes()
@@ -6687,15 +6751,31 @@ BOUCLE CONTINUE: pas de fin — le graphe respire tant qu'il est affiché.
        Elle étiquette seulement le genre pour le dessin. */
     forestListRows(){
         const rows=[]
-        for(const batch of this.forestGraphs??[]){
-            for(const graph of batch.graphs??[]){
-                const kind=graph.duplicateOf!=null
-                    ?"duplicate"
-                    :(graph.mergedFrom?.length?"merged":"tree")
-                rows.push({kind,graph,batch})
-            }
+        const batch=this.activeForestBatch()
+        for(const graph of batch?.graphs??[]){
+            const kind=graph.duplicateOf!=null
+                ?"duplicate"
+                :(graph.mergedFrom?.length?"merged":"tree")
+            rows.push({kind,graph,batch})
         }
         return rows
+    }
+    renderForestInputSelect(){
+        const select=this.forestInputSelect
+        if(!select) return
+        const batches=this.forestGraphs??[]
+        const selected=Math.min(this.forestInputIndex??0,Math.max(0,batches.length-1))
+        this.forestInputIndex=selected
+        select.replaceChildren()
+        batches.forEach((batch,index)=>{
+            const title=batch.title??`input ${index+1}`
+            select.appendChild(CE("option",{value:String(index)},[
+                `${index+1}. ${title}`
+            ]))
+        })
+        select.disabled=batches.length<2
+        select.value=String(selected)
+        select.style.display=batches.length?"":"none"
     }
 
     /* UNE LIGNE, CONSTRUITE UNE FOIS ET REMPLIE ENSUITE.

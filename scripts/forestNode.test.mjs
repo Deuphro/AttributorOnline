@@ -397,7 +397,7 @@ test("the legend says WHO cut, because the cut arrives by itself",()=>{
     assert.match(method("async setForestCut","applySuggestedCut"),
         /forestCutAutomatic=false/)
     assert.match(method("async autoApplyForestCut","renderForestButton"),
-        /forestCutAutomatic=true/)
+        /state\.cutAutomatic=true/)
 })
 
 test("the node class is BRACED, so its methods are methods",()=>{
@@ -586,6 +586,8 @@ test("the force layout runs ONCE for one graph, not at every repaint",()=>{
        donc un cache qui manque toujours — un test qui vérifierait le cache en
        le remplissant à chaque ligne ne vérifierait rien. */
     const node={
+        forestInputIndex:0,
+        activeForestBatch(){return this.forestGraphs?.[this.forestInputIndex??0]??null},
         forestSelected:new Set([0]),
         forestPlotBox:{clientWidth:600,clientHeight:300},
         forestPlotHeight:260,
@@ -697,8 +699,8 @@ test("the merge button fuses the drawn trees, biggest first",()=>{
         "each bridge is the stoichiometric difference of two roots")
     assert.match(FOREST_METHODS,/forestMergeGraphs\(/,
         "fused graphs keep every vertex and link, plus the bridge")
-    assert.match(FOREST_METHODS,/forestMerges\?\.clear\(\)/,
-        "a fresh Grow network regenerates the raw state: merges do not survive it")
+    assert.match(FOREST_METHODS,/state\.merges\.clear\(\)/,
+        "a fresh Grow network regenerates each input's raw state")
     assert.match(FOREST,/export function forestCompositionDiff\(/,
         "the root diff is pure: no DOM, no kernel, testable alone")
     assert.match(FOREST,/export function forestMergeGraphs\(/,
@@ -737,6 +739,8 @@ test("a click picks the VERTEX first, and the SEGMENT only when no vertex is the
     const opened=[]
     let closed=0
     const self={
+        forestInputIndex:0,
+        activeForestBatch(){return this.forestGraphs?.[this.forestInputIndex??0]??null},
         forestGraphs:[{graphs:[graph]}],
         forestSelected:new Set(),
         forestLayout:{groups:[{rank:0,points:[
@@ -781,6 +785,37 @@ test("a click picks the VERTEX first, and the SEGMENT only when no vertex is the
     await listeners.click({clientX:50,clientY:40})
     assert.equal(opened.length,1,"empty space selects nothing")
     assert.ok(closed>0,"an empty click must close the editor")
+})
+
+test("each input owns its forest selection and duplicate rank zero",()=>{
+    const stateMethod=slice(FOREST_METHODS,
+        "    forestState(","    get forestSelected","forestState")
+    const build=new Function("return "+stateMethod.replace(/^\s*/,"function "))()
+    const node={forestInputStates:new Map(),forestInputIndex:0}
+    const first=build.call(node,0)
+    const second=build.call(node,1)
+    first.selected.add(0)
+    second.selected.add(0)
+    first.treeState.set(0,{rootIndex:2})
+    assert.notEqual(first,second)
+    assert.equal(first.selected.has(0),true)
+    assert.equal(second.selected.has(0),true)
+    assert.notEqual(first.treeState,second.treeState)
+    const listMethod=method("forestListRows","renderForestInputSelect")
+    const list=new Function("return "+listMethod.replace(/^\s*/,"function "))()
+    const firstGraph={rank:0}
+    const secondGraph={rank:0}
+    const batches=[
+        {title:"sample-A",graphs:[firstGraph]},
+        {title:"sample-B",graphs:[secondGraph]}
+    ]
+    const rows=list.call({forestGraphs:batches,forestInputIndex:1,
+        activeForestBatch(){return batches[this.forestInputIndex]}})
+    assert.equal(rows.length,1)
+    assert.equal(rows[0].graph,secondGraph,
+        "the selected input's rank zero must not resolve to the first input")
+    assert.match(FOREST_METHODS,/an-forest-input-select/)
+    assert.match(FOREST_METHODS,/renderForestInputSelect\(\)/)
 })
 
 test("the segment editor writes the BRICK the propagation actually indexes",()=>{

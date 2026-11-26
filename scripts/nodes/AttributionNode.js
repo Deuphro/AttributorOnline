@@ -180,14 +180,15 @@ export class AttributionNode extends NodeWithAccordion{
         this.forests=[]
         this.forestComponents=[]
         this.forestErrors=[]
-        /* SELECTION DU RÉSEAU.
+          /* ÉTAT DU RÉSEAU, séparé par spectre; les rangs du noyau repartent à
+              zéro dans chaque entrée, donc aucune sélection ou racine n'est globale.
         
-           forestSelected: Set de rangs des arbres sélectionnés (cases à cocher).
-           forestActiveRank: arbre dont la racine est sondée / la formule éditée.
-           forestTreeState: racine et formule imposée par arbre (par rang), pour
-           qu'elles survivent aux reconstructions de `buildForestGraphs`.
-           forestDuplicates: copies bleues, rangs négatifs, source et couleur.
-           La sélection est persistée dans serializeState/restoreState. */
+              `forestInputStates` garde sélection, arbre actif, racines/formules,
+              copies, fusions et seuil de coupure par index d'entrée. Les accesseurs
+              du mixin exposent l'état de l'entrée choisie; seule la sélection est
+              persistée dans serializeState/restoreState. */
+        this.forestInputIndex=0
+        this.forestInputStates=new Map()
         this.forestSelected=new Set()
         this.forestActiveRank=null
         this.forestTreeState=new Map()
@@ -2845,6 +2846,9 @@ export class AttributionNode extends NodeWithAccordion{
             forestGroups:this.forestGroupList(),
             /* SÉLECTION DU RÉSEAU (persistée pour la session). */
             forestSelected:Array.from(this.forestSelected),
+            forestInputIndex:this.forestInputIndex,
+            forestInputSelections:[...this.forestInputStates]
+                .map(([index,state])=>({index,selected:[...state.selected]})),
             /* LES MARIAGES CHOISIS EN RÉINSPECTION. Ce sont des décisions, pas
                des résultats: aucun resolve ne peut les retrouver, donc elles
                voyagent sous forme de paires clé -> formule (ou null). */
@@ -2890,6 +2894,17 @@ export class AttributionNode extends NodeWithAccordion{
            So the old value is dropped, not translated, and the new default
            applies. The user loses a number they can hardly have meant, and gets a
            setting that behaves the way its name says. Nothing is guessed. */
+        if(Number.isInteger(state.forestInputIndex)&&state.forestInputIndex>=0){
+            this.forestInputIndex=state.forestInputIndex
+        }
+        if(Array.isArray(state.forestInputSelections)){
+            this.forestInputStates=new Map()
+            for(const entry of state.forestInputSelections){
+                if(!Number.isInteger(entry?.index)||entry.index<0
+                    ||!Array.isArray(entry.selected)) continue
+                this.forestState(entry.index).selected=new Set(entry.selected)
+            }
+        }
         if(Array.isArray(state.forestSelected)){
             this.forestSelected=new Set(state.forestSelected)
         }
