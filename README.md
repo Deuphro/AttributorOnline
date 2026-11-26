@@ -156,7 +156,7 @@ This project is licensed under the **[MIT License](#)**.
 ---
 ---
 ## <span style="color:#9b59b6">🔗 Links</span>
-- **[Try Attributor Online](attributor.fr)**
+- **[Try Attributor Online](https://attributor.fr)**
 - **[GitHub Repository](https://github.com/Deuphro/AttributorOnline)**
 - **[Documentation](doc.attributor.fr)**
 
